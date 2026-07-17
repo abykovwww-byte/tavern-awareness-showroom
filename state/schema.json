@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://abykov.site/schemas/rp-stack/world-state.schema.json",
+  "title": "RP Stack Authoritative World State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "meta",
+    "player",
+    "characters",
+    "factions",
+    "locations",
+    "resources",
+    "relationships",
+    "active_threads",
+    "completed_threads",
+    "world_constraints",
+    "timeline",
+    "last_turn"
+  ],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["campaign_id", "schema_version", "state_version", "turn", "last_updated"],
+      "properties": {
+        "campaign_id": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "state_version": { "type": "integer", "minimum": 1 },
+        "turn": { "type": "integer", "minimum": 0 },
+        "last_updated": { "type": "string", "format": "date-time" }
+      }
+    },
+    "player": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location",
+        "status",
+        "reputation",
+        "resources",
+        "known_abilities",
+        "constraints",
+        "known_world_facts"
+      ],
+      "properties": {
+        "location": { "type": "string" },
+        "status": { "type": "string" },
+        "reputation": { "type": "object", "additionalProperties": { "type": ["string", "number", "integer"] } },
+        "resources": { "type": "object", "additionalProperties": { "type": ["string", "number", "integer", "boolean"] } },
+        "known_abilities": { "type": "array", "items": { "type": "string" } },
+        "constraints": { "type": "array", "items": { "type": "string" } },
+        "known_world_facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } }
+      }
+    },
+    "characters": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/character" }
+    },
+    "factions": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/faction" }
+    },
+    "locations": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/location" }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/resource" }
+    },
+    "relationships": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/relationship" }
+    },
+    "active_threads": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/thread" }
+    },
+    "completed_threads": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/thread" }
+    },
+    "world_constraints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/constraint" }
+    },
+    "timeline": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/timeline_event" }
+    },
+    "last_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn", "player_message", "narrator_response", "state_patch_id"],
+      "properties": {
+        "turn": { "type": "integer", "minimum": 0 },
+        "player_message": { "type": "string" },
+        "narrator_response": { "type": "string" },
+        "state_patch_id": { "type": "string" }
+      }
+    },
+    "uncertain_facts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fact" }
+    }
+  },
+  "$defs": {
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "turn", "confidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "turn": { "type": "integer", "minimum": 0 },
+        "confidence": { "type": "string", "enum": ["confirmed", "uncertain"] },
+        "source": { "type": "string" }
+      }
+    },
+    "character": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "location",
+        "attitude_to_player",
+        "trust",
+        "fear",
+        "loyalty",
+        "current_goal",
+        "knowledge",
+        "secrets",
+        "obligations",
+        "hard_constraints",
+        "last_confirmed_update"
+      ],
+      "properties": {
+        "status": { "type": "string", "enum": ["alive", "dead", "unknown", "missing", "incapacitated"] },
+        "location": { "type": "string" },
+        "attitude_to_player": { "type": "string" },
+        "trust": { "type": "integer", "minimum": -10, "maximum": 10 },
+        "fear": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "loyalty": { "type": "string" },
+        "current_goal": { "type": "string" },
+        "knowledge": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+        "secrets": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+        "obligations": { "type": "array", "items": { "type": "string" } },
+        "hard_constraints": { "type": "array", "items": { "type": "string" } },
+        "last_confirmed_update": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "faction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leader", "goals", "resources", "allies", "opponents", "attitude_to_player", "current_actions", "constraints"],
+      "properties": {
+        "leader": { "type": "string" },
+        "goals": { "type": "array", "items": { "type": "string" } },
+        "resources": { "type": "object", "additionalProperties": { "type": ["string", "number", "integer", "boolean"] } },
+        "allies": { "type": "array", "items": { "type": "string" } },
+        "opponents": { "type": "array", "items": { "type": "string" } },
+        "attitude_to_player": { "type": "string" },
+        "current_actions": { "type": "array", "items": { "type": "string" } },
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "known_facts", "constraints"],
+      "properties": {
+        "description": { "type": "string" },
+        "known_facts": { "type": "array", "items": { "$ref": "#/$defs/fact" } },
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "quantity", "state", "constraints"],
+      "properties": {
+        "owner": { "type": "string" },
+        "quantity": { "type": ["integer", "number", "string"] },
+        "state": { "type": "string" },
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "trust", "suspicion", "notes"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "trust": { "type": "integer", "minimum": -10, "maximum": 10 },
+        "suspicion": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "state", "participants", "deadlines", "success_conditions", "failure_conditions", "confirmed_consequences"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "state": { "type": "string" },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "deadlines": { "type": "array", "items": { "type": "string" } },
+        "success_conditions": { "type": "array", "items": { "type": "string" } },
+        "failure_conditions": { "type": "array", "items": { "type": "string" } },
+        "confirmed_consequences": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "constraint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "scope", "turn"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string" },
+        "turn": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "timeline_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn", "event", "confirmed"],
+      "properties": {
+        "turn": { "type": "integer", "minimum": 0 },
+        "event": { "type": "string", "minLength": 1 },
+        "confirmed": { "type": "boolean" },
+        "participants": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
+

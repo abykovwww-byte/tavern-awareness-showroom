@@ -14,6 +14,17 @@ Browser in LAN
 
 SillyTavern image: `ghcr.io/sillytavern/sillytavern:1.18.0`.
 
+Iteration 2 adds a semi-automatic state workflow:
+
+```text
+SillyTavern scene
+  -> state-updater prompt produces proposed JSON patch
+  -> scripts/validate-state.py validates state and patch
+  -> scripts/apply-state-patch.py previews by default
+  -> scripts/apply-state-patch.py --confirm writes state/current.json
+  -> scripts/render-state-block.py renders AUTHORITATIVE_WORLD_STATE for prompt injection
+```
+
 Persistent data on server:
 
 ```text
@@ -22,6 +33,16 @@ Persistent data on server:
 /srv/app-data/rp-stack/plugins
 /srv/app-data/rp-stack/extensions
 /srv/backups/rp-stack
+```
+
+Runtime state:
+
+```text
+/srv/apps/rp-stack/state/schema.json
+/srv/apps/rp-stack/state/current.json
+/srv/apps/rp-stack/state/history/
+/srv/apps/rp-stack/state/proposed/
+/srv/apps/rp-stack/state/audit.log
 ```
 
 ## Запуск и остановка
@@ -81,6 +102,30 @@ API key вводится вручную в UI SillyTavern. Не сохраняй
 - `configs/characters/character-template.md`;
 - `configs/presets/openai-compatible-glm-5.2.json`.
 
+## State Workflow
+
+Generate a proposed patch with `configs/prompts/state-updater.md`, then save it under `state/proposed/`, for example:
+
+```bash
+cd /srv/apps/rp-stack
+python3 scripts/validate-state.py --patch state/proposed/turn-001.json
+python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json
+python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json --confirm
+python3 scripts/render-state-block.py
+```
+
+The first `apply-state-patch.py` command is a dry-run. Nothing is written until `--confirm` is present.
+
+Rollback:
+
+```bash
+cd /srv/apps/rp-stack
+python3 scripts/apply-state-patch.py --rollback latest
+python3 scripts/apply-state-patch.py --rollback latest --confirm
+```
+
+After applying or rolling back state, update the SillyTavern Chat Lorebook / World Info entry with the output of `render-state-block.py`.
+
 ## Обновление
 
 Изменения вносятся через GitHub IaC-репозиторий `ubuntu_ansible_palybooks`. На сервере применяется pull-based Ansible:
@@ -111,8 +156,7 @@ bash scripts/backup.sh
 
 ## Известные ограничения
 
-- Итерация 1 не содержит отдельного state store.
-- Игровой outcome пока обеспечивается prompt-правилами, не rule engine.
+- Iteration 2 uses manual confirmation and helper scripts; it is intentionally not fully automatic.
+- Игровой outcome пока обеспечивается prompt/state rules, не rule engine.
 - NVIDIA key на этой итерации вводится вручную в UI.
 - FastAPI gateway появится только в итерации 4.
-

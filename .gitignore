@@ -4,4 +4,11 @@ data/*
 backups/*
 !data/.gitkeep
 !backups/.gitkeep
-
+state/current.json
+state/audit.log
+state/proposed/*
+state/history/*
+!state/proposed/.gitkeep
+!state/history/.gitkeep
+.test-workdir/
+.test-tmp/

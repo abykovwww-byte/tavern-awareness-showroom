@@ -14,9 +14,22 @@ LAN browser
 
 The NVIDIA API key is entered in SillyTavern by the user and is not managed by Ansible.
 
+## Iteration 2
+
+The project now stores authoritative world state separately from chat prose.
+
+```text
+state/current.json
+  -> validated by scripts/validate-state.py
+  -> updated only by scripts/apply-state-patch.py --confirm
+  -> previous versions copied to state/history/
+  -> audit events appended to state/audit.log
+  -> rendered into prompt by scripts/render-state-block.py
+```
+
+The LLM may generate a proposed patch, but it cannot write `state/current.json` directly. The user reviews or edits the proposed patch and explicitly confirms application.
+
 Future iterations will add:
 
-- semi-automatic world state files;
 - STscript adjudication helpers;
 - FastAPI RP Gateway with SQLite state and rule engine.
-

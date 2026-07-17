@@ -20,3 +20,24 @@ docker compose logs --tail=200 sillytavern
 docker inspect --format='{{.State.Health.Status}}' rp-stack-sillytavern
 ```
 
+## Iteration 2 Checks
+
+```bash
+cd /srv/apps/rp-stack
+python3 scripts/test-state-workflow.py
+python3 scripts/validate-state.py
+python3 scripts/render-state-block.py >/tmp/rp-state-block.txt
+```
+
+Covered negative cases:
+
+- player declares a dead NPC alive;
+- player uses unavailable resource;
+- relationship/state change without reason;
+- narrative-only fact leaves state unchanged unless patch is confirmed;
+- invalid JSON is rejected;
+- rejected patch dry-run does not modify state;
+- corrected patch can be confirmed;
+- state persists after reload;
+- rollback restores a previous state as a new version.
+

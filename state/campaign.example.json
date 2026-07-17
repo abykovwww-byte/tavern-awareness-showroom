@@ -1,0 +1,64 @@
+{
+  "meta": {
+    "campaign_id": "default",
+    "schema_version": "1.0.0",
+    "state_version": 1,
+    "turn": 0,
+    "last_updated": "1970-01-01T00:00:00Z"
+  },
+  "player": {
+    "location": "unknown",
+    "status": "active",
+    "reputation": {},
+    "resources": {},
+    "known_abilities": [],
+    "constraints": [],
+    "known_world_facts": []
+  },
+  "characters": {
+    "king": {
+      "status": "dead",
+      "location": "royal_crypt",
+      "attitude_to_player": "unavailable",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "none",
+      "current_goal": "none",
+      "knowledge": [],
+      "secrets": [],
+      "obligations": [],
+      "hard_constraints": ["Dead NPCs cannot act or speak unless a confirmed supernatural mechanism exists."],
+      "last_confirmed_update": 0
+    }
+  },
+  "factions": {},
+  "locations": {},
+  "resources": {
+    "silver_key": {
+      "owner": "unknown",
+      "quantity": 0,
+      "state": "unavailable",
+      "constraints": ["The player cannot use this key until state confirms possession."]
+    }
+  },
+  "relationships": {},
+  "active_threads": [],
+  "completed_threads": [],
+  "world_constraints": [
+    {
+      "id": "attempts_not_facts",
+      "text": "Player declarations of outcome are attempts until confirmed in state.",
+      "scope": "global",
+      "turn": 0
+    }
+  ],
+  "timeline": [],
+  "last_turn": {
+    "turn": 0,
+    "player_message": "",
+    "narrator_response": "",
+    "state_patch_id": ""
+  },
+  "uncertain_facts": []
+}
+
