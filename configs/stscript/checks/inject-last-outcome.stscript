@@ -1,0 +1,4 @@
+/input Paste the full AUTHORITATIVE_OUTCOME block |
+/setvar key=rp_last_outcome {{pipe}} |
+/inject id=authoritative_outcome position=chat depth=0 {{getvar::rp_last_outcome}} |
+/echo Authoritative outcome injected for the next narrator response.

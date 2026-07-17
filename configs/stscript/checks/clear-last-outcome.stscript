@@ -1,0 +1,3 @@
+/inject id=authoritative_outcome position=chat depth=0 |
+/setvar key=rp_last_outcome |
+/echo Cleared authoritative outcome injection.

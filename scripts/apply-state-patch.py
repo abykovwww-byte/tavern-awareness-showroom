@@ -49,6 +49,23 @@ def append_audit(audit_path: Path, event: dict[str, Any]) -> None:
         handle.write("\n")
 
 
+def audit_has_check_id(audit_path: Path, check_id: str) -> bool:
+    if not audit_path.exists():
+        return False
+    with audit_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "apply_patch" and event.get("check_id") == check_id:
+                return True
+    return False
+
+
 def backup_state(state_path: Path, history_dir: Path, label: str) -> Path:
     state = load_json(state_path)
     meta = state.get("meta", {})
@@ -171,6 +188,11 @@ def main() -> int:
         print("Patch did not produce a candidate state.", file=sys.stderr)
         return 1
 
+    check_id = proposal.get("check_id")
+    if isinstance(check_id, str) and check_id.strip() and audit_has_check_id(audit_path, check_id):
+        print(f"Patch for check_id {check_id} has already been applied.", file=sys.stderr)
+        return 1
+
     if not args.confirm:
         print(json.dumps({"turn": proposal["turn"], "operations": proposal["patch"]}, ensure_ascii=False, indent=2))
         print("DRY RUN: state not changed. Add --confirm to apply.")
@@ -192,6 +214,7 @@ def main() -> int:
             "timestamp": now(),
             "event": "apply_patch",
             "patch_file": args.patch,
+            "check_id": check_id,
             "backup": str(backup),
             "ops": len(proposal["patch"]),
             "uncertain_facts": len(proposal.get("uncertain_facts", [])),
@@ -206,4 +229,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -25,6 +25,17 @@ SillyTavern scene
   -> scripts/render-state-block.py renders AUTHORITATIVE_WORLD_STATE for prompt injection
 ```
 
+Iteration 3 adds bounded check adjudication:
+
+```text
+Quick Reply / explicit command
+  -> scripts/run-check.py fixes the result
+  -> state/checks.log records roll and modifiers
+  -> state/proposed/check-<id>.json awaits review
+  -> STscript injects AUTHORITATIVE_OUTCOME
+  -> GLM narrates the fixed result
+```
+
 Persistent data on server:
 
 ```text
@@ -43,6 +54,8 @@ Runtime state:
 /srv/apps/rp-stack/state/history/
 /srv/apps/rp-stack/state/proposed/
 /srv/apps/rp-stack/state/audit.log
+/srv/apps/rp-stack/state/checks.log
+/srv/apps/rp-stack/state/last-check.json
 ```
 
 ## Запуск и остановка
@@ -126,6 +139,38 @@ python3 scripts/apply-state-patch.py --rollback latest --confirm
 
 After applying or rolling back state, update the SillyTavern Chat Lorebook / World Info entry with the output of `render-state-block.py`.
 
+## Check Workflow
+
+Run a bounded check from `/srv/apps/rp-stack`:
+
+```bash
+python3 scripts/run-check.py --type persuasion --target advisor --skill 2 --difficulty 12
+```
+
+Supported check types:
+
+```text
+persuasion intimidation deception stealth information resource feasibility trust conflict random_event
+```
+
+Use the printed `<AUTHORITATIVE_OUTCOME>` with the Quick Reply snippets in
+`configs/stscript/checks/`, especially `inject-last-outcome.stscript`. GLM should
+then narrate with `configs/prompts/outcome-narration.md`.
+
+Review and apply the generated patch only after validation:
+
+```bash
+python3 scripts/validate-state.py --patch state/proposed/check-<id>.json
+python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json
+python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json --confirm
+```
+
+Clear an un-narrated check:
+
+```bash
+python3 scripts/rollback-last-check.py --confirm
+```
+
 ## Обновление
 
 Изменения вносятся через GitHub IaC-репозиторий `ubuntu_ansible_palybooks`. На сервере применяется pull-based Ansible:
@@ -157,6 +202,6 @@ bash scripts/backup.sh
 ## Известные ограничения
 
 - Iteration 2 uses manual confirmation and helper scripts; it is intentionally not fully automatic.
-- Игровой outcome пока обеспечивается prompt/state rules, не rule engine.
+- Iteration 3 uses a server helper for rule resolution and STscript for Quick Reply workflow and prompt injection.
 - NVIDIA key на этой итерации вводится вручную в UI.
 - FastAPI gateway появится только в итерации 4.

@@ -31,5 +31,27 @@ The LLM may generate a proposed patch, but it cannot write `state/current.json` 
 
 Future iterations will add:
 
-- STscript adjudication helpers;
 - FastAPI RP Gateway with SQLite state and rule engine.
+
+## Iteration 3
+
+Frequent checks are now resolved before narration.
+
+```text
+SillyTavern Quick Reply
+  -> explicit check type and modifiers
+  -> scripts/run-check.py
+  -> state/checks.log
+  -> state/last-check.json
+  -> state/proposed/check-<id>.json
+  -> <AUTHORITATIVE_OUTCOME>
+  -> STscript /inject near the next chat turn
+  -> GLM narrates the fixed outcome
+```
+
+`run-check.py` supports persuasion, intimidation, deception, stealth,
+information search, resource use, feasibility, trust shifts, simple conflict,
+and random events. It does not parse arbitrary player prose for bonuses.
+
+State remains authoritative. Quick Reply variables are transient scene controls,
+and World Info remains static lore plus rendered authoritative state.

@@ -1,0 +1,6 @@
+/setvar key=rp_check_type stealth |
+/input Skill modifier |
+/setvar key=rp_check_skill {{pipe}} |
+/input Difficulty |
+/setvar key=rp_check_difficulty {{pipe}} |
+/echo Run on the server: python3 scripts/run-check.py --type stealth --skill {{getvar::rp_check_skill}} --difficulty {{getvar::rp_check_difficulty}}

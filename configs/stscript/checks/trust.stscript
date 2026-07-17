@@ -1,0 +1,8 @@
+/setvar key=rp_check_type trust |
+/input Target id |
+/setvar key=rp_check_target {{pipe}} |
+/input Skill modifier |
+/setvar key=rp_check_skill {{pipe}} |
+/input Difficulty |
+/setvar key=rp_check_difficulty {{pipe}} |
+/echo Run on the server: python3 scripts/run-check.py --type trust --target {{getvar::rp_check_target}} --skill {{getvar::rp_check_skill}} --difficulty {{getvar::rp_check_difficulty}}

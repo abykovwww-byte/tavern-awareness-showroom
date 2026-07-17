@@ -1,0 +1,6 @@
+/setvar key=rp_check_type feasibility |
+/input Desired outcome |
+/setvar key=rp_desired_outcome {{pipe}} |
+/input Difficulty |
+/setvar key=rp_check_difficulty {{pipe}} |
+/echo Run on the server: python3 scripts/run-check.py --type feasibility --desired-outcome "{{getvar::rp_desired_outcome}}" --difficulty {{getvar::rp_check_difficulty}}

@@ -1,0 +1,8 @@
+/setvar key=rp_check_type resource |
+/input Resource id |
+/setvar key=rp_check_resource {{pipe}} |
+/input Amount |
+/setvar key=rp_check_resource_amount {{pipe}} |
+/input Difficulty |
+/setvar key=rp_check_difficulty {{pipe}} |
+/echo Run on the server: python3 scripts/run-check.py --type resource --resource {{getvar::rp_check_resource}} --resource-amount {{getvar::rp_check_resource_amount}} --difficulty {{getvar::rp_check_difficulty}}

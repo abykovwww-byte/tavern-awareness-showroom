@@ -67,6 +67,40 @@ Render prompt block:
 python3 scripts/render-state-block.py
 ```
 
+## Check Workflow
+
+Run a bounded check:
+
+```bash
+python3 scripts/run-check.py --type persuasion --target advisor --skill 2 --difficulty 12
+```
+
+The command prints `<AUTHORITATIVE_OUTCOME>` and writes a proposed patch under
+`state/proposed/`.
+
+Useful check commands:
+
+```bash
+python3 scripts/run-check.py --type stealth --skill 2 --difficulty 14
+python3 scripts/run-check.py --type resource --resource coin --resource-amount 1 --difficulty 8
+python3 scripts/run-check.py --type feasibility --desired-outcome "cross locked gate" --difficulty 12
+```
+
+Preview and apply the generated patch:
+
+```bash
+python3 scripts/validate-state.py --patch state/proposed/check-<id>.json
+python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json
+python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json --confirm
+```
+
+Clear a generated check before narration:
+
+```bash
+python3 scripts/rollback-last-check.py
+python3 scripts/rollback-last-check.py --confirm
+```
+
 Rollback:
 
 ```bash

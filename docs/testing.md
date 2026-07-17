@@ -41,3 +41,20 @@ Covered negative cases:
 - state persists after reload;
 - rollback restores a previous state as a new version.
 
+## Iteration 3 Checks
+
+```bash
+cd /srv/apps/rp-stack
+python3 scripts/test-check-workflow.py
+python3 scripts/validate-state.py
+```
+
+Covered negative cases:
+
+- high difficulty fails plausibly;
+- long player prose does not add a hidden bonus;
+- unavailable resources are blocked;
+- hard constraints override critical success;
+- duplicate check patches cannot be applied twice;
+- rollback restores resource values;
+- check logs do not contain API-key-looking markers.
