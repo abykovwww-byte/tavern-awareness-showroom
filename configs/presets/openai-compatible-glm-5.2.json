@@ -1,0 +1,13 @@
+{
+  "name": "GLM-5.2 RP baseline",
+  "api": "chat-completions",
+  "source": "custom-openai-compatible",
+  "base_url": "https://integrate.api.nvidia.com/v1",
+  "model": "z-ai/glm-5.2",
+  "temperature": 0.8,
+  "top_p": 0.9,
+  "max_tokens": 1800,
+  "stream": true,
+  "notes": "Reference values for manual SillyTavern setup. Do not store API keys here."
+}
+
