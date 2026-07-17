@@ -13,3 +13,5 @@ state/history/*
 !state/history/.gitkeep
 .test-workdir/
 .test-tmp/
+rp-gateway/.pytest_cache/
+rp-gateway/**/__pycache__/

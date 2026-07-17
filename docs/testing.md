@@ -58,3 +58,29 @@ Covered negative cases:
 - duplicate check patches cannot be applied twice;
 - rollback restores resource values;
 - check logs do not contain API-key-looking markers.
+
+## Iteration 4 Checks
+
+```bash
+cd /srv/apps/rp-stack
+docker compose build rp-gateway
+docker compose run --rm rp-gateway pytest
+docker compose ps
+docker inspect --format='{{.State.Health.Status}}' rp-stack-gateway
+docker inspect --format='{{.State.Health.Status}}' rp-stack-sillytavern
+```
+
+Covered cases:
+
+- OpenAI-compatible chat response;
+- stream response shape;
+- intent schema validation;
+- hard constraints and resource checks;
+- transactional SQLite state versioning;
+- rollback as a new version;
+- idempotency key prevents duplicate turns;
+- validator detects hidden outcome compensation;
+- one repair attempt;
+- safe fallback after failed repair;
+- provider timeout and 429 handling;
+- 30-turn mock campaign.

@@ -36,6 +36,15 @@ Quick Reply / explicit command
   -> GLM narrates the fixed result
 ```
 
+Iteration 4 adds the FastAPI gateway:
+
+```text
+SillyTavern
+  -> http://rp-gateway:8088/v1
+  -> rp-gateway rule engine, SQLite state, validator, repair
+  -> NVIDIA OpenAI-compatible Chat Completions
+```
+
 Persistent data on server:
 
 ```text
@@ -43,6 +52,7 @@ Persistent data on server:
 /srv/app-data/rp-stack/data
 /srv/app-data/rp-stack/plugins
 /srv/app-data/rp-stack/extensions
+/srv/app-data/rp-stack/gateway
 /srv/backups/rp-stack
 ```
 
@@ -56,6 +66,7 @@ Runtime state:
 /srv/apps/rp-stack/state/audit.log
 /srv/apps/rp-stack/state/checks.log
 /srv/apps/rp-stack/state/last-check.json
+/srv/app-data/rp-stack/gateway/rp_gateway.db
 ```
 
 ## Запуск и остановка
@@ -99,7 +110,7 @@ sudo cat /etc/ansible/rp-stack-sillytavern-basic-auth-password
 ```text
 API type: Chat Completion
 Chat Completion Source: Custom (OpenAI-compatible)
-Base URL: https://integrate.api.nvidia.com/v1
+Base URL: http://rp-gateway:8088/v1
 Model: z-ai/glm-5.2
 ```
 
@@ -169,6 +180,24 @@ Clear an un-narrated check:
 
 ```bash
 python3 scripts/rollback-last-check.py --confirm
+```
+
+## Gateway Workflow
+
+The gateway understands explicit check commands in chat:
+
+```text
+/check persuasion target=advisor skill=2 difficulty=10 goal="secure a private meeting"
+/check resource resource=coin amount=1 difficulty=8 goal="bribe the guard"
+```
+
+Operational commands:
+
+```bash
+cd /srv/apps/rp-stack
+docker compose build rp-gateway
+docker compose run --rm rp-gateway pytest
+docker compose up -d
 ```
 
 ## Обновление

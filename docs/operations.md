@@ -15,6 +15,7 @@ cd /srv/apps/rp-stack
 docker compose up -d
 docker compose ps
 docker compose logs --tail=100 sillytavern
+docker compose logs --tail=100 rp-gateway
 docker compose restart sillytavern
 docker compose down
 ```
@@ -99,6 +100,29 @@ Clear a generated check before narration:
 ```bash
 python3 scripts/rollback-last-check.py
 python3 scripts/rollback-last-check.py --confirm
+```
+
+## Gateway
+
+Health:
+
+```bash
+cd /srv/apps/rp-stack
+docker compose exec rp-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/health').read().decode())"
+```
+
+Run gateway tests:
+
+```bash
+docker compose run --rm rp-gateway pytest
+```
+
+SillyTavern custom OpenAI-compatible settings:
+
+```text
+Base URL: http://rp-gateway:8088/v1
+Model: z-ai/glm-5.2
+API key: NVIDIA key
 ```
 
 Rollback:

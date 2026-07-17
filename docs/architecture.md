@@ -55,3 +55,28 @@ and random events. It does not parse arbitrary player prose for bonuses.
 
 State remains authoritative. Quick Reply variables are transient scene controls,
 and World Info remains static lore plus rendered authoritative state.
+
+## Iteration 4
+
+The arbiter now runs as a FastAPI service between SillyTavern and NVIDIA.
+
+```text
+SillyTavern container
+  -> http://rp-gateway:8088/v1/chat/completions
+  -> Intent Parser
+  -> Rule Engine
+  -> SQLite State Store
+  -> Adjudicator
+  -> Narrative Request Builder
+  -> NVIDIA OpenAI-compatible API
+  -> Output Validator
+  -> one optional repair
+  -> OpenAI-compatible response
+```
+
+The gateway persists state history in
+`/srv/app-data/rp-stack/gateway/rp_gateway.db` and mirrors the current state to
+`/srv/apps/rp-stack/state/current.json` for the earlier helper scripts.
+
+The gateway is not published through Nginx and is only reachable inside the
+Docker network by default.
