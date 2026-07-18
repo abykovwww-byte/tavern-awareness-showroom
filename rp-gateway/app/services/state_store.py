@@ -195,6 +195,186 @@ class StateStore:
         operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
         return apply_patch(state, operations)
 
+    def create_patch_proposal(self, patch: StatePatch) -> str:
+        if not patch.check_id:
+            raise ValueError("patch.check_id is required for proposals")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO state_patches(campaign_id, check_id, patch_json, applied, created_at, applied_at)
+                VALUES(?, ?, ?, 0, ?, NULL)
+                """,
+                (self.campaign_id, patch.check_id, patch.model_dump_json(), now_ts()),
+            )
+        return patch.check_id
+
+    def pending_patches(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, check_id, patch_json, created_at FROM state_patches
+                WHERE campaign_id = ? AND applied = 0
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (self.campaign_id, limit),
+            ).fetchall()
+        proposals: list[dict[str, Any]] = []
+        for row in rows:
+            patch = json.loads(row["patch_json"])
+            proposals.append(
+                {
+                    "id": row["id"],
+                    "proposal_id": row["check_id"],
+                    "turn": patch.get("turn"),
+                    "source": patch.get("source"),
+                    "created_at": row["created_at"],
+                    "operations": len(patch.get("patch", [])),
+                }
+            )
+        return proposals
+
+    def get_pending_patch(self, proposal_id: str = "latest") -> StatePatch:
+        with self.connect() as connection:
+            if proposal_id == "latest":
+                row = connection.execute(
+                    """
+                    SELECT patch_json FROM state_patches
+                    WHERE campaign_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT patch_json FROM state_patches
+                    WHERE campaign_id = ? AND check_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id, proposal_id),
+                ).fetchone()
+        if row is None:
+            raise ValueError(f"pending patch not found: {proposal_id}")
+        return StatePatch.model_validate(json.loads(row["patch_json"]))
+
+    def discard_pending_patch(self, proposal_id: str = "latest") -> str:
+        with self.connect() as connection:
+            if proposal_id == "latest":
+                row = connection.execute(
+                    """
+                    SELECT id, check_id FROM state_patches
+                    WHERE campaign_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT id, check_id FROM state_patches
+                    WHERE campaign_id = ? AND check_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id, proposal_id),
+                ).fetchone()
+            if row is None:
+                raise ValueError(f"pending patch not found: {proposal_id}")
+            connection.execute(
+                """
+                UPDATE state_patches
+                SET applied = -1, applied_at = ?
+                WHERE id = ?
+                """,
+                (now_ts(), row["id"]),
+            )
+            return str(row["check_id"])
+
+    def apply_pending_patch(self, proposal_id: str = "latest", reason: str = "world_instruction_apply") -> dict[str, Any]:
+        with self.connect() as connection:
+            if proposal_id == "latest":
+                row = connection.execute(
+                    """
+                    SELECT id, check_id, patch_json FROM state_patches
+                    WHERE campaign_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT id, check_id, patch_json FROM state_patches
+                    WHERE campaign_id = ? AND check_id = ? AND applied = 0
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id, proposal_id),
+                ).fetchone()
+            if row is None:
+                raise ValueError(f"pending patch not found: {proposal_id}")
+
+            patch = StatePatch.model_validate(json.loads(row["patch_json"]))
+            current = connection.execute(
+                """
+                SELECT state_json, version FROM state_versions
+                WHERE campaign_id = ?
+                ORDER BY version DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if current is None:
+                state = self.empty_state()
+                version = 0
+            else:
+                state = json.loads(current["state_json"])
+                version = int(current["version"])
+
+            if patch.check_id:
+                existing = connection.execute(
+                    """
+                    SELECT id FROM state_patches
+                    WHERE campaign_id = ? AND check_id = ? AND applied = 1 AND id != ?
+                    """,
+                    (self.campaign_id, patch.check_id, row["id"]),
+                ).fetchone()
+                if existing:
+                    raise ValueError(f"patch for check_id {patch.check_id} is already applied")
+
+            operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
+            candidate = apply_patch(state, operations)
+            candidate.setdefault("meta", {})
+            candidate["meta"]["state_version"] = version + 1
+            candidate["meta"]["turn"] = max(int(candidate["meta"].get("turn", 0)) + 1, patch.turn)
+            candidate["meta"]["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            candidate.setdefault("last_turn", {})
+            candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
+            candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
+
+            connection.execute(
+                """
+                UPDATE state_patches
+                SET applied = 1, applied_at = ?
+                WHERE id = ?
+                """,
+                (now_ts(), row["id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (self.campaign_id, version + 1, json.dumps(candidate, ensure_ascii=False), now_ts(), reason),
+            )
+        self.write_state_file(candidate)
+        return candidate
+
     def apply_state_patch(self, patch: StatePatch, reason: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(

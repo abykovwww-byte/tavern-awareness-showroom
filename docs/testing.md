@@ -84,3 +84,20 @@ Covered cases:
 - safe fallback after failed repair;
 - provider timeout and 429 handling;
 - 30-turn mock campaign.
+
+## Iteration 5 Checks
+
+```bash
+cd /srv/apps/rp-stack
+docker compose run --rm rp-gateway pytest
+```
+
+Covered cases:
+
+- natural-language `/world` command returns a readable preview;
+- preview does not mutate canonical state;
+- pending world proposals can be listed;
+- `apply latest` applies the pending patch transactionally;
+- `discard latest` removes a pending proposal from the apply queue;
+- `/world show` returns compact state status;
+- existing 30-turn mock campaign still passes.

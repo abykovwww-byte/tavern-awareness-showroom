@@ -102,6 +102,25 @@ class PatchEnvelope(BaseModel):
     confirm: bool = False
 
 
+class WorldInstructionRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=4000)
+    confirm: bool = False
+
+
+class WorldApplyRequest(BaseModel):
+    proposal_id: str = "latest"
+    confirm: bool = False
+
+
+class WorldInstructionDraft(BaseModel):
+    proposal_id: str
+    instruction: str
+    summary: str
+    changes: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    patch: StatePatch
+
+
 class ValidationResult(BaseModel):
     valid: bool
     violations: list[str] = Field(default_factory=list)

@@ -234,6 +234,75 @@ def test_patch_preview_apply_and_rollback(tmp_path: Path):
     assert len(history) >= 3
 
 
+def test_world_instruction_preview_does_not_apply_until_confirmed(tmp_path: Path):
+    c = client(tmp_path)
+    response = c.post(
+        "/api/world/instruct",
+        json={"instruction": "Remember: guard Varn now suspects the player but fears the captain."},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied"] is False
+    proposal_id = body["proposal"]["proposal_id"]
+
+    state = c.get("/api/state").json()["state"]
+    assert state["meta"]["state_version"] == 1
+    assert "varn" not in state["characters"]
+
+    preview = c.post("/api/world/apply", json={"proposal_id": proposal_id, "confirm": False})
+    assert preview.status_code == 200
+    assert preview.json()["applied"] is False
+
+    applied = c.post("/api/world/apply", json={"proposal_id": proposal_id, "confirm": True})
+    assert applied.status_code == 200
+    state = applied.json()["state"]
+    assert state["meta"]["state_version"] == 2
+    assert state["characters"]["varn"]["status"] == "alive"
+    assert state["relationships"]["player_varn"]["suspicion"] == 4
+
+
+def test_world_chat_command_draft_apply_and_discard(tmp_path: Path):
+    c = client(tmp_path)
+    draft = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/world Remember: guard Varn now suspects the player."),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "world-draft"},
+    )
+    assert draft.status_code == 200
+    content = draft.json()["choices"][0]["message"]["content"]
+    assert "World proposal ready:" in content
+    proposals = c.get("/api/world/proposals").json()["proposals"]
+    assert len(proposals) == 1
+
+    discard = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/world discard latest"),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "world-discard"},
+    )
+    assert discard.status_code == 200
+    assert c.get("/api/world/proposals").json()["proposals"] == []
+
+    c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/world Remember: guard Varn now suspects the player."),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "world-draft-2"},
+    )
+    apply = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/world apply latest"),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "world-apply"},
+    )
+    assert apply.status_code == 200
+    assert "World patch applied" in apply.json()["choices"][0]["message"]["content"]
+    show = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/world show"),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "world-show"},
+    )
+    assert "World state version:" in show.json()["choices"][0]["message"]["content"]
+
+
 def test_stream_response(tmp_path: Path):
     c = client(tmp_path)
     with c.stream(

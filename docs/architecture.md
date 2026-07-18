@@ -80,3 +80,21 @@ The gateway persists state history in
 
 The gateway is not published through Nginx and is only reachable inside the
 Docker network by default.
+
+## Iteration 5
+
+World management now has a player-facing command layer.
+
+```text
+SillyTavern Quick Reply
+  -> captures natural-language instruction
+  -> sends /world <instruction>
+  -> RP Gateway drafts a pending StatePatch
+  -> gateway returns readable preview and proposal id
+  -> /world apply latest applies transactionally
+  -> /world discard latest drops the pending proposal
+```
+
+The LLM is allowed to draft JSON, but it still cannot directly mutate canonical
+state. The gateway validates generated operations, stores them as pending
+patches, and only applies them after an explicit confirmation command.

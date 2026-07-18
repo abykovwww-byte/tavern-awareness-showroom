@@ -22,6 +22,9 @@ GET  /api/state
 GET  /api/state/history
 POST /api/state/patch/preview
 POST /api/state/patch/apply
+GET  /api/world/proposals
+POST /api/world/instruct
+POST /api/world/apply
 POST /api/turn/rollback
 POST /v1/chat/completions
 ```
@@ -38,6 +41,23 @@ message:
 
 Free-form text is treated as a low-confidence `feasibility` check. Claimed facts
 remain unconfirmed until state is updated by the gateway.
+
+## World UI Commands
+
+The gateway also understands world-management chat commands. They are intended
+for SillyTavern Quick Reply buttons:
+
+```text
+/world Remember: guard Varn now suspects the player.
+/world apply latest
+/world discard latest
+/world rollback
+/world show
+```
+
+`/world <instruction>` drafts a pending state patch and returns a human-readable
+preview. Nothing is applied until `/world apply <proposal-id>` or
+`/world apply latest` is sent.
 
 ## Tests
 

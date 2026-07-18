@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.core.json_patch import PatchError
-from app.models.schemas import ChatCompletionRequest, HealthResponse, PatchEnvelope
+from app.models.schemas import ChatCompletionRequest, HealthResponse, PatchEnvelope, WorldApplyRequest, WorldInstructionRequest
 from app.services.adjudicator import Adjudicator
 from app.services.state_store import StateStore
 
@@ -21,7 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
     adjudicator = Adjudicator(settings, store)
 
-    app = FastAPI(title="RP Gateway", version="0.4.0")
+    app = FastAPI(title="RP Gateway", version="0.5.0")
     app.state.settings = settings
     app.state.store = store
     app.state.adjudicator = adjudicator
@@ -58,6 +58,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not envelope.confirm:
                 return preview_patch(envelope)
             state = store.apply_state_patch(envelope.patch, reason="api_patch_apply")
+        except (PatchError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"applied": True, "state": state}
+
+    @app.get("/api/world/proposals")
+    def world_proposals(limit: int = 10) -> dict[str, Any]:
+        return {"campaign_id": settings.campaign_id, "proposals": store.pending_patches(limit=limit)}
+
+    @app.post("/api/world/instruct")
+    async def world_instruct(
+        request: WorldInstructionRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            draft = await adjudicator.world.draft_instruction(request.instruction, authorization)
+            store.create_patch_proposal(draft.patch)
+            candidate = store.preview_patch(draft.patch)
+            if request.confirm:
+                state = store.apply_pending_patch(draft.proposal_id, reason="world_instruction_api_confirm")
+                return {"applied": True, "proposal": draft.model_dump(mode="json"), "state": state}
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except (PatchError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "applied": False,
+            "proposal": draft.model_dump(mode="json"),
+            "candidate": candidate,
+            "apply_command": f"/world apply {draft.proposal_id}",
+            "discard_command": f"/world discard {draft.proposal_id}",
+        }
+
+    @app.post("/api/world/apply")
+    def world_apply(request: WorldApplyRequest) -> dict[str, Any]:
+        try:
+            patch = store.get_pending_patch(request.proposal_id)
+            if not request.confirm:
+                return {"applied": False, "would_apply": patch.model_dump(mode="json")}
+            state = store.apply_pending_patch(request.proposal_id, reason="world_instruction_api_apply")
         except (PatchError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"applied": True, "state": state}

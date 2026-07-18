@@ -125,6 +125,41 @@ Model: z-ai/glm-5.2
 API key: NVIDIA key
 ```
 
+## World Button Workflow
+
+Use the `RP World` Quick Reply preset from:
+
+```text
+configs/stscript/quick-replies/rp-world.quick-replies.md
+configs/stscript/world/
+```
+
+Player-facing flow:
+
+```text
+Мир -> write a natural instruction -> gateway returns preview
+Применить мир -> applies latest pending proposal
+Отменить preview -> discards latest pending proposal
+Показать мир -> shows compact state status
+Откат мира -> rolls back one state version
+```
+
+Equivalent chat commands:
+
+```text
+/world Remember: guard Varn now suspects the player.
+/world apply latest
+/world discard latest
+/world show
+/world rollback
+```
+
+Inspect pending world proposals from inside the gateway container:
+
+```bash
+docker compose exec rp-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/api/world/proposals').read().decode())"
+```
+
 Rollback:
 
 ```bash

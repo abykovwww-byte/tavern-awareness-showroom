@@ -15,6 +15,7 @@ from app.services.narrative import NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, safe_fallback
+from app.services.world_instructor import WorldInstructor
 
 
 class Adjudicator:
@@ -25,6 +26,7 @@ class Adjudicator:
         self.rule_engine = RuleEngine()
         self.validator = OutputValidator()
         self.narrative = NarrativeClient(settings)
+        self.world = WorldInstructor(settings, store)
 
     async def handle_chat(
         self,
@@ -41,6 +43,18 @@ class Adjudicator:
 
         started = time.perf_counter()
         latest = self.latest_user_message(request)
+        if self.world.is_world_command(latest):
+            response = await self.world.handle_chat_command(
+                latest,
+                authorization,
+                request.model or self.settings.narrative_model,
+                request_id,
+            )
+            text = response_text(response)
+            state_version = self.store.current_version() or 1
+            self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
+            return response
+
         state = self.store.get_state()
         intent = self.intent_parser.parse(latest)
         outcome, patch = self.rule_engine.resolve(state, intent, request_id)

@@ -45,6 +45,17 @@ SillyTavern
   -> NVIDIA OpenAI-compatible Chat Completions
 ```
 
+Iteration 5 adds a simpler world-management UX:
+
+```text
+SillyTavern Quick Reply button
+  -> /world natural-language instruction
+  -> rp-gateway drafts a pending JSON patch
+  -> player sees readable preview
+  -> /world apply latest confirms
+  -> SQLite state + state/current.json update transactionally
+```
+
 Persistent data on server:
 
 ```text
@@ -190,6 +201,19 @@ The gateway understands explicit check commands in chat:
 /check persuasion target=advisor skill=2 difficulty=10 goal="secure a private meeting"
 /check resource resource=coin amount=1 difficulty=8 goal="bribe the guard"
 ```
+
+World-management commands:
+
+```text
+/world Remember: guard Varn now suspects the player.
+/world apply latest
+/world discard latest
+/world rollback
+/world show
+```
+
+Quick Reply snippets live under `configs/stscript/world/` and
+`configs/stscript/quick-replies/rp-world.quick-replies.md`.
 
 Operational commands:
 

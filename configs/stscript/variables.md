@@ -18,6 +18,8 @@ The state file remains the only long-term source of truth.
 - `rp_check_preparation`: explicit preparation modifier.
 - `rp_check_leverage`: explicit leverage modifier.
 - `rp_check_resource`: resource id for resource checks.
+- `rp_world_instruction`: natural-language world instruction captured by the
+  `Мир` Quick Reply before it is sent to `/world`.
 - `rp_last_outcome`: the latest `<AUTHORITATIVE_OUTCOME>` block.
 - `rp_last_check_id`: idempotency key for the latest check.
 - `rp_debug`: `on` shows operational details to the user; any other value keeps
