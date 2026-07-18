@@ -130,9 +130,11 @@ API key: NVIDIA key
 Use the `RP World` Quick Reply preset from:
 
 ```text
-configs/stscript/quick-replies/rp-world.quick-replies.md
-configs/stscript/world/
+/srv/app-data/rp-stack/data/default-user/QuickReplies/RP World.json
 ```
+
+The IaC role creates this preset only when it is missing, so user edits in the
+SillyTavern UI are not overwritten on later applies.
 
 Player-facing flow:
 

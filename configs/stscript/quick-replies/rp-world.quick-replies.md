@@ -1,8 +1,15 @@
 # RP World Quick Replies
 
-Create a Quick Reply preset named `RP World`, then add these labels and script
-bodies. The buttons send ordinary chat messages that the RP Gateway intercepts
-before the narrator model.
+The IaC role creates a `RP World` Quick Reply preset under SillyTavern data when
+the file does not already exist:
+
+```text
+/srv/app-data/rp-stack/data/default-user/QuickReplies/RP World.json
+```
+
+If you want to recreate it manually, use the labels and script bodies below. The
+buttons send ordinary chat messages that the RP Gateway intercepts before the
+narrator model.
 
 ## Setup
 

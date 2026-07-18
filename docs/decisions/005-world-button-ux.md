@@ -21,6 +21,10 @@ Add a `/world` chat command handled by `rp-gateway` before normal narration.
 SillyTavern Quick Reply buttons send these commands through the same
 OpenAI-compatible chat endpoint already used by the game.
 
+The `RP World` Quick Reply preset is created in SillyTavern data by IaC when it
+is missing. The runtime file uses `force: false` through the existing app role,
+so later UI edits remain user-owned.
+
 ```text
 /world <natural-language instruction>
   -> draft pending StatePatch
