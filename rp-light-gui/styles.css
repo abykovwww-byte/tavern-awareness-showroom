@@ -514,6 +514,8 @@ select:focus {
 
 .party-dialog {
   width: min(820px, calc(100vw - 30px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);

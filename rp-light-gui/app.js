@@ -302,7 +302,9 @@ function renderCreationModes() {
   els.characterDescriptionLabel.textContent = characterPrompt ? "Prompt персонажа" : "Описание готового персонажа";
   els.characterDescriptionHint.textContent = characterPrompt
     ? "Опиши роль, характер, ограничения и стартовые ресурсы. Gateway сохранит это в profile персонажа."
-    : "Берется роль игрока из worldpack; можно слегка поправить перед стартом.";
+    : worldPrompt
+      ? "Для prompt-мира используется стандартная роль игрока; можно заменить ее своим описанием."
+      : "Берется роль игрока из worldpack; можно слегка поправить перед стартом.";
   if (!characterPrompt) {
     syncReadyCharacterDescription();
   }
