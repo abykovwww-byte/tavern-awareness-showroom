@@ -411,14 +411,16 @@ def test_timeout_and_rate_limit(tmp_path: Path):
 def test_disabled_primary_model_uses_fallback(tmp_path: Path):
     from app.core.config import Settings
     from app.services.narrative import NarrativeClient
+    from app.services.state_store import StateStore
     from app.services.world_instructor import WorldInstructor
 
     settings = Settings(
         nvidia_fallback_models=("fallback/model", "other/model"),
         nvidia_disabled_models=("primary/model",),
     )
+    state_store = StateStore(str(tmp_path / "state.db"), settings.campaign_id, str(tmp_path / "state.json"))
     assert NarrativeClient(settings).model_attempts("primary/model") == ["fallback/model", "other/model"]
-    assert WorldInstructor(settings, store(tmp_path)).model_attempts("primary/model") == ["fallback/model", "other/model"]
+    assert WorldInstructor(settings, state_store).model_attempts("primary/model") == ["fallback/model", "other/model"]
 
 
 def test_idempotency_prevents_duplicate_turn(tmp_path: Path):
