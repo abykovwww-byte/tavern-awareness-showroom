@@ -106,9 +106,10 @@ URL: `http://192.168.1.88:8000`
 
 - bind только на LAN IP сервера `192.168.1.88`;
 - SillyTavern whitelist для loopback и `192.168.0.0/16`;
-- HTTP Basic Auth внутри SillyTavern.
+- HTTP Basic Auth выключен для удобства работы внутри доверенной LAN.
 
-Пароль Basic Auth не хранится в Git. На сервере его можно посмотреть так:
+Если Basic Auth снова включен через `rp_stack_sillytavern_basic_auth_enabled`,
+пароль не хранится в Git. На сервере его можно посмотреть так:
 
 ```bash
 sudo cat /etc/ansible/rp-stack-sillytavern-basic-auth-password
