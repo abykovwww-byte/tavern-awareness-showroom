@@ -20,9 +20,11 @@ from app.models.schemas import (
     PatchEnvelope,
     PartyCheckRequest,
     PartyCreate,
+    PartyJournalSummarizeRequest,
     PartyMemorySummarizeRequest,
     PartyMessageRequest,
     PartyModelUpdate,
+    PartyPromptPreviewRequest,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
     WorldPromptCreate,
@@ -30,9 +32,12 @@ from app.models.schemas import (
     WorldInstructionRequest,
 )
 from app.services.adjudicator import Adjudicator
+from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
+from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.party_store import PartyStore
+from app.services.prompt_tools import PromptInspector
 from app.services.state_store import StateStore
 
 
@@ -269,6 +274,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "party_id": party_id,
             "context": estimate_party_context(party_state_store, party_settings, model_profile),
         }
+
+    @app.get("/api/parties/{party_id}/characters")
+    def get_party_characters(party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "state_campaign_id": party.state_campaign_id,
+            "characters": party_character_sheets(party_state_store.get_state()),
+        }
+
+    @app.get("/api/parties/{party_id}/journal")
+    def get_party_journal(party_id: str, limit: int = 8) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        journal = JournalBuilder(party_settings, party_state_store)
+        return {
+            "party_id": party_id,
+            "journal": party_state_store.latest_journal_entry(),
+            "entries": party_state_store.journal_entries(limit=limit),
+            "stats": journal.stats(),
+        }
+
+    @app.post("/api/parties/{party_id}/journal/summarize")
+    async def summarize_party_journal(
+        party_id: str,
+        request: PartyJournalSummarizeRequest = PartyJournalSummarizeRequest(),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+            result = await JournalBuilder(party_settings, party_state_store).summarize(
+                authorization,
+                force=request.force,
+                fail_open=False,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, **result}
+
+    @app.delete("/api/parties/{party_id}/journal/latest")
+    def delete_party_journal_latest(party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        deleted = party_state_store.delete_latest_journal_entry()
+        journal = JournalBuilder(party_settings, party_state_store)
+        return {
+            "party_id": party_id,
+            "deleted": deleted is not None,
+            "deleted_journal": deleted,
+            "journal": party_state_store.latest_journal_entry(),
+            "entries": party_state_store.journal_entries(limit=8),
+            "stats": journal.stats(),
+        }
+
+    @app.post("/api/parties/{party_id}/prompt/preview")
+    def preview_party_prompt(party_id: str, request: PartyPromptPreviewRequest) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            preview = PromptInspector(party_settings, party_state_store).preview(request.content)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, "preview": preview}
 
     @app.post("/api/parties/{party_id}/messages")
     async def party_message(

@@ -141,3 +141,29 @@ Memory is party-scoped by `campaign_id`, which is the selected party's
 `AUTHORITATIVE_OUTCOME` override memory. Each summary records the covered turn
 range and `state_version`, so rollback can create a new state version without
 destroying turn history or hiding what summary was generated against.
+
+## Iteration 8
+
+Light GUI now exposes party debug and human recap helpers without making
+SillyTavern the source of truth again.
+
+```text
+Light GUI drawer
+  -> /api/parties/{party_id}/prompt/preview
+  -> /api/parties/{party_id}/characters
+  -> /api/parties/{party_id}/journal
+  -> /api/parties/{party_id}/journal/summarize
+```
+
+Prompt preview is a dry-run inspector. It builds the exact narrator prompt
+blocks for the current party: system rules, `LONG_TERM_PARTY_MEMORY` when
+present, current state summary, `AUTHORITATIVE_OUTCOME`, and the latest raw
+turns. It does not persist state, turns, checks, or patches.
+
+Character sheets are derived from authoritative state and show the player/NPCs,
+relationships, obligations, active threads, and last confirmed appearance.
+
+Journal entries are player-facing recaps stored separately from model memory.
+Memory is optimized for narrator context; journal is optimized for humans.
+Both are party-scoped by `campaign_id`, and both keep turn coverage plus
+`state_version` metadata.

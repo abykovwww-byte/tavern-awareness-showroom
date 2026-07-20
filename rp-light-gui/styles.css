@@ -77,33 +77,65 @@ svg {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 360px;
+  grid-template-columns: 280px minmax(0, 1fr);
   min-height: 100vh;
-}
-
-.party-rail,
-.inspector {
-  min-height: 100vh;
-  background: rgba(24, 29, 32, 0.96);
 }
 
 .party-rail {
+  min-height: 100vh;
+  background: rgba(24, 29, 32, 0.96);
   border-right: 1px solid var(--line);
   padding: 18px;
 }
 
 .inspector {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  width: min(430px, calc(100vw - 18px));
+  min-height: 100dvh;
   border-left: 1px solid var(--line);
+  background: rgba(24, 29, 32, 0.98);
+  box-shadow: var(--shadow);
   padding: 16px;
   overflow: auto;
+  transform: translateX(105%);
+  transition: transform 180ms ease;
+}
+
+body.inspector-open .inspector {
+  transform: translateX(0);
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.46);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+body.inspector-open .drawer-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.busy #toolsButton,
+body.busy #closeInspectorButton {
+  pointer-events: auto;
 }
 
 .rail-head,
 .top-bar,
 .panel-head,
+.drawer-head,
 .dialog-head,
 .dialog-actions,
 .status-strip {
@@ -114,10 +146,17 @@ svg {
 .rail-head,
 .top-bar,
 .panel-head,
+.drawer-head,
 .dialog-head,
 .dialog-actions {
   justify-content: space-between;
   gap: 14px;
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .brand-mark {
@@ -472,6 +511,10 @@ button:disabled {
   margin: 0 0 10px;
 }
 
+.drawer-head .section-label {
+  margin: 0;
+}
+
 .meta-grid {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
@@ -588,6 +631,81 @@ button:disabled {
   gap: 6px;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.prompt-preview,
+.journal-summary,
+.character-sheets {
+  display: grid;
+  gap: 9px;
+}
+
+.prompt-block {
+  border: 1px solid rgba(52, 60, 63, 0.74);
+  border-radius: 6px;
+  background: rgba(17, 20, 23, 0.45);
+}
+
+.prompt-block summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 780;
+}
+
+.prompt-block summary span {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.prompt-block pre {
+  max-height: 280px;
+  margin: 0;
+  padding: 0 9px 9px;
+  overflow: auto;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.character-card,
+.journal-entry {
+  padding: 9px;
+  border: 1px solid rgba(52, 60, 63, 0.74);
+  border-radius: 6px;
+  background: rgba(17, 20, 23, 0.45);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.character-card strong,
+.journal-entry strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+
+.mini-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.mini-metrics span {
+  padding: 3px 6px;
+  border: 1px solid rgba(127, 182, 133, 0.22);
+  border-radius: 999px;
+  color: var(--green-strong);
+  font-size: 11px;
 }
 
 .warning-text {
@@ -839,13 +957,6 @@ button:disabled {
   .app-shell {
     grid-template-columns: 240px minmax(0, 1fr);
   }
-
-  .inspector {
-    grid-column: 1 / -1;
-    min-height: auto;
-    border-top: 1px solid var(--line);
-    border-left: 0;
-  }
 }
 
 @media (max-width: 760px) {
@@ -854,7 +965,6 @@ button:disabled {
   }
 
   .party-rail,
-  .inspector,
   .chat-stage {
     min-height: auto;
   }

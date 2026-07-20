@@ -616,7 +616,15 @@ class PartyStore:
         party = self.get_party(party_id)
         with self.connect() as connection:
             connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
-            for table in ("turns", "checks", "state_patches", "state_versions", "audit_events", "memory_summaries"):
+            for table in (
+                "turns",
+                "checks",
+                "state_patches",
+                "state_versions",
+                "audit_events",
+                "memory_summaries",
+                "journal_entries",
+            ):
                 connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (party.state_campaign_id,))
             connection.execute("DELETE FROM campaigns WHERE id = ?", (party.state_campaign_id,))
         self.delete_party_state_dir(party.state_campaign_id)

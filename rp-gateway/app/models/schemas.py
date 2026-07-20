@@ -193,6 +193,14 @@ class PartyMemorySummarizeRequest(BaseModel):
     force: bool = True
 
 
+class PartyJournalSummarizeRequest(BaseModel):
+    force: bool = True
+
+
+class PartyPromptPreviewRequest(BaseModel):
+    content: str = Field(default="", max_length=12000)
+
+
 class PartySummary(BaseModel):
     id: str
     title: str

@@ -124,6 +124,21 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_summaries_campaign_to
                     ON memory_summaries(campaign_id, to_turn_id DESC);
+                CREATE TABLE IF NOT EXISTS journal_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    from_turn_id INTEGER NOT NULL,
+                    to_turn_id INTEGER NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    recap_text TEXT NOT NULL,
+                    important_changes_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_journal_entries_campaign_to
+                    ON journal_entries(campaign_id, to_turn_id DESC);
                 """
             )
             connection.execute(
@@ -349,6 +364,93 @@ class StateStore:
         except json.JSONDecodeError:
             return []
         return parsed if isinstance(parsed, list) else []
+
+    def latest_journal_entry(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM journal_entries
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        return self.journal_entry_from_row(row) if row else None
+
+    def journal_entries(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM journal_entries
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, id DESC
+                LIMIT ?
+                """,
+                (self.campaign_id, limit),
+            ).fetchall()
+        return [self.journal_entry_from_row(row) for row in rows]
+
+    def record_journal_entry(
+        self,
+        from_turn_id: int,
+        to_turn_id: int,
+        state_version: int,
+        title: str,
+        recap_text: str,
+        important_changes: list[Any],
+        model: str,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO journal_entries(
+                    campaign_id, from_turn_id, to_turn_id, state_version,
+                    title, recap_text, important_changes_json, created_at, model
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    from_turn_id,
+                    to_turn_id,
+                    state_version,
+                    title,
+                    recap_text,
+                    json.dumps(important_changes, ensure_ascii=False),
+                    now_ts(),
+                    model,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM journal_entries WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        return self.journal_entry_from_row(row)
+
+    def delete_latest_journal_entry(self) -> dict[str, Any] | None:
+        latest = self.latest_journal_entry()
+        if latest is None:
+            return None
+        with self.connect() as connection:
+            connection.execute("DELETE FROM journal_entries WHERE id = ?", (latest["id"],))
+        return latest
+
+    def journal_entry_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "from_turn_id": row["from_turn_id"],
+            "to_turn_id": row["to_turn_id"],
+            "state_version": row["state_version"],
+            "title": row["title"],
+            "recap_text": row["recap_text"],
+            "important_changes": self.json_list(row["important_changes_json"]),
+            "created_at": row["created_at"],
+            "model": row["model"],
+        }
 
     def preview_patch(self, patch: StatePatch) -> dict[str, Any]:
         state = self.get_state()

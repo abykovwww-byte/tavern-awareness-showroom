@@ -34,9 +34,14 @@
             <div class="crumb" id="activeWorld">Мир не выбран</div>
             <h2 id="activePartyTitle">Нет активной партии</h2>
           </div>
-          <div class="status-strip">
-            <span class="status-dot" id="gatewayDot"></span>
-            <span id="gatewayStatus">gateway</span>
+          <div class="top-actions">
+            <div class="status-strip">
+              <span class="status-dot" id="gatewayDot"></span>
+              <span id="gatewayStatus">gateway</span>
+            </div>
+            <button class="icon-button" id="toolsButton" type="button" title="Инструменты партии">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+            </button>
           </div>
         </header>
 
@@ -53,7 +58,17 @@
         </form>
       </main>
 
-      <aside class="inspector">
+      <aside class="inspector" id="inspector" aria-label="Инструменты партии">
+        <div class="drawer-head">
+          <div>
+            <div class="section-label">Инструменты</div>
+            <h3>Партия</h3>
+          </div>
+          <button class="icon-button" id="closeInspectorButton" type="button" title="Закрыть">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+
         <section class="summary-panel">
           <div class="section-label">Связка</div>
           <p class="panel-hint">Что именно сейчас соединено в одну партию: мир, персонаж, модель и отдельный state.</p>
@@ -70,9 +85,22 @@
         </section>
 
         <section class="summary-panel">
+          <div class="section-label">Персонажи</div>
+          <div id="characterSheets" class="character-sheets"></div>
+        </section>
+
+        <section class="summary-panel">
           <div class="section-label">Контекст</div>
           <p class="panel-hint">Оценка prompt на следующий ход: state, правила и прямое окно истории.</p>
           <div id="contextSummary" class="context-summary"></div>
+        </section>
+
+        <section class="summary-panel">
+          <div class="panel-head">
+            <div class="section-label">Prompt inspector</div>
+            <button class="text-button" id="promptPreviewButton" type="button" title="Показать prompt, который уйдет в модель">Показать prompt</button>
+          </div>
+          <div id="promptPreview" class="prompt-preview"></div>
         </section>
 
         <section class="summary-panel">
@@ -84,6 +112,21 @@
               Обновить память
             </button>
             <button id="memoryClearButton" class="tool-button danger" title="Удалить последнюю сводку памяти без удаления turns или state">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
+              Очистить
+            </button>
+          </div>
+        </section>
+
+        <section class="summary-panel">
+          <div class="section-label">Журнал</div>
+          <div id="journalSummary" class="journal-summary"></div>
+          <div class="button-grid">
+            <button id="journalSummarizeButton" class="tool-button" title="Собрать читаемый recap партии по новым ходам">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-1.5Z"/><path d="M8 7h6"/><path d="M8 11h8"/></svg>
+              Обновить журнал
+            </button>
+            <button id="journalClearButton" class="tool-button danger" title="Удалить последнюю запись журнала без удаления turns или state">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
               Очистить
             </button>
@@ -159,6 +202,8 @@
         </section>
       </aside>
     </div>
+
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
 
     <dialog id="partyDialog" class="party-dialog">
       <form id="partyForm" method="dialog">

@@ -287,6 +287,55 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
     assert estimate["memory_summary_tokens"] == 0
 
 
+def test_party_prompt_preview_returns_blocks_without_mutating_state(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Prompt Preview")
+
+    first_turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": '/check information skill=1 difficulty=5 goal="find the old map"',
+            "idempotency_key": "prompt-preview-history",
+        },
+        headers={"Authorization": "Bearer test"},
+    )
+    assert first_turn.status_code == 200
+
+    before = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    before_version = before["meta"]["state_version"]
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": '/check persuasion target=advisor skill=1 difficulty=8 goal="borrow the map"'},
+    )
+    assert preview.status_code == 200
+    body = preview.json()["preview"]
+    assert body["dry_run"] is True
+    assert body["mutation"] == "none"
+    block_ids = {block["id"] for block in body["blocks"]}
+    assert {"system_rules", "state_summary", "authoritative_outcome", "raw_turns"}.issubset(block_ids)
+    assert body["estimated_prompt_tokens"] > 0
+
+    after = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    assert after["meta"]["state_version"] == before_version
+    assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 1
+
+
+def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Characters", character_name="Mira")
+
+    response = c.get(f"/api/parties/{party['id']}/characters")
+    assert response.status_code == 200
+    sheets = response.json()["characters"]
+    assert sheets["player"]["name"] == "Mira"
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert {"advisor", "king"}.issubset(by_id)
+    assert by_id["advisor"]["relationship"]["id"] == "player_advisor"
+    assert by_id["king"]["hard_constraints"]
+
+
 def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
@@ -316,6 +365,34 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     second_memory = c.get(f"/api/parties/{second['id']}/memory").json()
     assert second_memory["memory"] is None
     assert second_memory["stats"]["total_turns"] == 0
+
+
+def test_party_journal_auto_summary_is_party_isolated(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    first = create_demo_party(c, title="Journal A", character_name="A")
+    second = create_demo_party(c, title="Journal B", character_name="B")
+
+    for index in range(6):
+        response = c.post(
+            f"/api/parties/{first['id']}/messages",
+            json={
+                "content": f'/check information skill=1 difficulty=5 goal="journal clue {index}"',
+                "idempotency_key": f"journal-a-{index}",
+            },
+            headers={"Authorization": "Bearer test"},
+        )
+        assert response.status_code == 200
+
+    first_journal = c.get(f"/api/parties/{first['id']}/journal").json()
+    assert first_journal["journal"] is not None
+    assert first_journal["journal"]["from_turn_id"] == 1
+    assert first_journal["journal"]["to_turn_id"] == 6
+    assert "journal clue 0" in first_journal["journal"]["recap_text"]
+
+    second_journal = c.get(f"/api/parties/{second['id']}/journal").json()
+    assert second_journal["journal"] is None
+    assert second_journal["stats"]["total_turns"] == 0
 
 
 def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
@@ -351,6 +428,40 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
     assert deleted.json()["memory"] is None
+
+
+def test_party_journal_manual_summarize_and_clear_latest(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Manual Journal")
+
+    for index in range(2):
+        response = c.post(
+            f"/api/parties/{party['id']}/messages",
+            json={
+                "content": f'/check information skill=1 difficulty=5 goal="manual journal {index}"',
+                "idempotency_key": f"journal-manual-{index}",
+            },
+            headers={"Authorization": "Bearer test"},
+        )
+        assert response.status_code == 200
+
+    before = c.get(f"/api/parties/{party['id']}/journal").json()
+    assert before["journal"] is None
+
+    generated = c.post(
+        f"/api/parties/{party['id']}/journal/summarize",
+        json={"force": True},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert generated.status_code == 200
+    assert generated.json()["generated"] is True
+    assert generated.json()["journal"]["to_turn_id"] == 2
+
+    deleted = c.delete(f"/api/parties/{party['id']}/journal/latest")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["journal"] is None
 
 
 def test_narrative_prompt_includes_long_term_party_memory():

@@ -6,6 +6,9 @@ const appState = {
   partyState: null,
   contextEstimate: null,
   memory: null,
+  characters: null,
+  journal: null,
+  promptPreview: null,
   history: null,
   proposals: [],
   busy: false,
@@ -18,6 +21,9 @@ const els = {
   activePartyTitle: document.querySelector("#activePartyTitle"),
   gatewayDot: document.querySelector("#gatewayDot"),
   gatewayStatus: document.querySelector("#gatewayStatus"),
+  toolsButton: document.querySelector("#toolsButton"),
+  closeInspectorButton: document.querySelector("#closeInspectorButton"),
+  drawerBackdrop: document.querySelector("#drawerBackdrop"),
   chatLog: document.querySelector("#chatLog"),
   messageStatus: document.querySelector("#messageStatus"),
   messageForm: document.querySelector("#messageForm"),
@@ -29,6 +35,12 @@ const els = {
   memorySummary: document.querySelector("#memorySummary"),
   memorySummarizeButton: document.querySelector("#memorySummarizeButton"),
   memoryClearButton: document.querySelector("#memoryClearButton"),
+  characterSheets: document.querySelector("#characterSheets"),
+  promptPreviewButton: document.querySelector("#promptPreviewButton"),
+  promptPreview: document.querySelector("#promptPreview"),
+  journalSummary: document.querySelector("#journalSummary"),
+  journalSummarizeButton: document.querySelector("#journalSummarizeButton"),
+  journalClearButton: document.querySelector("#journalClearButton"),
   proposalList: document.querySelector("#proposalList"),
   toast: document.querySelector("#toast"),
   partyDialog: document.querySelector("#partyDialog"),
@@ -78,6 +90,9 @@ function bindEvents() {
   document.querySelector("#refreshButton").addEventListener("click", () => boot());
   document.querySelector("#stateRefreshButton").addEventListener("click", () => reloadActiveParty());
   document.querySelector("#newPartyButton").addEventListener("click", openPartyDialog);
+  els.toolsButton.addEventListener("click", openInspector);
+  els.closeInspectorButton.addEventListener("click", closeInspector);
+  els.drawerBackdrop.addEventListener("click", closeInspector);
   document.querySelector("#closePartyDialog").addEventListener("click", closePartyDialog);
   document.querySelector("#cancelPartyButton").addEventListener("click", closePartyDialog);
   document.querySelector("#worldPreviewButton").addEventListener("click", previewWorldInstruction);
@@ -86,6 +101,9 @@ function bindEvents() {
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
   els.memorySummarizeButton.addEventListener("click", summarizeMemory);
   els.memoryClearButton.addEventListener("click", clearLatestMemory);
+  els.promptPreviewButton.addEventListener("click", previewPrompt);
+  els.journalSummarizeButton.addEventListener("click", summarizeJournal);
+  els.journalClearButton.addEventListener("click", clearLatestJournal);
   els.changePartyModelButton.addEventListener("click", changePartyModel);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
@@ -98,8 +116,19 @@ function bindEvents() {
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeInspector();
+  });
   document.querySelectorAll("input[name='worldSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
   document.querySelectorAll("input[name='characterSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
+}
+
+function openInspector() {
+  document.body.classList.add("inspector-open");
+}
+
+function closeInspector() {
+  document.body.classList.remove("inspector-open");
 }
 
 async function boot() {
@@ -129,6 +158,9 @@ async function boot() {
       appState.partyState = null;
       appState.contextEstimate = null;
       appState.memory = null;
+      appState.characters = null;
+      appState.journal = null;
+      appState.promptPreview = null;
       appState.history = null;
       appState.proposals = [];
       renderAll();
@@ -153,13 +185,15 @@ async function reloadActiveParty() {
     return;
   }
   const partyId = appState.activeParty.id;
-  const [party, partyState, history, proposals, context, memory] = await Promise.all([
+  const [party, partyState, history, proposals, context, memory, characters, journal] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
     apiGet(`/api/parties/${partyId}/world/proposals`),
     apiGet(`/api/parties/${partyId}/context`),
     apiGet(`/api/parties/${partyId}/memory`),
+    apiGet(`/api/parties/${partyId}/characters`),
+    apiGet(`/api/parties/${partyId}/journal`),
   ]);
   appState.activeParty = party.party;
   appState.partyState = partyState.state;
@@ -167,6 +201,9 @@ async function reloadActiveParty() {
   appState.proposals = proposals.proposals || [];
   appState.contextEstimate = context.context || null;
   appState.memory = memory;
+  appState.characters = characters;
+  appState.journal = journal;
+  appState.promptPreview = null;
   renderAll();
 }
 
@@ -177,6 +214,9 @@ function renderAll() {
   renderState();
   renderContext();
   renderMemory();
+  renderCharacters();
+  renderPromptPreview();
+  renderJournal();
   renderChat();
   renderProposals();
   renderMessageControls();
@@ -350,6 +390,125 @@ function renderMemory() {
     ${memoryList("Отношения", memory.relationship_changes)}
     ${stateItem("Модель", escapeHtml(memory.model || "unknown"), "Модель, которая сгенерировала сводку.")}
   `;
+}
+
+function renderCharacters() {
+  if (!els.characterSheets) return;
+  if (!appState.activeParty) {
+    els.characterSheets.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
+    return;
+  }
+  const payload = appState.characters?.characters || {};
+  const player = payload.player || {};
+  const characters = Array.isArray(payload.characters) ? payload.characters : [];
+  const cards = [
+    characterCard({
+      name: player.name || "Игрок",
+      id: player.id || "player",
+      status: player.status,
+      location: player.location,
+      current_goal: player.description,
+      knowledge: player.known_world_facts,
+      obligations: player.constraints,
+      last_seen: null,
+    }),
+    ...characters.slice(0, 8).map((character) => characterCard(character)),
+  ];
+  if (!characters.length) {
+    cards.push(`<div class="state-item">NPC в state пока нет.</div>`);
+  }
+  els.characterSheets.innerHTML = cards.join("");
+}
+
+function characterCard(character) {
+  const relation = relationshipText(character.relationship);
+  const lastSeen = character.last_seen ? `ход ${character.last_seen.turn ?? "-"} · ${character.last_seen.event || ""}` : "нет отметки";
+  const metrics = [
+    character.status ? `статус: ${character.status}` : "",
+    character.location ? `место: ${character.location}` : "",
+    relation,
+  ].filter(Boolean);
+  const details = [
+    character.current_goal ? `Цель: ${character.current_goal}` : "",
+    listLine("Знание", character.knowledge),
+    listLine("Обязательства", character.obligations),
+    listLine("Нити", character.threads?.map((thread) => thread.description || thread.id)),
+    `Последнее появление: ${lastSeen}`,
+  ].filter(Boolean);
+  return `<div class="character-card">
+    <strong>${escapeHtml(character.name || character.id || "NPC")}</strong>
+    <div class="mini-metrics">${metrics.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
+    <div>${details.map((item) => escapeHtml(clipText(item, 220))).join("<br>")}</div>
+  </div>`;
+}
+
+function renderPromptPreview() {
+  if (!els.promptPreview) return;
+  if (els.promptPreviewButton) {
+    els.promptPreviewButton.disabled = !appState.activeParty;
+  }
+  if (!appState.activeParty) {
+    els.promptPreview.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
+    return;
+  }
+  const preview = appState.promptPreview;
+  if (!preview) {
+    els.promptPreview.innerHTML = `<div class="state-item">Нажми «Показать prompt», чтобы собрать dry-run для текущего текста в поле хода.</div>`;
+    return;
+  }
+  const blocks = Array.isArray(preview.blocks) ? preview.blocks : [];
+  const total = formatTokens(preview.estimated_prompt_tokens || 0);
+  const dryRun = preview.dry_run ? "dry-run, state не меняется" : "preview";
+  els.promptPreview.innerHTML = [
+    stateItem("Оценка", `~${escapeHtml(total)} токенов · ${escapeHtml(dryRun)}`, "Приблизительная оценка prompt по блокам."),
+    ...blocks.map((block, index) => promptBlock(block, index)),
+  ].join("");
+}
+
+function promptBlock(block, index) {
+  const title = block.title || block.id || `block ${index + 1}`;
+  const tokens = formatTokens(block.estimated_tokens || 0);
+  const open = index < 2 ? " open" : "";
+  return `<details class="prompt-block"${open}>
+    <summary>${escapeHtml(title)}<span>~${escapeHtml(tokens)} токенов</span></summary>
+    <pre>${escapeHtml(block.content || "")}</pre>
+  </details>`;
+}
+
+function renderJournal() {
+  if (!els.journalSummary) return;
+  const payload = appState.journal || {};
+  const journal = payload.journal || null;
+  const stats = payload.stats || {};
+  if (els.journalSummarizeButton) {
+    els.journalSummarizeButton.disabled = !appState.activeParty;
+  }
+  if (els.journalClearButton) {
+    els.journalClearButton.disabled = !appState.activeParty || !journal;
+  }
+  if (!appState.activeParty) {
+    els.journalSummary.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
+    return;
+  }
+  if (!journal) {
+    const total = stats.total_turns ?? 0;
+    const waiting = stats.next_auto_entry_turns_remaining ?? 0;
+    els.journalSummary.innerHTML = [
+      stateItem("Recap", "еще не собран", "Журнал нужен человеку, не модели."),
+      stateItem("Покрытие", `ходов ${escapeHtml(total)} · до auto ${escapeHtml(waiting)}`, "Auto-journal собирается пачками новых ходов."),
+    ].join("");
+    return;
+  }
+  const covered = `${journal.from_turn_id ?? "-"}-${journal.to_turn_id ?? "-"}`;
+  els.journalSummary.innerHTML = `<div class="journal-entry">
+    <strong>${escapeHtml(journal.title || "Журнал партии")}</strong>
+    <div class="mini-metrics">
+      <span>ходы ${escapeHtml(covered)}</span>
+      <span>state v${escapeHtml(journal.state_version ?? "-")}</span>
+    </div>
+    <div>${escapeHtml(clipText(journal.recap_text || "", 1000))}</div>
+    ${memoryList("Важные изменения", journal.important_changes)}
+  </div>`;
 }
 
 function renderChat() {
@@ -681,6 +840,56 @@ async function clearLatestMemory() {
   }
 }
 
+async function previewPrompt() {
+  if (!appState.activeParty) return;
+  const content = els.messageInput.value.trim();
+  try {
+    setBusy(true);
+    const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content });
+    appState.promptPreview = result.preview;
+    renderPromptPreview();
+    showToast("Prompt preview собран.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function summarizeJournal() {
+  if (!appState.activeParty) return;
+  try {
+    setBusy(true);
+    const result = await apiPost(`/api/parties/${appState.activeParty.id}/journal/summarize`, { force: true });
+    appState.journal = result;
+    renderJournal();
+    await reloadActiveParty();
+    showToast(result.generated ? "Журнал обновлен." : journalReason(result.reason));
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function clearLatestJournal() {
+  if (!appState.activeParty) return;
+  const ok = window.confirm("Удалить последнюю запись журнала этой партии?");
+  if (!ok) return;
+  try {
+    setBusy(true);
+    const result = await apiDelete(`/api/parties/${appState.activeParty.id}/journal/latest`);
+    appState.journal = result;
+    renderJournal();
+    await reloadActiveParty();
+    showToast(result.deleted ? "Последняя запись журнала удалена." : "Журнала пока нет.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function deleteActiveParty() {
   const party = appState.activeParty;
   if (!party) return;
@@ -934,6 +1143,20 @@ function memoryItemText(item) {
   return item.fact || item.thread || item.change || item.promise || item.obligation || JSON.stringify(item);
 }
 
+function relationshipText(relationship) {
+  if (!relationship || typeof relationship !== "object") return "";
+  const bits = [];
+  if (relationship.trust !== undefined) bits.push(`доверие ${relationship.trust}`);
+  if (relationship.suspicion !== undefined) bits.push(`подозрение ${relationship.suspicion}`);
+  if (relationship.fear !== undefined) bits.push(`страх ${relationship.fear}`);
+  return bits.join(" · ");
+}
+
+function listLine(title, items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return `${title}: ${items.map((item) => memoryItemText(item)).slice(0, 3).join("; ")}`;
+}
+
 function memoryReason(reason) {
   const labels = {
     not_enough_old_turns: "Память появится после нескольких ходов за пределами raw окна.",
@@ -941,6 +1164,14 @@ function memoryReason(reason) {
     up_to_date: "Память уже актуальна.",
   };
   return labels[reason] || "Память не изменилась.";
+}
+
+function journalReason(reason) {
+  const labels = {
+    not_enough_unsummarized_turns: "Для auto-journal пока мало новых ходов.",
+    up_to_date: "Журнал уже актуален.",
+  };
+  return labels[reason] || "Журнал не изменился.";
 }
 
 function clipText(value, limit) {
