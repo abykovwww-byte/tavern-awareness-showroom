@@ -1,0 +1,29 @@
+{
+  "id": "smoke-gate-borderland",
+  "title": "Предел Дымных Врат",
+  "language": "ru",
+  "mode": "original campaign",
+  "tone": ["dark fantasy", "frontier intrigue", "survival mystery"],
+  "player_role": "Временный поверенный Пограничной Канцелярии с ограниченным правом расследования",
+  "created_for": "sillytavern-rp-gateway",
+  "assumptions": [
+    "Оригинальный мир без привязки к существующим франшизам.",
+    "Игра идет на русском языке.",
+    "Кампания рассчитана на проверку полного flow: GUI, gateway, /world, /check и первые игровые ходы.",
+    "Игрок начинает компетентным, но не влиятельным: у него есть право задавать вопросы, но нет права приказывать."
+  ],
+  "files": {
+    "campaign_bible": "campaign-bible.md",
+    "state_seed": "state-seed.json",
+    "gm_system": "prompts/gm-system.md",
+    "authors_note": "prompts/authors-note.md",
+    "opening_scene": "prompts/opening-scene.md",
+    "world_info": "world-info/index.md",
+    "sillytavern_lorebook": "sillytavern/Predel_Dymnyh_Vrat.json",
+    "characters": "characters/index.md",
+    "checks": "rules/checks.md",
+    "quick_replies": "quick-replies/notes.md",
+    "server_installer": "../../scripts/install-worldpack.py",
+    "setup_flow": "setup-flow.md"
+  }
+}
