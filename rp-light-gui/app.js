@@ -10,6 +10,7 @@ const appState = {
   journal: null,
   promptPreview: null,
   history: null,
+  chatArchiveExpanded: false,
   proposals: [],
   busy: false,
   pendingMessage: null,
@@ -83,7 +84,10 @@ const metaHints = {
   "State": "campaign_id изолированного состояния партии.",
 };
 
+const CHAT_VISIBLE_TURNS = 10;
+
 bindEvents();
+setupCollapsiblePanels();
 boot();
 
 function bindEvents() {
@@ -116,6 +120,11 @@ function bindEvents() {
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
+  els.chatLog.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-chat-archive]");
+    if (!button) return;
+    setChatArchiveExpanded(button.dataset.chatArchive === "open");
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
   });
@@ -129,6 +138,59 @@ function openInspector() {
 
 function closeInspector() {
   document.body.classList.remove("inspector-open");
+}
+
+function setupCollapsiblePanels() {
+  document.querySelectorAll(".inspector .summary-panel").forEach((panel, index) => {
+    if (panel.dataset.collapsibleReady) return;
+    panel.dataset.collapsibleReady = "true";
+    const existingHead = panel.querySelector(":scope > .panel-head");
+    const label = existingHead?.querySelector(".section-label") || panel.querySelector(":scope > .section-label");
+    const title = label?.textContent.trim() || `Панель ${index + 1}`;
+    const head = document.createElement("div");
+    head.className = "collapsible-head";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "collapsible-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><span></span>`;
+    toggle.querySelector("span").textContent = title;
+    toggle.addEventListener("click", () => setPanelOpen(panel, !panel.classList.contains("panel-open")));
+    head.appendChild(toggle);
+
+    const actions = document.createElement("div");
+    actions.className = "collapsible-actions";
+    if (existingHead) {
+      Array.from(existingHead.children).forEach((child) => {
+        if (!child.classList.contains("section-label")) actions.appendChild(child);
+      });
+      existingHead.remove();
+    }
+    if (label?.parentElement === panel) label.remove();
+    if (actions.children.length) head.appendChild(actions);
+
+    const body = document.createElement("div");
+    body.className = "collapsible-body";
+    Array.from(panel.childNodes).forEach((child) => body.appendChild(child));
+    panel.appendChild(head);
+    panel.appendChild(body);
+  });
+}
+
+function setPanelOpen(panel, open) {
+  panel.classList.toggle("panel-open", open);
+  const toggle = panel.querySelector(":scope > .collapsible-head .collapsible-toggle");
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function openPanelFor(element) {
+  const panel = element?.closest?.(".summary-panel");
+  if (panel) setPanelOpen(panel, true);
+}
+
+function setChatArchiveExpanded(expanded) {
+  appState.chatArchiveExpanded = expanded;
+  renderChat({ scrollMode: expanded ? "top" : "bottom" });
 }
 
 async function boot() {
@@ -162,6 +224,7 @@ async function boot() {
       appState.journal = null;
       appState.promptPreview = null;
       appState.history = null;
+      appState.chatArchiveExpanded = false;
       appState.proposals = [];
       renderAll();
     }
@@ -204,6 +267,7 @@ async function reloadActiveParty() {
   appState.characters = characters;
   appState.journal = journal;
   appState.promptPreview = null;
+  appState.chatArchiveExpanded = false;
   renderAll();
 }
 
@@ -511,7 +575,7 @@ function renderJournal() {
   </div>`;
 }
 
-function renderChat() {
+function renderChat({ scrollMode = "bottom" } = {}) {
   const turns = appState.history?.turns || [];
   const pending = activePendingMessage();
   if (!appState.activeParty) {
@@ -522,8 +586,13 @@ function renderChat() {
     els.chatLog.innerHTML = `<div class="empty-chat">Партия готова. Первый ход начнет историю.</div>`;
     return;
   }
+  const hiddenTurnCount = Math.max(0, turns.length - CHAT_VISIBLE_TURNS);
+  const visibleTurns = hiddenTurnCount && !appState.chatArchiveExpanded ? turns.slice(-CHAT_VISIBLE_TURNS) : turns;
   const messages = [];
-  for (const turn of turns) {
+  if (hiddenTurnCount) {
+    messages.push(chatArchiveHtml(hiddenTurnCount));
+  }
+  for (const turn of visibleTurns) {
     messages.push(messageHtml("user", "Игрок", turn.player_message));
     messages.push(messageHtml("assistant", "GM", turn.narrative_response));
   }
@@ -532,7 +601,20 @@ function renderChat() {
     messages.push(pendingMessageHtml(pending.requestId, pending.status));
   }
   els.chatLog.innerHTML = messages.join("");
-  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  els.chatLog.scrollTop = scrollMode === "top" ? 0 : els.chatLog.scrollHeight;
+}
+
+function chatArchiveHtml(hiddenTurnCount) {
+  const expanded = appState.chatArchiveExpanded;
+  return `<div class="history-archive">
+    <div>
+      <strong>${expanded ? "Начало диалога раскрыто" : "Начало диалога свернуто"}</strong>
+      <span>${expanded ? `Можно вернуть компактный вид. Ранних ходов: ${hiddenTurnCount}.` : `Скрыто ранних ходов: ${hiddenTurnCount}.`}</span>
+    </div>
+    <button class="text-button" type="button" data-chat-archive="${expanded ? "close" : "open"}">
+      ${expanded ? "Свернуть начало" : "Показать начало"}
+    </button>
+  </div>`;
 }
 
 function renderProposals() {
@@ -754,6 +836,7 @@ async function previewWorldInstruction() {
     await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction: text });
     els.worldInstruction.value = "";
     await reloadActiveParty();
+    openPanelFor(els.proposalList);
     showToast("Черновик изменений создан.");
   } catch (error) {
     showToast(error.message);
@@ -768,6 +851,7 @@ async function applyWorldProposal() {
     setBusy(true);
     await apiPost(`/api/parties/${appState.activeParty.id}/world/apply`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
+    openPanelFor(els.proposalList);
     showToast("Черновик применен.");
   } catch (error) {
     showToast(error.message);
@@ -782,6 +866,7 @@ async function discardWorldProposal() {
     setBusy(true);
     await apiPost(`/api/parties/${appState.activeParty.id}/world/discard`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
+    openPanelFor(els.proposalList);
     showToast("Черновик отменен.");
   } catch (error) {
     showToast(error.message);
@@ -814,6 +899,7 @@ async function summarizeMemory() {
     appState.memory = result;
     renderMemory();
     await reloadActiveParty();
+    openPanelFor(els.memorySummary);
     showToast(result.generated ? "Память обновлена." : memoryReason(result.reason));
   } catch (error) {
     showToast(error.message);
@@ -832,6 +918,7 @@ async function clearLatestMemory() {
     appState.memory = result;
     renderMemory();
     await reloadActiveParty();
+    openPanelFor(els.memorySummary);
     showToast(result.deleted ? "Последняя сводка памяти удалена." : "Сводок памяти пока нет.");
   } catch (error) {
     showToast(error.message);
@@ -848,6 +935,7 @@ async function previewPrompt() {
     const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content });
     appState.promptPreview = result.preview;
     renderPromptPreview();
+    openPanelFor(els.promptPreview);
     showToast("Prompt preview собран.");
   } catch (error) {
     showToast(error.message);
@@ -864,6 +952,7 @@ async function summarizeJournal() {
     appState.journal = result;
     renderJournal();
     await reloadActiveParty();
+    openPanelFor(els.journalSummary);
     showToast(result.generated ? "Журнал обновлен." : journalReason(result.reason));
   } catch (error) {
     showToast(error.message);
@@ -882,6 +971,7 @@ async function clearLatestJournal() {
     appState.journal = result;
     renderJournal();
     await reloadActiveParty();
+    openPanelFor(els.journalSummary);
     showToast(result.deleted ? "Последняя запись журнала удалена." : "Журнала пока нет.");
   } catch (error) {
     showToast(error.message);
@@ -939,6 +1029,7 @@ async function runCheck(event) {
       goal: document.querySelector("#checkGoal").value.trim(),
     });
     await reloadActiveParty();
+    openPanelFor(els.stateSummary);
   } catch (error) {
     showToast(error.message);
   } finally {

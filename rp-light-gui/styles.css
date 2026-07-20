@@ -132,6 +132,23 @@ body.busy #closeInspectorButton {
   pointer-events: auto;
 }
 
+#toolsButton {
+  position: fixed;
+  right: 18px;
+  bottom: 88px;
+  z-index: 26;
+  width: 44px;
+  height: 44px;
+  border-color: rgba(127, 182, 133, 0.42);
+  background: rgba(31, 36, 39, 0.96);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.34);
+}
+
+body.inspector-open #toolsButton {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .rail-head,
 .top-bar,
 .panel-head,
@@ -369,6 +386,36 @@ h3 {
   overflow: auto;
 }
 
+.history-archive {
+  display: flex;
+  width: min(760px, 94%);
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  align-self: center;
+  padding: 10px 12px;
+  border: 1px dashed rgba(127, 182, 133, 0.42);
+  border-radius: var(--radius);
+  background: rgba(24, 29, 32, 0.82);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.history-archive strong,
+.history-archive span {
+  display: block;
+}
+
+.history-archive strong {
+  margin-bottom: 2px;
+  color: var(--text);
+}
+
+.history-archive .text-button {
+  flex: 0 0 auto;
+}
+
 .empty-chat {
   max-width: 560px;
   margin: auto;
@@ -504,11 +551,68 @@ button:disabled {
 }
 
 .summary-panel.grow {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .summary-panel .section-label {
   margin: 0 0 10px;
+}
+
+.collapsible-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.collapsible-toggle {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.collapsible-toggle svg {
+  width: 17px;
+  height: 17px;
+  color: var(--green-strong);
+  transition: transform 160ms ease;
+}
+
+.collapsible-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-panel.panel-open .collapsible-toggle svg {
+  transform: rotate(90deg);
+}
+
+.collapsible-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.collapsible-body {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+}
+
+.summary-panel:not(.panel-open) .collapsible-body {
+  display: none;
 }
 
 .drawer-head .section-label {
@@ -996,5 +1100,15 @@ button:disabled {
 
   .send-button {
     min-height: 42px;
+  }
+
+  #toolsButton {
+    right: 14px;
+    bottom: 88px;
+  }
+
+  .history-archive {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
