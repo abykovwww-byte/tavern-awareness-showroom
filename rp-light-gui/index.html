@@ -86,6 +86,7 @@
 
         <section class="summary-panel">
           <div class="section-label">Персонажи</div>
+          <p class="panel-hint">Карточки игрока и заметных NPC из structured state: статус, отношения, обязательства, нитки и последнее появление.</p>
           <div id="characterSheets" class="character-sheets"></div>
         </section>
 
@@ -100,11 +101,13 @@
             <div class="section-label">Prompt inspector</div>
             <button class="text-button" id="promptPreviewButton" type="button" title="Показать prompt, который уйдет в модель">Показать prompt</button>
           </div>
+          <p class="panel-hint">Dry-run без хода: показывает system rules, long-term memory, state summary, AUTHORITATIVE_OUTCOME и raw turns, которые уйдут в модель.</p>
           <div id="promptPreview" class="prompt-preview"></div>
         </section>
 
         <section class="summary-panel">
           <div class="section-label">Память</div>
+          <p class="panel-hint">Долгая память для модели: сжатые старые ходы, подтвержденные факты, открытые нити и изменения отношений. State напрямую не меняет.</p>
           <div id="memorySummary" class="state-summary"></div>
           <div class="button-grid">
             <button id="memorySummarizeButton" class="tool-button" title="Пересобрать long-term memory по старым ходам этой партии">
@@ -120,6 +123,7 @@
 
         <section class="summary-panel">
           <div class="section-label">Журнал</div>
+          <p class="panel-hint">Читаемый recap для человека: что происходило в партии по сессиям/отрезкам, отдельно от компактной памяти для модели.</p>
           <div id="journalSummary" class="journal-summary"></div>
           <div class="button-grid">
             <button id="journalSummarizeButton" class="tool-button" title="Собрать читаемый recap партии по новым ходам">
