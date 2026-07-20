@@ -185,6 +185,10 @@ class PartyCreate(BaseModel):
     model_profile_id: str
 
 
+class PartyModelUpdate(BaseModel):
+    model_profile_id: str
+
+
 class PartySummary(BaseModel):
     id: str
     title: str

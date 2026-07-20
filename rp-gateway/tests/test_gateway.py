@@ -204,6 +204,33 @@ def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     assert "reasoning" in models[0]["tags"]
 
 
+def test_party_model_can_be_changed(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+    character = c.post(
+        "/api/player-characters",
+        json={"worldpack_id": "demo-world", "name": "Mira", "description": "Investigator", "profile": {}},
+    ).json()["player_character"]
+    party = c.post(
+        "/api/parties",
+        json={
+            "title": "Model Switch",
+            "worldpack_id": "demo-world",
+            "player_character_id": character["id"],
+            "model_profile_id": models[0]["id"],
+        },
+    ).json()["party"]
+
+    changed = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": models[1]["id"]},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["party"]["model_profile_id"] == models[1]["id"]
+    assert changed.json()["party"]["model_profile"]["model"] == models[1]["model"]
+
+
 def test_build_catalog_parser_discards_non_rp_models():
     html = """
     <a href="/meta/llama-3_3-70b-instruct">Llama</a>
@@ -379,6 +406,19 @@ def test_timeout_and_rate_limit(tmp_path: Path):
         headers={"Authorization": "Bearer test", "Idempotency-Key": "rate"},
     )
     assert response.status_code == 502
+
+
+def test_disabled_primary_model_uses_fallback(tmp_path: Path):
+    from app.core.config import Settings
+    from app.services.narrative import NarrativeClient
+    from app.services.world_instructor import WorldInstructor
+
+    settings = Settings(
+        nvidia_fallback_models=("fallback/model", "other/model"),
+        nvidia_disabled_models=("primary/model",),
+    )
+    assert NarrativeClient(settings).model_attempts("primary/model") == ["fallback/model", "other/model"]
+    assert WorldInstructor(settings, store(tmp_path)).model_attempts("primary/model") == ["fallback/model", "other/model"]
 
 
 def test_idempotency_prevents_duplicate_turn(tmp_path: Path):

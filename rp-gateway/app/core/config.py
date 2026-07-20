@@ -20,6 +20,11 @@ def env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def env_list(name: str, default: str = "") -> tuple[str, ...]:
+    value = os.getenv(name, default)
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "production")
@@ -39,10 +44,16 @@ class Settings:
     narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
     intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
     validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
+    nvidia_fallback_models: tuple[str, ...] = env_list(
+        "NVIDIA_FALLBACK_MODELS",
+        "deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash",
+    )
+    nvidia_disabled_models: tuple[str, ...] = env_list("NVIDIA_DISABLED_MODELS", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_prompts: bool = env_bool("LOG_PROMPTS", False)
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
+    model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "45"))
 
     @property
     def sqlite_path(self) -> str:

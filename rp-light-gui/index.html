@@ -42,9 +42,11 @@
 
         <section class="chat-log" id="chatLog"></section>
 
+        <div class="message-status-bar hidden" id="messageStatus" role="status" aria-live="polite"></div>
+
         <form class="composer" id="messageForm">
           <textarea id="messageInput" rows="2" placeholder="Действие персонажа или команда /check"></textarea>
-          <button class="send-button" type="submit" title="Отправить">
+          <button class="send-button" id="messageSubmit" type="submit" title="Отправить">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
             Отправить
           </button>
@@ -121,6 +123,14 @@
         <section class="summary-panel">
           <div class="section-label">Управление</div>
           <p class="panel-hint">Операции над текущей партией. Миры и персонажи не удаляются этой кнопкой.</p>
+          <label class="management-field">
+            <span>Модель партии</span>
+            <select id="partyModelSelect" title="Сменить NVIDIA model profile для следующих ходов этой партии"></select>
+          </label>
+          <button id="changePartyModelButton" class="tool-button wide-button" type="button" title="Применить выбранную модель к этой партии">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h4v4"/><path d="M21 3 13 11"/><path d="M7 21H3v-4"/><path d="M3 21l8-8"/></svg>
+            Сменить модель
+          </button>
           <button id="deletePartyButton" class="tool-button danger wide-button" type="button" title="Удалить партию, ее историю ходов и isolated state">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
             Удалить партию

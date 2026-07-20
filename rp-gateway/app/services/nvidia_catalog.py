@@ -316,6 +316,13 @@ def profile_id_for_model(model_id: str) -> str:
 
 def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
     profiles = [profile_payload(settings, item, rank=index + 10, source="static_build_nvidia_fallback") for index, item in enumerate(STATIC_NVIDIA_MODELS)]
+    disabled = set(getattr(settings, "nvidia_disabled_models", ()))
+    for profile in profiles:
+        if profile["model"] == getattr(settings, "narrative_model", "") and profile["model"] not in disabled:
+            profile["params"]["rank"] = 0
+        if profile["model"] in disabled:
+            profile["params"]["rank"] = max(int(profile["params"].get("rank", 9999)), 900)
+            profile["params"]["availability"] = f"{profile['params'].get('availability', '').strip()} / disabled on this server".strip(" /")
     known = {profile["model"] for profile in profiles}
     if settings.narrative_model not in known:
         profiles.insert(

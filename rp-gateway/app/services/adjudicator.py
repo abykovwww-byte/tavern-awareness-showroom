@@ -67,13 +67,20 @@ class Adjudicator:
         llm_calls = 0
         repaired = False
         try:
-            raw = await self.narrative.complete(request, state, outcome, authorization)
+            raw = await self.narrative.complete(request, state, outcome, authorization, request_id=request_id)
             llm_calls += 1
             text = response_text(raw)
             validation = self.validator.validate(text, outcome)
             if not validation.valid and self.settings.max_repair_attempts > 0:
                 repaired = True
-                raw = await self.narrative.complete(request, state, outcome, authorization, validation.repair_instruction)
+                raw = await self.narrative.complete(
+                    request,
+                    state,
+                    outcome,
+                    authorization,
+                    validation.repair_instruction,
+                    request_id=request_id,
+                )
                 llm_calls += 1
                 text = response_text(raw)
                 validation = self.validator.validate(text, outcome)

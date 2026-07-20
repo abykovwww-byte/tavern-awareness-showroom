@@ -7,6 +7,7 @@ const appState = {
   history: null,
   proposals: [],
   busy: false,
+  pendingMessage: null,
 };
 
 const els = {
@@ -16,8 +17,10 @@ const els = {
   gatewayDot: document.querySelector("#gatewayDot"),
   gatewayStatus: document.querySelector("#gatewayStatus"),
   chatLog: document.querySelector("#chatLog"),
+  messageStatus: document.querySelector("#messageStatus"),
   messageForm: document.querySelector("#messageForm"),
   messageInput: document.querySelector("#messageInput"),
+  messageSubmit: document.querySelector("#messageSubmit"),
   partyMeta: document.querySelector("#partyMeta"),
   stateSummary: document.querySelector("#stateSummary"),
   proposalList: document.querySelector("#proposalList"),
@@ -39,6 +42,8 @@ const els = {
   worldPreview: document.querySelector("#worldPreview"),
   worldInstruction: document.querySelector("#worldInstruction"),
   checkForm: document.querySelector("#checkForm"),
+  partyModelSelect: document.querySelector("#partyModelSelect"),
+  changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
 };
 
@@ -73,6 +78,7 @@ function bindEvents() {
   document.querySelector("#worldApplyButton").addEventListener("click", applyWorldProposal);
   document.querySelector("#worldDiscardButton").addEventListener("click", discardWorldProposal);
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
+  els.changePartyModelButton.addEventListener("click", changePartyModel);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
     renderWorldPreview();
@@ -157,6 +163,7 @@ function renderAll() {
   renderState();
   renderChat();
   renderProposals();
+  renderMessageControls();
 }
 
 function renderPartyList() {
@@ -188,6 +195,8 @@ function renderHeader() {
 function renderMeta() {
   const party = appState.activeParty;
   els.deletePartyButton.disabled = !party;
+  els.changePartyModelButton.disabled = !party;
+  renderPartyModelSelect();
   if (!party) {
     els.partyMeta.innerHTML = `<dt title="Статус выбранной партии">Статус</dt><dd>партия не выбрана</dd>`;
     return;
@@ -202,6 +211,17 @@ function renderMeta() {
   els.partyMeta.innerHTML = rows
     .map(([key, value]) => `<dt title="${escapeHtml(metaHints[key] || "")}">${escapeHtml(key)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>`)
     .join("");
+}
+
+function renderPartyModelSelect() {
+  if (!els.partyModelSelect) return;
+  els.partyModelSelect.innerHTML = appState.modelProfiles
+    .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.title)}</option>`)
+    .join("");
+  els.partyModelSelect.disabled = !appState.activeParty || !appState.modelProfiles.length;
+  if (appState.activeParty?.model_profile_id) {
+    els.partyModelSelect.value = appState.activeParty.model_profile_id;
+  }
 }
 
 function renderState() {
@@ -233,11 +253,12 @@ function renderState() {
 
 function renderChat() {
   const turns = appState.history?.turns || [];
+  const pending = activePendingMessage();
   if (!appState.activeParty) {
     els.chatLog.innerHTML = `<div class="empty-chat">Создай или выбери партию.</div>`;
     return;
   }
-  if (!turns.length) {
+  if (!turns.length && !pending) {
     els.chatLog.innerHTML = `<div class="empty-chat">Партия готова. Первый ход начнет историю.</div>`;
     return;
   }
@@ -245,6 +266,10 @@ function renderChat() {
   for (const turn of turns) {
     messages.push(messageHtml("user", "Игрок", turn.player_message));
     messages.push(messageHtml("assistant", "GM", turn.narrative_response));
+  }
+  if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
+    messages.push(messageHtml("user", "Игрок", pending.text));
+    messages.push(pendingMessageHtml(pending.requestId, pending.status));
   }
   els.chatLog.innerHTML = messages.join("");
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
@@ -417,18 +442,46 @@ async function resolveWorldpack() {
 
 async function sendMessage(event) {
   event.preventDefault();
+  if (appState.pendingMessage) {
+    showToast("Дождись ответа GM по предыдущему ходу.");
+    return;
+  }
   const text = els.messageInput.value.trim();
   if (!text || !appState.activeParty) return;
+  const partyId = appState.activeParty.id;
+  const requestId = makeClientRequestId();
   els.messageInput.value = "";
-  appendPendingMessage(text);
+  startPendingMessage(partyId, requestId, text);
+  appendPendingMessage(text, requestId);
   try {
     setBusy(true);
-    await apiPost(`/api/parties/${appState.activeParty.id}/messages`, { content: text });
-    await reloadActiveParty();
+    setPendingStatus("GM формирует ответ...");
+    const result = await apiPost(
+      `/api/parties/${partyId}/messages`,
+      { content: text, idempotency_key: requestId },
+      { "X-Request-ID": requestId },
+    );
+    const content = result.message?.content || "";
+    if (content) {
+      replacePendingMessage(requestId, content);
+    }
+    setPendingStatus("Ответ получен. Обновляю историю...");
+    try {
+      await reloadActiveParty();
+    } catch (syncError) {
+      showToast(`Ответ получен, но история не обновилась: ${syncError.message}`);
+    }
   } catch (error) {
-    showToast(error.message);
-    await reloadActiveParty();
+    setPendingStatus("Запрос оборвался. Проверяю историю...");
+    const recovered = await waitForRecoveredMessage(partyId, requestId).catch(() => null);
+    if (recovered?.narrative_response) {
+      showToast("Ответ подтянут из истории.");
+    } else {
+      replacePendingMessage(requestId, `Ответ не получен: ${error.message}`, true);
+      showToast(error.message);
+    }
   } finally {
+    clearPendingMessage();
     setBusy(false);
   }
 }
@@ -511,6 +564,24 @@ async function deleteActiveParty() {
   }
 }
 
+async function changePartyModel() {
+  const party = appState.activeParty;
+  const modelProfileId = els.partyModelSelect.value;
+  if (!party || !modelProfileId || modelProfileId === party.model_profile_id) return;
+  const profile = appState.modelProfiles.find((item) => item.id === modelProfileId);
+  try {
+    setBusy(true);
+    await apiPatch(`/api/parties/${party.id}/model`, { model_profile_id: modelProfileId });
+    await boot();
+    await selectParty(party.id);
+    showToast(`Модель партии: ${profile?.title || modelProfileId}`);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function runCheck(event) {
   event.preventDefault();
   if (!appState.activeParty) return;
@@ -531,20 +602,124 @@ async function runCheck(event) {
   }
 }
 
-function appendPendingMessage(text) {
+function appendPendingMessage(text, requestId) {
   if (!appState.history) appState.history = { turns: [] };
   els.chatLog.insertAdjacentHTML("beforeend", messageHtml("user", "Игрок", text));
-  els.chatLog.insertAdjacentHTML("beforeend", messageHtml("assistant", "GM", "..."));
+  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, "GM формирует ответ..."));
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function makeClientRequestId() {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `ui_${Date.now().toString(36)}_${random}`;
+}
+
+function startPendingMessage(partyId, requestId, text) {
+  appState.pendingMessage = {
+    partyId,
+    requestId,
+    text,
+    status: "GM формирует ответ...",
+  };
+  renderMessageControls();
+}
+
+function activePendingMessage() {
+  if (!appState.pendingMessage || appState.pendingMessage.partyId !== appState.activeParty?.id) {
+    return null;
+  }
+  return appState.pendingMessage;
+}
+
+function setPendingStatus(status) {
+  if (!appState.pendingMessage) return;
+  appState.pendingMessage.status = status;
+  const pending = els.chatLog.querySelector(`[data-pending-id="${appState.pendingMessage.requestId}"] .pending-text`);
+  if (pending) pending.textContent = status;
+  renderMessageControls();
+}
+
+function clearPendingMessage() {
+  appState.pendingMessage = null;
+  renderMessageControls();
+}
+
+function replacePendingMessage(requestId, content, isError = false) {
+  const placeholder = els.chatLog.querySelector(`[data-pending-id="${requestId}"]`);
+  const html = messageHtml(isError ? "assistant error" : "assistant", isError ? "Система" : "GM", content);
+  if (placeholder) {
+    placeholder.outerHTML = html;
+  } else {
+    els.chatLog.insertAdjacentHTML("beforeend", html);
+  }
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+async function waitForRecoveredMessage(partyId, requestId) {
+  const attempts = 24;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await delay(5000);
+    setPendingStatus(`Проверяю историю партии... ${attempt + 1}/${attempts}`);
+    const history = await apiGet(`/api/parties/${partyId}/history`);
+    const turn = (history.turns || []).find((item) => item.request_id === requestId);
+    if (turn?.narrative_response) {
+      appState.history = history;
+      renderAll();
+      await reloadActiveParty().catch(() => {});
+      return turn;
+    }
+  }
+  return null;
+}
+
+function renderMessageControls() {
+  const locked = Boolean(appState.pendingMessage);
+  const hasParty = Boolean(appState.activeParty);
+  if (els.messageInput) {
+    els.messageInput.disabled = locked || !hasParty;
+  }
+  if (els.messageSubmit) {
+    els.messageSubmit.disabled = locked || !hasParty;
+  }
+  if (els.messageForm) {
+    els.messageForm.setAttribute("aria-busy", locked ? "true" : "false");
+  }
+  if (!els.messageStatus) return;
+  if (locked) {
+    els.messageStatus.classList.remove("hidden");
+    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(appState.pendingMessage.status)}</span>`;
+  } else {
+    els.messageStatus.classList.add("hidden");
+    els.messageStatus.innerHTML = "";
+  }
+}
+
+function pendingMessageHtml(requestId, status) {
+  return `<article class="message assistant pending" data-pending-id="${escapeHtml(requestId)}">
+    <div class="role">GM</div>
+    <div class="pending-line"><span class="spinner" aria-hidden="true"></span><span class="pending-text">${escapeHtml(status)}</span></div>
+  </article>`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 async function apiGet(path) {
   return api(path);
 }
 
-async function apiPost(path, body) {
+async function apiPost(path, body, headers = {}) {
   return api(path, {
     method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+async function apiPatch(path, body) {
+  return api(path, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });

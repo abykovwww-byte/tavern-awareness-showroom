@@ -600,6 +600,18 @@ class PartyStore:
             raise ValueError(f"party not found: {party_id}")
         return self.get_party(party_id)
 
+    def update_party_model(self, party_id: str, model_profile_id: str) -> PartySummary:
+        self.get_model_profile(model_profile_id)
+        timestamp = now_iso()
+        with self.connect() as connection:
+            updated = connection.execute(
+                "UPDATE parties SET model_profile_id = ?, updated_at = ? WHERE id = ?",
+                (model_profile_id, timestamp, party_id),
+            ).rowcount
+        if updated == 0:
+            raise ValueError(f"party not found: {party_id}")
+        return self.get_party(party_id)
+
     def delete_party(self, party_id: str) -> None:
         party = self.get_party(party_id)
         with self.connect() as connection:

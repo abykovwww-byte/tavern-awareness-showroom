@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -16,6 +17,9 @@ from app.core.json_patch import PatchError
 from app.models.schemas import PatchOperation, StatePatch, WorldInstructionDraft
 from app.services.narrative import response_text
 from app.services.state_store import StateStore
+
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_TOP_LEVEL = {
@@ -157,16 +161,74 @@ class WorldInstructor:
                 },
             ],
         }
-        timeout = httpx.Timeout(self.settings.request_timeout_seconds, connect=15.0)
+        timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
+        attempts = self.model_attempts(self.settings.intent_model)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                json=payload,
-                headers={"Authorization": authorization, "Content-Type": "application/json"},
-            )
-        if response.status_code == 429:
-            raise RuntimeError("NVIDIA API returned 429 rate limit")
-        response.raise_for_status()
+            for index, model in enumerate(attempts):
+                payload["model"] = model
+                started = time.perf_counter()
+                logger.info(
+                    "world_llm_attempt_start proposal_id=%s model=%s attempt=%s/%s timeout_seconds=%s",
+                    proposal_id,
+                    model,
+                    index + 1,
+                    len(attempts),
+                    self.settings.model_attempt_timeout_seconds,
+                )
+                try:
+                    response = await client.post(
+                        f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                        json=payload,
+                        headers={"Authorization": authorization, "Content-Type": "application/json"},
+                    )
+                except httpx.TimeoutException:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "world_llm_attempt_timeout proposal_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
+                        proposal_id,
+                        model,
+                        index + 1,
+                        len(attempts),
+                        elapsed_ms,
+                        index < len(attempts) - 1,
+                    )
+                    if index < len(attempts) - 1:
+                        continue
+                    raise
+                if response.status_code == 429:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "world_llm_attempt_rate_limited proposal_id=%s model=%s elapsed_ms=%s",
+                        proposal_id,
+                        model,
+                        elapsed_ms,
+                    )
+                    raise RuntimeError("NVIDIA API returned 429 rate limit")
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "world_llm_attempt_http_error proposal_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                        proposal_id,
+                        model,
+                        response.status_code,
+                        elapsed_ms,
+                        index < len(attempts) - 1,
+                    )
+                    if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
+                        continue
+                    raise
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "world_llm_attempt_success proposal_id=%s model=%s status=%s elapsed_ms=%s fallback_used=%s",
+                    proposal_id,
+                    model,
+                    response.status_code,
+                    elapsed_ms,
+                    index > 0 or model != self.settings.intent_model,
+                )
+                break
         data = self.extract_json(response_text(response.json()))
         patch_data = data.get("patch", {})
         operations = patch_data.get("patch") or data.get("operations") or []
@@ -187,6 +249,16 @@ class WorldInstructor:
             warnings=[str(item) for item in data.get("warnings", [])],
             patch=patch,
         )
+
+    def model_attempts(self, primary_model: str) -> list[str]:
+        disabled = set(self.settings.nvidia_disabled_models)
+        candidates = [primary_model, *self.settings.nvidia_fallback_models]
+        attempts: list[str] = []
+        for model in candidates:
+            if not model or model in disabled or model in attempts:
+                continue
+            attempts.append(model)
+        return attempts or [primary_model]
 
     def draft_prompt(self) -> str:
         return (

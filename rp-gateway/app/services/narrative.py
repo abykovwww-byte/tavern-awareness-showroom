@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -9,6 +10,9 @@ import httpx
 
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, Outcome
+
+
+logger = logging.getLogger(__name__)
 
 
 class NarrativeClient:
@@ -22,6 +26,7 @@ class NarrativeClient:
         outcome: Outcome,
         inbound_authorization: str | None,
         repair_instruction: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_completion(outcome, repair_instruction)
@@ -33,21 +38,104 @@ class NarrativeClient:
             raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
 
         payload = request.model_dump(exclude_none=True)
-        payload["model"] = self.settings.narrative_model
         payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction)
         payload["stream"] = False
 
-        timeout = httpx.Timeout(self.settings.request_timeout_seconds, connect=15.0)
+        timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
+        attempts = self.model_attempts(self.settings.narrative_model)
+        last_timeout: httpx.TimeoutException | None = None
+        last_status: httpx.HTTPStatusError | None = None
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                json=payload,
-                headers={"Authorization": authorization, "Content-Type": "application/json"},
-            )
-        if response.status_code == 429:
-            raise RuntimeError("NVIDIA API returned 429 rate limit")
-        response.raise_for_status()
-        return response.json()
+            for index, model in enumerate(attempts):
+                payload["model"] = model
+                started = time.perf_counter()
+                logger.info(
+                    "llm_attempt_start request_id=%s check_id=%s model=%s attempt=%s/%s timeout_seconds=%s repair=%s",
+                    request_id,
+                    outcome.check_id,
+                    model,
+                    index + 1,
+                    len(attempts),
+                    self.settings.model_attempt_timeout_seconds,
+                    bool(repair_instruction),
+                )
+                try:
+                    response = await client.post(
+                        f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                        json=payload,
+                        headers={"Authorization": authorization, "Content-Type": "application/json"},
+                    )
+                except httpx.TimeoutException as exc:
+                    last_timeout = exc
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "llm_attempt_timeout request_id=%s check_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
+                        request_id,
+                        outcome.check_id,
+                        model,
+                        index + 1,
+                        len(attempts),
+                        elapsed_ms,
+                        index < len(attempts) - 1,
+                    )
+                    if index < len(attempts) - 1:
+                        continue
+                    raise
+                if response.status_code == 429:
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "llm_attempt_rate_limited request_id=%s check_id=%s model=%s elapsed_ms=%s",
+                        request_id,
+                        outcome.check_id,
+                        model,
+                        elapsed_ms,
+                    )
+                    raise RuntimeError("NVIDIA API returned 429 rate limit")
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    last_status = exc
+                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    logger.warning(
+                        "llm_attempt_http_error request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                        request_id,
+                        outcome.check_id,
+                        model,
+                        response.status_code,
+                        elapsed_ms,
+                        index < len(attempts) - 1,
+                    )
+                    if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
+                        continue
+                    raise
+                data = response.json()
+                data.setdefault("model", model)
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "llm_attempt_success request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback_used=%s",
+                    request_id,
+                    outcome.check_id,
+                    model,
+                    response.status_code,
+                    elapsed_ms,
+                    index > 0 or model != self.settings.narrative_model,
+                )
+                return data
+        if last_status:
+            raise last_status
+        if last_timeout:
+            raise last_timeout
+        raise RuntimeError("No NVIDIA model attempts configured")
+
+    def model_attempts(self, primary_model: str) -> list[str]:
+        disabled = set(self.settings.nvidia_disabled_models)
+        candidates = [primary_model, *self.settings.nvidia_fallback_models]
+        attempts: list[str] = []
+        for model in candidates:
+            if not model or model in disabled or model in attempts:
+                continue
+            attempts.append(model)
+        return attempts or [primary_model]
 
     def narrative_messages(
         self,

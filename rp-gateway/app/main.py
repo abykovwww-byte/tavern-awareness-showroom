@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -20,6 +21,7 @@ from app.models.schemas import (
     PartyCheckRequest,
     PartyCreate,
     PartyMessageRequest,
+    PartyModelUpdate,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
     WorldPromptCreate,
@@ -33,6 +35,7 @@ from app.services.state_store import StateStore
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
     store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
     adjudicator = Adjudicator(settings, store)
     party_store = PartyStore(settings)
@@ -163,6 +166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "party_id": party_id}
+
+    @app.patch("/api/parties/{party_id}/model")
+    def update_party_model(party_id: str, request: PartyModelUpdate) -> dict[str, Any]:
+        try:
+            party = party_store.update_party_model(party_id, request.model_profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party": party.model_dump(mode="json")}
 
     @app.get("/api/parties/{party_id}/state")
     def get_party_state(party_id: str) -> dict[str, Any]:

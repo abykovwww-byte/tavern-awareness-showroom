@@ -291,7 +291,7 @@ h3 {
 
 .chat-stage {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   min-height: 100vh;
   background: rgba(17, 20, 23, 0.88);
 }
@@ -358,12 +358,54 @@ h3 {
   align-self: flex-start;
 }
 
+.message.pending {
+  border-color: rgba(195, 161, 90, 0.5);
+}
+
+.message.error {
+  border-color: rgba(211, 106, 98, 0.64);
+  color: #ffd3cf;
+}
+
 .message .role {
   margin-bottom: 6px;
   color: var(--brass);
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.pending-line,
+.message-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.message-status-bar {
+  min-height: 34px;
+  padding: 0 22px;
+  border-top: 1px solid var(--line);
+  background: rgba(17, 20, 23, 0.72);
+}
+
+.spinner {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border: 2px solid rgba(169, 176, 170, 0.26);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .composer {
@@ -402,6 +444,13 @@ textarea:focus,
 input:focus,
 select:focus {
   border-color: rgba(127, 182, 133, 0.85);
+}
+
+textarea:disabled,
+input:disabled,
+select:disabled,
+button:disabled {
+  opacity: 0.64;
 }
 
 .send-button {
@@ -480,6 +529,18 @@ select:focus {
 
 .wide-button {
   width: 100%;
+}
+
+.management-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.management-field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 780;
 }
 
 .tool-button.danger:hover {
