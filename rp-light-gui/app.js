@@ -101,6 +101,10 @@ async function boot() {
     appState.modelProfiles = models.model_profiles || [];
     appState.parties = parties.parties || [];
     setGatewayStatus(health.status || "ok", health.status === "ok");
+    if (els.partyDialog.open && (!els.modelSelect.options.length || !els.worldSelect.options.length)) {
+      renderDialogOptions();
+      renderCreationModes();
+    }
     renderPartyList();
     const savedPartyId = localStorage.getItem("rp-light-gui-active-party");
     const active = appState.parties.find((party) => party.id === savedPartyId) || appState.parties[0] || null;
