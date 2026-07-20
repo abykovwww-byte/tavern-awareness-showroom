@@ -16,6 +16,7 @@ docker compose up -d
 docker compose ps
 docker compose logs --tail=100 sillytavern
 docker compose logs --tail=100 rp-gateway
+docker compose logs --tail=100 rp-light-gui
 docker compose restart sillytavern
 docker compose down
 ```
@@ -123,6 +124,26 @@ SillyTavern custom OpenAI-compatible settings:
 Base URL: http://rp-gateway:8088/v1
 Model: z-ai/glm-5.2
 API key: NVIDIA key
+```
+
+## Light GUI
+
+Open from the LAN:
+
+```text
+http://192.168.1.88:8010
+```
+
+The `rp-light-gui` service serves the static client and proxies `/api` to
+`rp-gateway`. The browser keeps only the active `party_id` preference; gateway
+owns the world, player character, model profile, state and turn history binding.
+
+Useful checks:
+
+```bash
+cd /srv/apps/rp-stack
+docker compose ps rp-light-gui
+docker compose exec rp-light-gui wget -qO- http://127.0.0.1/health
 ```
 
 ## World Button Workflow

@@ -5,6 +5,7 @@ backups/*
 !data/.gitkeep
 !backups/.gitkeep
 state/current.json
+state/parties/*
 state/audit.log
 state/last-check.json
 state/proposed/*

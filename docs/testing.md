@@ -101,3 +101,23 @@ Covered cases:
 - `discard latest` removes a pending proposal from the apply queue;
 - `/world show` returns compact state status;
 - existing 30-turn mock campaign still passes.
+
+## Iteration 6 Checks
+
+```bash
+cd /srv/apps/rp-stack
+docker compose build rp-gateway rp-light-gui
+docker compose run --rm rp-gateway pytest
+docker compose ps
+docker compose exec rp-light-gui wget -qO- http://127.0.0.1/health
+```
+
+Covered cases:
+
+- party API scans installed world packs;
+- player character draft can be approved into a saved character;
+- party creation initializes isolated state from `state-seed.json`;
+- `POST /api/parties/{party_id}/messages` records turn history;
+- party-scoped GM preview is not visible in another party;
+- Light GUI is reachable from LAN at `http://192.168.1.88:8010`;
+- gateway legacy `/v1/chat/completions` remains available for SillyTavern.

@@ -98,3 +98,28 @@ SillyTavern Quick Reply
 The LLM is allowed to draft JSON, but it still cannot directly mutate canonical
 state. The gateway validates generated operations, stores them as pending
 patches, and only applies them after an explicit confirmation command.
+
+## Iteration 6
+
+The stack adds a LAN-only Light GUI for the intended play loop.
+
+```text
+LAN browser
+  -> http://192.168.1.88:8010
+  -> rp-light-gui static client
+  -> /api proxy to rp-gateway
+  -> party-scoped gateway API
+```
+
+The central binding is explicit and server-owned:
+
+```text
+Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
+```
+
+The browser stores only the selected `party_id` preference. Each game, check,
+state, history and GM request goes through `/api/parties/{party_id}/...`.
+Gateway resolves that party to the selected world pack, player character,
+model profile and `StateStore(state_campaign_id)`.
+
+SillyTavern remains available on port `8000` as a legacy/debug client.

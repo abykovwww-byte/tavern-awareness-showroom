@@ -85,7 +85,7 @@ def base_state() -> dict[str, object]:
     }
 
 
-def client(tmp_path: Path, mode: str = "success") -> TestClient:
+def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key") -> TestClient:
     state_path = tmp_path / "state" / "current.json"
     state_path.parent.mkdir(parents=True)
     state_path.write_text(json.dumps(base_state(), ensure_ascii=False), encoding="utf-8")
@@ -94,8 +94,10 @@ def client(tmp_path: Path, mode: str = "success") -> TestClient:
         campaign_id="default",
         database_url=f"sqlite:///{tmp_path / 'rp_gateway.db'}",
         world_state_path=str(state_path),
+        party_state_root=str(tmp_path / "state" / "parties"),
+        worldpacks_path=str(tmp_path / "worldpacks"),
         nvidia_api_base=f"mock://{mode}",
-        nvidia_api_key="test-key",
+        nvidia_api_key=api_key,
     )
     return TestClient(create_app(settings))
 
@@ -111,11 +113,119 @@ def chat_payload(message: str, stream: bool = False) -> dict[str, object]:
     }
 
 
+def write_worldpack(root: Path, pack_id: str = "demo-world") -> Path:
+    pack_dir = root / "worldpacks" / pack_id
+    pack_dir.mkdir(parents=True)
+    manifest = {
+        "id": pack_id,
+        "title": "Demo World",
+        "player_role": "Field investigator with limited authority.",
+        "files": {"state_seed": "state-seed.json", "world_info": "world-info/index.md"},
+    }
+    seed = base_state()
+    seed["meta"]["campaign_id"] = pack_id
+    (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    (pack_dir / "state-seed.json").write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+    (pack_dir / "world-info").mkdir()
+    (pack_dir / "world-info" / "index.md").write_text("# Demo World\n", encoding="utf-8")
+    return pack_dir
+
+
 def test_health_and_state(tmp_path: Path):
     c = client(tmp_path)
     assert c.get("/health").json()["status"] == "ok"
     state = c.get("/api/state").json()["state"]
     assert state["meta"]["campaign_id"] == "default"
+
+
+def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+
+    worldpacks = c.get("/api/worldpacks").json()["worldpacks"]
+    assert [pack["id"] for pack in worldpacks] == ["demo-world"]
+
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+    assert models
+    draft = c.post(
+        "/api/player-characters/draft",
+        json={"worldpack_id": "demo-world", "name": "Mira", "concept": "Careful investigator."},
+    )
+    assert draft.status_code == 200
+    character = c.post(
+        "/api/player-characters",
+        json={
+            "worldpack_id": "demo-world",
+            "name": draft.json()["draft"]["name"],
+            "description": draft.json()["draft"]["description"],
+            "profile": draft.json()["draft"]["profile"],
+        },
+    )
+    assert character.status_code == 200
+
+    party = c.post(
+        "/api/parties",
+        json={
+            "title": "Mira at the Gate",
+            "worldpack_id": "demo-world",
+            "player_character_id": character.json()["player_character"]["id"],
+            "model_profile_id": models[0]["id"],
+        },
+    )
+    assert party.status_code == 200
+    party_id = party.json()["party"]["id"]
+
+    state = c.get(f"/api/parties/{party_id}/state").json()["state"]
+    assert state["meta"]["campaign_id"] == party_id
+    assert state["player"]["character_id"] == character.json()["player_character"]["id"]
+
+    message = c.post(
+        f"/api/parties/{party_id}/messages",
+        json={"content": '/check persuasion target=advisor skill=2 difficulty=8 goal="gain a meeting"'},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert message.status_code == 200
+    assert message.json()["message"]["role"] == "assistant"
+    assert message.json()["party_id"] == party_id
+
+    history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
+    assert len(history) == 1
+    assert "gain a meeting" in history[0]["player_message"]
+
+
+def test_party_world_proposals_are_isolated(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    parties: list[str] = []
+    for name in ["A", "B"]:
+        character = c.post(
+            "/api/player-characters",
+            json={"worldpack_id": "demo-world", "name": name, "description": name, "profile": {"name": name}},
+        ).json()["player_character"]
+        party = c.post(
+            "/api/parties",
+            json={
+                "title": f"Party {name}",
+                "worldpack_id": "demo-world",
+                "player_character_id": character["id"],
+                "model_profile_id": model_id,
+            },
+        ).json()["party"]
+        parties.append(party["id"])
+
+    proposal = c.post(
+        f"/api/parties/{parties[0]}/world/instruct",
+        json={"instruction": "Remember: guard Varn now suspects the player."},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert proposal.status_code == 200
+    assert proposal.json()["applied"] is False
+
+    first_history = c.get(f"/api/parties/{parties[0]}/history").json()["state_versions"]
+    second_state = c.get(f"/api/parties/{parties[1]}/state").json()["state"]
+    assert first_history[-1]["version"] == 1
+    assert "varn" not in second_state["characters"]
 
 
 def test_invalid_json_intent_parser():
@@ -137,6 +247,18 @@ def test_successful_turn_updates_state_transactionally(tmp_path: Path):
     state = c.get("/api/state").json()["state"]
     assert state["meta"]["state_version"] == 2
     assert len(state["timeline"]) == 1
+
+
+def test_missing_provider_key_does_not_mutate_state(tmp_path: Path):
+    c = client(tmp_path, api_key="")
+    response = c.post(
+        "/v1/chat/completions",
+        json=chat_payload('/check persuasion target=advisor skill=3 difficulty=8 goal="gain a meeting"'),
+        headers={"Idempotency-Key": "missing-key"},
+    )
+    assert response.status_code == 401
+    state = c.get("/api/state").json()["state"]
+    assert state["meta"]["state_version"] == 1
 
 
 def test_hard_constraint_overrides_success(tmp_path: Path):

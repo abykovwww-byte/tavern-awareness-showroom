@@ -56,6 +56,16 @@ SillyTavern Quick Reply button
   -> SQLite state + state/current.json update transactionally
 ```
 
+Iteration 6 adds a LAN-only Light GUI:
+
+```text
+Browser in LAN
+  -> http://192.168.1.88:8010
+  -> rp-light-gui static client
+  -> /api proxy to rp-gateway
+  -> explicit Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
+```
+
 Persistent data on server:
 
 ```text
@@ -102,6 +112,8 @@ docker inspect --format='{{.State.Health.Status}}' rp-stack-sillytavern
 
 URL: `http://192.168.1.88:8000`
 
+Light GUI URL: `http://192.168.1.88:8010`
+
 Включены:
 
 - bind только на LAN IP сервера `192.168.1.88`;
@@ -127,6 +139,15 @@ Model: z-ai/glm-5.2
 ```
 
 API key вводится вручную в UI SillyTavern. Не сохраняй его в Git, compose-файлах или документации.
+
+For `rp-light-gui`, do not enter provider keys in the browser. Set the gateway
+key on the server through `/etc/ansible/local-overrides.yml`:
+
+```yaml
+rp_stack_nvidia_api_key: "..."
+```
+
+The committed default stays empty, so no secret is stored in Git.
 
 ## RP-профиль
 
@@ -221,6 +242,7 @@ Operational commands:
 ```bash
 cd /srv/apps/rp-stack
 docker compose build rp-gateway
+docker compose build rp-light-gui
 docker compose run --rm rp-gateway pytest
 docker compose up -d
 ```

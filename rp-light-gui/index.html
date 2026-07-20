@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RP Light GUI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="party-rail">
+        <div class="rail-head">
+          <div>
+            <div class="brand-mark">RP</div>
+            <h1>Light GUI</h1>
+          </div>
+          <button class="icon-button" id="refreshButton" title="Обновить">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M19 11a7 7 0 0 0-12-4l-3 3"/><path d="M5 13a7 7 0 0 0 12 4l3-3"/></svg>
+          </button>
+        </div>
+
+        <button class="primary-action" id="newPartyButton">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          Новая партия
+        </button>
+
+        <div class="section-label">Партии</div>
+        <div id="partyList" class="party-list"></div>
+      </aside>
+
+      <main class="chat-stage">
+        <header class="top-bar">
+          <div>
+            <div class="crumb" id="activeWorld">Мир не выбран</div>
+            <h2 id="activePartyTitle">Нет активной партии</h2>
+          </div>
+          <div class="status-strip">
+            <span class="status-dot" id="gatewayDot"></span>
+            <span id="gatewayStatus">gateway</span>
+          </div>
+        </header>
+
+        <section class="chat-log" id="chatLog"></section>
+
+        <form class="composer" id="messageForm">
+          <textarea id="messageInput" rows="2" placeholder="Действие персонажа или команда /check"></textarea>
+          <button class="send-button" type="submit" title="Отправить">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+            Отправить
+          </button>
+        </form>
+      </main>
+
+      <aside class="inspector">
+        <section class="summary-panel">
+          <div class="section-label">Связка</div>
+          <dl class="meta-grid" id="partyMeta"></dl>
+        </section>
+
+        <section class="summary-panel grow">
+          <div class="panel-head">
+            <div class="section-label">State</div>
+            <button class="text-button" id="stateRefreshButton">Обновить</button>
+          </div>
+          <div id="stateSummary" class="state-summary"></div>
+        </section>
+
+        <section class="summary-panel">
+          <div class="section-label">GM mode</div>
+          <textarea id="worldInstruction" rows="3" placeholder="Изменение мира"></textarea>
+          <div class="button-grid">
+            <button id="worldPreviewButton" class="tool-button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              Preview
+            </button>
+            <button id="worldApplyButton" class="tool-button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>
+              Apply
+            </button>
+            <button id="worldDiscardButton" class="tool-button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              Discard
+            </button>
+            <button id="rollbackButton" class="tool-button danger">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6l-3 2"/></svg>
+              Rollback
+            </button>
+          </div>
+          <div id="proposalList" class="proposal-list"></div>
+        </section>
+
+        <section class="summary-panel">
+          <div class="section-label">Проверка</div>
+          <form id="checkForm" class="check-form">
+            <select id="checkType">
+              <option value="persuasion">persuasion</option>
+              <option value="intimidation">intimidation</option>
+              <option value="deception">deception</option>
+              <option value="stealth">stealth</option>
+              <option value="information">information</option>
+              <option value="resource">resource</option>
+              <option value="feasibility">feasibility</option>
+            </select>
+            <input id="checkTarget" placeholder="target" />
+            <div class="split-row">
+              <input id="checkSkill" type="number" value="0" />
+              <input id="checkDifficulty" type="number" value="10" />
+            </div>
+            <input id="checkGoal" placeholder="goal" />
+            <button class="tool-button" type="submit">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
+              Run
+            </button>
+          </form>
+        </section>
+      </aside>
+    </div>
+
+    <dialog id="partyDialog" class="party-dialog">
+      <form id="partyForm" method="dialog">
+        <div class="dialog-head">
+          <div>
+            <div class="section-label">Новая партия</div>
+            <h3>Мир, персонаж, модель</h3>
+          </div>
+          <button class="icon-button" id="closePartyDialog" type="button" title="Закрыть">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="wizard-grid">
+          <label>
+            <span>Название</span>
+            <input id="partyTitleInput" required />
+          </label>
+          <label>
+            <span>Мир</span>
+            <select id="worldSelect" required></select>
+          </label>
+          <label>
+            <span>Персонаж</span>
+            <input id="characterNameInput" required />
+          </label>
+          <label>
+            <span>Модель</span>
+            <select id="modelSelect" required></select>
+          </label>
+          <label class="wide">
+            <span>Описание персонажа</span>
+            <textarea id="characterDescriptionInput" rows="4"></textarea>
+          </label>
+        </div>
+
+        <div id="worldPreview" class="world-preview"></div>
+        <div class="dialog-actions">
+          <button class="text-button" id="cancelPartyButton" type="button">Отмена</button>
+          <button class="primary-action" type="submit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+            Старт
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

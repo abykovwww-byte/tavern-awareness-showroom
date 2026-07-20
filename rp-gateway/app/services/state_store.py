@@ -190,6 +190,20 @@ class StateStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def turn_history(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, request_id, player_message, narrative_response, state_version, created_at
+                FROM turns
+                WHERE campaign_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (self.campaign_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
     def preview_patch(self, patch: StatePatch) -> dict[str, Any]:
         state = self.get_state()
         operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]

@@ -55,6 +55,9 @@ class Adjudicator:
             self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
             return response
 
+        if not authorization and not self.settings.nvidia_api_key:
+            raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+
         state = self.store.get_state()
         intent = self.intent_parser.parse(latest)
         outcome, patch = self.rule_engine.resolve(state, intent, request_id)

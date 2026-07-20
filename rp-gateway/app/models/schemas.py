@@ -112,6 +112,97 @@ class WorldApplyRequest(BaseModel):
     confirm: bool = False
 
 
+class WorldPackSummary(BaseModel):
+    id: str
+    title: str
+    slug: str
+    status: str
+    premise: str = ""
+    manifest_path: str
+    state_seed_path: str
+    lorebook_path: str | None = None
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlayerTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlayerCharacterDraftRequest(BaseModel):
+    worldpack_id: str
+    name: str = Field(default="Player Character", min_length=1, max_length=120)
+    concept: str = Field(default="", max_length=4000)
+
+
+class PlayerCharacterCreate(BaseModel):
+    worldpack_id: str
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=4000)
+    starting_state_patch_json: str | None = None
+    profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlayerCharacterSummary(BaseModel):
+    id: str
+    worldpack_id: str
+    name: str
+    description: str
+    status: str
+    profile: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class ModelProfileSummary(BaseModel):
+    id: str
+    title: str
+    provider: str
+    base_url: str
+    model: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    api_key_source: str
+
+
+class PartyCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    worldpack_id: str
+    player_character_id: str
+    model_profile_id: str
+
+
+class PartySummary(BaseModel):
+    id: str
+    title: str
+    worldpack_id: str
+    player_character_id: str
+    model_profile_id: str
+    state_campaign_id: str
+    status: str
+    created_at: str
+    updated_at: str
+    worldpack: WorldPackSummary | None = None
+    player_character: PlayerCharacterSummary | None = None
+    model_profile: ModelProfileSummary | None = None
+
+
+class PartyMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=12000)
+    idempotency_key: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
+class PartyCheckRequest(BaseModel):
+    check_type: CheckType = "feasibility"
+    target: str | None = Field(default=None, max_length=120)
+    skill: int = 0
+    difficulty: int = 10
+    goal: str = Field(default="", max_length=1000)
+
+
 class WorldInstructionDraft(BaseModel):
     proposal_id: str
     instruction: str
