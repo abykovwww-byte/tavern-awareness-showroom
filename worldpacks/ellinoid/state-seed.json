@@ -1,0 +1,1053 @@
+{
+  "meta": {
+    "campaign_id": "ellinoid",
+    "schema_version": "1.0.0",
+    "state_version": 1,
+    "turn": 0,
+    "last_updated": "2026-07-20T00:00:00Z"
+  },
+  "player": {
+    "location": "sokolovsky-apartment-liteiny",
+    "status": "active",
+    "reputation": {
+      "old-nobility": 2,
+      "family-creditors": -2,
+      "vyazemskaya-salon": 1,
+      "ministry-clerks": 0,
+      "merchant-houses": 0,
+      "romantic-rumors": 0
+    },
+    "resources": {
+      "pin_money_rubles": 12,
+      "calling_cards": 8,
+      "family_diamond_brooch": 1,
+      "anna_discreet_help": 1,
+      "sealed_note_from_dmitry": 1,
+      "carriage_access": 1
+    },
+    "known_abilities": [
+      "вести светскую беседу на русском и французском",
+      "читать подтекст визитов, танцев и писем",
+      "играть на фортепиано достаточно хорошо для салона",
+      "составлять учтивые письма с двойным смыслом",
+      "замечать перемены в настроении семьи и гостей",
+      "пользоваться правилами этикета как защитой или оружием"
+    ],
+    "constraints": [
+      "Героиня не имеет полной финансовой самостоятельности.",
+      "Самостоятельные поездки по вечернему Петербургу требуют легенды, сопровождения или риска для репутации.",
+      "Семья ожидает, что выгодный брак поможет закрыть долги и сохранить имя.",
+      "Тайная переписка и встречи могут стать слухом, если появятся свидетели или письма попадут не в те руки.",
+      "Романтическое согласие, чувства и выбор героини принадлежат только игроку."
+    ],
+    "known_world_facts": [
+      {
+        "id": "fact-start-year",
+        "text": "Действие начинается в Санкт-Петербурге в 1862 году, в начале зимнего светского сезона.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "campaign premise"
+      },
+      {
+        "id": "fact-family-poor",
+        "text": "Дом Соколовских сохраняет старое дворянское имя, но находится в тяжелом денежном положении.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "family situation"
+      },
+      {
+        "id": "fact-marriage-pressure",
+        "text": "Варвара Петровна ожидает, что героиня будет любезна с князем Ардатовым на собрании у княгини Вяземской.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "opening scene"
+      },
+      {
+        "id": "fact-dmitry-note",
+        "text": "Анна передала героине записку от Дмитрия Ланского с просьбой встретиться после собрания у Казанского собора.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "opening scene"
+      }
+    ]
+  },
+  "characters": {
+    "dmitry-lanskoy": {
+      "status": "alive",
+      "location": "kazan-cathedral",
+      "attitude_to_player": "искренне привязан, просит быть услышанным до семейного решения",
+      "trust": 4,
+      "fear": 3,
+      "loyalty": "personal-honor",
+      "current_goal": "добиться тайной встречи и объяснить, почему брачные переговоры могут ускориться",
+      "knowledge": [
+        {
+          "id": "fact-dmitry-knows-transfer-threat",
+          "text": "Дмитрий знает, что его могут перевести из Петербурга до конца недели.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-dmitry-heard-dowry-bargain",
+          "text": "Дмитрий слышал, что один из женихов обсуждал не чувства героини, а контроль над будущим приданым и долгами.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранять честь полка",
+        "не компрометировать героиню без ее выбора",
+        "подчиняться возможному переводу"
+      ],
+      "hard_constraints": [
+        "Не может оплатить долги Соколовских.",
+        "Не станет просить героиню бежать без честного разговора о последствиях."
+      ],
+      "last_confirmed_update": 0
+    },
+    "sergei-ardatov": {
+      "status": "alive",
+      "location": "vyazemskaya-salon",
+      "attitude_to_player": "сдержанно заинтересован, оценивает достоинство и послушание",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "ardatov-house",
+      "current_goal": "понять, может ли героиня стать женой, которая укрепит его дом без нового скандала",
+      "knowledge": [
+        {
+          "id": "fact-ardatov-knows-family-needs-money",
+          "text": "Ардатов знает, что Соколовским нужны деньги и защита имени.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "salon talk"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-ardatov-first-marriage",
+          "text": "Первый брак Ардатова был внешне безупречен, но дома оставил холод, взаимное молчание и страх повторения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранить достоинство княжеского дома",
+        "не вступать в публичное соперничество",
+        "искать союз, приемлемый для высшего общества"
+      ],
+      "hard_constraints": [
+        "Не будет добиваться брака через явную сцену ревности.",
+        "Отступит или станет холодно опасным при публичном унижении."
+      ],
+      "last_confirmed_update": 0
+    },
+    "nikolai-hvoshtov": {
+      "status": "alive",
+      "location": "vyazemskaya-salon",
+      "attitude_to_player": "учтиво наблюдает и ищет возможность стать необходимым",
+      "trust": 0,
+      "fear": 1,
+      "loyalty": "ministry-clerks",
+      "current_goal": "использовать знание бумаг Соколовских, чтобы получить доверие и шанс на брак",
+      "knowledge": [
+        {
+          "id": "fact-hvoshtov-knows-ragozin-note",
+          "text": "Хвостов видел упоминание расписки Павла Андреевича перед торговым домом Рагозиных.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "ministry papers"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-hvoshtov-career-bargain",
+          "text": "Хвостов рассчитывает, что брак со старым именем ускорит его служебное продвижение.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "не раскрывать служебные сведения открыто",
+        "сохранить репутацию аккуратного чиновника",
+        "поддерживать отношения с покровителем в министерстве"
+      ],
+      "hard_constraints": [
+        "Не рискнет карьерой без сильного чувства, выгоды или шантажа.",
+        "Не отдаст документы без подтвержденного рычага или доверия."
+      ],
+      "last_confirmed_update": 0
+    },
+    "pavel-ragozin": {
+      "status": "alive",
+      "location": "ragozin-house-galernaya",
+      "attitude_to_player": "восхищен и прям, но считает помощь естественным основанием для влияния",
+      "trust": -1,
+      "fear": 0,
+      "loyalty": "merchant-creditors",
+      "current_goal": "получить честный доступ к героине и доказать, что его деньги не хуже старого титула",
+      "knowledge": [
+        {
+          "id": "fact-ragozin-knows-family-debt",
+          "text": "Павел знает, что его отец держит долговую расписку Павла Андреевича Соколовского.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "family business"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-ragozin-wants-name-and-choice",
+          "text": "Павел хочет войти в дворянский круг, но его задевает мысль, что его примут только как кошелек.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "уважать волю отца в торговом доме",
+        "не разбрасываться крупными деньгами без условий",
+        "защитить честь семьи Рагозиных"
+      ],
+      "hard_constraints": [
+        "Не закрывает долги Соколовских бесплатно.",
+        "Открытое презрение старого салона делает его жестче и расчетливее."
+      ],
+      "last_confirmed_update": 0
+    },
+    "alexey-mertsalov": {
+      "status": "alive",
+      "location": "senate-embankment-office",
+      "attitude_to_player": "вежлив, терпелив и оценивает ее как редкую семейную возможность",
+      "trust": -1,
+      "fear": 0,
+      "loyalty": "senatorial-patronage",
+      "current_goal": "через посредников приблизить брак, пока героиня не успела выбрать другого",
+      "knowledge": [
+        {
+          "id": "fact-mertsalov-knows-lanskoy-rumor",
+          "text": "Мерцалов слышал, что имя Дмитрия Ланского уже связывают с тайной запиской.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "servants network"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-mertsalov-can-feed-rumor",
+          "text": "Мерцалов готов ускорить слух о компрометации, если это подтолкнет семью к безопасному для него браку.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранять видимость безупречной порядочности",
+        "служить интересам сенаторского покровителя",
+        "не оставлять письменных следов своих маневров"
+      ],
+      "hard_constraints": [
+        "Редко действует прямо; предпочитает посредников, слухи и юридические намеки.",
+        "Не признается в давлении без доказательств."
+      ],
+      "last_confirmed_update": 0
+    },
+    "varvara-sokolovskaya": {
+      "status": "alive",
+      "location": "sokolovsky-apartment-liteiny",
+      "attitude_to_player": "любит дочь, но давит семейным долгом и страхом бедности",
+      "trust": 2,
+      "fear": 5,
+      "loyalty": "sokolovsky-family",
+      "current_goal": "добиться выгодной партии до того, как долги станут публичным позором",
+      "knowledge": [
+        {
+          "id": "fact-varvara-knows-ardatov-interest",
+          "text": "Варвара Петровна знает, что князь Ардатов согласился присмотреться к героине у княгини Вяземской.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "family correspondence"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-varvara-sold-jewels",
+          "text": "Варвара Петровна уже продала часть фамильных украшений, чтобы оплатить проценты и сохранить видимость достатка.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранить имя Соколовских",
+        "защитить дочь от слухов",
+        "поддерживать союз с княгиней Вяземской"
+      ],
+      "hard_constraints": [
+        "Не примет бедного жениха без убедительного плана будущей безопасности.",
+        "Не перестанет давить только от одного романтического признания."
+      ],
+      "last_confirmed_update": 0
+    },
+    "pavel-sokolovsky": {
+      "status": "alive",
+      "location": "sokolovsky-apartment-liteiny",
+      "attitude_to_player": "нежен и виноват, но уходит от вопросов о деньгах",
+      "trust": 1,
+      "fear": 6,
+      "loyalty": "sokolovsky-family",
+      "current_goal": "скрыть масштаб долгов и выиграть время до брачного решения",
+      "knowledge": [
+        {
+          "id": "fact-pavel-hides-ragozin-paper",
+          "text": "Павел Андреевич спрятал в кабинете расписку с печатью торгового дома Рагозиных.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-pavel-pledged-dowry",
+          "text": "Павел Андреевич подписал долговое обязательство, где будущая брачная сделка дочери фактически стала частью переговоров с кредиторами.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранить семью от банкротства",
+        "не унизить род перед старым обществом",
+        "не признаться дочери в полной мере своей ошибки"
+      ],
+      "hard_constraints": [
+        "Будет отрицать худшие долги без доказательства или сильной семейной сцены.",
+        "Не имеет скрытого состояния, которое внезапно решит проблему."
+      ],
+      "last_confirmed_update": 0
+    },
+    "zoya-vyazemskaya": {
+      "status": "alive",
+      "location": "vyazemskaya-salon",
+      "attitude_to_player": "покровительственно благосклонна, пока героиня не рушит ее устройство вечера",
+      "trust": 1,
+      "fear": 0,
+      "loyalty": "vyazemskaya-salon",
+      "current_goal": "устроить брачный расклад, который укрепит ее салон и влияние",
+      "knowledge": [
+        {
+          "id": "fact-zoya-invited-suitors",
+          "text": "Княгиня Вяземская пригласила Ардатова, Хвостова и Мерцалова так, чтобы они увидели героиню в один вечер.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "salon plan"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-zoya-promised-introduction",
+          "text": "Княгиня Вяземская уже дала Ардатову понять, что семья Соколовских готова к серьезному разговору.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "поддерживать репутацию собственного салона",
+        "помочь родне без прямой потери лица",
+        "не позволить купеческим деньгам выглядеть сильнее ее связей"
+      ],
+      "hard_constraints": [
+        "Не потерпит скандала в своей гостиной без ответного социального наказания.",
+        "Не станет бесплатной союзницей против собственных брачных планов."
+      ],
+      "last_confirmed_update": 0
+    },
+    "anna-ustinova": {
+      "status": "alive",
+      "location": "sokolovsky-apartment-liteiny",
+      "attitude_to_player": "верна и тревожится, но думает о практических последствиях",
+      "trust": 5,
+      "fear": 4,
+      "loyalty": "player",
+      "current_goal": "помочь героине с письмами, не потеряв место и не вызвав подозрения",
+      "knowledge": [
+        {
+          "id": "fact-anna-delivered-note",
+          "text": "Анна передала героине записку Дмитрия, спрятав ее в перчатке.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-anna-knows-footman-route",
+          "text": "Анна знает, через какого лакея княгини Вяземской проходят некоторые частные записки после собраний.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "сохранить место",
+        "не попасть под обвинение в сводничестве или краже писем",
+        "защитить героиню от неосторожности"
+      ],
+      "hard_constraints": [
+        "Не пойдет на риск увольнения без просьбы, доверия или понятной выгоды.",
+        "Не сможет остановить светский слух, если он уже пошел через гостей."
+      ],
+      "last_confirmed_update": 0
+    },
+    "maria-ladomirskaya": {
+      "status": "alive",
+      "location": "vyazemskaya-salon",
+      "attitude_to_player": "дружески любопытна, готова помогать, но любит опасную игру",
+      "trust": 2,
+      "fear": 1,
+      "loyalty": "reputation-network",
+      "current_goal": "понять, кто из женихов действительно опасен, и развлечься светской интригой",
+      "knowledge": [
+        {
+          "id": "fact-maria-heard-mertsalov",
+          "text": "Мария слышала, что Мерцалов расспрашивал о Дмитрии Ланском слишком спокойно для простого любопытства.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "salon rumor"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-maria-can-leak",
+          "text": "Мария умеет хранить тайну подруги, но под давлением матери или светского азарта может сказать лишнее.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "слушаться матери на людях",
+        "не оказаться главной виновницей чужого скандала",
+        "сохранить собственные шансы на хорошую партию"
+      ],
+      "hard_constraints": [
+        "Не является безошибочной союзницей.",
+        "Может помочь легендой, но не может отменить последствия явных свидетелей."
+      ],
+      "last_confirmed_update": 0
+    }
+  },
+  "factions": {
+    "sokolovsky-family": {
+      "leader": "pavel-sokolovsky",
+      "goals": [
+        "сохранить имя рода",
+        "закрыть или отсрочить долги",
+        "выдать героиню замуж без публичного скандала"
+      ],
+      "resources": {
+        "old_name": "high",
+        "ready_money": "low",
+        "estate_income": "declining",
+        "family_jewels": "limited"
+      },
+      "allies": ["vyazemskaya-salon"],
+      "opponents": ["merchant-creditors"],
+      "attitude_to_player": "любит героиню, но считает ее брак семейным ресурсом",
+      "current_actions": [
+        "готовит героиню к собранию у княгини Вяземской",
+        "скрывает масштаб долгов от молодых гостей",
+        "обсуждает Ардатова как предпочтительную партию"
+      ],
+      "constraints": [
+        "не может жить прежним образом без новых денег или брачного союза",
+        "боится открытого разговора о банкротстве"
+      ]
+    },
+    "vyazemskaya-salon": {
+      "leader": "zoya-vyazemskaya",
+      "goals": [
+        "управлять брачными переговорами через приглашения и слухи",
+        "поддерживать видимость добродетельной светскости",
+        "укреплять собственное влияние среди старых домов"
+      ],
+      "resources": {
+        "invitations": "high",
+        "gossip": "high",
+        "formal_patronage": "moderate"
+      },
+      "allies": ["sokolovsky-family", "old-nobility-circle"],
+      "opponents": ["merchant-creditors"],
+      "attitude_to_player": "видит в героине родню и фигуру в брачном раскладе",
+      "current_actions": [
+        "собирает женихов на одном вечере",
+        "проверяет, кто первым проявит серьезность",
+        "следит за поведением героини"
+      ],
+      "constraints": [
+        "не может открыто торговать браком, не теряя благородного фасада"
+      ]
+    },
+    "old-nobility-circle": {
+      "leader": "sergei-ardatov",
+      "goals": [
+        "сохранить превосходство старого имени над купеческими деньгами",
+        "заключать браки без видимого расчета",
+        "не допускать громких компрометаций"
+      ],
+      "resources": {
+        "titles": "high",
+        "estate_network": "moderate",
+        "social_access": "high"
+      },
+      "allies": ["vyazemskaya-salon"],
+      "opponents": ["merchant-creditors"],
+      "attitude_to_player": "принимает героиню как равную по крови, но оценивает бедность как слабость",
+      "current_actions": [
+        "наблюдает за героиней на вечерах",
+        "обсуждает, насколько долги Соколовских опасны",
+        "отделяет допустимые браки от мезальянса"
+      ],
+      "constraints": [
+        "не признает открытую зависимость от купеческого капитала"
+      ]
+    },
+    "ministry-clerks": {
+      "leader": "nikolai-hvoshtov",
+      "goals": [
+        "получать карьерный рост через бумаги, услуги и брачные связи",
+        "не светить служебные сведения",
+        "оставаться полезными всем сторонам"
+      ],
+      "resources": {
+        "paper_access": "moderate",
+        "career_leverage": "moderate",
+        "money": "low"
+      },
+      "allies": ["senatorial-patronage"],
+      "opponents": [],
+      "attitude_to_player": "видит шанс соединить старое имя и новую служебную силу",
+      "current_actions": [
+        "собирает сведения о долгах",
+        "ищет способ предложить помощь без прямого шантажа"
+      ],
+      "constraints": [
+        "служебный риск ограничивает прямые действия"
+      ]
+    },
+    "merchant-creditors": {
+      "leader": "pavel-ragozin",
+      "goals": [
+        "вернуть деньги по распискам",
+        "превратить долг в выгодный союз",
+        "получить признание старого общества"
+      ],
+      "resources": {
+        "ready_money": "high",
+        "debt_notes": "high",
+        "trade_network": "high"
+      },
+      "allies": [],
+      "opponents": ["old-nobility-circle", "sokolovsky-family"],
+      "attitude_to_player": "разделяет личный интерес к героине и расчет торгового дома",
+      "current_actions": [
+        "держит расписку Павла Андреевича",
+        "оценивает, станет ли брак лучшим способом урегулировать долг"
+      ],
+      "constraints": [
+        "не получит полного принятия старого дворянства одним браком"
+      ]
+    },
+    "reputation-network": {
+      "leader": "zoya-vyazemskaya",
+      "goals": [
+        "первыми узнать о тайных письмах, визитах и неловких сценах",
+        "защищать или разрушать репутации через намеки",
+        "подталкивать брачные решения без официальных слов"
+      ],
+      "resources": {
+        "servants": "high",
+        "chaperones": "moderate",
+        "salon_whispers": "high"
+      },
+      "allies": ["vyazemskaya-salon"],
+      "opponents": [],
+      "attitude_to_player": "может защищать героиню или превратить ее тайну в общественный факт",
+      "current_actions": [
+        "следит, кто танцует с героиней",
+        "замечает записки и задержки после вечеров"
+      ],
+      "constraints": [
+        "слух требует хотя бы повода, свидетеля, письма или публичной странности"
+      ]
+    }
+  },
+  "locations": {
+    "sokolovsky-apartment-liteiny": {
+      "description": "Скромная квартира Соколовских в Литейной части: старые портреты, потертая мебель, холодная парадная лестница и кабинет отца с закрытым бюваром.",
+      "known_facts": [
+        {
+          "id": "fact-apartment-hidden-note",
+          "text": "В квартире героиня получила записку Дмитрия, спрятанную в перчатке.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Слуги, мать и отец могут заметить необычные письма, плащ, задержку или поиск в кабинете."
+      ]
+    },
+    "vyazemskaya-salon": {
+      "description": "Гостиная княгини Вяземской на Адмиралтейской стороне: музыка, карты, благотворительные сборы, чай, французская речь и брачные разговоры без прямых слов.",
+      "known_facts": [
+        {
+          "id": "fact-salon-suitors-gather",
+          "text": "На собрании ожидаются князь Ардатов, Хвостов, Мерцалов и Мария Ладомирская.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "invitation"
+        }
+      ],
+      "constraints": [
+        "Почти любой резкий жест в салоне получает свидетеля и будущую версию в слухах."
+      ]
+    },
+    "kazan-cathedral": {
+      "description": "Площадь у Казанского собора после вечернего собрания: извозчики, мокрый снег, редкие прохожие, колоннада и удобные тени для короткого разговора.",
+      "known_facts": [
+        {
+          "id": "fact-cathedral-meeting-place",
+          "text": "Дмитрий просит героиню встретиться после собрания у Казанского собора.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "dmitry note"
+        }
+      ],
+      "constraints": [
+        "Тайная встреча вечером требует маршрута, времени, легенды и риска свидетелей."
+      ]
+    },
+    "nevsky-prospect": {
+      "description": "Невский проспект: витрины, экипажи, офицеры, дамы с компаньонками, лавки, книжные разговоры и постоянное ощущение чужого взгляда.",
+      "known_facts": [
+        {
+          "id": "fact-nevsky-visible-place",
+          "text": "На Невском легко встретить знакомых, но так же легко превратить случайность в удобную легенду.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "local knowledge"
+        }
+      ],
+      "constraints": [
+        "Прогулка без уместного сопровождения или объяснения может усилить слухи."
+      ]
+    },
+    "ragozin-house-galernaya": {
+      "description": "Торговый дом Рагозиных у Галерной: конторские книги, тяжелые двери, запах бумаги и чая, место, где деньги говорят менее стыдливо, чем в салоне.",
+      "known_facts": [
+        {
+          "id": "fact-ragozin-paper-source",
+          "text": "Расписка отца связана с торговым домом Рагозиных.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Визит дворянской девушки в купеческую контору без прикрытия станет заметным событием."
+      ]
+    },
+    "senate-embankment-office": {
+      "description": "Канцелярские комнаты у Сенатской площади: переписчики, печати, прошения, ожидание в коридорах и люди, которые знают цену бумаге.",
+      "known_facts": [
+        {
+          "id": "fact-office-papers-matter",
+          "text": "Чиновники могут знать больше о семейных долгах и имениях, чем признают на светском вечере.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "social knowledge"
+        }
+      ],
+      "constraints": [
+        "Служебные сведения нельзя получить без доверия, рычага, просьбы или нарушения с последствиями."
+      ]
+    },
+    "mikhailovsky-theatre": {
+      "description": "Михайловский театр: ложи, коридоры, антракты и разговоры, где случайная встреча может быть и романтической, и опасно публичной.",
+      "known_facts": [
+        {
+          "id": "fact-theatre-semi-private",
+          "text": "В театре можно обменяться несколькими словами почти на людях, сохранив видимость случайности.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "salon custom"
+        }
+      ],
+      "constraints": [
+        "Слишком долгий разговор в антракте быстро станет предметом обсуждения."
+      ]
+    }
+  },
+  "resources": {
+    "pin-money-rubles": {
+      "owner": "player",
+      "quantity": 12,
+      "state": "available",
+      "constraints": [
+        "Достаточно для мелких расходов, но не для закрытия долгов или покупки молчания влиятельного человека."
+      ]
+    },
+    "calling-cards": {
+      "owner": "player",
+      "quantity": 8,
+      "state": "available",
+      "constraints": [
+        "Визитная карточка открывает светский ход, но оставляет след."
+      ]
+    },
+    "family-diamond-brooch": {
+      "owner": "player",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Фамильная брошь ценна; продажа или залог помогут деньгами, но могут быть замечены матерью."
+      ]
+    },
+    "sealed-note-from-dmitry": {
+      "owner": "player",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Если записку найдут, она станет серьезным поводом для слуха."
+      ]
+    },
+    "anna-discreet-help": {
+      "owner": "anna-ustinova",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Анна поможет с одним рискованным бытовым ходом до того, как потребует объяснений или защиты."
+      ]
+    },
+    "carriage-access": {
+      "owner": "sokolovsky-family",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Карета подана для поездки к княгине Вяземской; отклонение маршрута заметит кучер или лакей."
+      ]
+    },
+    "family-debt-rubles": {
+      "owner": "sokolovsky-family",
+      "quantity": 4200,
+      "state": "owed",
+      "constraints": [
+        "Долг нельзя отменить без выплаты, отсрочки, брачной сделки или юридического риска."
+      ]
+    },
+    "vyazemskaya-invitation": {
+      "owner": "player",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Приглашение дает доступ в салон, но поведение там влияет на будущие приглашения."
+      ]
+    }
+  },
+  "relationships": {
+    "player-dmitry-lanskoy": {
+      "from": "player",
+      "to": "dmitry-lanskoy",
+      "trust": 4,
+      "suspicion": 1,
+      "notes": [
+        "Дмитрий уже решился на тайную записку; встреча может углубить роман или создать угрозу репутации."
+      ]
+    },
+    "player-sergei-ardatov": {
+      "from": "player",
+      "to": "sergei-ardatov",
+      "trust": 0,
+      "suspicion": 2,
+      "notes": [
+        "Ардатов считается лучшей партией для семьи, но его мотивы и ожидания пока не ясны."
+      ]
+    },
+    "player-nikolai-hvoshtov": {
+      "from": "player",
+      "to": "nikolai-hvoshtov",
+      "trust": 0,
+      "suspicion": 3,
+      "notes": [
+        "Хвостов может знать о долгах и использовать это знание как помощь или крючок."
+      ]
+    },
+    "player-pavel-ragozin": {
+      "from": "player",
+      "to": "pavel-ragozin",
+      "trust": -1,
+      "suspicion": 3,
+      "notes": [
+        "Рагозин связан с кредиторами семьи; его помощь может быть спасением и зависимостью одновременно."
+      ]
+    },
+    "player-alexey-mertsalov": {
+      "from": "player",
+      "to": "alexey-mertsalov",
+      "trust": -1,
+      "suspicion": 4,
+      "notes": [
+        "Мерцалов внешне безопасен, но предпочитает давить через посредников и слухи."
+      ]
+    },
+    "player-varvara-sokolovskaya": {
+      "from": "player",
+      "to": "varvara-sokolovskaya",
+      "trust": 2,
+      "suspicion": 2,
+      "notes": [
+        "Мать любит героиню, но видит в выгодном браке почти единственный выход."
+      ]
+    },
+    "player-pavel-sokolovsky": {
+      "from": "player",
+      "to": "pavel-sokolovsky",
+      "trust": 1,
+      "suspicion": 4,
+      "notes": [
+        "Отец нежен, но скрывает долговые бумаги и избегает прямого разговора."
+      ]
+    },
+    "player-zoya-vyazemskaya": {
+      "from": "player",
+      "to": "zoya-vyazemskaya",
+      "trust": 1,
+      "suspicion": 3,
+      "notes": [
+        "Княгиня полезна как покровительница, но уже ведет брачную игру."
+      ]
+    },
+    "player-anna-ustinova": {
+      "from": "player",
+      "to": "anna-ustinova",
+      "trust": 5,
+      "suspicion": 0,
+      "notes": [
+        "Анна - ближайшая практическая союзница для записок, легенд и тайных бытовых ходов."
+      ]
+    },
+    "player-maria-ladomirskaya": {
+      "from": "player",
+      "to": "maria-ladomirskaya",
+      "trust": 2,
+      "suspicion": 2,
+      "notes": [
+        "Мария может помочь светской легендой, но ее легкость повышает риск болтовни."
+      ]
+    }
+  },
+  "active_threads": [
+    {
+      "id": "marriage-deadline",
+      "description": "Семья Соколовских стремится определить выгодную брачную партию героини до того, как долги станут публичным позором.",
+      "state": "open",
+      "participants": ["player", "varvara-sokolovskaya", "pavel-sokolovsky", "zoya-vyazemskaya", "sergei-ardatov"],
+      "deadlines": [
+        "Первый серьезный разговор с Ардатовым ожидается после собрания у княгини Вяземской.",
+        "До конца недели кредиторы могут потребовать нового обеспечения."
+      ],
+      "success_conditions": [
+        "героиня получает время или право участвовать в выборе",
+        "семья узнает правду о долгах без немедленного скандала",
+        "один из вариантов брака становится честно обсуждаемым, а не навязанным"
+      ],
+      "failure_conditions": [
+        "семья дает брачное обещание без участия героини",
+        "кредиторы превращают долг в публичное унижение",
+        "отказ героини оборачивается потерей поддержки семьи"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "secret-romance",
+      "description": "Дмитрий Ланской просит тайной встречи у Казанского собора, чтобы предупредить героиню и, возможно, признаться.",
+      "state": "open",
+      "participants": ["player", "dmitry-lanskoy", "anna-ustinova", "reputation-network"],
+      "deadlines": [
+        "Встреча возможна только после текущего собрания, пока записка не раскрыта."
+      ],
+      "success_conditions": [
+        "героиня узнает, что Дмитрий знает о брачных переговорах",
+        "встреча проходит без свидетелей или с контролируемой легендой",
+        "отношения получают ясное обещание, границу или отсрочку"
+      ],
+      "failure_conditions": [
+        "записку находят мать, тетка или чужой слуга",
+        "тайная встреча получает свидетеля",
+        "Дмитрий уезжает, не успев объясниться"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "debt-paper",
+      "description": "Павел Андреевич скрывает расписку Рагозиных, связанную с будущим приданым и брачными переговорами.",
+      "state": "open",
+      "participants": ["player", "pavel-sokolovsky", "pavel-ragozin", "nikolai-hvoshtov"],
+      "deadlines": [
+        "Рагозины могут потребовать ответа до конца недели."
+      ],
+      "success_conditions": [
+        "героиня выясняет сумму и условия долга",
+        "получена отсрочка или безопасный способ переговоров",
+        "долг перестает быть тайным рычагом против героини"
+      ],
+      "failure_conditions": [
+        "Рагозины используют расписку для брачного давления",
+        "отец уничтожает или прячет бумаги глубже",
+        "слух о долге выходит в салон"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "suitors-game",
+      "description": "Ардатов, Хвостов, Рагозин, Мерцалов и Дмитрий становятся разными путями к любви, безопасности, власти или несвободе.",
+      "state": "open",
+      "participants": ["player", "sergei-ardatov", "nikolai-hvoshtov", "pavel-ragozin", "alexey-mertsalov", "dmitry-lanskoy"],
+      "deadlines": [
+        "Первые впечатления сегодняшнего вечера определят, кто получит право на следующий визит."
+      ],
+      "success_conditions": [
+        "героиня узнает настоящие мотивы хотя бы одного жениха",
+        "ни один жених не получает необратимое обещание без выбора игрока",
+        "появляется союзник среди женихов или их окружения"
+      ],
+      "failure_conditions": [
+        "один жених получает преимущество через слух или семейное давление",
+        "два претендента начинают публичное соперничество",
+        "героиню считают легкомысленной или неблагодарной"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "reputation-risk",
+      "description": "Светская сеть следит за записками, танцами, задержками и взглядами героини.",
+      "state": "open",
+      "participants": ["player", "zoya-vyazemskaya", "maria-ladomirskaya", "anna-ustinova", "alexey-mertsalov"],
+      "deadlines": [
+        "Любая странность на собрании может стать первым слухом уже на следующий день."
+      ],
+      "success_conditions": [
+        "героиня создает убедительную светскую легенду",
+        "подруга или горничная помогает скрыть риск",
+        "опасный слух переводится в безобидное объяснение"
+      ],
+      "failure_conditions": [
+        "письмо или тайная встреча получают свидетеля",
+        "княгиня Вяземская теряет терпение",
+        "Мерцалов или другой соперник использует намек против героини"
+      ],
+      "confirmed_consequences": []
+    }
+  ],
+  "completed_threads": [],
+  "world_constraints": [
+    {
+      "id": "historical-realism",
+      "text": "Мир остается реалистичным Петербургом 1862 года: без магии, фантастики, современных технологий и намеренных анахронизмов.",
+      "scope": "setting",
+      "turn": 0
+    },
+    {
+      "id": "adult-romance-only",
+      "text": "Все романтические, брачные и чувственные взаимодействия возможны только между персонажами 18+.",
+      "scope": "safety",
+      "turn": 0
+    },
+    {
+      "id": "player-agency",
+      "text": "Нарратор не решает за героиню ее чувства, согласие, обещания, выбор жениха или действия.",
+      "scope": "player agency",
+      "turn": 0
+    },
+    {
+      "id": "marriage-needs-state",
+      "text": "Помолвка, брак, разрыв, компрометация, крупная выплата или публичный скандал требуют подтвержденного state update.",
+      "scope": "gateway",
+      "turn": 0
+    },
+    {
+      "id": "social-consequences",
+      "text": "Письма, тайные встречи, долги, визиты и танцы имеют социальные последствия, если есть свидетели, бумаги, слухи или признания.",
+      "scope": "society",
+      "turn": 0
+    },
+    {
+      "id": "npc-autonomy",
+      "text": "NPC сохраняют собственные мотивы, ограничения и достоинство; романтический интерес не отменяет их целей и границ.",
+      "scope": "characters",
+      "turn": 0
+    }
+  ],
+  "timeline": [
+    {
+      "turn": 0,
+      "event": "Семья Соколовских готовится к благотворительному музыкальному собранию у княгини Вяземской.",
+      "confirmed": true,
+      "participants": ["player", "varvara-sokolovskaya", "pavel-sokolovsky"]
+    },
+    {
+      "turn": 0,
+      "event": "Варвара Петровна просит героиню быть особенно любезной с князем Ардатовым.",
+      "confirmed": true,
+      "participants": ["player", "varvara-sokolovskaya", "sergei-ardatov"]
+    },
+    {
+      "turn": 0,
+      "event": "Павел Андреевич прячет в кабинете расписку с печатью торгового дома Рагозиных.",
+      "confirmed": true,
+      "participants": ["player", "pavel-sokolovsky"]
+    },
+    {
+      "turn": 0,
+      "event": "Анна передает героине записку Дмитрия Ланского с просьбой о встрече у Казанского собора после собрания.",
+      "confirmed": true,
+      "participants": ["player", "anna-ustinova", "dmitry-lanskoy"]
+    }
+  ],
+  "last_turn": {
+    "turn": 0,
+    "player_message": "",
+    "narrator_response": "",
+    "state_patch_id": ""
+  },
+  "uncertain_facts": [
+    {
+      "id": "rumor-ardatov-ready-offer",
+      "text": "Говорят, князь Ардатов готов сделать предложение быстро, если вечер у Вяземской пройдет безупречно.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "salon rumor"
+    },
+    {
+      "id": "rumor-mertsalov-knows-secret-note",
+      "text": "Есть намек, что Мерцалов уже знает о тайной записке или по крайней мере ищет ее след.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "maria-ladomirskaya"
+    },
+    {
+      "id": "rumor-ragozin-personal-interest",
+      "text": "Неясно, интерес Павла Рагозина к героине личный, деловой или оба сразу.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "family creditors"
+    }
+  ]
+}

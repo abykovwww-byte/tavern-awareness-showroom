@@ -1,0 +1,31 @@
+{
+  "id": "ellinoid",
+  "title": "Эллиноид",
+  "language": "ru",
+  "mode": "historical original campaign",
+  "tone": ["реализм", "тайный роман", "светская интрига", "семейная драма", "Петербург 1862 года"],
+  "status": "playable",
+  "premise": "Санкт-Петербург, 1862 год. Игрок начинает 18-летней дворянкой из знатного, но обедневшего рода: семья требует выгодного брака, сердце тянется к тайной любви, а каждое письмо, визит и танец могут изменить репутацию.",
+  "player_role": "18-летняя незамужняя дворянка из знатного, но обнищавшего петербургского рода. Ее имя выбирает игрок. Семья ожидает, что она спасет дом выгодным браком; сама героиня ищет любовь, свободу и способ не предать близких.",
+  "created_for": "sillytavern-rp-gateway",
+  "assumptions": [
+    "Период выбран как 1862 год, ранняя эпоха реформ Александра II: старые дворянские доходы шатки, служба, приданое и купеческие капиталы становятся сильными рычагами.",
+    "Сеттинг реалистичный: без магии, фантастики и намеренных анахронизмов.",
+    "Все романтические NPC и возможные женихи старше 18 лет.",
+    "Имя, внешность и темперамент героини игрок может задать при создании персонажа; world pack задает стартовое положение и социальные связи."
+  ],
+  "files": {
+    "campaign_bible": "campaign-bible.md",
+    "state_seed": "state-seed.json",
+    "gm_system": "prompts/gm-system.md",
+    "authors_note": "prompts/authors-note.md",
+    "opening_scene": "prompts/opening-scene.md",
+    "world_info": "world-info/index.md",
+    "sillytavern_lorebook": "sillytavern/ellinoid.json",
+    "characters": "characters/index.md",
+    "checks": "rules/checks.md",
+    "quick_replies": "quick-replies/notes.md",
+    "server_installer": "../../scripts/install-worldpack.py",
+    "setup_flow": "setup-flow.md"
+  }
+}
