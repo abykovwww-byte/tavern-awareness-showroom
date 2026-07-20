@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 import time
 import uuid
+from calendar import timegm
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -20,7 +22,13 @@ from app.models.schemas import (
     PlayerCharacterCreate,
     PlayerCharacterSummary,
     PlayerTemplate,
+    WorldPromptCreate,
     WorldPackSummary,
+)
+from app.services.nvidia_catalog import (
+    fetch_build_nvidia_profiles,
+    fetch_integrate_api_profiles,
+    static_model_profiles,
 )
 from app.services.state_store import StateStore
 
@@ -106,32 +114,110 @@ class PartyStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS app_cache (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
     def seed_model_profiles(self) -> None:
+        for profile in static_model_profiles(self.settings):
+            self.upsert_model_profile(profile)
+        self.refresh_live_model_profiles_if_due()
+
+    def upsert_model_profile(self, profile: dict[str, Any]) -> None:
         timestamp = now_iso()
-        profile_id = slug(self.settings.narrative_model.replace("/", "-"))
+        params = dict(profile.get("params") or {})
         with self.connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO model_profiles(
+                INSERT INTO model_profiles(
                     id, title, provider, base_url, model, params_json,
                     api_key_source, created_at, updated_at
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    provider = excluded.provider,
+                    base_url = excluded.base_url,
+                    model = excluded.model,
+                    params_json = excluded.params_json,
+                    api_key_source = excluded.api_key_source,
+                    updated_at = excluded.updated_at
                 """,
                 (
-                    profile_id,
-                    f"{self.settings.narrative_model} (NVIDIA)",
-                    "nvidia-openai-compatible",
-                    self.settings.nvidia_api_base,
-                    self.settings.narrative_model,
-                    json.dumps({"temperature": 0.8, "max_tokens": 1200}, ensure_ascii=False),
-                    "server_env_or_authorization_header",
+                    profile["id"],
+                    profile["title"],
+                    profile["provider"],
+                    profile["base_url"],
+                    profile["model"],
+                    json.dumps(params, ensure_ascii=False),
+                    profile["api_key_source"],
                     timestamp,
                     timestamp,
                 ),
+            )
+
+    def refresh_live_model_profiles_if_due(self) -> None:
+        if not self.settings.nvidia_model_catalog_live:
+            return
+        if self.settings.app_env == "test" or self.settings.nvidia_api_base.startswith("mock://"):
+            return
+        if not self.cache_due("nvidia_model_catalog_refresh", self.settings.nvidia_model_catalog_ttl_seconds):
+            return
+        profiles: list[dict[str, Any]] = []
+        errors: list[str] = []
+        try:
+            profiles.extend(fetch_build_nvidia_profiles(self.settings))
+        except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
+            errors.append(f"build:{type(exc).__name__}")
+        if self.settings.nvidia_api_key:
+            try:
+                profiles.extend(fetch_integrate_api_profiles(self.settings))
+            except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
+                errors.append(f"api:{type(exc).__name__}")
+
+        seen: set[str] = set()
+        for profile in profiles:
+            if profile["id"] in seen:
+                continue
+            seen.add(profile["id"])
+            self.upsert_model_profile(profile)
+        status = {
+            "source": "live" if seen else "static_fallback",
+            "error": ";".join(errors),
+            "profiles": len(seen),
+        }
+        self.cache_set("nvidia_model_catalog_refresh", status)
+
+    def cache_due(self, key: str, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            return True
+        with self.connect() as connection:
+            row = connection.execute("SELECT updated_at FROM app_cache WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return True
+        try:
+            updated = time.strptime(row["updated_at"], "%Y-%m-%dT%H:%M:%SZ")
+            updated_ts = timegm(updated)
+        except (TypeError, ValueError):
+            return True
+        return time.time() - updated_ts >= ttl_seconds
+
+    def cache_set(self, key: str, value: dict[str, Any]) -> None:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO app_cache(key, value_json, updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(value, ensure_ascii=False), timestamp),
             )
 
     def scan_worldpacks(self) -> list[WorldPackSummary]:
@@ -203,6 +289,101 @@ class PartyStore:
                     timestamp,
                 ),
             )
+
+    def create_prompt_worldpack(self, request: WorldPromptCreate) -> WorldPackSummary:
+        title = " ".join(request.title.split())[:160] or "Свой мир"
+        prompt = " ".join(request.prompt.split())[:6000]
+        pack_id = f"prompt-{slug(title)[:42]}-{uuid.uuid4().hex[:8]}"
+        generated_root = Path(self.settings.party_state_root) / "_generated_worldpacks" / pack_id
+        generated_root.mkdir(parents=True, exist_ok=True)
+        state = self.prompt_world_state(pack_id, title, prompt)
+        manifest = {
+            "id": pack_id,
+            "title": title,
+            "language": "ru",
+            "mode": "prompt world",
+            "status": "playable",
+            "premise": prompt[:600],
+            "player_role": "Персонаж, заданный игроком для этой партии.",
+            "generated_by": "rp-light-gui",
+            "prompt": prompt,
+            "files": {"state_seed": "state-seed.json"},
+        }
+        manifest_path = generated_root / "manifest.json"
+        state_seed_path = generated_root / "state-seed.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        state_seed_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        summary = WorldPackSummary(
+            id=pack_id,
+            title=title,
+            slug=pack_id,
+            status="playable",
+            premise=prompt[:600],
+            manifest_path=str(manifest_path.resolve()),
+            state_seed_path=str(state_seed_path.resolve()),
+            lorebook_path=None,
+            manifest=manifest,
+        )
+        self.upsert_worldpack(summary)
+        return summary
+
+    def prompt_world_state(self, pack_id: str, title: str, prompt: str) -> dict[str, Any]:
+        return {
+            "meta": {
+                "campaign_id": pack_id,
+                "schema_version": "1.0.0",
+                "state_version": 1,
+                "turn": 0,
+                "last_updated": "1970-01-01T00:00:00Z",
+            },
+            "player": {
+                "location": "начальная сцена",
+                "status": "active",
+                "reputation": {},
+                "resources": {},
+                "known_abilities": [],
+                "constraints": [],
+                "known_world_facts": [{"id": "world_prompt", "text": prompt, "source": "world_prompt", "turn": 0}],
+            },
+            "characters": {},
+            "factions": {},
+            "locations": {
+                "initial_scene": {
+                    "name": "Начальная сцена",
+                    "description": prompt[:500],
+                    "status": "available",
+                    "hard_constraints": [],
+                }
+            },
+            "resources": {},
+            "relationships": {},
+            "active_threads": [
+                {
+                    "id": "main_prompt_thread",
+                    "description": f"{title}: развивать мир по prompt игрока, не переписывая подтвержденный state.",
+                    "status": "active",
+                    "turn": 0,
+                }
+            ],
+            "completed_threads": [],
+            "world_constraints": [
+                {
+                    "id": "attempts_not_facts",
+                    "text": "Player declarations of outcome are attempts until confirmed in state.",
+                    "scope": "global",
+                    "turn": 0,
+                },
+                {
+                    "id": "world_prompt",
+                    "text": prompt,
+                    "scope": "global",
+                    "turn": 0,
+                },
+            ],
+            "timeline": [{"turn": 0, "event": f"Мир создан из prompt: {title}", "confirmed": True, "participants": ["player"]}],
+            "last_turn": {"turn": 0, "player_message": "", "narrator_response": "", "state_patch_id": ""},
+            "uncertain_facts": [],
+        }
 
     def extract_premise(self, manifest: dict[str, Any]) -> str:
         for key in ("premise", "summary", "description", "player_role"):
@@ -309,6 +490,7 @@ class PartyStore:
             name=row["name"],
             description=row["description"],
             status=row["status"],
+            starting_state_patch_json=row["starting_state_patch_json"],
             profile=json.loads(row["profile_json"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -318,7 +500,8 @@ class PartyStore:
         self.seed_model_profiles()
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM model_profiles ORDER BY title").fetchall()
-        return [self.model_profile_from_row(row) for row in rows]
+        profiles = [self.model_profile_from_row(row) for row in rows]
+        return sorted(profiles, key=lambda profile: (int(profile.params.get("rank", 9999)), profile.title))
 
     def get_model_profile(self, model_profile_id: str) -> ModelProfileSummary:
         with self.connect() as connection:
@@ -328,14 +511,21 @@ class PartyStore:
         return self.model_profile_from_row(row)
 
     def model_profile_from_row(self, row: sqlite3.Row) -> ModelProfileSummary:
+        params = json.loads(row["params_json"])
         return ModelProfileSummary(
             id=row["id"],
             title=row["title"],
             provider=row["provider"],
             base_url=row["base_url"],
             model=row["model"],
-            params=json.loads(row["params_json"]),
+            params=params,
             api_key_source=row["api_key_source"],
+            description=str(params.get("description") or ""),
+            rp_fit=str(params.get("rp_fit") or ""),
+            context_window=str(params.get("context_window") or ""),
+            tags=[str(tag) for tag in params.get("tags", [])],
+            source=str(params.get("source") or "static"),
+            availability=str(params.get("availability") or ""),
         )
 
     def list_parties(self) -> list[PartySummary]:
@@ -353,7 +543,7 @@ class PartyStore:
 
         party_id = f"party_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
-        self.initialize_party_state(party_id, pack, request.player_character_id)
+        self.initialize_party_state(party_id, pack, character)
         with self.connect() as connection:
             connection.execute(
                 """
@@ -395,6 +585,23 @@ class PartyStore:
             raise ValueError(f"party not found: {party_id}")
         return self.get_party(party_id)
 
+    def delete_party(self, party_id: str) -> None:
+        party = self.get_party(party_id)
+        with self.connect() as connection:
+            connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
+            for table in ("turns", "checks", "state_patches", "state_versions", "audit_events"):
+                connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (party.state_campaign_id,))
+            connection.execute("DELETE FROM campaigns WHERE id = ?", (party.state_campaign_id,))
+        self.delete_party_state_dir(party.state_campaign_id)
+
+    def delete_party_state_dir(self, state_campaign_id: str) -> None:
+        root = Path(self.settings.party_state_root).resolve()
+        target = (root / state_campaign_id).resolve()
+        if target == root or root not in target.parents:
+            raise ValueError("party state path is outside party state root")
+        if target.exists():
+            shutil.rmtree(target)
+
     def party_from_row(self, row: sqlite3.Row, include_related: bool = False) -> PartySummary:
         party = PartySummary(
             id=row["id"],
@@ -419,7 +626,7 @@ class PartyStore:
     def state_path_for(self, state_campaign_id: str) -> Path:
         return Path(self.settings.party_state_root) / state_campaign_id / "current.json"
 
-    def initialize_party_state(self, party_id: str, pack: WorldPackSummary, player_character_id: str) -> None:
+    def initialize_party_state(self, party_id: str, pack: WorldPackSummary, character: PlayerCharacterSummary) -> None:
         state_path = self.state_path_for(party_id)
         if state_path.exists():
             return
@@ -460,7 +667,15 @@ class PartyStore:
         state["meta"]["campaign_id"] = party_id
         state["meta"]["state_version"] = 1
         state.setdefault("player", {})
-        state["player"]["character_id"] = player_character_id
+        state["player"]["character_id"] = character.id
+        state["player"]["name"] = character.name
+        state["player"]["description"] = character.description
+        state["player"].setdefault("known_world_facts", [])
+        if character.description:
+            state["player"]["known_world_facts"].append(
+                {"id": "player_character_prompt", "text": character.description, "source": "player_character", "turn": 0}
+            )
+        state = self.apply_starting_patch(state, character.starting_state_patch_json)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

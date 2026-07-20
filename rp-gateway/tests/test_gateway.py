@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 from app.services.intent_parser import IntentParser
+from app.services.nvidia_catalog import parse_build_catalog
 
 
 def base_state() -> dict[str, object]:
@@ -191,6 +192,70 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
     assert "gain a meeting" in history[0]["player_message"]
+
+
+def test_model_profiles_include_rp_descriptions(tmp_path: Path):
+    c = client(tmp_path)
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+    assert len(models) >= 8
+    assert models[0]["model"] == "z-ai/glm-5.2"
+    assert models[0]["rp_fit"]
+    assert models[0]["context_window"]
+    assert "reasoning" in models[0]["tags"]
+
+
+def test_build_catalog_parser_discards_non_rp_models():
+    html = """
+    <a href="/meta/llama-3_3-70b-instruct">Llama</a>
+    <a href="/nvidia/llama-3_1-nemoguard-8b-content-safety">Guard</a>
+    <a href="/qwen/qwen3.5-122b-a10b">Qwen</a>
+    """
+    assert parse_build_catalog(html) == ["meta/llama-3.3-70b-instruct", "qwen/qwen3.5-122b-a10b"]
+
+
+def test_prompt_world_party_and_delete(tmp_path: Path):
+    c = client(tmp_path)
+    world = c.post(
+        "/api/worldpacks/prompt",
+        json={
+            "title": "Город под стеклянным дождем",
+            "prompt": "Неонуарный город, где дождь хранит воспоминания. Игрок расследует пропажу архивариуса.",
+        },
+    )
+    assert world.status_code == 200
+    pack = world.json()["worldpack"]
+    assert pack["id"].startswith("prompt-")
+    assert pack["status"] == "playable"
+
+    model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    character = c.post(
+        "/api/player-characters",
+        json={
+            "worldpack_id": pack["id"],
+            "name": "Ника",
+            "description": "Бывшая городская медиаторка, умеет читать следы памяти в стеклянном дожде.",
+            "profile": {"source": "prompt"},
+        },
+    ).json()["player_character"]
+    party = c.post(
+        "/api/parties",
+        json={
+            "title": "Стеклянный дождь",
+            "worldpack_id": pack["id"],
+            "player_character_id": character["id"],
+            "model_profile_id": model_id,
+        },
+    ).json()["party"]
+    state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    assert any(item["id"] == "world_prompt" for item in state["world_constraints"])
+    assert state["player"]["name"] == "Ника"
+    assert "стеклянном дожде" in state["player"]["description"]
+
+    deleted = c.delete(f"/api/parties/{party['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert c.get(f"/api/parties/{party['id']}").status_code == 404
+    assert not (tmp_path / "state" / "parties" / party["id"]).exists()
 
 
 def test_party_world_proposals_are_isolated(tmp_path: Path):

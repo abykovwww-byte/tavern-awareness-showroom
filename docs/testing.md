@@ -121,3 +121,23 @@ Covered cases:
 - party-scoped GM preview is not visible in another party;
 - Light GUI is reachable from LAN at `http://192.168.1.88:8010`;
 - gateway legacy `/v1/chat/completions` remains available for SillyTavern.
+
+## Iteration 7 Checks
+
+```bash
+cd /srv/apps/rp-stack
+docker compose build rp-gateway rp-light-gui
+docker compose run --rm rp-gateway pytest
+docker compose ps
+```
+
+Covered cases:
+
+- model profiles include RP descriptions and metadata for the GUI dropdown;
+- live build.nvidia.com parser keeps chat/RP candidates and skips safety/guard
+  endpoints;
+- prompt-created worlds become playable generated worldpacks;
+- prompt-created character descriptions are written into party state;
+- `DELETE /api/parties/{party_id}` removes the party, its turn history and its
+  isolated state directory;
+- right inspector and check controls are Russian-labeled with inline hints.

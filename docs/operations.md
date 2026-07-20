@@ -138,6 +138,20 @@ The `rp-light-gui` service serves the static client and proxies `/api` to
 `rp-gateway`. The browser keeps only the active `party_id` preference; gateway
 owns the world, player character, model profile, state and turn history binding.
 
+Model selection:
+
+- `/api/model-profiles` returns the gateway model registry.
+- The registry is seeded with a static NVIDIA NIM fallback catalog with
+  RP-focused descriptions.
+- If `NVIDIA_MODEL_CATALOG_LIVE=true`, gateway tries to refresh from
+  `https://build.nvidia.com/models?q=llm`.
+- If `NVIDIA_API_KEY` is configured, gateway also tries
+  `NVIDIA_API_BASE/v1/models`.
+
+Party creation can use either an installed `worldpacks/*/manifest.json` world or
+a prompt-generated world. Prompt worlds are saved under `/state/parties` as
+generated worldpacks and then behave like normal party world references.
+
 Useful checks:
 
 ```bash

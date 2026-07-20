@@ -35,11 +35,20 @@ body {
 button,
 input,
 select,
-textarea {
+textarea,
+label,
+fieldset {
   font: inherit;
 }
 
 button {
+  border: 0;
+}
+
+fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
   border: 0;
 }
 
@@ -160,6 +169,19 @@ h3 {
 
 .section-label {
   margin: 18px 0 9px;
+}
+
+.panel-hint,
+.field-hint {
+  margin: -4px 0 10px;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.field-hint {
+  margin: 0;
+  font-weight: 560;
 }
 
 .primary-action,
@@ -456,6 +478,10 @@ select:focus {
   background: var(--panel-2);
 }
 
+.wide-button {
+  width: 100%;
+}
+
 .tool-button.danger:hover {
   border-color: rgba(211, 106, 98, 0.82);
   color: #f2a29b;
@@ -487,7 +513,7 @@ select:focus {
 }
 
 .party-dialog {
-  width: min(720px, calc(100vw - 30px));
+  width: min(820px, calc(100vw - 30px));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
@@ -521,6 +547,105 @@ select:focus {
 
 .wizard-grid .wide {
   grid-column: 1 / -1;
+}
+
+.choice-block {
+  display: grid;
+  gap: 9px;
+}
+
+.choice-block legend {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.segmented label {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #15191b;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.segmented input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+}
+
+.prompt-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#modelPreview {
+  padding: 11px;
+  border: 1px solid rgba(119, 167, 200, 0.34);
+  border-radius: 7px;
+  background: rgba(17, 20, 23, 0.42);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+#modelPreview strong,
+.world-preview strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text);
+}
+
+#modelPreview p {
+  margin: 0 0 9px;
+}
+
+#modelPreview dl {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 5px 8px;
+  margin: 0;
+}
+
+#modelPreview dt {
+  color: var(--dim);
+}
+
+#modelPreview dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.tag-row span {
+  padding: 3px 7px;
+  border: 1px solid rgba(127, 182, 133, 0.28);
+  border-radius: 999px;
+  color: var(--green-strong);
+  font-size: 11px;
 }
 
 .world-preview {
@@ -612,7 +737,8 @@ select:focus {
   }
 
   .composer,
-  .wizard-grid {
+  .wizard-grid,
+  .segmented {
     grid-template-columns: 1fr;
   }
 

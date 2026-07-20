@@ -124,6 +124,11 @@ class WorldPackSummary(BaseModel):
     manifest: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorldPromptCreate(BaseModel):
+    title: str = Field(default="Свой мир", min_length=1, max_length=160)
+    prompt: str = Field(min_length=1, max_length=6000)
+
+
 class PlayerTemplate(BaseModel):
     id: str
     name: str
@@ -151,6 +156,7 @@ class PlayerCharacterSummary(BaseModel):
     name: str
     description: str
     status: str
+    starting_state_patch_json: str | None = None
     profile: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
@@ -164,6 +170,12 @@ class ModelProfileSummary(BaseModel):
     model: str
     params: dict[str, Any] = Field(default_factory=dict)
     api_key_source: str
+    description: str = ""
+    rp_fit: str = ""
+    context_window: str = ""
+    tags: list[str] = Field(default_factory=list)
+    source: str = "static"
+    availability: str = ""
 
 
 class PartyCreate(BaseModel):

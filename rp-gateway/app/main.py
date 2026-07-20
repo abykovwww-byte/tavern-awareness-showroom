@@ -22,6 +22,7 @@ from app.models.schemas import (
     PartyMessageRequest,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
+    WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
 )
@@ -63,6 +64,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/worldpacks")
     def list_worldpacks() -> dict[str, Any]:
         return {"worldpacks": [pack.model_dump(mode="json") for pack in party_store.list_worldpacks()]}
+
+    @app.post("/api/worldpacks/prompt")
+    def create_prompt_worldpack(request: WorldPromptCreate) -> dict[str, Any]:
+        try:
+            pack = party_store.create_prompt_worldpack(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"worldpack": pack.model_dump(mode="json")}
 
     @app.get("/api/worldpacks/{worldpack_id}")
     def get_worldpack(worldpack_id: str) -> dict[str, Any]:
@@ -146,6 +155,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
+
+    @app.delete("/api/parties/{party_id}")
+    def delete_party(party_id: str) -> dict[str, Any]:
+        try:
+            party_store.delete_party(party_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"deleted": True, "party_id": party_id}
 
     @app.get("/api/parties/{party_id}/state")
     def get_party_state(party_id: str) -> dict[str, Any]:

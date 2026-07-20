@@ -26,33 +26,71 @@ const els = {
   partyForm: document.querySelector("#partyForm"),
   partyTitleInput: document.querySelector("#partyTitleInput"),
   worldSelect: document.querySelector("#worldSelect"),
+  worldReadyFields: document.querySelector("#worldReadyFields"),
+  worldPromptFields: document.querySelector("#worldPromptFields"),
+  worldPromptTitleInput: document.querySelector("#worldPromptTitleInput"),
+  worldPromptInput: document.querySelector("#worldPromptInput"),
   characterNameInput: document.querySelector("#characterNameInput"),
   characterDescriptionInput: document.querySelector("#characterDescriptionInput"),
+  characterDescriptionLabel: document.querySelector("#characterDescriptionLabel"),
+  characterDescriptionHint: document.querySelector("#characterDescriptionHint"),
   modelSelect: document.querySelector("#modelSelect"),
+  modelPreview: document.querySelector("#modelPreview"),
   worldPreview: document.querySelector("#worldPreview"),
   worldInstruction: document.querySelector("#worldInstruction"),
   checkForm: document.querySelector("#checkForm"),
+  deletePartyButton: document.querySelector("#deletePartyButton"),
 };
 
-document.querySelector("#refreshButton").addEventListener("click", () => boot());
-document.querySelector("#stateRefreshButton").addEventListener("click", () => reloadActiveParty());
-document.querySelector("#newPartyButton").addEventListener("click", openPartyDialog);
-document.querySelector("#closePartyDialog").addEventListener("click", closePartyDialog);
-document.querySelector("#cancelPartyButton").addEventListener("click", closePartyDialog);
-document.querySelector("#worldPreviewButton").addEventListener("click", previewWorldInstruction);
-document.querySelector("#worldApplyButton").addEventListener("click", applyWorldProposal);
-document.querySelector("#worldDiscardButton").addEventListener("click", discardWorldProposal);
-document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
-els.worldSelect.addEventListener("change", renderWorldPreview);
-els.messageForm.addEventListener("submit", sendMessage);
-els.partyForm.addEventListener("submit", createParty);
-els.checkForm.addEventListener("submit", runCheck);
+const checkLabels = {
+  persuasion: "Убеждение",
+  intimidation: "Запугивание",
+  deception: "Обман",
+  stealth: "Скрытность",
+  information: "Поиск сведений",
+  resource: "Ресурс",
+  feasibility: "Реалистичность",
+};
 
+const metaHints = {
+  "Мир": "Worldpack или prompt-мир, из которого взят стартовый state.",
+  "Персонаж": "Активный игроковый персонаж этой партии.",
+  "Модель": "NVIDIA model profile, выбранный для нарратива, проверок и world edits.",
+  "ID партии": "Стабильный party_id; он связывает историю, state и выбранные профили.",
+  "State": "campaign_id изолированного состояния партии.",
+};
+
+bindEvents();
 boot();
+
+function bindEvents() {
+  document.querySelector("#refreshButton").addEventListener("click", () => boot());
+  document.querySelector("#stateRefreshButton").addEventListener("click", () => reloadActiveParty());
+  document.querySelector("#newPartyButton").addEventListener("click", openPartyDialog);
+  document.querySelector("#closePartyDialog").addEventListener("click", closePartyDialog);
+  document.querySelector("#cancelPartyButton").addEventListener("click", closePartyDialog);
+  document.querySelector("#worldPreviewButton").addEventListener("click", previewWorldInstruction);
+  document.querySelector("#worldApplyButton").addEventListener("click", applyWorldProposal);
+  document.querySelector("#worldDiscardButton").addEventListener("click", discardWorldProposal);
+  document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
+  els.deletePartyButton.addEventListener("click", deleteActiveParty);
+  els.worldSelect.addEventListener("change", () => {
+    renderWorldPreview();
+    syncReadyCharacterDescription();
+  });
+  els.worldPromptTitleInput.addEventListener("input", renderWorldPreview);
+  els.worldPromptInput.addEventListener("input", renderWorldPreview);
+  els.modelSelect.addEventListener("change", renderModelPreview);
+  els.messageForm.addEventListener("submit", sendMessage);
+  els.partyForm.addEventListener("submit", createParty);
+  els.checkForm.addEventListener("submit", runCheck);
+  document.querySelectorAll("input[name='worldSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
+  document.querySelectorAll("input[name='characterSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
+}
 
 async function boot() {
   try {
-    setGatewayStatus("sync", false);
+    setGatewayStatus("синхронизация", false);
     const [health, worldpacks, models, parties] = await Promise.all([
       apiGet("/health"),
       apiGet("/api/worldpacks"),
@@ -70,10 +108,13 @@ async function boot() {
       await selectParty(active.id);
     } else {
       appState.activeParty = null;
+      appState.partyState = null;
+      appState.history = null;
+      appState.proposals = [];
       renderAll();
     }
   } catch (error) {
-    setGatewayStatus("offline", false);
+    setGatewayStatus("недоступен", false);
     showToast(error.message);
     renderAll();
   }
@@ -123,7 +164,7 @@ function renderPartyList() {
     .map((party) => {
       const active = appState.activeParty?.id === party.id ? " active" : "";
       const world = party.worldpack?.title || party.worldpack_id;
-      return `<button class="party-card${active}" data-party-id="${escapeHtml(party.id)}">
+      return `<button class="party-card${active}" data-party-id="${escapeHtml(party.id)}" title="Открыть партию ${escapeHtml(party.title)}">
         <strong>${escapeHtml(party.title)}</strong>
         <span>${escapeHtml(world)}</span>
       </button>`;
@@ -142,25 +183,27 @@ function renderHeader() {
 
 function renderMeta() {
   const party = appState.activeParty;
+  els.deletePartyButton.disabled = !party;
   if (!party) {
-    els.partyMeta.innerHTML = `<dt>status</dt><dd>empty</dd>`;
+    els.partyMeta.innerHTML = `<dt title="Статус выбранной партии">Статус</dt><dd>партия не выбрана</dd>`;
     return;
   }
-  els.partyMeta.innerHTML = [
-    ["world", party.worldpack?.title || party.worldpack_id],
-    ["player", party.player_character?.name || party.player_character_id],
-    ["model", party.model_profile?.model || party.model_profile_id],
-    ["party_id", party.id],
-    ["state", party.state_campaign_id],
-  ]
-    .map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>`)
+  const rows = [
+    ["Мир", party.worldpack?.title || party.worldpack_id],
+    ["Персонаж", party.player_character?.name || party.player_character_id],
+    ["Модель", party.model_profile?.model || party.model_profile_id],
+    ["ID партии", party.id],
+    ["State", party.state_campaign_id],
+  ];
+  els.partyMeta.innerHTML = rows
+    .map(([key, value]) => `<dt title="${escapeHtml(metaHints[key] || "")}">${escapeHtml(key)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>`)
     .join("");
 }
 
 function renderState() {
   const state = appState.partyState;
   if (!state) {
-    els.stateSummary.innerHTML = `<div class="state-item">State не загружен.</div>`;
+    els.stateSummary.innerHTML = `<div class="state-item">State еще не загружен.</div>`;
     return;
   }
   const meta = state.meta || {};
@@ -170,16 +213,17 @@ function renderState() {
   const relationships = state.relationships || {};
   const relRows = Object.entries(relationships)
     .slice(0, 5)
-    .map(
-      ([key, value]) =>
-        `${escapeHtml(key)}: trust ${escapeHtml(value.trust ?? "-")}, suspicion ${escapeHtml(value.suspicion ?? "-")}`,
-    );
+    .map(([key, value]) => `${escapeHtml(key)}: доверие ${escapeHtml(value.trust ?? "-")}, подозрение ${escapeHtml(value.suspicion ?? "-")}`);
   els.stateSummary.innerHTML = [
-    stateItem("Версия", `v${meta.state_version ?? "-"} · turn ${meta.turn ?? "-"}`),
-    stateItem("Локация", player.location || "unknown"),
-    stateItem("Ресурсы", resources),
-    stateItem("Отношения", relRows.length ? relRows.join("<br>") : "нет записей"),
-    stateItem("Нити", threads.length ? threads.map((thread) => escapeHtml(thread.description || thread.id)).join("<br>") : "нет активных"),
+    stateItem("Версия", `v${meta.state_version ?? "-"} · ход ${meta.turn ?? "-"}`, "Номер сохраненного state и текущий ход партии."),
+    stateItem("Локация", player.location || "unknown", "Где сейчас находится персонаж."),
+    stateItem("Ресурсы", resources, "Подтвержденные ресурсы игрока; их нельзя выдумывать в ходе."),
+    stateItem("Отношения", relRows.length ? relRows.join("<br>") : "нет записей", "Доверие/подозрение NPC и фракций к игроку."),
+    stateItem(
+      "Нити",
+      threads.length ? threads.map((thread) => escapeHtml(thread.description || thread.id)).join("<br>") : "нет активных",
+      "Активные сюжетные линии, которые GM должен помнить.",
+    ),
   ].join("");
 }
 
@@ -190,7 +234,7 @@ function renderChat() {
     return;
   }
   if (!turns.length) {
-    els.chatLog.innerHTML = `<div class="empty-chat">Партия готова. Первый ход начнёт историю.</div>`;
+    els.chatLog.innerHTML = `<div class="empty-chat">Партия готова. Первый ход начнет историю.</div>`;
     return;
   }
   const messages = [];
@@ -204,14 +248,14 @@ function renderChat() {
 
 function renderProposals() {
   if (!appState.proposals.length) {
-    els.proposalList.innerHTML = `<div class="proposal">Нет pending preview.</div>`;
+    els.proposalList.innerHTML = `<div class="proposal">Нет черновиков изменений.</div>`;
     return;
   }
   els.proposalList.innerHTML = appState.proposals
     .map(
       (proposal) => `<div class="proposal">
         <strong>${escapeHtml(proposal.proposal_id)}</strong><br>
-        turn ${proposal.turn ?? "-"} · ops ${proposal.operations ?? 0}
+        ход ${proposal.turn ?? "-"} · операций ${proposal.operations ?? 0}
       </div>`,
     )
     .join("");
@@ -219,7 +263,7 @@ function renderProposals() {
 
 function openPartyDialog() {
   renderDialogOptions();
-  renderWorldPreview();
+  renderCreationModes();
   if (typeof els.partyDialog.showModal === "function") {
     els.partyDialog.showModal();
   } else {
@@ -240,11 +284,43 @@ function renderDialogOptions() {
     .join("");
   const pack = selectedWorldpack();
   els.partyTitleInput.value = pack ? `${pack.title}: партия` : "Новая партия";
+  els.worldPromptTitleInput.value = "";
+  els.worldPromptInput.value = "";
   els.characterNameInput.value = "Игрок";
   els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
+  renderWorldPreview();
+  renderModelPreview();
+}
+
+function renderCreationModes() {
+  const worldPrompt = selectedRadioValue("worldSource") === "prompt";
+  const characterPrompt = selectedRadioValue("characterSource") === "prompt";
+  els.worldReadyFields.classList.toggle("hidden", worldPrompt);
+  els.worldPromptFields.classList.toggle("hidden", !worldPrompt);
+  els.worldSelect.toggleAttribute("required", !worldPrompt);
+  els.worldPromptInput.toggleAttribute("required", worldPrompt);
+  els.characterDescriptionLabel.textContent = characterPrompt ? "Prompt персонажа" : "Описание готового персонажа";
+  els.characterDescriptionHint.textContent = characterPrompt
+    ? "Опиши роль, характер, ограничения и стартовые ресурсы. Gateway сохранит это в profile персонажа."
+    : "Берется роль игрока из worldpack; можно слегка поправить перед стартом.";
+  if (!characterPrompt) {
+    syncReadyCharacterDescription();
+  }
+  renderWorldPreview();
+  renderModelPreview();
 }
 
 function renderWorldPreview() {
+  if (selectedRadioValue("worldSource") === "prompt") {
+    const title = els.worldPromptTitleInput.value.trim() || "Свой мир";
+    const prompt = els.worldPromptInput.value.trim() || "Опиши мир, стартовую ситуацию, тон и ограничения.";
+    els.worldPreview.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(prompt)}`;
+    if (!els.partyTitleInput.value || els.partyTitleInput.value === "Новая партия") {
+      els.partyTitleInput.value = `${title}: партия`;
+    }
+    return;
+  }
+
   const pack = selectedWorldpack();
   if (!pack) {
     els.worldPreview.textContent = "Нет доступных worldpacks.";
@@ -254,26 +330,56 @@ function renderWorldPreview() {
   if (!els.partyTitleInput.value) {
     els.partyTitleInput.value = `${pack.title}: партия`;
   }
-  if (!els.characterDescriptionInput.value) {
-    els.characterDescriptionInput.value = pack.manifest?.player_role || "";
+}
+
+function renderModelPreview() {
+  const profile = selectedModelProfile();
+  if (!profile) {
+    els.modelPreview.textContent = "Нет доступных моделей.";
+    return;
   }
+  const tags = Array.isArray(profile.tags) && profile.tags.length ? profile.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("") : "";
+  els.modelPreview.innerHTML = `<strong>${escapeHtml(profile.title)}</strong>
+    <p>${escapeHtml(profile.rp_fit || profile.description || "Описание пока не задано.")}</p>
+    <dl>
+      <dt>Alias</dt><dd>${escapeHtml(profile.model)}</dd>
+      <dt>Контекст</dt><dd>${escapeHtml(profile.context_window || "уточняется")}</dd>
+      <dt>Источник</dt><dd>${escapeHtml(sourceLabel(profile.source))}</dd>
+      <dt>Доступность</dt><dd>${escapeHtml(profile.availability || "зависит от ключа NVIDIA")}</dd>
+    </dl>
+    <div class="tag-row">${tags}</div>`;
+}
+
+function syncReadyCharacterDescription() {
+  if (selectedRadioValue("characterSource") === "prompt") return;
+  const pack = selectedWorldpack();
+  els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
 }
 
 async function createParty(event) {
   event.preventDefault();
-  const worldpackId = els.worldSelect.value;
   const modelProfileId = els.modelSelect.value;
+  const characterPrompt = selectedRadioValue("characterSource") === "prompt";
   try {
     setBusy(true);
+    if (!modelProfileId) throw new Error("Нет доступной модели для партии.");
+    const worldpack = await resolveWorldpack();
+    const concept = characterPrompt
+      ? els.characterDescriptionInput.value.trim()
+      : els.characterDescriptionInput.value.trim() || worldpack?.manifest?.player_role || "Игроковый персонаж.";
     const draft = await apiPost("/api/player-characters/draft", {
-      worldpack_id: worldpackId,
+      worldpack_id: worldpack.id,
       name: els.characterNameInput.value.trim(),
-      concept: els.characterDescriptionInput.value.trim(),
+      concept,
     });
+    draft.draft.profile = {
+      ...(draft.draft.profile || {}),
+      character_source: characterPrompt ? "prompt" : "worldpack_template",
+    };
     const character = await apiPost("/api/player-characters", draft.draft);
     const party = await apiPost("/api/parties", {
       title: els.partyTitleInput.value.trim(),
-      worldpack_id: worldpackId,
+      worldpack_id: worldpack.id,
       player_character_id: character.player_character.id,
       model_profile_id: modelProfileId,
     });
@@ -286,6 +392,21 @@ async function createParty(event) {
   } finally {
     setBusy(false);
   }
+}
+
+async function resolveWorldpack() {
+  if (selectedRadioValue("worldSource") !== "prompt") {
+    if (!els.worldSelect.value) throw new Error("Выбери готовый мир.");
+    const pack = selectedWorldpack();
+    if (!pack) throw new Error("Готовый мир не найден.");
+    return pack;
+  }
+  const prompt = els.worldPromptInput.value.trim();
+  if (!prompt) throw new Error("Заполни prompt мира.");
+  const title = els.worldPromptTitleInput.value.trim() || els.partyTitleInput.value.trim() || "Свой мир";
+  const result = await apiPost("/api/worldpacks/prompt", { title, prompt });
+  appState.worldpacks.push(result.worldpack);
+  return result.worldpack;
 }
 
 async function sendMessage(event) {
@@ -314,7 +435,7 @@ async function previewWorldInstruction() {
     await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction: text });
     els.worldInstruction.value = "";
     await reloadActiveParty();
-    showToast("Preview создан.");
+    showToast("Черновик изменений создан.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -328,7 +449,7 @@ async function applyWorldProposal() {
     setBusy(true);
     await apiPost(`/api/parties/${appState.activeParty.id}/world/apply`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
-    showToast("Preview применён.");
+    showToast("Черновик применен.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -342,7 +463,7 @@ async function discardWorldProposal() {
     setBusy(true);
     await apiPost(`/api/parties/${appState.activeParty.id}/world/discard`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
-    showToast("Preview отменён.");
+    showToast("Черновик отменен.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -352,11 +473,31 @@ async function discardWorldProposal() {
 
 async function rollbackParty() {
   if (!appState.activeParty) return;
+  const ok = window.confirm("Откатить последний примененный state этой партии?");
+  if (!ok) return;
   try {
     setBusy(true);
     await apiPost(`/api/parties/${appState.activeParty.id}/rollback`, {});
     await reloadActiveParty();
     showToast("Откат выполнен.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteActiveParty() {
+  const party = appState.activeParty;
+  if (!party) return;
+  const ok = window.confirm(`Удалить партию "${party.title}" и ее историю ходов?`);
+  if (!ok) return;
+  try {
+    setBusy(true);
+    await apiDelete(`/api/parties/${party.id}`);
+    localStorage.removeItem("rp-light-gui-active-party");
+    await boot();
+    showToast("Партия удалена.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -387,7 +528,7 @@ async function runCheck(event) {
 function appendPendingMessage(text) {
   if (!appState.history) appState.history = { turns: [] };
   els.chatLog.insertAdjacentHTML("beforeend", messageHtml("user", "Игрок", text));
-  els.chatLog.insertAdjacentHTML("beforeend", messageHtml("assistant", "GM", "…"));
+  els.chatLog.insertAdjacentHTML("beforeend", messageHtml("assistant", "GM", "..."));
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
 }
 
@@ -401,6 +542,10 @@ async function apiPost(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function apiDelete(path) {
+  return api(path, { method: "DELETE" });
 }
 
 async function api(path, options = {}) {
@@ -424,8 +569,26 @@ function selectedWorldpack() {
   return appState.worldpacks.find((pack) => pack.id === els.worldSelect.value) || appState.worldpacks[0] || null;
 }
 
-function stateItem(title, body) {
-  return `<div class="state-item"><strong>${escapeHtml(title)}</strong>${body}</div>`;
+function selectedModelProfile() {
+  return appState.modelProfiles.find((profile) => profile.id === els.modelSelect.value) || appState.modelProfiles[0] || null;
+}
+
+function selectedRadioValue(name) {
+  return document.querySelector(`input[name='${name}']:checked`)?.value || "ready";
+}
+
+function sourceLabel(source) {
+  const labels = {
+    static_build_nvidia_fallback: "статичный fallback build.nvidia.com",
+    build_nvidia_live: "live build.nvidia.com",
+    nvidia_api_live: "live NVIDIA /v1/models",
+    server_env: "server env",
+  };
+  return labels[source] || source || "неизвестно";
+}
+
+function stateItem(title, body, hint) {
+  return `<div class="state-item" title="${escapeHtml(hint || "")}"><strong>${escapeHtml(title)}</strong>${body}</div>`;
 }
 
 function messageHtml(kind, role, content) {
