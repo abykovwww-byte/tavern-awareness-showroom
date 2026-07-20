@@ -106,6 +106,24 @@ class StateStore:
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
+                CREATE TABLE IF NOT EXISTS memory_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    from_turn_id INTEGER NOT NULL,
+                    to_turn_id INTEGER NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    summary_text TEXT NOT NULL,
+                    key_facts_json TEXT NOT NULL,
+                    open_threads_json TEXT NOT NULL,
+                    relationship_changes_json TEXT NOT NULL,
+                    player_promises_json TEXT NOT NULL,
+                    npc_obligations_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_summaries_campaign_to
+                    ON memory_summaries(campaign_id, to_turn_id DESC);
                 """
             )
             connection.execute(
@@ -203,6 +221,134 @@ class StateStore:
                 (self.campaign_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    def turns_for_memory(
+        self,
+        after_turn_id: int = 0,
+        to_turn_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT id, request_id, player_message, narrative_response, state_version, created_at
+            FROM turns
+            WHERE campaign_id = ? AND id > ?
+        """
+        params: list[Any] = [self.campaign_id, after_turn_id]
+        if to_turn_id is not None:
+            query += " AND id <= ?"
+            params.append(to_turn_id)
+        query += " ORDER BY id ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        with self.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def latest_memory_summary(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM memory_summaries
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        return self.memory_summary_from_row(row) if row else None
+
+    def memory_summaries(self, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM memory_summaries
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, id DESC
+                LIMIT ?
+                """,
+                (self.campaign_id, limit),
+            ).fetchall()
+        return [self.memory_summary_from_row(row) for row in rows]
+
+    def record_memory_summary(
+        self,
+        from_turn_id: int,
+        to_turn_id: int,
+        state_version: int,
+        summary_text: str,
+        key_facts: list[Any],
+        open_threads: list[Any],
+        relationship_changes: list[Any],
+        player_promises: list[Any],
+        npc_obligations: list[Any],
+        model: str,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_summaries(
+                    campaign_id, from_turn_id, to_turn_id, state_version,
+                    summary_text, key_facts_json, open_threads_json,
+                    relationship_changes_json, player_promises_json,
+                    npc_obligations_json, created_at, model
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    from_turn_id,
+                    to_turn_id,
+                    state_version,
+                    summary_text,
+                    json.dumps(key_facts, ensure_ascii=False),
+                    json.dumps(open_threads, ensure_ascii=False),
+                    json.dumps(relationship_changes, ensure_ascii=False),
+                    json.dumps(player_promises, ensure_ascii=False),
+                    json.dumps(npc_obligations, ensure_ascii=False),
+                    now_ts(),
+                    model,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM memory_summaries WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        return self.memory_summary_from_row(row)
+
+    def delete_latest_memory_summary(self) -> dict[str, Any] | None:
+        latest = self.latest_memory_summary()
+        if latest is None:
+            return None
+        with self.connect() as connection:
+            connection.execute("DELETE FROM memory_summaries WHERE id = ?", (latest["id"],))
+        return latest
+
+    def memory_summary_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "from_turn_id": row["from_turn_id"],
+            "to_turn_id": row["to_turn_id"],
+            "state_version": row["state_version"],
+            "summary_text": row["summary_text"],
+            "key_facts": self.json_list(row["key_facts_json"]),
+            "open_threads": self.json_list(row["open_threads_json"]),
+            "relationship_changes": self.json_list(row["relationship_changes_json"]),
+            "player_promises": self.json_list(row["player_promises_json"]),
+            "npc_obligations": self.json_list(row["npc_obligations_json"]),
+            "created_at": row["created_at"],
+            "model": row["model"],
+        }
+
+    def json_list(self, value: str) -> list[Any]:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
 
     def preview_patch(self, patch: StatePatch) -> dict[str, Any]:
         state = self.get_state()

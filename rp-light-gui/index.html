@@ -76,6 +76,21 @@
         </section>
 
         <section class="summary-panel">
+          <div class="section-label">Память</div>
+          <div id="memorySummary" class="state-summary"></div>
+          <div class="button-grid">
+            <button id="memorySummarizeButton" class="tool-button" title="Пересобрать long-term memory по старым ходам этой партии">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-6"/><path d="M6 20V10"/><path d="M18 20V4"/><path d="M4 20h16"/></svg>
+              Обновить память
+            </button>
+            <button id="memoryClearButton" class="tool-button danger" title="Удалить последнюю сводку памяти без удаления turns или state">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
+              Очистить
+            </button>
+          </div>
+        </section>
+
+        <section class="summary-panel">
           <div class="section-label">Режим GM</div>
           <p class="panel-hint">Безопасные правки мира: сначала preview, потом явное применение.</p>
           <textarea id="worldInstruction" rows="3" placeholder="Например: страж Варн теперь подозревает игрока" title="Натуральная инструкция для изменения world state"></textarea>

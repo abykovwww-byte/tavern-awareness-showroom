@@ -11,6 +11,7 @@ import httpx
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest
 from app.services.intent_parser import IntentParser
+from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
@@ -26,6 +27,7 @@ class Adjudicator:
         self.rule_engine = RuleEngine()
         self.validator = OutputValidator()
         self.narrative = NarrativeClient(settings)
+        self.memory = MemorySummarizer(settings, store)
         self.world = WorldInstructor(settings, store)
 
     async def handle_chat(
@@ -53,6 +55,7 @@ class Adjudicator:
             text = response_text(response)
             state_version = self.store.current_version() or 1
             self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
+            await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
             return response
 
         if not authorization and not self.settings.nvidia_api_key:
@@ -67,7 +70,15 @@ class Adjudicator:
         llm_calls = 0
         repaired = False
         try:
-            raw = await self.narrative.complete(request, state, outcome, authorization, request_id=request_id)
+            memory_summary = self.store.latest_memory_summary()
+            raw = await self.narrative.complete(
+                request,
+                updated_state,
+                outcome,
+                authorization,
+                memory_summary=memory_summary,
+                request_id=request_id,
+            )
             llm_calls += 1
             text = response_text(raw)
             validation = self.validator.validate(text, outcome)
@@ -75,10 +86,11 @@ class Adjudicator:
                 repaired = True
                 raw = await self.narrative.complete(
                     request,
-                    state,
+                    updated_state,
                     outcome,
                     authorization,
                     validation.repair_instruction,
+                    memory_summary=memory_summary,
                     request_id=request_id,
                 )
                 llm_calls += 1
@@ -115,6 +127,7 @@ class Adjudicator:
             },
             request_id,
         )
+        await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
         return response
 
     def latest_user_message(self, request: ChatCompletionRequest) -> str:

@@ -123,3 +123,21 @@ Gateway resolves that party to the selected world pack, player character,
 model profile and `StateStore(state_campaign_id)`.
 
 SillyTavern remains available on port `8000` as a legacy/debug client.
+
+## Iteration 7
+
+Long-running Light GUI parties now have gateway-owned long-term memory.
+
+```text
+party turn succeeds
+  -> turn remains in SQLite turns
+  -> gateway keeps the latest raw turns in the narrator prompt
+  -> older unsummarized turns are compressed into memory_summaries
+  -> next narrator prompt gets LONG_TERM_PARTY_MEMORY + current state + outcome + raw tail
+```
+
+Memory is party-scoped by `campaign_id`, which is the selected party's
+`state_campaign_id`. It is context, not authority: canonical state and
+`AUTHORITATIVE_OUTCOME` override memory. Each summary records the covered turn
+range and `state_version`, so rollback can create a new state version without
+destroying turn history or hiding what summary was generated against.

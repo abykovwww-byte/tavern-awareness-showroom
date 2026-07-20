@@ -13,7 +13,7 @@ from app.services.state_store import StateStore
 
 
 SOURCE_TURN_LIMIT = 8
-NARRATIVE_MESSAGE_LIMIT = 12
+NARRATIVE_MESSAGE_LIMIT = 24
 TOKEN_CHARS = 3.5
 
 
@@ -25,12 +25,19 @@ def estimate_party_context(
     state = store.get_state()
     all_turns = store.turn_history(limit=10000)
     source_turns = all_turns[-SOURCE_TURN_LIMIT:]
+    memory_summary = store.latest_memory_summary()
     request_messages = history_messages(source_turns)
     request_messages.append(ChatMessage(role="user", content="[следующий ход игрока]"))
 
     request = ChatCompletionRequest(model=settings.narrative_model, messages=request_messages, stream=False)
     outcome = placeholder_outcome()
-    prompt_messages = NarrativeClient(settings).narrative_messages(request, state, outcome, repair_instruction=None)
+    prompt_messages = NarrativeClient(settings).narrative_messages(
+        request,
+        state,
+        outcome,
+        repair_instruction=None,
+        memory_summary=memory_summary,
+    )
     prompt_text = "\n".join(f"{message['role']}: {message['content']}" for message in prompt_messages)
 
     retained_history_messages = min(len(source_turns) * 2, max(NARRATIVE_MESSAGE_LIMIT - 1, 0))
@@ -56,6 +63,8 @@ def estimate_party_context(
         "usage_ratio": usage_ratio,
         "severity": severity_for_usage(usage_ratio),
         "state_summary_tokens": estimate_tokens(state_summary_text),
+        "memory_summary_tokens": estimate_tokens(str(memory_summary)) if memory_summary else 0,
+        "memory_covered_turns": [memory_summary["from_turn_id"], memory_summary["to_turn_id"]] if memory_summary else None,
         "direct_history_tokens": estimate_tokens(history_text) if history_text else 0,
         "history_turns_total": len(all_turns),
         "history_source_turn_limit": SOURCE_TURN_LIMIT,

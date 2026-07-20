@@ -515,6 +515,17 @@ button:disabled {
   font-size: 12px;
 }
 
+.memory-text {
+  white-space: pre-wrap;
+}
+
+.memory-list ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 16px;
+}
+
 .context-summary {
   display: grid;
   gap: 9px;

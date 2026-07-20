@@ -189,6 +189,10 @@ class PartyModelUpdate(BaseModel):
     model_profile_id: str
 
 
+class PartyMemorySummarizeRequest(BaseModel):
+    force: bool = True
+
+
 class PartySummary(BaseModel):
     id: str
     title: str

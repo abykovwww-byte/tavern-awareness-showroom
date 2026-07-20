@@ -5,6 +5,7 @@ const appState = {
   activeParty: null,
   partyState: null,
   contextEstimate: null,
+  memory: null,
   history: null,
   proposals: [],
   busy: false,
@@ -25,6 +26,9 @@ const els = {
   partyMeta: document.querySelector("#partyMeta"),
   stateSummary: document.querySelector("#stateSummary"),
   contextSummary: document.querySelector("#contextSummary"),
+  memorySummary: document.querySelector("#memorySummary"),
+  memorySummarizeButton: document.querySelector("#memorySummarizeButton"),
+  memoryClearButton: document.querySelector("#memoryClearButton"),
   proposalList: document.querySelector("#proposalList"),
   toast: document.querySelector("#toast"),
   partyDialog: document.querySelector("#partyDialog"),
@@ -80,6 +84,8 @@ function bindEvents() {
   document.querySelector("#worldApplyButton").addEventListener("click", applyWorldProposal);
   document.querySelector("#worldDiscardButton").addEventListener("click", discardWorldProposal);
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
+  els.memorySummarizeButton.addEventListener("click", summarizeMemory);
+  els.memoryClearButton.addEventListener("click", clearLatestMemory);
   els.changePartyModelButton.addEventListener("click", changePartyModel);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
@@ -122,6 +128,7 @@ async function boot() {
       appState.activeParty = null;
       appState.partyState = null;
       appState.contextEstimate = null;
+      appState.memory = null;
       appState.history = null;
       appState.proposals = [];
       renderAll();
@@ -146,18 +153,20 @@ async function reloadActiveParty() {
     return;
   }
   const partyId = appState.activeParty.id;
-  const [party, partyState, history, proposals, context] = await Promise.all([
+  const [party, partyState, history, proposals, context, memory] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
     apiGet(`/api/parties/${partyId}/world/proposals`),
     apiGet(`/api/parties/${partyId}/context`),
+    apiGet(`/api/parties/${partyId}/memory`),
   ]);
   appState.activeParty = party.party;
   appState.partyState = partyState.state;
   appState.history = history;
   appState.proposals = proposals.proposals || [];
   appState.contextEstimate = context.context || null;
+  appState.memory = memory;
   renderAll();
 }
 
@@ -167,6 +176,7 @@ function renderAll() {
   renderMeta();
   renderState();
   renderContext();
+  renderMemory();
   renderChat();
   renderProposals();
   renderMessageControls();
@@ -284,6 +294,8 @@ function renderContext() {
     : "Все сохраненные ходы сейчас помещаются в прямое окно prompt.";
   const stateTokens = estimate.state_summary_tokens ? formatTokens(estimate.state_summary_tokens) : "0";
   const historyTokens = estimate.direct_history_tokens ? formatTokens(estimate.direct_history_tokens) : "0";
+  const memoryTokens = estimate.memory_summary_tokens ? formatTokens(estimate.memory_summary_tokens) : "0";
+  const memoryCoverage = Array.isArray(estimate.memory_covered_turns) ? ` · память ${estimate.memory_covered_turns.join("-")}` : "";
   els.contextSummary.innerHTML = `
     <div class="context-meter ${escapeHtml(estimate.severity || "unknown")}" title="Оценка приблизительная: tokenizer NVIDIA недоступен, считаем по размеру prompt.">
       <div class="context-meter-head">
@@ -294,8 +306,49 @@ function renderContext() {
     </div>
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
     ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
-    ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · история ~${escapeHtml(historyTokens)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
+    ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · память ~${escapeHtml(memoryTokens)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
     ${notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : ""}
+  `;
+}
+
+function renderMemory() {
+  if (!els.memorySummary) return;
+  const payload = appState.memory || {};
+  const memory = payload.memory || null;
+  const stats = payload.stats || {};
+  if (els.memorySummarizeButton) {
+    els.memorySummarizeButton.disabled = !appState.activeParty;
+  }
+  if (els.memoryClearButton) {
+    els.memoryClearButton.disabled = !appState.activeParty || !memory;
+  }
+  if (!appState.activeParty) {
+    els.memorySummary.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
+    return;
+  }
+  if (!memory) {
+    const oldTurns = stats.eligible_old_turns ?? 0;
+    const waiting = stats.next_auto_summary_turns_remaining ?? 0;
+    els.memorySummary.innerHTML = [
+      stateItem("Сводка", "еще не собрана", "Summary появится, когда накопятся старые ходы за пределами raw окна."),
+      stateItem(
+        "Покрытие",
+        `старых ходов ${escapeHtml(oldTurns)} · до auto ${escapeHtml(waiting)}`,
+        "Gateway хранит последние raw ходы напрямую, а более старые сжимает в long-term memory.",
+      ),
+    ].join("");
+    return;
+  }
+  const covered = `${memory.from_turn_id ?? "-"}-${memory.to_turn_id ?? "-"}`;
+  const stateVersion = memory.state_version ? `v${memory.state_version}` : "v-";
+  const summary = escapeHtml(clipText(memory.summary_text || "", 900));
+  els.memorySummary.innerHTML = `
+    ${stateItem("Покрытие", `ходы ${escapeHtml(covered)} · state ${escapeHtml(stateVersion)}`, "Диапазон turns, сжатых в последнюю сводку.")}
+    <div class="state-item memory-text"><strong>Сводка</strong>${summary || "пусто"}</div>
+    ${memoryList("Факты", memory.key_facts)}
+    ${memoryList("Нити", memory.open_threads)}
+    ${memoryList("Отношения", memory.relationship_changes)}
+    ${stateItem("Модель", escapeHtml(memory.model || "unknown"), "Модель, которая сгенерировала сводку.")}
   `;
 }
 
@@ -594,6 +647,40 @@ async function rollbackParty() {
   }
 }
 
+async function summarizeMemory() {
+  if (!appState.activeParty) return;
+  try {
+    setBusy(true);
+    const result = await apiPost(`/api/parties/${appState.activeParty.id}/memory/summarize`, { force: true });
+    appState.memory = result;
+    renderMemory();
+    await reloadActiveParty();
+    showToast(result.generated ? "Память обновлена." : memoryReason(result.reason));
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function clearLatestMemory() {
+  if (!appState.activeParty) return;
+  const ok = window.confirm("Удалить последнюю сводку памяти этой партии?");
+  if (!ok) return;
+  try {
+    setBusy(true);
+    const result = await apiDelete(`/api/parties/${appState.activeParty.id}/memory/latest`);
+    appState.memory = result;
+    renderMemory();
+    await reloadActiveParty();
+    showToast(result.deleted ? "Последняя сводка памяти удалена." : "Сводок памяти пока нет.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function deleteActiveParty() {
   const party = appState.activeParty;
   if (!party) return;
@@ -830,6 +917,35 @@ function messageHtml(kind, role, content) {
 function compactJson(value) {
   const text = JSON.stringify(value, null, 0);
   return escapeHtml(text.length > 180 ? `${text.slice(0, 177)}...` : text);
+}
+
+function memoryList(title, items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  const rows = items
+    .slice(0, 4)
+    .map((item) => `<li>${escapeHtml(memoryItemText(item))}</li>`)
+    .join("");
+  return `<div class="state-item memory-list"><strong>${escapeHtml(title)}</strong><ul>${rows}</ul></div>`;
+}
+
+function memoryItemText(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return String(item ?? "");
+  return item.fact || item.thread || item.change || item.promise || item.obligation || JSON.stringify(item);
+}
+
+function memoryReason(reason) {
+  const labels = {
+    not_enough_old_turns: "Память появится после нескольких ходов за пределами raw окна.",
+    not_enough_unsummarized_turns: "Для auto-summary пока мало новых старых ходов.",
+    up_to_date: "Память уже актуальна.",
+  };
+  return labels[reason] || "Память не изменилась.";
+}
+
+function clipText(value, limit) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
 }
 
 function setGatewayStatus(text, ok) {

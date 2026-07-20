@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from typing import Any
 
@@ -26,6 +27,7 @@ class NarrativeClient:
         outcome: Outcome,
         inbound_authorization: str | None,
         repair_instruction: str | None = None,
+        memory_summary: dict[str, Any] | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         if self.settings.nvidia_api_base.startswith("mock://"):
@@ -38,7 +40,7 @@ class NarrativeClient:
             raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
 
         payload = request.model_dump(exclude_none=True)
-        payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction)
+        payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)
         payload["stream"] = False
 
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
@@ -143,6 +145,7 @@ class NarrativeClient:
         state: dict[str, Any],
         outcome: Outcome,
         repair_instruction: str | None,
+        memory_summary: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         state_summary = {
             "campaign_id": state.get("meta", {}).get("campaign_id"),
@@ -160,10 +163,16 @@ class NarrativeClient:
             rules += f" Repair instruction: {repair_instruction}"
         messages = [
             {"role": "system", "content": rules},
-            {"role": "system", "content": f"Relevant state summary: {state_summary}"},
-            {"role": "system", "content": outcome.authoritative_block},
         ]
-        for message in request.messages[-12:]:
+        if memory_summary:
+            messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
+        messages.extend(
+            [
+                {"role": "system", "content": f"Relevant state summary: {state_summary}"},
+                {"role": "system", "content": outcome.authoritative_block},
+            ]
+        )
+        for message in request.messages[-24:]:
             if isinstance(message.content, str):
                 messages.append({"role": message.role, "content": message.content})
         return messages
@@ -205,3 +214,22 @@ def with_text(response: dict[str, Any], text: str) -> dict[str, Any]:
     choices[0] = first
     updated["choices"] = choices
     return updated
+
+
+def long_term_memory_block(memory_summary: dict[str, Any]) -> str:
+    payload = {
+        "covered_turns": [memory_summary.get("from_turn_id"), memory_summary.get("to_turn_id")],
+        "state_version_at_summary": memory_summary.get("state_version"),
+        "summary": memory_summary.get("summary_text", ""),
+        "confirmed_facts": memory_summary.get("key_facts", []),
+        "unresolved_threads": memory_summary.get("open_threads", []),
+        "relationship_changes": memory_summary.get("relationship_changes", []),
+        "player_promises": memory_summary.get("player_promises", []),
+        "npc_obligations": memory_summary.get("npc_obligations", []),
+    }
+    return (
+        "LONG_TERM_PARTY_MEMORY\n"
+        "Use this as campaign context only. Current authoritative state and AUTHORITATIVE_OUTCOME override it. "
+        "Do not promote unresolved or player-claimed events into facts.\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )

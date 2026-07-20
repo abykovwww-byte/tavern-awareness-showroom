@@ -20,6 +20,7 @@ from app.models.schemas import (
     PatchEnvelope,
     PartyCheckRequest,
     PartyCreate,
+    PartyMemorySummarizeRequest,
     PartyMessageRequest,
     PartyModelUpdate,
     PlayerCharacterCreate,
@@ -30,6 +31,7 @@ from app.models.schemas import (
 )
 from app.services.adjudicator import Adjudicator
 from app.services.context_estimator import estimate_party_context
+from app.services.memory import MemorySummarizer
 from app.services.party_store import PartyStore
 from app.services.state_store import StateStore
 
@@ -196,6 +198,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "party_id": party_id,
             "turns": party_state_store.turn_history(limit=limit),
             "state_versions": party_state_store.history(limit=limit),
+        }
+
+    @app.get("/api/parties/{party_id}/memory")
+    def get_party_memory(party_id: str, limit: int = 5) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        summarizer = MemorySummarizer(party_settings, party_state_store)
+        return {
+            "party_id": party_id,
+            "memory": party_state_store.latest_memory_summary(),
+            "summaries": party_state_store.memory_summaries(limit=limit),
+            "stats": summarizer.stats(),
+        }
+
+    @app.post("/api/parties/{party_id}/memory/summarize")
+    async def summarize_party_memory(
+        party_id: str,
+        request: PartyMemorySummarizeRequest = PartyMemorySummarizeRequest(),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+            result = await MemorySummarizer(party_settings, party_state_store).summarize(
+                authorization,
+                force=request.force,
+                fail_open=False,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, **result}
+
+    @app.delete("/api/parties/{party_id}/memory/latest")
+    def delete_party_memory_latest(party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        deleted = party_state_store.delete_latest_memory_summary()
+        return {
+            "party_id": party_id,
+            "deleted": deleted is not None,
+            "deleted_memory": deleted,
+            "memory": party_state_store.latest_memory_summary(),
+            "stats": MemorySummarizer(party_settings, party_state_store).stats(),
         }
 
     @app.get("/api/parties/{party_id}/context")

@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
+from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
 from app.services.intent_parser import IntentParser
+from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog
 
 
@@ -132,6 +134,23 @@ def write_worldpack(root: Path, pack_id: str = "demo-world") -> Path:
     return pack_dir
 
 
+def create_demo_party(c: TestClient, title: str = "Demo Party", character_name: str = "Mira") -> dict[str, object]:
+    model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    character = c.post(
+        "/api/player-characters",
+        json={"worldpack_id": "demo-world", "name": character_name, "description": "Investigator", "profile": {}},
+    ).json()["player_character"]
+    return c.post(
+        "/api/parties",
+        json={
+            "title": title,
+            "worldpack_id": "demo-world",
+            "player_character_id": character["id"],
+            "model_profile_id": model_id,
+        },
+    ).json()["party"]
+
+
 def test_health_and_state(tmp_path: Path):
     c = client(tmp_path)
     assert c.get("/health").json()["status"] == "ok"
@@ -231,7 +250,7 @@ def test_party_model_can_be_changed(tmp_path: Path):
     assert changed.json()["party"]["model_profile"]["model"] == models[1]["model"]
 
 
-def test_party_context_estimate_reports_usage_and_trimmed_history(tmp_path: Path):
+def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
@@ -262,9 +281,119 @@ def test_party_context_estimate_reports_usage_and_trimmed_history(tmp_path: Path
     assert estimate["estimated_prompt_tokens"] > 0
     assert estimate["estimated_total_tokens"] >= estimate["estimated_prompt_tokens"]
     assert estimate["history_turns_total"] == 7
-    assert estimate["direct_history_messages"] == 11
-    assert estimate["history_limited"] is True
-    assert estimate["omitted_history_turns_estimate"] > 0
+    assert estimate["direct_history_messages"] == 14
+    assert estimate["history_limited"] is False
+    assert estimate["omitted_history_turns_estimate"] == 0
+    assert estimate["memory_summary_tokens"] == 0
+
+
+def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    first = create_demo_party(c, title="Memory A", character_name="A")
+    second = create_demo_party(c, title="Memory B", character_name="B")
+
+    for index in range(18):
+        response = c.post(
+            f"/api/parties/{first['id']}/messages",
+            json={
+                "content": f'/check information skill=1 difficulty=5 goal="old clue {index}"',
+                "idempotency_key": f"memory-a-{index}",
+            },
+            headers={"Authorization": "Bearer test"},
+        )
+        assert response.status_code == 200
+
+    first_history = c.get(f"/api/parties/{first['id']}/history", params={"limit": 50}).json()["turns"]
+    assert len(first_history) == 18
+
+    first_memory = c.get(f"/api/parties/{first['id']}/memory").json()
+    assert first_memory["memory"] is not None
+    assert first_memory["memory"]["from_turn_id"] == 1
+    assert first_memory["memory"]["to_turn_id"] == 10
+    assert "old clue 0" in first_memory["memory"]["summary_text"]
+
+    second_memory = c.get(f"/api/parties/{second['id']}/memory").json()
+    assert second_memory["memory"] is None
+    assert second_memory["stats"]["total_turns"] == 0
+
+
+def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Manual Memory")
+
+    for index in range(9):
+        response = c.post(
+            f"/api/parties/{party['id']}/messages",
+            json={
+                "content": f'/check information skill=1 difficulty=5 goal="manual clue {index}"',
+                "idempotency_key": f"memory-manual-{index}",
+            },
+            headers={"Authorization": "Bearer test"},
+        )
+        assert response.status_code == 200
+
+    before = c.get(f"/api/parties/{party['id']}/memory").json()
+    assert before["memory"] is None
+    assert before["stats"]["eligible_old_turns"] == 1
+
+    generated = c.post(
+        f"/api/parties/{party['id']}/memory/summarize",
+        json={"force": True},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert generated.status_code == 200
+    assert generated.json()["generated"] is True
+    assert generated.json()["memory"]["to_turn_id"] == 1
+
+    deleted = c.delete(f"/api/parties/{party['id']}/memory/latest")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["memory"] is None
+
+
+def test_narrative_prompt_includes_long_term_party_memory():
+    outcome = Outcome(
+        check_id="memory-prompt",
+        action_type="feasibility",
+        actor="player",
+        result="partial_success",
+        roll=10,
+        difficulty=10,
+        modifiers={},
+        final_score=10,
+        consequences=["The fixed outcome remains authoritative."],
+        authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
+    )
+    memory = {
+        "from_turn_id": 1,
+        "to_turn_id": 10,
+        "state_version": 12,
+        "summary_text": "The old tower burned, and Mira promised to return.",
+        "key_facts": ["The old tower burned."],
+        "open_threads": ["Who lit the fire remains unresolved."],
+        "relationship_changes": [],
+        "player_promises": ["Mira promised to return."],
+        "npc_obligations": [],
+    }
+    request = ChatCompletionRequest(
+        model="z-ai/glm-5.2",
+        messages=[ChatMessage(role="user", content="I inspect the ashes.")],
+    )
+
+    messages = NarrativeClient(Settings(nvidia_api_base="mock://success")).narrative_messages(
+        request,
+        base_state(),
+        outcome,
+        repair_instruction=None,
+        memory_summary=memory,
+    )
+
+    memory_blocks = [message["content"] for message in messages if "LONG_TERM_PARTY_MEMORY" in message["content"]]
+    assert len(memory_blocks) == 1
+    assert "The old tower burned" in memory_blocks[0]
+    assert "AUTHORITATIVE_OUTCOME" in "\n".join(message["content"] for message in messages)
 
 
 def test_build_catalog_parser_discards_non_rp_models():
