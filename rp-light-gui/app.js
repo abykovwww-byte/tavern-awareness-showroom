@@ -25,6 +25,7 @@ const els = {
   toolsButton: document.querySelector("#toolsButton"),
   closeInspectorButton: document.querySelector("#closeInspectorButton"),
   drawerBackdrop: document.querySelector("#drawerBackdrop"),
+  historyControls: document.querySelector("#historyControls"),
   chatLog: document.querySelector("#chatLog"),
   messageStatus: document.querySelector("#messageStatus"),
   messageForm: document.querySelector("#messageForm"),
@@ -84,7 +85,7 @@ const metaHints = {
   "State": "campaign_id изолированного состояния партии.",
 };
 
-const CHAT_VISIBLE_TURNS = 10;
+const CHAT_VISIBLE_TURNS = 4;
 
 bindEvents();
 setupCollapsiblePanels();
@@ -120,11 +121,7 @@ function bindEvents() {
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
-  els.chatLog.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-chat-archive]");
-    if (!button) return;
-    setChatArchiveExpanded(button.dataset.chatArchive === "open");
-  });
+  [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
   });
@@ -191,6 +188,12 @@ function openPanelFor(element) {
 function setChatArchiveExpanded(expanded) {
   appState.chatArchiveExpanded = expanded;
   renderChat({ scrollMode: expanded ? "top" : "bottom" });
+}
+
+function handleChatArchiveClick(event) {
+  const button = event.target.closest("[data-chat-archive]");
+  if (!button) return;
+  setChatArchiveExpanded(button.dataset.chatArchive === "open");
 }
 
 async function boot() {
@@ -579,15 +582,18 @@ function renderChat({ scrollMode = "bottom" } = {}) {
   const turns = appState.history?.turns || [];
   const pending = activePendingMessage();
   if (!appState.activeParty) {
+    renderHistoryControls(0, 0);
     els.chatLog.innerHTML = `<div class="empty-chat">Создай или выбери партию.</div>`;
     return;
   }
   if (!turns.length && !pending) {
+    renderHistoryControls(0, 0);
     els.chatLog.innerHTML = `<div class="empty-chat">Партия готова. Первый ход начнет историю.</div>`;
     return;
   }
   const hiddenTurnCount = Math.max(0, turns.length - CHAT_VISIBLE_TURNS);
   const visibleTurns = hiddenTurnCount && !appState.chatArchiveExpanded ? turns.slice(-CHAT_VISIBLE_TURNS) : turns;
+  renderHistoryControls(hiddenTurnCount, turns.length);
   const messages = [];
   if (hiddenTurnCount) {
     messages.push(chatArchiveHtml(hiddenTurnCount));
@@ -602,6 +608,24 @@ function renderChat({ scrollMode = "bottom" } = {}) {
   }
   els.chatLog.innerHTML = messages.join("");
   els.chatLog.scrollTop = scrollMode === "top" ? 0 : els.chatLog.scrollHeight;
+}
+
+function renderHistoryControls(hiddenTurnCount, totalTurns) {
+  if (!els.historyControls) return;
+  if (!hiddenTurnCount) {
+    els.historyControls.classList.add("hidden");
+    els.historyControls.innerHTML = "";
+    return;
+  }
+  const expanded = appState.chatArchiveExpanded;
+  els.historyControls.classList.remove("hidden");
+  els.historyControls.innerHTML = `<div>
+    <strong>${expanded ? "Вся история раскрыта" : `Показаны последние ${CHAT_VISIBLE_TURNS} хода`}</strong>
+    <span>${expanded ? `Всего ходов: ${totalTurns}.` : `Скрыто ранних ходов: ${hiddenTurnCount} из ${totalTurns}.`}</span>
+  </div>
+  <button class="text-button" type="button" data-chat-archive="${expanded ? "close" : "open"}">
+    ${expanded ? "Свернуть начало" : "Показать начало"}
+  </button>`;
 }
 
 function chatArchiveHtml(hiddenTurnCount) {
