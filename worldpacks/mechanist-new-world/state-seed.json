@@ -1,0 +1,1097 @@
+{
+  "meta": {
+    "campaign_id": "mechanist-new-world",
+    "schema_version": "1.0.0",
+    "state_version": 1,
+    "turn": 0,
+    "last_updated": "2026-07-20T00:00:00Z"
+  },
+  "player": {
+    "location": "abandoned-watermill-tob-edge",
+    "status": "active",
+    "reputation": {
+      "nazarick": 0,
+      "carne-village": 0,
+      "re-estize": 0,
+      "baharuth-empire": 0,
+      "slane-theocracy": 0,
+      "adventurers-guild": 0,
+      "mechanist-rumors": 0
+    },
+    "resources": {
+      "modern-phone": 1,
+      "phone-battery-percent": 38,
+      "moscow-keys": 1,
+      "modern-coins": 7,
+      "pocket-lighter": 1,
+      "scrap-iron": 2,
+      "old-mill-tools": 1,
+      "mechanist-insight-level": 0
+    },
+    "known_abilities": [
+      "современная инженерная интуиция и бытовые технические знания",
+      "чувствовать износ, напряжение и назначение простых механизмов",
+      "ускоренно чинить простые узлы при наличии материалов",
+      "пробуждать слабое самодвижение в малых механизмах при концентрации",
+      "физическая сила крупного взрослого мужчины"
+    ],
+    "constraints": [
+      "Персонаж не имеет статуса, денег Нового Мира, документов и союзников.",
+      "Современные предметы ограничены тем, что было при нем в момент переноса.",
+      "Телефон не имеет сети и не является бесконечным источником информации.",
+      "Сила над механизмами имеет абсолютный потенциал, но на старте раскрыта только на уровне интуиции и простых узлов.",
+      "Новые уровни способности требуют опыта, материалов, мастерской, риска или подтвержденного state update.",
+      "Персонаж не бессмертен и не защищен от магии, ядов, проклятий или сверхуровневого насилия по умолчанию."
+    ],
+    "known_world_facts": [
+      {
+        "id": "fact-start-overlord-setup",
+        "text": "Персонаж попал в Новый Мир каноничного сетапа Overlord, где Назарик и основные фракции существуют.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "campaign premise"
+      },
+      {
+        "id": "fact-start-location",
+        "text": "Персонаж очнулся у заброшенной водяной мельницы возле Великого леса Тоб, недалеко от деревни Карн.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "opening scene"
+      },
+      {
+        "id": "fact-start-mechanist-potential",
+        "text": "Способность персонажа к созданию и оживлению механизмов имеет абсолютный потенциал, но раскрывается постепенно.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "player premise"
+      },
+      {
+        "id": "fact-start-black-arrow",
+        "text": "На полу мельницы лежит чужая стрела с черным оперением.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "opening scene"
+      }
+    ]
+  },
+  "characters": {
+    "ainz-ooal-gown": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "пока не знает игрока; при обнаружении будет осторожно оценивать как возможную аномалию",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "собрать информацию о Новом Мире, защитить Назарик и понять, есть ли другие игроки или угрозы",
+      "knowledge": [
+        {
+          "id": "fact-ainz-knows-new-world",
+          "text": "Аинз знает, что Назарик перенесен в неизвестный Новый Мир, и действует осторожно.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-ainz-private-doubts",
+          "text": "Аинз скрывает от подчиненных часть неуверенности и недостаток знаний о мире.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "защитить Назарик",
+        "сохранять образ абсолютного владыки",
+        "не раскрывать слабость перед подчиненными"
+      ],
+      "hard_constraints": [
+        "Не доверит неизвестной силе доступ к Назарикy без проверки.",
+        "Не станет союзником игрока просто из-за сходства с попаданцем."
+      ],
+      "last_confirmed_update": 0
+    },
+    "albedo": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "не знает игрока; при угрозе Назарикy станет фанатично враждебной",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "защищать Аинза, Назарик и внутренний порядок Гробницы",
+      "knowledge": [
+        {
+          "id": "fact-albedo-loyal",
+          "text": "Альбедо абсолютно лояльна Аинзу и воспринимает угрозы Назарикy как личное оскорбление.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-albedo-obsession",
+          "text": "Личная одержимость Аинзом влияет на суждения Альбедо сильнее, чем она показывает.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "администрировать Назарик",
+        "исполнять волю Аинза",
+        "нейтрализовать угрозы"
+      ],
+      "hard_constraints": [
+        "Не поставит чужака выше безопасности Назарика.",
+        "Не раскроет внутренние тайны Гробницы без приказа Аинза."
+      ],
+      "last_confirmed_update": 0
+    },
+    "demiurge": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "не знает игрока; при обнаружении начнет искать скрытый план и практическую пользу",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "строить долгосрочные стратегии в пользу Назарика",
+      "knowledge": [
+        {
+          "id": "fact-demiurge-strategist",
+          "text": "Демиург является одним из главных стратегов Назарика и склонен видеть многоходовые замыслы.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-demiurge-overinterprets",
+          "text": "Демиург может переоценивать глубину замыслов Аинза и объяснять случайность как гениальный план.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "служить Аинзу",
+        "находить выгоду в угрозах",
+        "не раскрывать планы Назарика"
+      ],
+      "hard_constraints": [
+        "Не оставит редкую аномалию без наблюдения.",
+        "Не пожертвует интересами Назарика ради любопытства."
+      ],
+      "last_confirmed_update": 0
+    },
+    "sebas-tian": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "не знает игрока; может уважать достоинство, смелость и защиту слабых",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "служить Назарикy, сохраняя личное чувство благородства",
+      "knowledge": [
+        {
+          "id": "fact-sebas-dignity",
+          "text": "Себас Тиан служит Назарикy, но способен проявлять достоинство и сострадание.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-sebas-compassion",
+          "text": "Себас может сочувствовать людям сильнее, чем многие NPC Назарика сочли бы уместным.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "служить Назарикy",
+        "исполнять приказы Аинза",
+        "сохранять дисциплину"
+      ],
+      "hard_constraints": [
+        "Не предаст прямой приказ Назарика.",
+        "Не раскроет принадлежность к Назарикy без причины."
+      ],
+      "last_confirmed_update": 0
+    },
+    "narberal-gamma": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "не знает игрока; по умолчанию презирает людей и слабость",
+      "trust": -1,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "исполнять приказы и сохранять превосходство Назарика",
+      "knowledge": [
+        {
+          "id": "fact-narberal-human-contempt",
+          "text": "Нарберал Гамма презирает большинство людей, но подчиняется приказам Назарика.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-narberal-mask-risk",
+          "text": "Высокомерие Нарберал может осложнять скрытные операции среди людей.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "подчиняться приказам Назарика",
+        "защищать маскировку при операции",
+        "не терпеть угрозы Аинзу"
+      ],
+      "hard_constraints": [
+        "Не станет дружелюбной к игроку без приказа, пользы или доказанной силы."
+      ],
+      "last_confirmed_update": 0
+    },
+    "shalltear-bloodfallen": {
+      "status": "alive",
+      "location": "great-tomb-of-nazarick",
+      "attitude_to_player": "не знает игрока; может счесть необычную силу игрушкой или угрозой",
+      "trust": -1,
+      "fear": 0,
+      "loyalty": "nazarick",
+      "current_goal": "служить Аинзу и выполнять роль Стража этажа",
+      "knowledge": [
+        {
+          "id": "fact-shalltear-power",
+          "text": "Шалти чрезвычайно сильна и опасна для неподготовленного противника.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-shalltear-impulsive",
+          "text": "Импульсивность Шалти может создавать неожиданные риски даже для союзников.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "служить Аинзу",
+        "охранять интересы Назарика",
+        "поддерживать статус Стража"
+      ],
+      "hard_constraints": [
+        "Прямое столкновение с ней без подготовки почти наверняка смертельно.",
+        "Она не игнорирует сильную аномалию, если получила приказ обратить внимание."
+      ],
+      "last_confirmed_update": 0
+    },
+    "gazef-stronoff": {
+      "status": "alive",
+      "location": "re-estize-patrol-route",
+      "attitude_to_player": "не знает игрока; оценит помощь слабым, но будет осторожен к неизвестной силе",
+      "trust": 0,
+      "fear": 0,
+      "loyalty": "re-estize",
+      "current_goal": "защитить подданных Королевства и выполнить долг в опасной приграничной зоне",
+      "knowledge": [
+        {
+          "id": "fact-gazef-duty",
+          "text": "Газеф Стронофф является воином долга и защиты людей Королевства.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-gazef-knows-kingdom-weakness",
+          "text": "Газеф понимает слабость Королевства и ограниченность поддержки сильнее, чем говорит вслух.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "служить Королю",
+        "защищать мирных жителей",
+        "не бросать долг ради выгоды"
+      ],
+      "hard_constraints": [
+        "Не станет игнорировать опасную силу рядом с деревней.",
+        "Не предаст мирных жителей ради политического удобства."
+      ],
+      "last_confirmed_update": 0
+    },
+    "enri-emmot": {
+      "status": "alive",
+      "location": "carne-village",
+      "attitude_to_player": "не знает игрока; доверие зависит от первого поступка",
+      "trust": 0,
+      "fear": 1,
+      "loyalty": "carne-village",
+      "current_goal": "выжить и защитить близких в деревне Карн",
+      "knowledge": [
+        {
+          "id": "fact-enri-carne-local",
+          "text": "Энри живет в деревне Карн и знает местные тропы, семьи и страхи.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-enri-future-center",
+          "text": "Судьба Энри может стать центром больших событий, если игрок или Назарик вмешаются в жизнь Карна.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "защитить семью",
+        "не доверять опасным чужакам без причины",
+        "сохранить деревню"
+      ],
+      "hard_constraints": [
+        "Не станет союзницей без поступков, которые докажут безопасность игрока."
+      ],
+      "last_confirmed_update": 0
+    },
+    "nfirea-bareare": {
+      "status": "alive",
+      "location": "e-rantel",
+      "attitude_to_player": "не знает игрока; может заинтересоваться механистом как ремесленник и алхимик",
+      "trust": 0,
+      "fear": 1,
+      "loyalty": "carne-village",
+      "current_goal": "развивать алхимию, защищать близких и не стать добычей для сильных",
+      "knowledge": [
+        {
+          "id": "fact-nfirea-alchemy",
+          "text": "Нфирея обладает значимым алхимическим талантом и связями с Э-Рантелом.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-nfirea-dangerous-talent",
+          "text": "Талант Нфиреи делает его желанной целью для опасных людей и фракций.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "беречь близких",
+        "сохранять семейные знания",
+        "не раскрывать рецепты без доверия"
+      ],
+      "hard_constraints": [
+        "Не отдаст алхимические знания без доверия, сделки или спасения."
+      ],
+      "last_confirmed_update": 0
+    },
+    "clementine": {
+      "status": "alive",
+      "location": "unknown",
+      "attitude_to_player": "не знает игрока; при слухах о силе может захотеть проверить или сломать его",
+      "trust": -2,
+      "fear": 0,
+      "loyalty": "self",
+      "current_goal": "искать хаос, сильных противников и выгодные редкости",
+      "knowledge": [
+        {
+          "id": "fact-clementine-danger",
+          "text": "Клементин является чрезвычайно опасной беглой убийцей.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-clementine-watches-talent",
+          "text": "Клементин быстро интересуется редкими талантами, если о них начинают говорить в криминальных кругах.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "служить только собственной выгоде",
+        "не оставлять опасных свидетелей без причины"
+      ],
+      "hard_constraints": [
+        "Не ведет честные переговоры, если не видит силы, выгоды или ловушки."
+      ],
+      "last_confirmed_update": 0
+    },
+    "jircniv-rune-farlord-el-nix": {
+      "status": "alive",
+      "location": "baharuth-capital",
+      "attitude_to_player": "не знает игрока; при слухах о механисте увидит стратегический ресурс или угрозу",
+      "trust": 0,
+      "fear": 1,
+      "loyalty": "baharuth-empire",
+      "current_goal": "сохранять власть Империи и быстро оценивать новые силы",
+      "knowledge": [
+        {
+          "id": "fact-jircniv-ruler",
+          "text": "Джиркнив - расчетливый Император Бахарутской Империи.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "canon setup"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-jircniv-pragmatic-fear",
+          "text": "Джиркнив готов к прагматичным союзам, если сталкивается с силой выше обычной политики.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "защищать Империю",
+        "не позволять неизвестной силе расти без наблюдения",
+        "использовать таланты раньше врагов"
+      ],
+      "hard_constraints": [
+        "Не оставит слухи об абсолютной механической силе без разведки."
+      ],
+      "last_confirmed_update": 0
+    }
+  },
+  "factions": {
+    "nazarick": {
+      "leader": "ainz-ooal-gown",
+      "goals": [
+        "защитить Назарик",
+        "разведать Новый Мир",
+        "обнаружить возможных игроков или аномалии",
+        "расширять влияние без неоправданного риска"
+      ],
+      "resources": {
+        "power_level": "overwhelming",
+        "intelligence": "high",
+        "loyal_npcs": "many",
+        "public_visibility": "low"
+      },
+      "allies": [],
+      "opponents": ["slane-theocracy"],
+      "attitude_to_player": "пока не знает игрока; будет оценивать как аномалию при обнаружении",
+      "current_actions": [
+        "разведывает окрестности",
+        "собирает сведения о государствах",
+        "скрывает истинный масштаб сил"
+      ],
+      "constraints": [
+        "не раскрывает все силы без необходимости",
+        "решения зависят от приказов Аинза"
+      ]
+    },
+    "carne-village": {
+      "leader": "enri-emmot",
+      "goals": [
+        "выжить",
+        "защитить семьи",
+        "понять, кому можно доверять"
+      ],
+      "resources": {
+        "militia": "low",
+        "food": "limited",
+        "local_knowledge": "moderate"
+      },
+      "allies": [],
+      "opponents": [],
+      "attitude_to_player": "боится чужаков, но может принять защитника",
+      "current_actions": [
+        "живет на границе больших угроз",
+        "следит за дорогой и лесом"
+      ],
+      "constraints": [
+        "не имеет сил против серьезного отряда или монстров"
+      ]
+    },
+    "re-estize": {
+      "leader": "gazef-stronoff",
+      "goals": [
+        "удержать приграничные земли",
+        "защитить подданных",
+        "сохранить лицо Королевства"
+      ],
+      "resources": {
+        "army": "uneven",
+        "noble_support": "fragmented",
+        "adventurers": "available"
+      },
+      "allies": ["adventurers-guild"],
+      "opponents": ["baharuth-empire"],
+      "attitude_to_player": "будет осторожно оценивать неизвестного сильного чужака",
+      "current_actions": [
+        "патрулирует опасные зоны",
+        "реагирует на нападения и слухи"
+      ],
+      "constraints": [
+        "дворянская политика мешает быстрым решениям"
+      ]
+    },
+    "baharuth-empire": {
+      "leader": "jircniv-rune-farlord-el-nix",
+      "goals": [
+        "получить стратегическое преимущество",
+        "контролировать магические и военные таланты",
+        "нейтрализовать угрозы до их роста"
+      ],
+      "resources": {
+        "military": "disciplined",
+        "magic_academy": "strong",
+        "spies": "moderate"
+      },
+      "allies": [],
+      "opponents": ["re-estize"],
+      "attitude_to_player": "при обнаружении захочет оценить, завербовать или ограничить",
+      "current_actions": [
+        "наблюдает за соседями",
+        "собирает сведения о необычных силах"
+      ],
+      "constraints": [
+        "не знает о механисте на старте"
+      ]
+    },
+    "slane-theocracy": {
+      "leader": "unknown-scripture-command",
+      "goals": [
+        "защитить человечество по собственной догме",
+        "контролировать или уничтожать опасные аномалии",
+        "вести тайные операции"
+      ],
+      "resources": {
+        "scriptures": "elite",
+        "faith_network": "high",
+        "intelligence": "high"
+      },
+      "allies": [],
+      "opponents": ["nazarick"],
+      "attitude_to_player": "может счесть чужую силу чудом, угрозой или оружием",
+      "current_actions": [
+        "ведет тайные операции",
+        "следит за нелюдскими и сверхъестественными угрозами"
+      ],
+      "constraints": [
+        "не обязана раскрывать себя открыто"
+      ]
+    },
+    "adventurers-guild": {
+      "leader": "e-rantel-guildmaster",
+      "goals": [
+        "регистрировать задания",
+        "оценивать силу авантюристов",
+        "сдерживать угрозы для городов и торговых путей"
+      ],
+      "resources": {
+        "contracts": "many",
+        "information": "moderate",
+        "rank_system": "active"
+      },
+      "allies": ["re-estize"],
+      "opponents": [],
+      "attitude_to_player": "может дать легальный статус через испытания и задания",
+      "current_actions": [
+        "собирает слухи из Э-Рантела",
+        "оценивает необычных талантов через ранги"
+      ],
+      "constraints": [
+        "не признает абсолютную силу без проверок и свидетельств"
+      ]
+    },
+    "dwarven-runesmiths": {
+      "leader": "unknown-runesmith-master",
+      "goals": [
+        "сохранить ремесло",
+        "найти новые способы усилить руны и механизмы",
+        "выжить среди угроз гор"
+      ],
+      "resources": {
+        "workshops": "specialized",
+        "runes": "rare",
+        "metals": "high"
+      },
+      "allies": [],
+      "opponents": [],
+      "attitude_to_player": "пока не знает игрока; может стать ключом к позднему раскрытию силы",
+      "current_actions": [
+        "хранит ремесленные традиции",
+        "ищет способы не потерять мастерство"
+      ],
+      "constraints": [
+        "отдалены от стартовой локации"
+      ]
+    }
+  },
+  "locations": {
+    "abandoned-watermill-tob-edge": {
+      "description": "Заброшенная водяная мельница у края Великого леса Тоб: сломанное колесо, старые инструменты, сырость, укрытие и первый отклик силы механиста.",
+      "known_facts": [
+        {
+          "id": "fact-watermill-start",
+          "text": "Игрок очнулся в заброшенной мельнице, где сломанное колесо движется вопреки слабому потоку.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Мельница дает материалы только для простых механизмов, пока не найдены новые ресурсы.",
+        "Шум работающего механизма может привлечь свидетелей."
+      ]
+    },
+    "great-forest-of-tob": {
+      "description": "Великий лес Тоб: опасная дикая зона с монстрами, скрытыми тропами и существами, которые не обязаны бояться человека.",
+      "known_facts": [
+        {
+          "id": "fact-forest-danger",
+          "text": "В лесу слышны чужие голоса и движение; без разведки идти туда опасно.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Лес требует осторожности, разведки или проводника."
+      ]
+    },
+    "carne-village": {
+      "description": "Пограничная деревня Карн, уязвимая перед отрядами, монстрами и большими силами.",
+      "known_facts": [
+        {
+          "id": "fact-carne-nearby",
+          "text": "К югу от мельницы виден слабый огонь, вероятно деревня или хутор.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Деревня не доверяет опасным чужакам без поступков."
+      ]
+    },
+    "great-tomb-of-nazarick": {
+      "description": "Великая Гробница Назарик, скрытая база Аинза и его NPC, превосходящая обычные силы Нового Мира.",
+      "known_facts": [
+        {
+          "id": "fact-nazarick-exists",
+          "text": "Назарик существует в мире, но игрок на старте не знает его точного положения и природы.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign premise"
+        }
+      ],
+      "constraints": [
+        "Назарик не доступен игроку без разведки, приглашения, пленения или особого события."
+      ]
+    },
+    "e-rantel": {
+      "description": "Крепостной город Э-Рантел: ворота, гильдия авантюристов, торговля, алхимики, слухи и путь к легальному статусу.",
+      "known_facts": [
+        {
+          "id": "fact-e-rantel-hub",
+          "text": "Э-Рантел является ближайшим крупным центром информации, торговли и гильдейских заданий.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "world knowledge"
+        }
+      ],
+      "constraints": [
+        "Вход, регистрация и покупки требуют денег, языка, статуса или сопровождения."
+      ]
+    },
+    "re-estize-capital": {
+      "description": "Столица Королевства Ре-Эстиз: дворяне, интриги, бедность, власть короны и политическая слабость.",
+      "known_facts": [
+        {
+          "id": "fact-re-estize-politics",
+          "text": "Дворянская раздробленность Королевства мешает быстро реагировать на необычные угрозы.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "setting"
+        }
+      ],
+      "constraints": [
+        "Далека от стартовой точки и требует маршрута, денег или покровителя."
+      ]
+    },
+    "baharuth-capital": {
+      "description": "Столица Бахарутской Империи: дисциплина, магическая академия, разведка и власть Императора.",
+      "known_facts": [
+        {
+          "id": "fact-baharuth-distant",
+          "text": "Бахарутская Империя находится вне стартового района, но может заинтересоваться механистом позже.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "setting"
+        }
+      ],
+      "constraints": [
+        "Контакт с Империей требует известности, дороги или посредников."
+      ]
+    }
+  },
+  "resources": {
+    "modern-phone": {
+      "owner": "player",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Нет сети и заряд ограничен; может служить источником света, памяти, деталей или риска слухов."
+      ]
+    },
+    "pocket-lighter": {
+      "owner": "player",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Ограниченное топливо; выглядит как странный артефакт для местных."
+      ]
+    },
+    "scrap-iron": {
+      "owner": "player",
+      "quantity": 2,
+      "state": "available",
+      "constraints": [
+        "Хватает на малый ремонт или простую самодвижущуюся деталь, но не на боевого автомата."
+      ]
+    },
+    "old-mill-tools": {
+      "owner": "abandoned-watermill-tob-edge",
+      "quantity": 1,
+      "state": "available",
+      "constraints": [
+        "Старые грубые инструменты ограничивают точность работы."
+      ]
+    },
+    "mechanist-insight-level": {
+      "owner": "player",
+      "quantity": 0,
+      "state": "latent",
+      "constraints": [
+        "Уровень 0: ощущение механических связей. Повышение требует подтвержденных событий и state update."
+      ]
+    },
+    "old-waterwheel": {
+      "owner": "abandoned-watermill-tob-edge",
+      "quantity": 1,
+      "state": "damaged",
+      "constraints": [
+        "Может стать первым оживленным механизмом, если игрок починит ось и примет риск шума."
+      ]
+    },
+    "black-feather-arrow": {
+      "owner": "unknown",
+      "quantity": 1,
+      "state": "evidence",
+      "constraints": [
+        "Может быть уликой о недавнем отряде; происхождение не подтверждено."
+      ]
+    },
+    "local-currency": {
+      "owner": "player",
+      "quantity": 0,
+      "state": "missing",
+      "constraints": [
+        "Покупки и услуги Нового Мира требуют местных денег, обмена, работы или покровителя."
+      ]
+    }
+  },
+  "relationships": {
+    "player-ainz-ooal-gown": {
+      "from": "player",
+      "to": "ainz-ooal-gown",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Аинз пока не знает игрока; первое обнаружение механической аномалии изменит это."
+      ]
+    },
+    "player-nazarick": {
+      "from": "player",
+      "to": "nazarick",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Назарик является потенциальной сверхдержавой, союзом или смертельной угрозой."
+      ]
+    },
+    "player-carne-village": {
+      "from": "player",
+      "to": "carne-village",
+      "trust": 0,
+      "suspicion": 2,
+      "notes": [
+        "Деревня рядом, но чужой крупный мужчина со странными вещами может напугать жителей."
+      ]
+    },
+    "player-enri-emmot": {
+      "from": "player",
+      "to": "enri-emmot",
+      "trust": 0,
+      "suspicion": 1,
+      "notes": [
+        "Энри может стать первой человеческой связью, если игрок защитит или убедит деревню."
+      ]
+    },
+    "player-gazef-stronoff": {
+      "from": "player",
+      "to": "gazef-stronoff",
+      "trust": 0,
+      "suspicion": 1,
+      "notes": [
+        "Газеф может уважать поступки игрока, но обязан оценивать угрозы Королевству."
+      ]
+    },
+    "player-adventurers-guild": {
+      "from": "player",
+      "to": "adventurers-guild",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Гильдия может дать легальный путь к деньгам, информации и рангу."
+      ]
+    },
+    "player-baharuth-empire": {
+      "from": "player",
+      "to": "baharuth-empire",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Империя пока не знает игрока; слухи о механисте привлекут разведку."
+      ]
+    },
+    "player-slane-theocracy": {
+      "from": "player",
+      "to": "slane-theocracy",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Теократия может счесть способность игрока угрозой или полезным оружием."
+      ]
+    }
+  },
+  "active_threads": [
+    {
+      "id": "first-awakening",
+      "description": "Понять первое проявление способности механиста у заброшенной мельницы.",
+      "state": "open",
+      "participants": ["player"],
+      "deadlines": [
+        "До того, как шум или свет привлечет чужое внимание."
+      ],
+      "success_conditions": [
+        "игрок понимает базовые правила способности",
+        "починен или оживлен простой механизм",
+        "получен полезный инструмент, укрытие или разведчик"
+      ],
+      "failure_conditions": [
+        "мельница ломается громко и привлекает угрозу",
+        "игрок травмируется или расходует ценный современный предмет",
+        "аномальный след замечает чужой наблюдатель"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "find-carne",
+      "description": "Найти деревню Карн и решить, как войти в контакт с людьми Нового Мира.",
+      "state": "open",
+      "participants": ["player", "enri-emmot", "carne-village"],
+      "deadlines": [
+        "До наступления опасного ночного движения в лесу или приближения отряда."
+      ],
+      "success_conditions": [
+        "игрок получает безопасный первый контакт",
+        "деревня не воспринимает его как немедленную угрозу",
+        "появляется доступ к языку, еде, слухам или проводнику"
+      ],
+      "failure_conditions": [
+        "жители пугаются и поднимают тревогу",
+        "игрок приходит слишком поздно к угрозе",
+        "о чужаке быстро расходится опасный слух"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "nazarick-attention",
+      "description": "Определить, когда и как Назарик узнает о механической аномалии рядом с ранними событиями.",
+      "state": "open",
+      "participants": ["player", "ainz-ooal-gown", "demiurge", "nazarick"],
+      "deadlines": [
+        "Любая заметная демонстрация силы может ускорить наблюдение."
+      ],
+      "success_conditions": [
+        "игрок контролирует первое впечатление или скрывает следы",
+        "Назарик видит в нем полезную аномалию, а не немедленную угрозу",
+        "получен шанс на переговоры, наблюдение или отсрочку"
+      ],
+      "failure_conditions": [
+        "Назарик классифицирует игрока как угрозу",
+        "за игроком устанавливается скрытое наблюдение без его знания",
+        "механизм игрока попадает к Назарикy как образец"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "power-progression",
+      "description": "Раскрыть абсолютный потенциал механиста через опыт, материалы и риск.",
+      "state": "open",
+      "participants": ["player", "nfirea-bareare", "dwarven-runesmiths", "adventurers-guild"],
+      "deadlines": [
+        "Чем громче проявления силы, тем быстрее о них узнают фракции."
+      ],
+      "success_conditions": [
+        "получен новый уровень mechanist-insight-level",
+        "создан устойчивый малый механизм или мастерская",
+        "найден путь к магическим материалам или рунической технике"
+      ],
+      "failure_conditions": [
+        "эксперимент привлекает Клементин, Теократию или Назарик",
+        "игрок теряет редкие материалы",
+        "механизм выходит из-под контроля"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "canon-divergence",
+      "description": "Действия игрока могут изменить каноничные события вокруг Карна, Э-Рантела, Назарика и государств.",
+      "state": "open",
+      "participants": ["player", "nazarick", "re-estize", "baharuth-empire", "slane-theocracy"],
+      "deadlines": [
+        "Ранние решения рядом с Карном могут быстро сдвинуть канон."
+      ],
+      "success_conditions": [
+        "изменение канона имеет понятную причину и последствия",
+        "фракции реагируют согласно информации, которой они реально обладают",
+        "игрок получает новые возможности без потери логики мира"
+      ],
+      "failure_conditions": [
+        "слишком громкая аномалия запускает охоту",
+        "игрок теряет контроль над тем, кто знает о его происхождении",
+        "канонные силы используют его раньше, чем он понимает расклад"
+      ],
+      "confirmed_consequences": []
+    }
+  ],
+  "completed_threads": [],
+  "world_constraints": [
+    {
+      "id": "canon-setup-divergent-future",
+      "text": "Сетап Overlord каноничен на старте, но дальнейшие события могут меняться от подтвержденных действий игрока.",
+      "scope": "setting",
+      "turn": 0
+    },
+    {
+      "id": "player-agency",
+      "text": "Нарратор не решает за персонажа игрока его мысли, чувства, намерения, выбор или согласие.",
+      "scope": "player agency",
+      "turn": 0
+    },
+    {
+      "id": "mechanist-gradual-unlock",
+      "text": "Абсолютный потенциал власти над механизмами раскрывается постепенно и требует опыта, материалов, мастерской, риска или подтвержденного state update.",
+      "scope": "power",
+      "turn": 0
+    },
+    {
+      "id": "mechanisms-need-material",
+      "text": "Механизмы требуют материала, формы, времени, инструмента, источника движения или магического аналога; они не появляются из ничего без причины.",
+      "scope": "power",
+      "turn": 0
+    },
+    {
+      "id": "no-free-soul-or-resurrection",
+      "text": "Оживление механизмов не является бесплатным созданием живой души, воскрешением мертвых или универсальным контролем чужой магии.",
+      "scope": "power",
+      "turn": 0
+    },
+    {
+      "id": "nazarick-autonomy",
+      "text": "Назарик и его NPC сохраняют собственную лояльность, цели, ресурсы и подозрительность; они не становятся союзниками игрока без причины.",
+      "scope": "characters",
+      "turn": 0
+    },
+    {
+      "id": "state-before-power-jump",
+      "text": "Новые уровни силы, союзов, репутации, мастерских и доступа к важным фракциям требуют canonical state update.",
+      "scope": "gateway",
+      "turn": 0
+    }
+  ],
+  "timeline": [
+    {
+      "turn": 0,
+      "event": "Назарик перенесен в Новый Мир и начинает осторожно собирать сведения.",
+      "confirmed": true,
+      "participants": ["ainz-ooal-gown", "nazarick"]
+    },
+    {
+      "turn": 0,
+      "event": "Игрок, 30-летний попаданец из Москвы XXI века, очнулся у заброшенной мельницы возле Великого леса Тоб.",
+      "confirmed": true,
+      "participants": ["player"]
+    },
+    {
+      "turn": 0,
+      "event": "Сломанное мельничное колесо отвечает на присутствие игрока невозможным движением.",
+      "confirmed": true,
+      "participants": ["player"]
+    },
+    {
+      "turn": 0,
+      "event": "На полу мельницы найдена стрела с черным оперением, происхождение которой пока неизвестно.",
+      "confirmed": true,
+      "participants": ["player"]
+    }
+  ],
+  "last_turn": {
+    "turn": 0,
+    "player_message": "",
+    "narrator_response": "",
+    "state_patch_id": ""
+  },
+  "uncertain_facts": [
+    {
+      "id": "rumor-nearby-voices",
+      "text": "Голоса за стеной мельницы могут принадлежать солдатам, бандитам, разведчикам или лесным существам.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "opening scene"
+    },
+    {
+      "id": "rumor-black-arrow-origin",
+      "text": "Черная стрела может быть следом тайного отряда или локальной угрозы, но ее происхождение не подтверждено.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "opening scene"
+    },
+    {
+      "id": "rumor-nazarick-may-notice",
+      "text": "Если первый оживленный механизм будет заметным, Назарик или другие фракции могут узнать об аномалии раньше каноничного хода событий.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "gm"
+    }
+  ]
+}

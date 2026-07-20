@@ -1,0 +1,31 @@
+{
+  "id": "mechanist-new-world",
+  "title": "Механист Нового Мира",
+  "language": "ru",
+  "mode": "canon-faithful divergent fan campaign",
+  "tone": ["темное фэнтези", "исекай", "политическая интрига", "выживание", "техномагическое возвышение"],
+  "status": "playable",
+  "premise": "Каноничный сетап Overlord: Назарик перенесен в Новый Мир, ключевые фракции и персонажи существуют, но дальнейшие события могут меняться от действий игрока. Игрок - 30-летний попаданец из Москвы XXI века с постепенно раскрывающейся абсолютной властью над механизмами.",
+  "player_role": "30-летний мужчина-попаданец из Москвы XXI века, рост 187 см, вес 110 кг. Появляется у заброшенной водяной мельницы возле Великого леса Тоб, недалеко от деревни Карн. Его способность создавать и оживлять механизмы имеет абсолютный потенциал, но на старте раскрывается только через осознание, опыт, материалы, мастерскую и подтвержденные события.",
+  "created_for": "sillytavern-rp-gateway",
+  "assumptions": [
+    "Сетап основан на аниме Overlord: Назарик, Аинз, Стражи этажей и основные государства Нового Мира существуют.",
+    "Кампания начинается в ранний период после переноса Назарика, до того как действия игрока существенно изменили канон.",
+    "Используются краткие справочные описания канона и оригинальная игровая ситуация; дальнейшие события canon-divergent.",
+    "Имя персонажа игрок задает при создании партии; стартовая роль фиксирует происхождение, возраст, телосложение и способность."
+  ],
+  "files": {
+    "campaign_bible": "campaign-bible.md",
+    "state_seed": "state-seed.json",
+    "gm_system": "prompts/gm-system.md",
+    "authors_note": "prompts/authors-note.md",
+    "opening_scene": "prompts/opening-scene.md",
+    "world_info": "world-info/index.md",
+    "sillytavern_lorebook": "sillytavern/mechanist-new-world.json",
+    "characters": "characters/index.md",
+    "checks": "rules/checks.md",
+    "quick_replies": "quick-replies/notes.md",
+    "setup_flow": "setup-flow.md",
+    "server_installer": "../../scripts/install-worldpack.py"
+  }
+}
