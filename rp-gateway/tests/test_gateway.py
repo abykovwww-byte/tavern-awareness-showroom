@@ -231,6 +231,42 @@ def test_party_model_can_be_changed(tmp_path: Path):
     assert changed.json()["party"]["model_profile"]["model"] == models[1]["model"]
 
 
+def test_party_context_estimate_reports_usage_and_trimmed_history(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+    character = c.post(
+        "/api/player-characters",
+        json={"worldpack_id": "demo-world", "name": "Mira", "description": "Investigator", "profile": {}},
+    ).json()["player_character"]
+    party = c.post(
+        "/api/parties",
+        json={
+            "title": "Context Estimate",
+            "worldpack_id": "demo-world",
+            "player_character_id": character["id"],
+            "model_profile_id": models[0]["id"],
+        },
+    ).json()["party"]
+
+    for index in range(7):
+        response = c.post(
+            f"/api/parties/{party['id']}/messages",
+            json={"content": f'/check information skill=1 difficulty=5 goal="clue {index}"'},
+            headers={"Authorization": "Bearer test"},
+        )
+        assert response.status_code == 200
+
+    estimate = c.get(f"/api/parties/{party['id']}/context").json()["context"]
+    assert estimate["context_limit_tokens"] == 1_000_000
+    assert estimate["estimated_prompt_tokens"] > 0
+    assert estimate["estimated_total_tokens"] >= estimate["estimated_prompt_tokens"]
+    assert estimate["history_turns_total"] == 7
+    assert estimate["direct_history_messages"] == 11
+    assert estimate["history_limited"] is True
+    assert estimate["omitted_history_turns_estimate"] > 0
+
+
 def test_build_catalog_parser_discards_non_rp_models():
     html = """
     <a href="/meta/llama-3_3-70b-instruct">Llama</a>

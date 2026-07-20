@@ -29,6 +29,7 @@ from app.models.schemas import (
     WorldInstructionRequest,
 )
 from app.services.adjudicator import Adjudicator
+from app.services.context_estimator import estimate_party_context
 from app.services.party_store import PartyStore
 from app.services.state_store import StateStore
 
@@ -195,6 +196,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "party_id": party_id,
             "turns": party_state_store.turn_history(limit=limit),
             "state_versions": party_state_store.history(limit=limit),
+        }
+
+    @app.get("/api/parties/{party_id}/context")
+    def get_party_context(party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+            model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "context": estimate_party_context(party_state_store, party_settings, model_profile),
         }
 
     @app.post("/api/parties/{party_id}/messages")

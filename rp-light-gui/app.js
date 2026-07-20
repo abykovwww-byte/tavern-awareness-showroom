@@ -4,6 +4,7 @@ const appState = {
   parties: [],
   activeParty: null,
   partyState: null,
+  contextEstimate: null,
   history: null,
   proposals: [],
   busy: false,
@@ -23,6 +24,7 @@ const els = {
   messageSubmit: document.querySelector("#messageSubmit"),
   partyMeta: document.querySelector("#partyMeta"),
   stateSummary: document.querySelector("#stateSummary"),
+  contextSummary: document.querySelector("#contextSummary"),
   proposalList: document.querySelector("#proposalList"),
   toast: document.querySelector("#toast"),
   partyDialog: document.querySelector("#partyDialog"),
@@ -119,6 +121,7 @@ async function boot() {
     } else {
       appState.activeParty = null;
       appState.partyState = null;
+      appState.contextEstimate = null;
       appState.history = null;
       appState.proposals = [];
       renderAll();
@@ -143,16 +146,18 @@ async function reloadActiveParty() {
     return;
   }
   const partyId = appState.activeParty.id;
-  const [party, partyState, history, proposals] = await Promise.all([
+  const [party, partyState, history, proposals, context] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
     apiGet(`/api/parties/${partyId}/world/proposals`),
+    apiGet(`/api/parties/${partyId}/context`),
   ]);
   appState.activeParty = party.party;
   appState.partyState = partyState.state;
   appState.history = history;
   appState.proposals = proposals.proposals || [];
+  appState.contextEstimate = context.context || null;
   renderAll();
 }
 
@@ -161,6 +166,7 @@ function renderAll() {
   renderHeader();
   renderMeta();
   renderState();
+  renderContext();
   renderChat();
   renderProposals();
   renderMessageControls();
@@ -249,6 +255,48 @@ function renderState() {
       "Активные сюжетные линии, которые GM должен помнить.",
     ),
   ].join("");
+}
+
+function renderContext() {
+  if (!els.contextSummary) return;
+  const estimate = appState.contextEstimate;
+  if (!appState.activeParty) {
+    els.contextSummary.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
+    return;
+  }
+  if (!estimate) {
+    els.contextSummary.innerHTML = `<div class="state-item">Оценка контекста еще не загружена.</div>`;
+    return;
+  }
+  const percent = typeof estimate.usage_ratio === "number" ? estimate.usage_ratio * 100 : null;
+  const fill = percent === null ? 0 : Math.max(2, Math.min(100, percent));
+  const percentLabel = percent === null ? "лимит неизвестен" : `${formatPercent(percent)} лимита`;
+  const limitLabel = estimate.context_limit_tokens ? formatTokens(estimate.context_limit_tokens) : "неизвестно";
+  const notes = Array.isArray(estimate.notes) ? estimate.notes : [];
+  const historyText = [
+    `в prompt ${estimate.direct_history_messages ?? 0} сообщений`,
+    `примерно ${estimate.direct_history_turns_estimate ?? 0} ходов`,
+    `всего ${estimate.history_turns_total ?? 0}`,
+  ].join(" · ");
+  const omitted = Number(estimate.omitted_history_turns_estimate || 0);
+  const historyHint = omitted
+    ? `Еще ${omitted} старых ходов не попадут в прямой prompt; они остаются в storage/state.`
+    : "Все сохраненные ходы сейчас помещаются в прямое окно prompt.";
+  const stateTokens = estimate.state_summary_tokens ? formatTokens(estimate.state_summary_tokens) : "0";
+  const historyTokens = estimate.direct_history_tokens ? formatTokens(estimate.direct_history_tokens) : "0";
+  els.contextSummary.innerHTML = `
+    <div class="context-meter ${escapeHtml(estimate.severity || "unknown")}" title="Оценка приблизительная: tokenizer NVIDIA недоступен, считаем по размеру prompt.">
+      <div class="context-meter-head">
+        <strong>~${formatTokens(estimate.estimated_total_tokens)} токенов</strong>
+        <span>${escapeHtml(percentLabel)}</span>
+      </div>
+      <div class="context-bar"><span style="width: ${fill}%"></span></div>
+    </div>
+    ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
+    ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
+    ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · история ~${escapeHtml(historyTokens)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
+    ${notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : ""}
+  `;
 }
 
 function renderChat() {
@@ -799,6 +847,19 @@ function showToast(message) {
   els.toast.classList.add("show");
   window.clearTimeout(showToast.timeout);
   showToast.timeout = window.setTimeout(() => els.toast.classList.remove("show"), 3600);
+}
+
+function formatTokens(value) {
+  const number = Number(value || 0);
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 100_000 ? 0 : 1)}k`;
+  return `${Math.round(number)}`;
+}
+
+function formatPercent(value) {
+  if (value < 1) return `${value.toFixed(2)}%`;
+  if (value < 10) return `${value.toFixed(1)}%`;
+  return `${Math.round(value)}%`;
 }
 
 function escapeHtml(value) {
