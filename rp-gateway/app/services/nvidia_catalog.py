@@ -253,12 +253,17 @@ SKIP_MODEL_TERMS = {
     "embed",
     "embedding",
     "rerank",
+    "ranking",
     "classify",
     "guard",
     "safety",
     "whisper",
     "tts",
     "speech",
+    "audio",
+    "asr",
+    "ocr",
+    "clip",
     "image",
     "diffusion",
     "calibration",
@@ -266,6 +271,41 @@ SKIP_MODEL_TERMS = {
     "topic-control",
     "paligemma",
     "lipsync",
+    "translate",
+    "riva",
+    "vila",
+    "neva",
+    "nvclip",
+    "palmyra-fin",
+    "palmyra-med",
+}
+
+CHAT_MODEL_TERMS = {
+    "baichuan",
+    "chat",
+    "command",
+    "deepseek",
+    "dbrx",
+    "gemma",
+    "glm",
+    "gpt-oss",
+    "granite",
+    "inkling",
+    "instruct",
+    "laguna",
+    "llama",
+    "mistral",
+    "mixtral",
+    "nemotron",
+    "palmyra-creative",
+    "phi",
+    "qwen",
+    "sarvam",
+    "seed",
+    "solar",
+    "step",
+    "yi",
+    "zamba",
 }
 
 
@@ -378,21 +418,22 @@ def fetch_integrate_api_profiles(settings: Any) -> list[dict[str, Any]]:
         if model_id and is_rp_candidate(model_id):
             models.append(model_id)
     profiles: list[dict[str, Any]] = []
+    known_static = {item["model"]: item for item in STATIC_NVIDIA_MODELS}
     for index, model_id in enumerate(sorted(set(models))):
+        item = dict(known_static.get(model_id, {}))
+        item.setdefault("model", model_id)
+        item.setdefault("title", display_title_from_model(model_id))
+        item.setdefault("publisher", publisher_from_model(model_id))
+        item.setdefault("description", "Модель возвращена NVIDIA OpenAI-compatible /v1/models для текущего ключа.")
+        item.setdefault("rp_fit", "Endpoint сообщает, что модель доступна для ключа; RP-качество нужно проверить на короткой сцене.")
+        item.setdefault("context_window", "уточняется endpoint")
+        item.setdefault("tags", ["live api"])
+        item["availability"] = "NVIDIA /v1/models"
+        item.setdefault("catalog_url", f"https://build.nvidia.com/{model_id}")
         profiles.append(
             profile_payload(
                 settings,
-                {
-                    "model": model_id,
-                    "title": display_title_from_model(model_id),
-                    "publisher": publisher_from_model(model_id),
-                    "description": "Модель возвращена NVIDIA OpenAI-compatible /v1/models для текущего ключа.",
-                    "rp_fit": "Endpoint сообщает, что модель доступна для ключа; RP-качество нужно проверить на короткой сцене.",
-                    "context_window": "уточняется endpoint",
-                    "tags": ["live api"],
-                    "availability": "NVIDIA /v1/models",
-                    "catalog_url": f"https://build.nvidia.com/{model_id}",
-                },
+                item,
                 rank=500 + index,
                 source="nvidia_api_live",
             )
@@ -425,7 +466,7 @@ def model_id_from_href(href: str) -> str | None:
 
 def is_rp_candidate(model_id: str) -> bool:
     lower = model_id.lower()
-    return "/" in lower and not any(term in lower for term in SKIP_MODEL_TERMS)
+    return "/" in lower and not any(term in lower for term in SKIP_MODEL_TERMS) and any(term in lower for term in CHAT_MODEL_TERMS)
 
 
 def display_title_from_model(model_id: str) -> str:

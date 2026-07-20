@@ -123,9 +123,23 @@ class PartyStore:
             )
 
     def seed_model_profiles(self) -> None:
+        self.prune_unused_live_model_profiles()
         for profile in static_model_profiles(self.settings):
             self.upsert_model_profile(profile)
         self.refresh_live_model_profiles_if_due()
+
+    def prune_unused_live_model_profiles(self) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM model_profiles
+                WHERE id NOT IN (SELECT model_profile_id FROM parties)
+                  AND (
+                    params_json LIKE '%"source": "nvidia_api_live"%'
+                    OR params_json LIKE '%"source": "build_nvidia_live"%'
+                  )
+                """
+            )
 
     def upsert_model_profile(self, profile: dict[str, Any]) -> None:
         timestamp = now_iso()
@@ -165,7 +179,8 @@ class PartyStore:
             return
         if self.settings.app_env == "test" or self.settings.nvidia_api_base.startswith("mock://"):
             return
-        if not self.cache_due("nvidia_model_catalog_refresh", self.settings.nvidia_model_catalog_ttl_seconds):
+        cache_key = "nvidia_model_catalog_refresh_v2"
+        if not self.cache_due(cache_key, self.settings.nvidia_model_catalog_ttl_seconds):
             return
         profiles: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -190,7 +205,7 @@ class PartyStore:
             "error": ";".join(errors),
             "profiles": len(seen),
         }
-        self.cache_set("nvidia_model_catalog_refresh", status)
+        self.cache_set(cache_key, status)
 
     def cache_due(self, key: str, ttl_seconds: int) -> bool:
         if ttl_seconds <= 0:
