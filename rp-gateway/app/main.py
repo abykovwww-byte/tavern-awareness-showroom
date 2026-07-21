@@ -9,7 +9,7 @@ from dataclasses import replace
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import Settings, get_settings
@@ -18,6 +18,7 @@ from app.models.schemas import (
     ChatCompletionRequest,
     ChatMessage,
     HealthResponse,
+    LoginRequest,
     Outcome,
     PatchEnvelope,
     PartyCheckRequest,
@@ -30,11 +31,18 @@ from app.models.schemas import (
     PartyStartRequest,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
+    ProviderApiKeyCreate,
+    ProviderApiKeyUpdate,
+    UserCreate,
+    UserDeleteRequest,
+    UserPasswordUpdate,
+    UserStatusUpdate,
     WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
 )
 from app.services.adjudicator import Adjudicator
+from app.services.auth_store import AuthStore, AuthUser
 from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
@@ -52,14 +60,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
     store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
-    adjudicator = Adjudicator(settings, store)
-    party_store = PartyStore(settings)
+    auth_store = AuthStore(settings)
+    party_store = PartyStore(settings, default_owner_user_id=auth_store.default_owner_user_id())
 
     app = FastAPI(title="RP Gateway", version="0.5.0")
     app.state.settings = settings
     app.state.store = store
-    app.state.adjudicator = adjudicator
+    app.state.auth_store = auth_store
+    app.state.adjudicator = Adjudicator(settings, store)
     app.state.party_store = party_store
+
+    def settings_with_provider_key(base: Settings) -> Settings:
+        secret = auth_store.default_provider_secret(base.nvidia_api_base)
+        if secret:
+            return replace(base, nvidia_api_key=secret)
+        return base
+
+    def runtime_settings_for_party(party: Any) -> Settings:
+        return settings_with_provider_key(settings_for_party(settings, party))
+
+    def current_user(request: Request) -> AuthUser | None:
+        if not settings.auth_enabled:
+            return None
+        user = getattr(request.state, "user", None)
+        if not isinstance(user, AuthUser):
+            raise HTTPException(status_code=401, detail="authentication required")
+        return user
+
+    def owner_user_id(request: Request) -> str | None:
+        user = current_user(request)
+        return user.id if user else None
+
+    def require_admin(request: Request) -> AuthUser | None:
+        user = current_user(request)
+        if settings.auth_enabled and (not user or not user.is_admin):
+            raise HTTPException(status_code=403, detail="admin role required")
+        return user
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        if not settings.auth_enabled or not request.url.path.startswith("/api/"):
+            return await call_next(request)
+        if request.url.path.startswith("/api/auth/"):
+            return await call_next(request)
+        token = request.cookies.get(settings.auth_session_cookie_name)
+        user = auth_store.user_for_session(token)
+        if user is None:
+            return JSONResponse({"detail": "authentication required"}, status_code=401)
+        request.state.user = user
+        return await call_next(request)
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -71,62 +120,197 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status = "ok" if database == "ok" else "error"
         return HealthResponse(status=status, campaign_id=settings.campaign_id, database=database)
 
+    @app.get("/api/auth/me")
+    def auth_me(request: Request) -> dict[str, Any]:
+        user = auth_store.user_for_session(request.cookies.get(settings.auth_session_cookie_name)) if settings.auth_enabled else None
+        return {
+            "auth_enabled": settings.auth_enabled,
+            "authenticated": user is not None or not settings.auth_enabled,
+            "user": user.public_dict() if user else None,
+        }
+
+    @app.post("/api/auth/login")
+    def auth_login(request: LoginRequest, response: Response) -> dict[str, Any]:
+        if not settings.auth_enabled:
+            return {"auth_enabled": False, "authenticated": True, "user": None}
+        user = auth_store.authenticate(request.username, request.password)
+        if user is None:
+            raise HTTPException(status_code=401, detail="invalid username or password")
+        token = auth_store.create_session(user.id)
+        response.set_cookie(
+            settings.auth_session_cookie_name,
+            token,
+            max_age=settings.auth_session_ttl_seconds,
+            httponly=True,
+            secure=settings.auth_cookie_secure,
+            samesite="lax",
+        )
+        return {"auth_enabled": True, "authenticated": True, "user": user.public_dict()}
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request, response: Response) -> dict[str, Any]:
+        auth_store.delete_session(request.cookies.get(settings.auth_session_cookie_name))
+        response.delete_cookie(settings.auth_session_cookie_name)
+        return {"logged_out": True}
+
+    @app.get("/api/admin/users")
+    def admin_list_users(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        users = auth_store.list_users()
+        return {
+            "users": [
+                {
+                    **user.public_dict(),
+                    "party_count": len(party_store.list_parties(owner_user_id=user.id)),
+                    "character_count": len(party_store.list_player_characters(owner_user_id=user.id)),
+                }
+                for user in users
+            ]
+        }
+
+    @app.post("/api/admin/users")
+    def admin_create_user(request: Request, payload: UserCreate) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            user = auth_store.create_user(payload.username, payload.password, payload.role)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"user": user.public_dict()}
+
+    @app.patch("/api/admin/users/{user_id}/password")
+    def admin_set_user_password(request: Request, user_id: str, payload: UserPasswordUpdate) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            user = auth_store.set_password(user_id, payload.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"user": user.public_dict()}
+
+    @app.patch("/api/admin/users/{user_id}/status")
+    def admin_set_user_status(request: Request, user_id: str, payload: UserStatusUpdate) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            user = auth_store.set_user_status(user_id, payload.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"user": user.public_dict()}
+
+    @app.delete("/api/admin/users/{user_id}")
+    def admin_delete_user(request: Request, user_id: str, payload: UserDeleteRequest = UserDeleteRequest()) -> dict[str, Any]:
+        admin = require_admin(request)
+        if admin and admin.id == user_id:
+            raise HTTPException(status_code=400, detail="cannot delete the current admin session user")
+        try:
+            if payload.delete_data:
+                party_store.delete_user_data(user_id)
+            elif party_store.list_parties(owner_user_id=user_id) or party_store.list_player_characters(owner_user_id=user_id):
+                raise ValueError("user still owns parties or characters")
+            auth_store.delete_user(user_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True, "user_id": user_id, "deleted_data": payload.delete_data}
+
+    @app.get("/api/admin/api-keys")
+    def admin_list_api_keys(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        return {"api_keys": [key.public_dict() for key in auth_store.list_provider_api_keys()]}
+
+    @app.post("/api/admin/api-keys")
+    def admin_create_api_key(request: Request, payload: ProviderApiKeyCreate) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            key = auth_store.create_provider_api_key(
+                label=payload.label,
+                secret_value=payload.api_key,
+                provider=payload.provider,
+                base_url=payload.base_url,
+                is_default=payload.is_default,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"api_key": key.public_dict()}
+
+    @app.patch("/api/admin/api-keys/{key_id}")
+    def admin_update_api_key(request: Request, key_id: str, payload: ProviderApiKeyUpdate) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            key = auth_store.update_provider_api_key(
+                key_id,
+                label=payload.label,
+                secret_value=payload.api_key,
+                is_default=payload.is_default,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"api_key": key.public_dict()}
+
+    @app.delete("/api/admin/api-keys/{key_id}")
+    def admin_delete_api_key(request: Request, key_id: str) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            auth_store.delete_provider_api_key(key_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True, "api_key_id": key_id}
+
     @app.get("/api/state")
-    def get_state() -> dict[str, Any]:
+    def get_state(request: Request) -> dict[str, Any]:
+        require_admin(request)
         return {"campaign_id": settings.campaign_id, "state": store.get_state()}
 
     @app.get("/api/state/history")
-    def get_history(limit: int = 50) -> dict[str, Any]:
+    def get_history(request: Request, limit: int = 50) -> dict[str, Any]:
+        require_admin(request)
         return {"campaign_id": settings.campaign_id, "history": store.history(limit=limit)}
 
     @app.get("/api/worldpacks")
-    def list_worldpacks() -> dict[str, Any]:
-        return {"worldpacks": [pack.model_dump(mode="json") for pack in party_store.list_worldpacks()]}
+    def list_worldpacks(request: Request) -> dict[str, Any]:
+        return {"worldpacks": [pack.model_dump(mode="json") for pack in party_store.list_worldpacks(owner_user_id=owner_user_id(request))]}
 
     @app.post("/api/worldpacks/prompt")
-    def create_prompt_worldpack(request: WorldPromptCreate) -> dict[str, Any]:
+    def create_prompt_worldpack(request: Request, payload: WorldPromptCreate) -> dict[str, Any]:
         try:
-            pack = party_store.create_prompt_worldpack(request)
+            pack = party_store.create_prompt_worldpack(payload, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"worldpack": pack.model_dump(mode="json")}
 
     @app.get("/api/worldpacks/{worldpack_id}")
-    def get_worldpack(worldpack_id: str) -> dict[str, Any]:
+    def get_worldpack(request: Request, worldpack_id: str) -> dict[str, Any]:
         try:
-            pack = party_store.get_worldpack(worldpack_id)
+            pack = party_store.get_worldpack(worldpack_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"worldpack": pack.model_dump(mode="json")}
 
     @app.get("/api/worldpacks/{worldpack_id}/player-templates")
-    def player_templates(worldpack_id: str) -> dict[str, Any]:
+    def player_templates(request: Request, worldpack_id: str) -> dict[str, Any]:
         try:
-            templates = party_store.player_templates(worldpack_id)
+            templates = party_store.player_templates(worldpack_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"worldpack_id": worldpack_id, "templates": [template.model_dump(mode="json") for template in templates]}
 
     @app.get("/api/player-characters")
-    def list_player_characters(worldpack_id: str | None = None) -> dict[str, Any]:
-        characters = party_store.list_player_characters(worldpack_id=worldpack_id)
+    def list_player_characters(request: Request, worldpack_id: str | None = None) -> dict[str, Any]:
+        characters = party_store.list_player_characters(worldpack_id=worldpack_id, owner_user_id=owner_user_id(request))
         return {"player_characters": [character.model_dump(mode="json") for character in characters]}
 
     @app.post("/api/player-characters/draft")
-    def draft_player_character(request: PlayerCharacterDraftRequest) -> dict[str, Any]:
+    def draft_player_character(request: Request, payload: PlayerCharacterDraftRequest) -> dict[str, Any]:
         try:
-            pack = party_store.get_worldpack(request.worldpack_id)
+            pack = party_store.get_worldpack(payload.worldpack_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        description = request.concept.strip() or str(pack.manifest.get("player_role") or "Player character")
+        description = payload.concept.strip() or str(pack.manifest.get("player_role") or "Player character")
         return {
             "draft": {
-                "worldpack_id": request.worldpack_id,
-                "name": request.name,
+                "worldpack_id": payload.worldpack_id,
+                "name": payload.name,
                 "description": description,
                 "profile": {
                     "source": "light-gui-draft",
-                    "worldpack_id": request.worldpack_id,
+                    "worldpack_id": payload.worldpack_id,
                     "world_title": pack.title,
                     "concept": description,
                 },
@@ -134,76 +318,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/player-characters")
-    def create_player_character(request: PlayerCharacterCreate) -> dict[str, Any]:
+    def create_player_character(request: Request, payload: PlayerCharacterCreate) -> dict[str, Any]:
         try:
-            character = party_store.create_player_character(request)
+            character = party_store.create_player_character(payload, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"player_character": character.model_dump(mode="json")}
 
     @app.get("/api/model-profiles")
     def list_model_profiles() -> dict[str, Any]:
+        party_store.settings = settings_with_provider_key(settings)
         profiles = party_store.list_model_profiles()
         return {"model_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
     @app.get("/api/parties")
-    def list_parties() -> dict[str, Any]:
-        return {"parties": [party.model_dump(mode="json") for party in party_store.list_parties()]}
+    def list_parties(request: Request) -> dict[str, Any]:
+        return {"parties": [party.model_dump(mode="json") for party in party_store.list_parties(owner_user_id=owner_user_id(request))]}
 
     @app.post("/api/parties")
-    def create_party(request: PartyCreate) -> dict[str, Any]:
+    def create_party(request: Request, payload: PartyCreate) -> dict[str, Any]:
         try:
-            party = party_store.create_party(request)
+            party = party_store.create_party(payload, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
     @app.get("/api/parties/{party_id}")
-    def get_party(party_id: str) -> dict[str, Any]:
+    def get_party(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
     @app.post("/api/parties/{party_id}/activate")
-    def activate_party(party_id: str) -> dict[str, Any]:
+    def activate_party(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.activate_party(party_id)
+            party = party_store.activate_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
     @app.delete("/api/parties/{party_id}")
-    def delete_party(party_id: str) -> dict[str, Any]:
+    def delete_party(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party_store.delete_party(party_id)
+            party_store.delete_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "party_id": party_id}
 
     @app.patch("/api/parties/{party_id}/model")
-    def update_party_model(party_id: str, request: PartyModelUpdate) -> dict[str, Any]:
+    def update_party_model(request: Request, party_id: str, payload: PartyModelUpdate) -> dict[str, Any]:
         try:
-            party = party_store.update_party_model(party_id, request.model_profile_id)
+            party = party_store.update_party_model(party_id, payload.model_profile_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
     @app.get("/api/parties/{party_id}/state")
-    def get_party_state(party_id: str) -> dict[str, Any]:
+    def get_party_state(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state = party_store.store_for_party(party_id).get_state()
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request)).get_state()
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party_id": party.id, "state_campaign_id": party.state_campaign_id, "state": party_state}
 
     @app.get("/api/parties/{party_id}/history")
-    def get_party_history(party_id: str, limit: int = 50) -> dict[str, Any]:
+    def get_party_history(request: Request, party_id: str, limit: int = 50) -> dict[str, Any]:
         try:
-            party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
+            party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
@@ -213,11 +398,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/memory")
-    def get_party_memory(party_id: str, limit: int = 5) -> dict[str, Any]:
+    def get_party_memory(request: Request, party_id: str, limit: int = 5) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summarizer = MemorySummarizer(party_settings, party_state_store)
@@ -230,14 +415,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/memory/summarize")
     async def summarize_party_memory(
+        http_request: Request,
         party_id: str,
         request: PartyMemorySummarizeRequest = PartyMemorySummarizeRequest(),
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
             result = await MemorySummarizer(party_settings, party_state_store).summarize(
                 authorization,
                 force=request.force,
@@ -255,11 +441,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"party_id": party_id, **result}
 
     @app.delete("/api/parties/{party_id}/memory/latest")
-    def delete_party_memory_latest(party_id: str) -> dict[str, Any]:
+    def delete_party_memory_latest(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         deleted = party_state_store.delete_latest_memory_summary()
@@ -272,11 +458,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/context")
-    def get_party_context(party_id: str) -> dict[str, Any]:
+    def get_party_context(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -286,10 +472,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/characters")
-    def get_party_characters(party_id: str) -> dict[str, Any]:
+    def get_party_characters(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {
@@ -299,11 +485,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/journal")
-    def get_party_journal(party_id: str, limit: int = 8) -> dict[str, Any]:
+    def get_party_journal(request: Request, party_id: str, limit: int = 8) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         journal = JournalBuilder(party_settings, party_state_store)
@@ -316,14 +502,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/journal/summarize")
     async def summarize_party_journal(
+        http_request: Request,
         party_id: str,
         request: PartyJournalSummarizeRequest = PartyJournalSummarizeRequest(),
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
             result = await JournalBuilder(party_settings, party_state_store).summarize(
                 authorization,
                 force=request.force,
@@ -341,11 +528,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"party_id": party_id, **result}
 
     @app.delete("/api/parties/{party_id}/journal/latest")
-    def delete_party_journal_latest(party_id: str) -> dict[str, Any]:
+    def delete_party_journal_latest(request: Request, party_id: str) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         deleted = party_state_store.delete_latest_journal_entry()
@@ -360,11 +547,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/parties/{party_id}/prompt/preview")
-    def preview_party_prompt(party_id: str, request: PartyPromptPreviewRequest) -> dict[str, Any]:
+    def preview_party_prompt(http_request: Request, party_id: str, request: PartyPromptPreviewRequest) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
@@ -375,15 +562,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/start")
     async def start_party(
+        http_request: Request,
         party_id: str,
         request: PartyStartRequest = PartyStartRequest(),
         authorization: str | None = Header(default=None),
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -469,15 +657,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/messages")
     async def party_message(
+        http_request: Request,
         party_id: str,
         request: PartyMessageRequest,
         authorization: str | None = Header(default=None),
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
             chat_request = party_chat_request(
                 party_state_store,
@@ -507,12 +696,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/checks")
     async def party_check(
+        http_request: Request,
         party_id: str,
         request: PartyCheckRequest,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         command = check_command(request)
         return await party_message(
+            http_request,
             party_id,
             PartyMessageRequest(content=command),
             authorization=authorization,
@@ -521,14 +712,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/parties/{party_id}/world/instruct")
     async def party_world_instruct(
+        http_request: Request,
         party_id: str,
         request: WorldInstructionRequest,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id)
-            party_state_store = party_store.store_for_party(party_id)
-            party_settings = settings_for_party(settings, party)
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
             world = Adjudicator(party_settings, party_state_store).world
             draft = await world.draft_instruction(request.instruction, authorization)
             party_state_store.create_patch_proposal(draft.patch)
@@ -550,17 +742,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/world/proposals")
-    def party_world_proposals(party_id: str, limit: int = 10) -> dict[str, Any]:
+    def party_world_proposals(request: Request, party_id: str, limit: int = 10) -> dict[str, Any]:
         try:
-            party_state_store = party_store.store_for_party(party_id)
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party_id": party_id, "proposals": party_state_store.pending_patches(limit=limit)}
 
     @app.post("/api/parties/{party_id}/world/apply")
-    def party_world_apply(party_id: str, request: WorldApplyRequest) -> dict[str, Any]:
+    def party_world_apply(http_request: Request, party_id: str, request: WorldApplyRequest) -> dict[str, Any]:
         try:
-            party_state_store = party_store.store_for_party(party_id)
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             patch = party_state_store.get_pending_patch(request.proposal_id)
             if not request.confirm:
                 return {"party_id": party_id, "applied": False, "would_apply": patch.model_dump(mode="json")}
@@ -570,9 +762,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"party_id": party_id, "applied": True, "state": state}
 
     @app.post("/api/parties/{party_id}/world/discard")
-    def party_world_discard(party_id: str, request: WorldApplyRequest) -> dict[str, Any]:
+    def party_world_discard(http_request: Request, party_id: str, request: WorldApplyRequest) -> dict[str, Any]:
         try:
-            party_state_store = party_store.store_for_party(party_id)
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             proposal_id = party_state_store.discard_pending_patch(request.proposal_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -585,14 +777,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body = await request.json()
         target_version = body.get("target_version")
         try:
-            party_state_store = party_store.store_for_party(party_id)
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
             state = party_state_store.rollback(int(target_version) if target_version is not None else None)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party_id": party_id, "rolled_back": True, "state": state}
 
     @app.post("/api/state/patch/preview")
-    def preview_patch(envelope: PatchEnvelope) -> dict[str, Any]:
+    def preview_patch(request: Request, envelope: PatchEnvelope) -> dict[str, Any]:
+        require_admin(request)
         try:
             candidate = store.preview_patch(envelope.patch)
         except PatchError as exc:
@@ -600,26 +793,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"candidate": candidate, "would_apply": envelope.patch.model_dump(mode="json")}
 
     @app.post("/api/state/patch/apply")
-    def apply_patch(envelope: PatchEnvelope) -> dict[str, Any]:
+    def apply_patch(request: Request, envelope: PatchEnvelope) -> dict[str, Any]:
+        require_admin(request)
         try:
             if not envelope.confirm:
-                return preview_patch(envelope)
+                return preview_patch(request, envelope)
             state = store.apply_state_patch(envelope.patch, reason="api_patch_apply")
         except (PatchError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"applied": True, "state": state}
 
     @app.get("/api/world/proposals")
-    def world_proposals(limit: int = 10) -> dict[str, Any]:
+    def world_proposals(request: Request, limit: int = 10) -> dict[str, Any]:
+        require_admin(request)
         return {"campaign_id": settings.campaign_id, "proposals": store.pending_patches(limit=limit)}
 
     @app.post("/api/world/instruct")
     async def world_instruct(
+        http_request: Request,
         request: WorldInstructionRequest,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
+        require_admin(http_request)
         try:
-            draft = await adjudicator.world.draft_instruction(request.instruction, authorization)
+            draft = await Adjudicator(settings_with_provider_key(settings), store).world.draft_instruction(request.instruction, authorization)
             store.create_patch_proposal(draft.patch)
             candidate = store.preview_patch(draft.patch)
             if request.confirm:
@@ -640,7 +837,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/world/apply")
-    def world_apply(request: WorldApplyRequest) -> dict[str, Any]:
+    def world_apply(http_request: Request, request: WorldApplyRequest) -> dict[str, Any]:
+        require_admin(http_request)
         try:
             patch = store.get_pending_patch(request.proposal_id)
             if not request.confirm:
@@ -652,6 +850,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/turn/rollback")
     async def rollback(request: Request) -> dict[str, Any]:
+        require_admin(request)
         body: dict[str, Any] = {}
         if request.headers.get("content-length") not in {None, "0"}:
             body = await request.json()
@@ -671,7 +870,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ):
         request_id = x_request_id or f"req_{uuid.uuid4().hex}"
         try:
-            response = await adjudicator.handle_chat(request, authorization, idempotency_key, request_id)
+            response = await Adjudicator(settings_with_provider_key(settings), store).handle_chat(request, authorization, idempotency_key, request_id)
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except RuntimeError as exc:

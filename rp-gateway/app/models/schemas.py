@@ -114,6 +114,7 @@ class WorldApplyRequest(BaseModel):
 
 class WorldPackSummary(BaseModel):
     id: str
+    owner_user_id: str | None = None
     title: str
     slug: str
     status: str
@@ -152,6 +153,7 @@ class PlayerCharacterCreate(BaseModel):
 
 class PlayerCharacterSummary(BaseModel):
     id: str
+    owner_user_id: str | None = None
     worldpack_id: str
     name: str
     description: str
@@ -209,6 +211,7 @@ class PartyStartRequest(BaseModel):
 
 class PartySummary(BaseModel):
     id: str
+    owner_user_id: str | None = None
     title: str
     worldpack_id: str
     player_character_id: str
@@ -271,3 +274,40 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: dict[str, int] | None = None
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=6, max_length=200)
+    role: Literal["admin", "user"] = "user"
+
+
+class UserPasswordUpdate(BaseModel):
+    password: str = Field(min_length=6, max_length=200)
+
+
+class UserStatusUpdate(BaseModel):
+    status: Literal["active", "disabled"]
+
+
+class UserDeleteRequest(BaseModel):
+    delete_data: bool = True
+
+
+class ProviderApiKeyCreate(BaseModel):
+    label: str = Field(default="NVIDIA key", min_length=1, max_length=120)
+    api_key: str = Field(min_length=1, max_length=400)
+    provider: str = Field(default="nvidia", min_length=1, max_length=40)
+    base_url: str | None = Field(default=None, max_length=300)
+    is_default: bool = True
+
+
+class ProviderApiKeyUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    api_key: str | None = Field(default=None, min_length=1, max_length=400)
+    is_default: bool | None = None

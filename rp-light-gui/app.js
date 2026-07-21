@@ -1,4 +1,6 @@
 const appState = {
+  authEnabled: true,
+  currentUser: null,
   worldpacks: [],
   modelProfiles: [],
   parties: [],
@@ -14,9 +16,18 @@ const appState = {
   proposals: [],
   busy: false,
   pendingMessages: {},
+  adminUsers: [],
+  adminApiKeys: [],
 };
 
 const els = {
+  loginScreen: document.querySelector("#loginScreen"),
+  loginForm: document.querySelector("#loginForm"),
+  loginUsername: document.querySelector("#loginUsername"),
+  loginPassword: document.querySelector("#loginPassword"),
+  accountStrip: document.querySelector("#accountStrip"),
+  currentUserLabel: document.querySelector("#currentUserLabel"),
+  logoutButton: document.querySelector("#logoutButton"),
   partyList: document.querySelector("#partyList"),
   activeWorld: document.querySelector("#activeWorld"),
   activePartyTitle: document.querySelector("#activePartyTitle"),
@@ -65,6 +76,16 @@ const els = {
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
+  adminPanel: document.querySelector("#adminPanel"),
+  adminUsersList: document.querySelector("#adminUsersList"),
+  adminUserForm: document.querySelector("#adminUserForm"),
+  adminUsernameInput: document.querySelector("#adminUsernameInput"),
+  adminPasswordInput: document.querySelector("#adminPasswordInput"),
+  adminRoleSelect: document.querySelector("#adminRoleSelect"),
+  adminApiKeysList: document.querySelector("#adminApiKeysList"),
+  adminApiKeyForm: document.querySelector("#adminApiKeyForm"),
+  adminApiKeyLabelInput: document.querySelector("#adminApiKeyLabelInput"),
+  adminApiKeyInput: document.querySelector("#adminApiKeyInput"),
 };
 
 const checkLabels = {
@@ -93,6 +114,8 @@ setupCollapsiblePanels();
 boot();
 
 function bindEvents() {
+  els.loginForm.addEventListener("submit", login);
+  els.logoutButton.addEventListener("click", logout);
   document.querySelector("#refreshButton").addEventListener("click", () => boot());
   document.querySelector("#stateRefreshButton").addEventListener("click", () => reloadActiveParty());
   document.querySelector("#newPartyButton").addEventListener("click", openPartyDialog);
@@ -122,6 +145,10 @@ function bindEvents() {
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
+  els.adminUserForm.addEventListener("submit", createAdminUser);
+  els.adminApiKeyForm.addEventListener("submit", createAdminApiKey);
+  els.adminUsersList.addEventListener("click", handleAdminUserAction);
+  els.adminApiKeysList.addEventListener("click", handleAdminApiKeyAction);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
@@ -199,6 +226,17 @@ function handleChatArchiveClick(event) {
 
 async function boot() {
   try {
+    const auth = await readAuthState();
+    appState.authEnabled = auth.auth_enabled !== false;
+    appState.currentUser = auth.user || null;
+    renderAuth();
+    if (appState.authEnabled && !auth.authenticated) {
+      clearWorkspaceState();
+      renderAll();
+      showLoginScreen();
+      return;
+    }
+    hideLoginScreen();
     setGatewayStatus("синхронизация", false);
     const [health, worldpacks, models, parties] = await Promise.all([
       apiGet("/health"),
@@ -232,11 +270,107 @@ async function boot() {
       appState.proposals = [];
       renderAll();
     }
+    if (isAdmin()) {
+      await reloadAdminData().catch((error) => showToast(error.message));
+    }
   } catch (error) {
     setGatewayStatus("недоступен", false);
     showToast(error.message);
     renderAll();
   }
+}
+
+async function readAuthState() {
+  const response = await fetch("/api/auth/me");
+  if (response.status === 404) {
+    return { auth_enabled: false, authenticated: true, user: null };
+  }
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    return { auth_enabled: true, authenticated: false, user: null };
+  }
+  return data;
+}
+
+async function login(event) {
+  event.preventDefault();
+  try {
+    setBusy(true);
+    const result = await apiPost("/api/auth/login", {
+      username: els.loginUsername.value.trim(),
+      password: els.loginPassword.value,
+    });
+    appState.currentUser = result.user || null;
+    els.loginPassword.value = "";
+    hideLoginScreen();
+    await boot();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function logout() {
+  try {
+    setBusy(true);
+    await apiPost("/api/auth/logout", {});
+  } catch {
+    // Expired sessions are already logged out from the user's perspective.
+  } finally {
+    appState.currentUser = null;
+    clearWorkspaceState();
+    renderAuth();
+    renderAll();
+    showLoginScreen();
+    setBusy(false);
+  }
+}
+
+function clearWorkspaceState() {
+  appState.worldpacks = [];
+  appState.modelProfiles = [];
+  appState.parties = [];
+  appState.activeParty = null;
+  appState.partyState = null;
+  appState.contextEstimate = null;
+  appState.memory = null;
+  appState.characters = null;
+  appState.journal = null;
+  appState.promptPreview = null;
+  appState.history = null;
+  appState.chatArchiveExpanded = false;
+  appState.proposals = [];
+  appState.pendingMessages = {};
+  appState.adminUsers = [];
+  appState.adminApiKeys = [];
+}
+
+function renderAuth() {
+  const user = appState.currentUser;
+  els.accountStrip.classList.toggle("hidden", !user);
+  if (user) {
+    els.currentUserLabel.textContent = `${user.username} · ${user.role}`;
+  }
+  if (els.adminPanel) {
+    els.adminPanel.classList.toggle("hidden", !isAdmin());
+  }
+}
+
+function showLoginScreen() {
+  document.body.classList.add("auth-locked");
+  els.loginScreen.classList.remove("hidden");
+  window.setTimeout(() => els.loginUsername.focus(), 0);
+}
+
+function hideLoginScreen() {
+  document.body.classList.remove("auth-locked");
+  els.loginScreen.classList.add("hidden");
+}
+
+function isAdmin() {
+  return appState.currentUser?.role === "admin";
 }
 
 async function selectParty(partyId) {
@@ -288,6 +422,7 @@ function renderAll() {
   renderChat();
   renderProposals();
   renderMessageControls();
+  renderAdminPanel();
 }
 
 function renderPartyList() {
@@ -667,6 +802,59 @@ function renderProposals() {
     .join("");
 }
 
+async function reloadAdminData() {
+  if (!isAdmin()) return;
+  const [users, apiKeys] = await Promise.all([apiGet("/api/admin/users"), apiGet("/api/admin/api-keys")]);
+  appState.adminUsers = users.users || [];
+  appState.adminApiKeys = apiKeys.api_keys || [];
+  renderAdminPanel();
+}
+
+function renderAdminPanel() {
+  if (!els.adminPanel) return;
+  els.adminPanel.classList.toggle("hidden", !isAdmin());
+  if (!isAdmin()) {
+    els.adminUsersList.innerHTML = "";
+    els.adminApiKeysList.innerHTML = "";
+    return;
+  }
+  els.adminUsersList.innerHTML = appState.adminUsers.length
+    ? appState.adminUsers.map((user) => adminUserRow(user)).join("")
+    : `<div class="admin-empty">Пользователей нет.</div>`;
+  els.adminApiKeysList.innerHTML = appState.adminApiKeys.length
+    ? appState.adminApiKeys.map((key) => adminApiKeyRow(key)).join("")
+    : `<div class="admin-empty">Ключей нет.</div>`;
+}
+
+function adminUserRow(user) {
+  const disabled = user.status !== "active";
+  const isCurrent = user.id === appState.currentUser?.id;
+  return `<div class="admin-row">
+    <div>
+      <strong>${escapeHtml(user.username)}</strong>
+      <span>${escapeHtml(user.role)} · ${escapeHtml(user.status)} · партий ${escapeHtml(user.party_count ?? 0)}</span>
+    </div>
+    <div class="row-actions">
+      <button class="text-button" type="button" data-admin-user-action="password" data-user-id="${escapeHtml(user.id)}">Пароль</button>
+      <button class="text-button" type="button" data-admin-user-action="${disabled ? "enable" : "disable"}" data-user-id="${escapeHtml(user.id)}">${disabled ? "Вкл" : "Выкл"}</button>
+      <button class="text-button danger-text" type="button" data-admin-user-action="delete" data-user-id="${escapeHtml(user.id)}" ${isCurrent ? "disabled" : ""}>Удалить</button>
+    </div>
+  </div>`;
+}
+
+function adminApiKeyRow(key) {
+  return `<div class="admin-row">
+    <div>
+      <strong>${escapeHtml(key.label)}</strong>
+      <span>${escapeHtml(key.provider)} · ${escapeHtml(key.is_default ? "default" : "backup")} · ...${escapeHtml(key.secret_hint || "----")}</span>
+    </div>
+    <div class="row-actions">
+      <button class="text-button" type="button" data-admin-key-action="default" data-key-id="${escapeHtml(key.id)}" ${key.is_default ? "disabled" : ""}>Default</button>
+      <button class="text-button danger-text" type="button" data-admin-key-action="delete" data-key-id="${escapeHtml(key.id)}">Удалить</button>
+    </div>
+  </div>`;
+}
+
 function openPartyDialog() {
   renderDialogOptions();
   renderCreationModes();
@@ -905,6 +1093,103 @@ async function previewWorldInstruction() {
     await reloadActiveParty();
     openPanelFor(els.proposalList);
     showToast("Черновик изменений создан.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function createAdminUser(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    setBusy(true);
+    await apiPost("/api/admin/users", {
+      username: els.adminUsernameInput.value.trim(),
+      password: els.adminPasswordInput.value,
+      role: els.adminRoleSelect.value,
+    });
+    els.adminUsernameInput.value = "";
+    els.adminPasswordInput.value = "";
+    els.adminRoleSelect.value = "user";
+    await reloadAdminData();
+    showToast("Пользователь создан.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleAdminUserAction(event) {
+  const button = event.target.closest("[data-admin-user-action]");
+  if (!button || !isAdmin()) return;
+  const userId = button.dataset.userId;
+  const action = button.dataset.adminUserAction;
+  try {
+    setBusy(true);
+    if (action === "password") {
+      const password = window.prompt("Новый пароль пользователя");
+      if (!password) return;
+      await apiPatch(`/api/admin/users/${userId}/password`, { password });
+      showToast("Пароль обновлен.");
+    } else if (action === "disable" || action === "enable") {
+      await apiPatch(`/api/admin/users/${userId}/status`, { status: action === "enable" ? "active" : "disabled" });
+      showToast("Статус обновлен.");
+    } else if (action === "delete") {
+      const ok = window.confirm("Удалить пользователя вместе с его партиями, персонажами и isolated state?");
+      if (!ok) return;
+      await apiDelete(`/api/admin/users/${userId}`, { delete_data: true });
+      showToast("Пользователь удален.");
+    }
+    await reloadAdminData();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function createAdminApiKey(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    setBusy(true);
+    await apiPost("/api/admin/api-keys", {
+      label: els.adminApiKeyLabelInput.value.trim(),
+      api_key: els.adminApiKeyInput.value,
+      provider: "nvidia",
+      is_default: true,
+    });
+    els.adminApiKeyLabelInput.value = "";
+    els.adminApiKeyInput.value = "";
+    await reloadAdminData();
+    showToast("API ключ сохранен.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleAdminApiKeyAction(event) {
+  const button = event.target.closest("[data-admin-key-action]");
+  if (!button || !isAdmin()) return;
+  const keyId = button.dataset.keyId;
+  const action = button.dataset.adminKeyAction;
+  try {
+    setBusy(true);
+    if (action === "default") {
+      await apiPatch(`/api/admin/api-keys/${keyId}`, { is_default: true });
+      showToast("Default API ключ обновлен.");
+    } else if (action === "delete") {
+      const ok = window.confirm("Удалить API ключ из Gateway?");
+      if (!ok) return;
+      await apiDelete(`/api/admin/api-keys/${keyId}`);
+      showToast("API ключ удален.");
+    }
+    await reloadAdminData();
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1252,8 +1537,13 @@ async function apiPatch(path, body) {
   });
 }
 
-async function apiDelete(path) {
-  return api(path, { method: "DELETE" });
+async function apiDelete(path, body = null) {
+  const options = { method: "DELETE" };
+  if (body) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
+  return api(path, options);
 }
 
 async function api(path, options = {}) {
@@ -1268,6 +1558,13 @@ async function api(path, options = {}) {
     }
   }
   if (!response.ok) {
+    if (response.status === 401 && path !== "/api/auth/login") {
+      appState.currentUser = null;
+      clearWorkspaceState();
+      renderAuth();
+      renderAll();
+      showLoginScreen();
+    }
     throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`);
   }
   return data;

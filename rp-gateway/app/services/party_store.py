@@ -43,8 +43,9 @@ def slug(value: str) -> str:
 
 
 class PartyStore:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, default_owner_user_id: str | None = None):
         self.settings = settings
+        self.default_owner_user_id = default_owner_user_id
         Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
         Path(settings.party_state_root).mkdir(parents=True, exist_ok=True)
         self.init_db()
@@ -70,6 +71,7 @@ class PartyStore:
                 """
                 CREATE TABLE IF NOT EXISTS worldpacks (
                     id TEXT PRIMARY KEY,
+                    owner_user_id TEXT,
                     title TEXT NOT NULL,
                     slug TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
@@ -121,6 +123,21 @@ class PartyStore:
                 );
                 """
             )
+            self.migrate_owner_columns(connection)
+
+    def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
+        worldpack_columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
+        if "owner_user_id" not in worldpack_columns:
+            connection.execute("ALTER TABLE worldpacks ADD COLUMN owner_user_id TEXT")
+        for table in ("player_characters", "parties"):
+            columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+            if "owner_user_id" not in columns:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN owner_user_id TEXT")
+            if self.default_owner_user_id:
+                connection.execute(
+                    f"UPDATE {table} SET owner_user_id = ? WHERE owner_user_id IS NULL OR owner_user_id = ''",
+                    (self.default_owner_user_id,),
+                )
 
     def seed_model_profiles(self) -> None:
         self.prune_unused_live_model_profiles()
@@ -269,16 +286,16 @@ class PartyStore:
             self.upsert_worldpack(summary)
         return packs
 
-    def upsert_worldpack(self, pack: WorldPackSummary) -> None:
+    def upsert_worldpack(self, pack: WorldPackSummary, owner_user_id: str | None = None) -> None:
         timestamp = now_iso()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO worldpacks(
-                    id, title, slug, status, premise, manifest_path, state_seed_path,
+                    id, owner_user_id, title, slug, status, premise, manifest_path, state_seed_path,
                     lorebook_path, manifest_json, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     slug = excluded.slug,
@@ -292,6 +309,7 @@ class PartyStore:
                 """,
                 (
                     pack.id,
+                    owner_user_id,
                     pack.title,
                     pack.slug,
                     pack.status,
@@ -305,7 +323,7 @@ class PartyStore:
                 ),
             )
 
-    def create_prompt_worldpack(self, request: WorldPromptCreate) -> WorldPackSummary:
+    def create_prompt_worldpack(self, request: WorldPromptCreate, owner_user_id: str | None = None) -> WorldPackSummary:
         title = " ".join(request.title.split())[:160] or "Свой мир"
         prompt = " ".join(request.prompt.split())[:6000]
         pack_id = f"prompt-{slug(title)[:42]}-{uuid.uuid4().hex[:8]}"
@@ -330,6 +348,7 @@ class PartyStore:
         state_seed_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         summary = WorldPackSummary(
             id=pack_id,
+            owner_user_id=owner_user_id,
             title=title,
             slug=pack_id,
             status="playable",
@@ -339,7 +358,7 @@ class PartyStore:
             lorebook_path=None,
             manifest=manifest,
         )
-        self.upsert_worldpack(summary)
+        self.upsert_worldpack(summary, owner_user_id=owner_user_id)
         return summary
 
     def prompt_world_state(self, pack_id: str, title: str, prompt: str) -> dict[str, Any]:
@@ -410,16 +429,27 @@ class PartyStore:
             return str(assumptions[0])[:600]
         return ""
 
-    def list_worldpacks(self) -> list[WorldPackSummary]:
+    def list_worldpacks(self, owner_user_id: str | None = None) -> list[WorldPackSummary]:
         self.scan_worldpacks()
+        sql = "SELECT * FROM worldpacks"
+        params: tuple[Any, ...] = ()
+        if owner_user_id:
+            sql += " WHERE owner_user_id IS NULL OR owner_user_id = ?"
+            params = (owner_user_id,)
+        sql += " ORDER BY title"
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM worldpacks ORDER BY title").fetchall()
+            rows = connection.execute(sql, params).fetchall()
         return [self.worldpack_from_row(row) for row in rows]
 
-    def get_worldpack(self, worldpack_id: str) -> WorldPackSummary:
+    def get_worldpack(self, worldpack_id: str, owner_user_id: str | None = None) -> WorldPackSummary:
         self.scan_worldpacks()
+        sql = "SELECT * FROM worldpacks WHERE id = ?"
+        params: list[Any] = [worldpack_id]
+        if owner_user_id:
+            sql += " AND (owner_user_id IS NULL OR owner_user_id = ?)"
+            params.append(owner_user_id)
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM worldpacks WHERE id = ?", (worldpack_id,)).fetchone()
+            row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"worldpack not found: {worldpack_id}")
         return self.worldpack_from_row(row)
@@ -427,6 +457,7 @@ class PartyStore:
     def worldpack_from_row(self, row: sqlite3.Row) -> WorldPackSummary:
         return WorldPackSummary(
             id=row["id"],
+            owner_user_id=row["owner_user_id"],
             title=row["title"],
             slug=row["slug"],
             status=row["status"],
@@ -437,8 +468,8 @@ class PartyStore:
             manifest=json.loads(row["manifest_json"]),
         )
 
-    def player_templates(self, worldpack_id: str) -> list[PlayerTemplate]:
-        pack = self.get_worldpack(worldpack_id)
+    def player_templates(self, worldpack_id: str, owner_user_id: str | None = None) -> list[PlayerTemplate]:
+        pack = self.get_worldpack(worldpack_id, owner_user_id=owner_user_id)
         role = str(pack.manifest.get("player_role") or "Player character")
         return [
             PlayerTemplate(
@@ -463,20 +494,30 @@ class PartyStore:
         except OSError:
             return ""
 
-    def list_player_characters(self, worldpack_id: str | None = None) -> list[PlayerCharacterSummary]:
+    def list_player_characters(
+        self,
+        worldpack_id: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> list[PlayerCharacterSummary]:
         self.scan_worldpacks()
         sql = "SELECT * FROM player_characters"
-        params: tuple[Any, ...] = ()
+        filters: list[str] = []
+        params: list[Any] = []
         if worldpack_id:
-            sql += " WHERE worldpack_id = ?"
-            params = (worldpack_id,)
+            filters.append("worldpack_id = ?")
+            params.append(worldpack_id)
+        if owner_user_id:
+            filters.append("owner_user_id = ?")
+            params.append(owner_user_id)
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
         sql += " ORDER BY updated_at DESC"
         with self.connect() as connection:
-            rows = connection.execute(sql, params).fetchall()
+            rows = connection.execute(sql, tuple(params)).fetchall()
         return [self.character_from_row(row) for row in rows]
 
-    def create_player_character(self, request: PlayerCharacterCreate) -> PlayerCharacterSummary:
-        self.get_worldpack(request.worldpack_id)
+    def create_player_character(self, request: PlayerCharacterCreate, owner_user_id: str | None = None) -> PlayerCharacterSummary:
+        self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
         character_id = f"pc_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         profile = dict(request.profile)
@@ -486,13 +527,14 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO player_characters(
-                    id, worldpack_id, name, description, status,
+                    id, owner_user_id, worldpack_id, name, description, status,
                     starting_state_patch_json, profile_json, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     character_id,
+                    owner_user_id,
                     request.worldpack_id,
                     request.name,
                     request.description,
@@ -503,11 +545,16 @@ class PartyStore:
                     timestamp,
                 ),
             )
-        return self.get_player_character(character_id)
+        return self.get_player_character(character_id, owner_user_id=owner_user_id)
 
-    def get_player_character(self, character_id: str) -> PlayerCharacterSummary:
+    def get_player_character(self, character_id: str, owner_user_id: str | None = None) -> PlayerCharacterSummary:
+        sql = "SELECT * FROM player_characters WHERE id = ?"
+        params: list[Any] = [character_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM player_characters WHERE id = ?", (character_id,)).fetchone()
+            row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"player character not found: {character_id}")
         return self.character_from_row(row)
@@ -515,6 +562,7 @@ class PartyStore:
     def character_from_row(self, row: sqlite3.Row) -> PlayerCharacterSummary:
         return PlayerCharacterSummary(
             id=row["id"],
+            owner_user_id=row["owner_user_id"],
             worldpack_id=row["worldpack_id"],
             name=row["name"],
             description=row["description"],
@@ -557,15 +605,21 @@ class PartyStore:
             availability=str(params.get("availability") or ""),
         )
 
-    def list_parties(self) -> list[PartySummary]:
+    def list_parties(self, owner_user_id: str | None = None) -> list[PartySummary]:
         self.scan_worldpacks()
+        sql = "SELECT * FROM parties"
+        params: tuple[Any, ...] = ()
+        if owner_user_id:
+            sql += " WHERE owner_user_id = ?"
+            params = (owner_user_id,)
+        sql += " ORDER BY updated_at DESC"
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM parties ORDER BY updated_at DESC").fetchall()
+            rows = connection.execute(sql, params).fetchall()
         return [self.party_from_row(row, include_related=True) for row in rows]
 
-    def create_party(self, request: PartyCreate) -> PartySummary:
-        pack = self.get_worldpack(request.worldpack_id)
-        character = self.get_player_character(request.player_character_id)
+    def create_party(self, request: PartyCreate, owner_user_id: str | None = None) -> PartySummary:
+        pack = self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
+        character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
         self.get_model_profile(request.model_profile_id)
@@ -577,13 +631,14 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO parties(
-                    id, title, worldpack_id, player_character_id, model_profile_id,
+                    id, owner_user_id, title, worldpack_id, player_character_id, model_profile_id,
                     state_campaign_id, status, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
+                    owner_user_id,
                     request.title,
                     request.worldpack_id,
                     request.player_character_id,
@@ -594,40 +649,49 @@ class PartyStore:
                     timestamp,
                 ),
             )
-        return self.get_party(party_id)
+        return self.get_party(party_id, owner_user_id=owner_user_id)
 
-    def get_party(self, party_id: str) -> PartySummary:
+    def get_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
+        sql = "SELECT * FROM parties WHERE id = ?"
+        params: list[Any] = [party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM parties WHERE id = ?", (party_id,)).fetchone()
+            row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"party not found: {party_id}")
         return self.party_from_row(row, include_related=True)
 
-    def activate_party(self, party_id: str) -> PartySummary:
+    def activate_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
         timestamp = now_iso()
+        sql = "UPDATE parties SET status = 'active', updated_at = ? WHERE id = ?"
+        params: list[Any] = [timestamp, party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         with self.connect() as connection:
-            updated = connection.execute(
-                "UPDATE parties SET status = 'active', updated_at = ? WHERE id = ?",
-                (timestamp, party_id),
-            ).rowcount
+            updated = connection.execute(sql, tuple(params)).rowcount
         if updated == 0:
             raise ValueError(f"party not found: {party_id}")
-        return self.get_party(party_id)
+        return self.get_party(party_id, owner_user_id=owner_user_id)
 
-    def update_party_model(self, party_id: str, model_profile_id: str) -> PartySummary:
+    def update_party_model(self, party_id: str, model_profile_id: str, owner_user_id: str | None = None) -> PartySummary:
         self.get_model_profile(model_profile_id)
         timestamp = now_iso()
+        sql = "UPDATE parties SET model_profile_id = ?, updated_at = ? WHERE id = ?"
+        params: list[Any] = [model_profile_id, timestamp, party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         with self.connect() as connection:
-            updated = connection.execute(
-                "UPDATE parties SET model_profile_id = ?, updated_at = ? WHERE id = ?",
-                (model_profile_id, timestamp, party_id),
-            ).rowcount
+            updated = connection.execute(sql, tuple(params)).rowcount
         if updated == 0:
             raise ValueError(f"party not found: {party_id}")
-        return self.get_party(party_id)
+        return self.get_party(party_id, owner_user_id=owner_user_id)
 
-    def delete_party(self, party_id: str) -> None:
-        party = self.get_party(party_id)
+    def delete_party(self, party_id: str, owner_user_id: str | None = None) -> None:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
         with self.connect() as connection:
             connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
             for table in (
@@ -651,9 +715,17 @@ class PartyStore:
         if target.exists():
             shutil.rmtree(target)
 
+    def delete_user_data(self, owner_user_id: str) -> None:
+        parties = self.list_parties(owner_user_id=owner_user_id)
+        for party in parties:
+            self.delete_party(party.id, owner_user_id=owner_user_id)
+        with self.connect() as connection:
+            connection.execute("DELETE FROM player_characters WHERE owner_user_id = ?", (owner_user_id,))
+
     def party_from_row(self, row: sqlite3.Row, include_related: bool = False) -> PartySummary:
         party = PartySummary(
             id=row["id"],
+            owner_user_id=row["owner_user_id"],
             title=row["title"],
             worldpack_id=row["worldpack_id"],
             player_character_id=row["player_character_id"],
@@ -728,8 +800,8 @@ class PartyStore:
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    def store_for_party(self, party_id: str) -> StateStore:
-        party = self.get_party(party_id)
+    def store_for_party(self, party_id: str, owner_user_id: str | None = None) -> StateStore:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
         return StateStore(self.settings.sqlite_path, party.state_campaign_id, str(self.state_path_for(party.state_campaign_id)))
 
     def apply_starting_patch(self, state: dict[str, Any], patch_json: str | None) -> dict[str, Any]:

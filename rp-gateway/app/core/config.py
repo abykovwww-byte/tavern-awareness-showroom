@@ -61,6 +61,12 @@ class Settings:
     memory_max_batch_turns: int = env_int("MEMORY_MAX_BATCH_TURNS", 96)
     journal_auto_min_unsummarized_turns: int = env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
     journal_max_batch_turns: int = env_int("JOURNAL_MAX_BATCH_TURNS", 48)
+    auth_enabled: bool = env_bool("GATEWAY_AUTH_ENABLED", True)
+    auth_session_cookie_name: str = os.getenv("GATEWAY_SESSION_COOKIE_NAME", "rp_gateway_session")
+    auth_session_ttl_seconds: int = env_int("GATEWAY_SESSION_TTL_SECONDS", 60 * 60 * 24 * 14)
+    auth_cookie_secure: bool = env_bool("GATEWAY_COOKIE_SECURE", False)
+    bootstrap_admin_username: str = os.getenv("GATEWAY_BOOTSTRAP_ADMIN_USERNAME", "admin")
+    bootstrap_admin_password: str = os.getenv("GATEWAY_BOOTSTRAP_ADMIN_PASSWORD", "")
 
     @property
     def sqlite_path(self) -> str:

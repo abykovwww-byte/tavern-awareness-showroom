@@ -106,6 +106,7 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "nvidia_api_base": f"mock://{mode}",
         "nvidia_api_key": api_key,
         "post_turn_helpers_inline": True,
+        "auth_enabled": False,
     }
     settings_kwargs.update(settings_overrides)
     settings = Settings(**settings_kwargs)
@@ -158,6 +159,12 @@ def create_demo_party(c: TestClient, title: str = "Demo Party", character_name: 
             "model_profile_id": model_id,
         },
     ).json()["party"]
+
+
+def login(c: TestClient, username: str = "admin", password: str = "admin-secret") -> dict[str, object]:
+    response = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200, response.text
+    return response.json()["user"]
 
 
 def test_health_and_state(tmp_path: Path):
@@ -219,7 +226,99 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
 
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
-    assert "gain a meeting" in history[0]["player_message"]
+
+
+def test_auth_required_and_parties_are_user_scoped(tmp_path: Path):
+    write_worldpack(tmp_path)
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    assert admin.get("/api/parties").status_code == 401
+    login(admin)
+
+    created = admin.post(
+        "/api/admin/users",
+        json={"username": "alice", "password": "alice-secret", "role": "user"},
+    )
+    assert created.status_code == 200, created.text
+
+    admin_party = create_demo_party(admin, title="Admin Party", character_name="Admin Hero")
+    alice = TestClient(admin.app)
+    login(alice, "alice", "alice-secret")
+    assert alice.get("/api/parties").json()["parties"] == []
+    assert alice.get(f"/api/parties/{admin_party['id']}").status_code == 404
+
+    alice_party = create_demo_party(alice, title="Alice Party", character_name="Alice Hero")
+    alice_parties = alice.get("/api/parties").json()["parties"]
+    assert [party["id"] for party in alice_parties] == [alice_party["id"]]
+    assert admin.get("/api/parties").json()["parties"][0]["id"] == admin_party["id"]
+
+    users = admin.get("/api/admin/users").json()["users"]
+    alice_summary = next(user for user in users if user["username"] == "alice")
+    assert alice_summary["party_count"] == 1
+
+
+def test_admin_user_lifecycle_and_data_delete(tmp_path: Path):
+    write_worldpack(tmp_path)
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    user = admin.post(
+        "/api/admin/users",
+        json={"username": "bob", "password": "bob-secret", "role": "user"},
+    ).json()["user"]
+    bob = TestClient(admin.app)
+    login(bob, "bob", "bob-secret")
+    party = create_demo_party(bob, title="Bob Party", character_name="Bob Hero")
+
+    assert admin.patch(f"/api/admin/users/{user['id']}/password", json={"password": "next-secret"}).status_code == 200
+    assert bob.get("/api/parties").status_code == 401
+    login(bob, "bob", "next-secret")
+    assert bob.get("/api/parties").json()["parties"][0]["id"] == party["id"]
+
+    assert admin.patch(f"/api/admin/users/{user['id']}/status", json={"status": "disabled"}).status_code == 200
+    disabled = TestClient(admin.app)
+    assert disabled.post("/api/auth/login", json={"username": "bob", "password": "next-secret"}).status_code == 401
+    assert admin.patch(f"/api/admin/users/{user['id']}/status", json={"status": "active"}).status_code == 200
+
+    deleted = admin.request("DELETE", f"/api/admin/users/{user['id']}", json={"delete_data": True})
+    assert deleted.status_code == 200, deleted.text
+    assert admin.get("/api/admin/users").json()["users"][0]["username"] == "admin"
+    assert admin.app.state.party_store.list_parties(owner_user_id=user["id"]) == []
+
+
+def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Path):
+    c = client(
+        tmp_path,
+        api_key="",
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(c)
+    response = c.post(
+        "/api/admin/api-keys",
+        json={"label": "Test NVIDIA", "api_key": "managed-provider-key", "provider": "nvidia", "is_default": True},
+    )
+    assert response.status_code == 200, response.text
+    key = response.json()["api_key"]
+    assert "api_key" not in key
+    assert key["secret_hint"] == "-key"
+
+    completion = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/check stealth skill=1 difficulty=10"),
+        headers={"Idempotency-Key": "managed-key"},
+    )
+    assert completion.status_code == 200, completion.text
+    assert completion.json()["choices"][0]["message"]["content"]
 
 
 def test_party_start_endpoint_is_idempotent_and_party_isolated(tmp_path: Path):

@@ -997,6 +997,97 @@ button:disabled {
   gap: 12px;
 }
 
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(17, 20, 23, 0.96);
+}
+
+.login-panel {
+  display: grid;
+  width: min(360px, 100%);
+  gap: 13px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.login-panel .primary-action {
+  margin-top: 4px;
+}
+
+.account-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.admin-panel h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.admin-block + .admin-block {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-list,
+.admin-form {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-form {
+  margin-top: 9px;
+}
+
+.admin-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(17, 20, 23, 0.42);
+}
+
+.admin-row strong,
+.admin-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-row span,
+.admin-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.danger-text {
+  color: #ffb4ad;
+}
+
 .hidden {
   display: none !important;
 }
