@@ -8,6 +8,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -244,6 +245,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:

@@ -181,6 +181,10 @@ class NarrativeClient:
         mode = self.settings.nvidia_api_base.removeprefix("mock://")
         if mode == "timeout":
             raise httpx.TimeoutException("mock timeout")
+        if mode == "http-503":
+            request = httpx.Request("POST", "https://mock.nvidia.local/chat/completions")
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
         if mode == "rate-limit":
             raise RuntimeError("NVIDIA API returned 429 rate limit")
         if mode == "violate" and not repair_instruction:

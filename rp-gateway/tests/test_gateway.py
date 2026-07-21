@@ -723,6 +723,48 @@ def test_timeout_and_rate_limit(tmp_path: Path):
     assert response.status_code == 502
 
 
+def test_provider_http_error_returns_502_not_500(tmp_path: Path):
+    c = client(tmp_path, mode="http-503")
+    response = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("/check stealth skill=1 difficulty=10"),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "provider-http-503"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
+
+
+def test_party_message_provider_http_error_returns_502(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path, mode="http-503")
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "/check stealth skill=1 difficulty=10"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
+
+
+def test_party_start_provider_http_error_returns_502(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path, mode="http-503")
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "start-provider-http-503"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
+
+
 def test_disabled_primary_model_uses_fallback(tmp_path: Path):
     from app.core.config import Settings
     from app.services.narrative import NarrativeClient

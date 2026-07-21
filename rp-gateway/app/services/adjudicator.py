@@ -104,6 +104,14 @@ class Adjudicator:
                 raw = with_text(raw, text)
         except PermissionError:
             raise
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            self.store.audit(
+                "llm_http_error",
+                {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
+                request_id,
+            )
+            raise RuntimeError(f"Narrative provider HTTP {status}") from exc
         except httpx.TimeoutException as exc:
             self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
             raise RuntimeError("Narrative provider timeout") from exc
