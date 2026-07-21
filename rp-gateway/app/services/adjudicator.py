@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 import uuid
 from typing import Any
@@ -20,7 +22,12 @@ from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
 
+logger = logging.getLogger(__name__)
+
+
 class Adjudicator:
+    _post_turn_helper_campaigns: set[str] = set()
+
     def __init__(self, settings: Settings, store: StateStore):
         self.settings = settings
         self.store = store
@@ -57,8 +64,7 @@ class Adjudicator:
             text = response_text(response)
             state_version = self.store.current_version() or 1
             self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
-            await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
-            await self.journal.summarize(authorization, fail_open=True, request_id=request_id)
+            await self.after_turn_recorded(authorization, request_id)
             return response
 
         if not authorization and not self.settings.nvidia_api_key:
@@ -138,9 +144,41 @@ class Adjudicator:
             },
             request_id,
         )
-        await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
-        await self.journal.summarize(authorization, fail_open=True, request_id=request_id)
+        await self.after_turn_recorded(authorization, request_id)
         return response
+
+    async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
+        if self.settings.post_turn_helpers_inline:
+            await self.run_post_turn_helpers(authorization, request_id)
+            return
+        campaign_id = self.store.campaign_id
+        if campaign_id in self._post_turn_helper_campaigns:
+            self.store.audit("post_turn_helpers_skipped", {"reason": "already_running"}, request_id)
+            return
+        self._post_turn_helper_campaigns.add(campaign_id)
+        task = asyncio.create_task(self.run_post_turn_helpers(authorization, request_id))
+        task.add_done_callback(lambda completed: self.post_turn_helpers_done(campaign_id, completed))
+
+    async def run_post_turn_helpers(self, authorization: str | None, request_id: str) -> None:
+        try:
+            await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
+            await self.journal.summarize(authorization, fail_open=True, request_id=request_id)
+        except Exception as exc:  # noqa: BLE001 - background helpers must never affect gameplay
+            logger.warning(
+                "post_turn_helpers_failed campaign_id=%s request_id=%s error=%s",
+                self.store.campaign_id,
+                request_id,
+                exc,
+            )
+
+    def post_turn_helpers_done(self, campaign_id: str, completed: asyncio.Task[None]) -> None:
+        self._post_turn_helper_campaigns.discard(campaign_id)
+        if completed.cancelled():
+            logger.warning("post_turn_helpers_cancelled campaign_id=%s", campaign_id)
+            return
+        exc = completed.exception()
+        if exc:
+            logger.warning("post_turn_helpers_task_failed campaign_id=%s error=%s", campaign_id, exc)
 
     def latest_user_message(self, request: ChatCompletionRequest) -> str:
         for message in reversed(request.messages):

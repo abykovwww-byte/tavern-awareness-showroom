@@ -29,6 +29,7 @@ MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS=48
 MEMORY_MAX_BATCH_TURNS=96
 JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS=24
 JOURNAL_MAX_BATCH_TURNS=48
+POST_TURN_HELPERS_INLINE=false
 ```
 
 `NARRATIVE_HISTORY_MESSAGE_LIMIT=0` means the gateway derives the message limit
@@ -47,6 +48,12 @@ Manual memory force still respects the protected raw tail. It bypasses the
 minimum unsummarized threshold, but it does not summarize turns that are still
 inside the direct raw window.
 
+Post-turn helpers run outside the gameplay response path by default. A turn can
+return to Light GUI as soon as state, checks, turn history, and audit are
+persisted; auto-memory and auto-journal continue as best-effort background
+helpers. Inline helper execution is reserved for deterministic tests and
+debugging.
+
 ## Consequences
 
 - A 50-turn scenario can stay entirely raw in the narrator prompt by default.
@@ -56,3 +63,5 @@ inside the direct raw window.
   is required.
 - Smaller-context models can lower the limits through Ansible/env without code
   changes.
+- Slow summarization no longer makes a completed GM response appear lost in the
+  browser.

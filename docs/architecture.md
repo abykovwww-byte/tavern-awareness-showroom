@@ -187,3 +187,9 @@ The policy is configured through environment variables rendered by Ansible:
 `JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS`, and `JOURNAL_MAX_BATCH_TURNS`.
 The default is tuned for current 1M-context model profiles while remaining
 server-configurable for smaller windows.
+
+Post-turn memory and journal helpers are best-effort background work by
+default. A successful player turn records state, check, turn text, and audit
+first; then the HTTP response can return to Light GUI while memory/journal
+summaries continue outside the response path. `POST_TURN_HELPERS_INLINE=true`
+exists only for deterministic debugging and tests.

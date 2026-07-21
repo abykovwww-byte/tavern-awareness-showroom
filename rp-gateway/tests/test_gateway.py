@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -9,9 +11,11 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.main import create_app
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
+from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog
+from app.services.state_store import StateStore
 
 
 def base_state() -> dict[str, object]:
@@ -101,6 +105,7 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "worldpacks_path": str(tmp_path / "worldpacks"),
         "nvidia_api_base": f"mock://{mode}",
         "nvidia_api_key": api_key,
+        "post_turn_helpers_inline": True,
     }
     settings_kwargs.update(settings_overrides)
     settings = Settings(**settings_kwargs)
@@ -272,15 +277,53 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
         "MEMORY_MAX_BATCH_TURNS",
         "JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS",
         "JOURNAL_MAX_BATCH_TURNS",
+        "POST_TURN_HELPERS_INLINE",
     ]:
         monkeypatch.delenv(name, raising=False)
     settings = Settings()
+    assert settings.post_turn_helpers_inline is False
     assert settings.party_raw_turn_limit == 96
     assert settings.effective_narrative_history_message_limit == 193
     assert settings.memory_auto_min_unsummarized_turns == 48
     assert settings.memory_max_batch_turns == 96
     assert settings.journal_auto_min_unsummarized_turns == 24
     assert settings.journal_max_batch_turns == 48
+
+
+def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async def scenario() -> None:
+        settings = Settings(
+            app_env="test",
+            database_url=f"sqlite:///{tmp_path / 'helpers.db'}",
+            world_state_path=str(tmp_path / "state.json"),
+            nvidia_api_base="mock://success",
+            post_turn_helpers_inline=False,
+        )
+        store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
+        Adjudicator._post_turn_helper_campaigns.discard(store.campaign_id)
+        adjudicator = Adjudicator(settings, store)
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def slow_helpers(authorization: str | None, request_id: str) -> None:
+            _ = authorization, request_id
+            started.set()
+            await asyncio.sleep(0.1)
+            finished.set()
+
+        monkeypatch.setattr(adjudicator, "run_post_turn_helpers", slow_helpers)
+        before = time.perf_counter()
+        await adjudicator.after_turn_recorded("Bearer test", "background-helper")
+        elapsed = time.perf_counter() - before
+
+        assert elapsed < 0.05
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not finished.is_set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert store.campaign_id not in Adjudicator._post_turn_helper_campaigns
+
+    asyncio.run(scenario())
 
 
 def test_party_model_can_be_changed(tmp_path: Path):

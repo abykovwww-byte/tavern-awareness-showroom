@@ -54,6 +54,7 @@ class Settings:
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900"))
     model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "120"))
+    post_turn_helpers_inline: bool = env_bool("POST_TURN_HELPERS_INLINE", False)
     party_raw_turn_limit: int = env_int("PARTY_RAW_TURN_LIMIT", 96)
     narrative_history_message_limit: int = env_int("NARRATIVE_HISTORY_MESSAGE_LIMIT", 0)
     memory_auto_min_unsummarized_turns: int = env_int("MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS", 48)
