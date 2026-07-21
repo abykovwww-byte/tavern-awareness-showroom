@@ -1,0 +1,1169 @@
+{
+  "meta": {
+    "campaign_id": "incident-50",
+    "schema_version": "1.0.0",
+    "state_version": 1,
+    "turn": 0,
+    "last_updated": "2026-07-21T00:00:00Z"
+  },
+  "player": {
+    "location": "war-room-10f",
+    "status": "active",
+    "reputation": {
+      "security-office": 2,
+      "it-operations": 0,
+      "executive-committee": 0,
+      "legal-compliance": 1,
+      "crisis-comms": 0,
+      "external-ir-vendor": 0,
+      "adversary-cell": 0
+    },
+    "resources": {
+      "turns-remaining": 50,
+      "analysis-bandwidth": 3,
+      "executive-trust": 2,
+      "legal-cover": 2,
+      "evidence-integrity": 3,
+      "business-uptime": 3,
+      "public-trust": 2,
+      "sleep-debt": 0
+    },
+    "known_abilities": [
+      "форензика рабочих станций и серверов без разрушения доказательств",
+      "анализ SIEM/EDR/сетевой телеметрии на уровне индикаторов и временных линий",
+      "интервьюирование сотрудников и фиксация цепочки хранения доказательств",
+      "координация с IT, юристами, PR и руководством во время кризиса",
+      "подготовка кратких технических и управленческих брифингов"
+    ],
+    "constraints": [
+      "Нельзя атаковать внешние системы, проводить самосуд, шантажировать людей или нарушать закон ради расследования.",
+      "Любое сильное действие против инфраструктуры требует согласования с владельцами сервиса или кризисным штабом.",
+      "Грубое отключение систем может спасти доказательства, но ударить по бизнесу и репутации игрока.",
+      "Партия заканчивается после 50-го хода независимо от полноты расследования."
+    ],
+    "known_world_facts": [
+      {
+        "id": "fact-russia-2026",
+        "text": "События происходят в России в июле 2026 года, в вымышленной корпоративной среде.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "campaign premise"
+      },
+      {
+        "id": "fact-company-under-attack",
+        "text": "АО «Северная линия» столкнулась с киберинцидентом: есть признаки компрометации учетных записей, сбоев в логистических системах и возможной утечки данных.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "opening scene"
+      },
+      {
+        "id": "fact-player-role",
+        "text": "Игрок является внутренним киберкриминалистом и IR-специалистом компании, а не атакующим.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "manifest"
+      },
+      {
+        "id": "fact-turn-limit",
+        "text": "У кампании жесткий лимит 50 ходов; на 50-м ходу происходит финальная развязка по подтвержденному state.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "campaign rules"
+      }
+    ]
+  },
+  "characters": {
+    "marina-vorontsova": {
+      "status": "alive",
+      "location": "war-room-10f",
+      "attitude_to_player": "доверяет профессионализму игрока, но требует краткости и доказательности",
+      "trust": 3,
+      "fear": 2,
+      "loyalty": "security-office",
+      "current_goal": "сдержать инцидент, защитить компанию и не потерять контроль над штабом",
+      "knowledge": [
+        {
+          "id": "fact-marina-ciso",
+          "text": "Марина Воронцова - директор по информационной безопасности АО «Северная линия».",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-marina-old-risk",
+          "text": "Марина ранее предупреждала правление о слабом сегментировании сети, но часть бюджета была срезана.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "вести кризисный штаб ИБ",
+        "докладывать правлению",
+        "не скрывать критичные риски от юристов"
+      ],
+      "hard_constraints": [
+        "Не разрешит незаконные действия даже под давлением.",
+        "Не примет технический вывод без доказательной базы."
+      ],
+      "last_confirmed_update": 0
+    },
+    "ilya-safonov": {
+      "status": "alive",
+      "location": "soc-floor",
+      "attitude_to_player": "смотрит на игрока как на старшего следователя и ждет четких задач",
+      "trust": 2,
+      "fear": 3,
+      "loyalty": "security-office",
+      "current_goal": "разобрать поток алертов и понять, какие события связаны с атакой",
+      "knowledge": [
+        {
+          "id": "fact-ilya-night-alert",
+          "text": "Илья первым заметил цепочку ночных алертов от EDR и SIEM.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-ilya-missed-alert",
+          "text": "Илья боится, что пропустил ранний слабый сигнал атаки за сутки до кризиса.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "держать SOC-очередь",
+        "не удалять сырые события",
+        "сообщать игроку о новых корреляциях"
+      ],
+      "hard_constraints": [
+        "Не сможет одновременно вести мониторинг, выгрузки и интервью без помощи."
+      ],
+      "last_confirmed_update": 0
+    },
+    "oleg-shumilov": {
+      "status": "alive",
+      "location": "primary-dc",
+      "attitude_to_player": "уважает экспертизу, но болезненно реагирует на предложения отключать системы",
+      "trust": 0,
+      "fear": 2,
+      "loyalty": "it-operations",
+      "current_goal": "удержать бизнес-сервисы живыми и не стать крайним за архитектурные долги",
+      "knowledge": [
+        {
+          "id": "fact-oleg-it-head",
+          "text": "Олег Шумилов руководит инфраструктурной эксплуатацией и знает реальные зависимости систем.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-oleg-exception",
+          "text": "Олег оставил временное исключение для старого сервисного контура, потому что иначе останавливался складской обмен.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "поддерживать инфраструктуру",
+        "предупреждать о последствиях отключений",
+        "сохранять доступность критичных сервисов"
+      ],
+      "hard_constraints": [
+        "Не отдаст административные действия без понятного риска и письменной фиксации."
+      ],
+      "last_confirmed_update": 0
+    },
+    "ksenia-lebedeva": {
+      "status": "alive",
+      "location": "legal-conference-room",
+      "attitude_to_player": "готова прикрыть корректное расследование, но требует дисциплины формулировок",
+      "trust": 2,
+      "fear": 1,
+      "loyalty": "legal-compliance",
+      "current_goal": "снизить юридический ущерб и не дать штабу сделать необратимое заявление без фактов",
+      "knowledge": [
+        {
+          "id": "fact-ksenia-legal",
+          "text": "Ксения Лебедева отвечает за правовые риски инцидента, уведомления и сохранение доказательств.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-ksenia-client-clause",
+          "text": "В одном крупном контракте есть жесткое условие о сроках уведомления клиента при подтвержденной утечке.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "вести юридическую линию",
+        "контролировать формулировки",
+        "разделять подтвержденные факты и версии"
+      ],
+      "hard_constraints": [
+        "Не разрешит публично назвать источник атаки без проверенной доказательной базы."
+      ],
+      "last_confirmed_update": 0
+    },
+    "artem-pavlov": {
+      "status": "alive",
+      "location": "board-room",
+      "attitude_to_player": "оценивает игрока по способности давать решения, а не только риски",
+      "trust": 0,
+      "fear": 3,
+      "loyalty": "executive-committee",
+      "current_goal": "удержать операционную деятельность и не сорвать поставки ключевым клиентам",
+      "knowledge": [
+        {
+          "id": "fact-artem-ops",
+          "text": "Артем Павлов - операционный директор, для которого каждый час простоя превращается в штрафы.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-artem-side-channel",
+          "text": "Артем уже получил звонок от крупного клиента, который слышал слух о сбое раньше официального сообщения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "защищать операционную выручку",
+        "давить на штаб ради сроков",
+        "принимать бизнес-риск"
+      ],
+      "hard_constraints": [
+        "Не согласится на полный простой без понятного сценария восстановления."
+      ],
+      "last_confirmed_update": 0
+    },
+    "stanislav-kireev": {
+      "status": "alive",
+      "location": "board-room",
+      "attitude_to_player": "вежлив, но пытается понять, можно ли обойтись без дорогого публичного кризиса",
+      "trust": -1,
+      "fear": 4,
+      "loyalty": "executive-committee",
+      "current_goal": "защитить стоимость компании, страховые позиции и финансовую отчетность",
+      "knowledge": [
+        {
+          "id": "fact-stanislav-cfo",
+          "text": "Станислав Киреев - финансовый директор, чувствительный к цене простоя и раскрытия инцидента.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-stanislav-insurance",
+          "text": "Станислав знает, что страховая может отказать в выплате, если компания нарушит процедуру фиксации инцидента.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "контролировать финансовые последствия",
+        "задавать неудобные вопросы о цене мер",
+        "держать связь со страховщиками"
+      ],
+      "hard_constraints": [
+        "Не согласится на дорогое решение без краткого управленческого обоснования."
+      ],
+      "last_confirmed_update": 0
+    },
+    "alina-reznikova": {
+      "status": "alive",
+      "location": "communications-room",
+      "attitude_to_player": "хочет от игрока ясных слов, которые можно сказать клиентам без вранья",
+      "trust": 1,
+      "fear": 2,
+      "loyalty": "crisis-comms",
+      "current_goal": "не дать слухам определить историю раньше компании",
+      "knowledge": [
+        {
+          "id": "fact-alina-pr",
+          "text": "Алина Резникова ведет кризисные коммуникации и клиентские сообщения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-alina-draft",
+          "text": "У Алины уже есть черновик публичного сообщения, но она ждет технического подтверждения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "готовить внешние сообщения",
+        "отслеживать слухи",
+        "согласовывать формулировки с юристами"
+      ],
+      "hard_constraints": [
+        "Не сможет долго молчать, если слухи начнут жить самостоятельной жизнью."
+      ],
+      "last_confirmed_update": 0
+    },
+    "nika-belyaeva": {
+      "status": "alive",
+      "location": "remote-call",
+      "attitude_to_player": "профессионально нейтральна и уважает того, кто приносит чистые артефакты",
+      "trust": 0,
+      "fear": 1,
+      "loyalty": "external-ir-vendor",
+      "current_goal": "быстро подтвердить масштаб компрометации и дать независимые рекомендации",
+      "knowledge": [
+        {
+          "id": "fact-nika-external-ir",
+          "text": "Ника Беляева - ведущий консультант внешней IR-команды, подключенной по срочному договору.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-nika-pattern",
+          "text": "Ника видела похожий почерк атаки у другого клиента, но не может раскрыть детали без разрешения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "давать независимую экспертизу",
+        "не раскрывать чужие кейсы",
+        "помогать с форензикой и восстановлением"
+      ],
+      "hard_constraints": [
+        "Не примет на веру выводы без артефактов и воспроизводимой временной линии."
+      ],
+      "last_confirmed_update": 0
+    },
+    "pavel-menshov": {
+      "status": "alive",
+      "location": "unknown",
+      "attitude_to_player": "пока недоступен; может быть свидетелем, виновником, жертвой или удобным козлом отпущения",
+      "trust": -1,
+      "fear": 2,
+      "loyalty": "unknown",
+      "current_goal": "сохранить контроль над собственной версией событий",
+      "knowledge": [
+        {
+          "id": "fact-pavel-former-contractor",
+          "text": "Павел Меньшов - бывший подрядчик по автоматизации складского обмена, его старые доступы всплывают в логах как версия.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-pavel-real-role-unknown",
+          "text": "Реальная роль Павла в инциденте не определена на старте и должна выясняться только через подтвержденные события.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "отвечать за собственные действия",
+        "не быть автоматически виновным без доказательств"
+      ],
+      "hard_constraints": [
+        "Нарратор не должен объявлять Павла виновным без подтвержденного state update."
+      ],
+      "last_confirmed_update": 0
+    },
+    "operator-rubin": {
+      "status": "unknown",
+      "location": "unknown",
+      "attitude_to_player": "видит в игроке помеху, но не знает его лично",
+      "trust": -5,
+      "fear": 1,
+      "loyalty": "adversary-cell",
+      "current_goal": "сохранить давление на компанию и заставить штаб ошибиться",
+      "knowledge": [
+        {
+          "id": "fact-rubin-fictional",
+          "text": "«Рубин» - условное имя неизвестного оператора художественной атакующей группы; его реальные личность и местоположение неизвестны.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "secrets": [
+        {
+          "id": "secret-rubin-playbook",
+          "text": "Рубин больше заинтересован в управлении давлением и переговорами, чем в публичной славе.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "gm"
+        }
+      ],
+      "obligations": [
+        "оставаться художественным антагонистом",
+        "не раскрывать игроку процедурные атакующие инструкции"
+      ],
+      "hard_constraints": [
+        "Не предоставлять пошаговые offensive-техники, команды, вредоносный код или реальные цели."
+      ],
+      "last_confirmed_update": 0
+    }
+  },
+  "factions": {
+    "security-office": {
+      "leader": "marina-vorontsova",
+      "goals": [
+        "подтвердить масштаб атаки",
+        "сохранить доказательства",
+        "дать руководству правдивую картину риска"
+      ],
+      "resources": {
+        "soc-analysts": 4,
+        "forensic-kits": 2,
+        "authority": "medium"
+      },
+      "allies": ["legal-compliance", "external-ir-vendor"],
+      "opponents": ["adversary-cell"],
+      "attitude_to_player": "считает игрока ключевым специалистом по фактам",
+      "current_actions": [
+        "собирает алерты",
+        "держит военный канал штаба",
+        "готовит первичный scope"
+      ],
+      "constraints": [
+        "не владеет бизнес-системами напрямую",
+        "работает под давлением времени"
+      ]
+    },
+    "it-operations": {
+      "leader": "oleg-shumilov",
+      "goals": [
+        "сохранить работоспособность сервисов",
+        "устранить уязвимые зависимости",
+        "не потерять данные при восстановлении"
+      ],
+      "resources": {
+        "admins": 6,
+        "maintenance-windows": "limited",
+        "system-knowledge": "high"
+      },
+      "allies": ["security-office", "executive-committee"],
+      "opponents": ["adversary-cell"],
+      "attitude_to_player": "осторожное рабочее сотрудничество",
+      "current_actions": [
+        "проверяет сервисные учетные записи",
+        "готовит планы изоляции",
+        "держит критичные очереди обмена"
+      ],
+      "constraints": [
+        "полное отключение ударит по поставкам",
+        "часть старых систем плохо документирована"
+      ]
+    },
+    "executive-committee": {
+      "leader": "artem-pavlov",
+      "goals": [
+        "снизить простой",
+        "сохранить клиентов",
+        "избежать паники и финансовых потерь"
+      ],
+      "resources": {
+        "budget": "emergency",
+        "business-authority": "high",
+        "patience": 2
+      },
+      "allies": ["it-operations", "crisis-comms"],
+      "opponents": ["adversary-cell", "uncontrolled-rumors"],
+      "attitude_to_player": "ожидает практичных рекомендаций",
+      "current_actions": [
+        "запрашивает статус каждые несколько ходов",
+        "давит на сроки восстановления",
+        "готовит разговор с ключевыми клиентами"
+      ],
+      "constraints": [
+        "не понимает всех технических рисков",
+        "может принять плохое решение при недостатке ясности"
+      ]
+    },
+    "legal-compliance": {
+      "leader": "ksenia-lebedeva",
+      "goals": [
+        "разделить факты и версии",
+        "сохранить доказательства",
+        "подготовить корректные уведомления при необходимости"
+      ],
+      "resources": {
+        "privileged-channel": true,
+        "document-control": "strict",
+        "external-counsel": "available"
+      },
+      "allies": ["security-office", "crisis-comms"],
+      "opponents": ["adversary-cell", "reckless-statements"],
+      "attitude_to_player": "поддерживает аккуратную доказательную работу",
+      "current_actions": [
+        "заводит юридический трек инцидента",
+        "проверяет договорные сроки",
+        "фиксирует решения штаба"
+      ],
+      "constraints": [
+        "публичные заявления требуют осторожности",
+        "нельзя подменять технические факты желаемой версией"
+      ]
+    },
+    "crisis-comms": {
+      "leader": "alina-reznikova",
+      "goals": [
+        "удержать доверие клиентов",
+        "не дать слухам стать единственной версией",
+        "не соврать публично"
+      ],
+      "resources": {
+        "client-mailing": true,
+        "press-monitoring": "active",
+        "message-drafts": 2
+      },
+      "allies": ["legal-compliance", "executive-committee"],
+      "opponents": ["uncontrolled-rumors", "adversary-cell"],
+      "attitude_to_player": "нуждается в ясных технических формулировках",
+      "current_actions": [
+        "мониторит внешние упоминания",
+        "готовит клиентский Q&A",
+        "ждет подтверждения фактов"
+      ],
+      "constraints": [
+        "молчание имеет цену",
+        "слишком раннее признание непроверенных фактов тоже имеет цену"
+      ]
+    },
+    "external-ir-vendor": {
+      "leader": "nika-belyaeva",
+      "goals": [
+        "дать независимую оценку",
+        "помочь восстановить временную линию",
+        "подготовить технический отчет"
+      ],
+      "resources": {
+        "senior-consultant": 1,
+        "remote-lab": true,
+        "artifact-review": "available"
+      },
+      "allies": ["security-office", "legal-compliance"],
+      "opponents": ["adversary-cell"],
+      "attitude_to_player": "нейтрально-профессиональное",
+      "current_actions": [
+        "запрашивает чистые копии артефактов",
+        "строит независимую временную линию"
+      ],
+      "constraints": [
+        "не может работать с загрязненными доказательствами",
+        "связана договором и конфиденциальностью"
+      ]
+    },
+    "adversary-cell": {
+      "leader": "operator-rubin",
+      "goals": [
+        "сохранить давление",
+        "заставить компанию ошибиться",
+        "монетизировать кризис через вымогательство или продажу данных"
+      ],
+      "resources": {
+        "foothold": "uncertain",
+        "stolen-data-claim": "unconfirmed",
+        "pressure-channel": "available"
+      },
+      "allies": [],
+      "opponents": ["security-office", "it-operations", "legal-compliance"],
+      "attitude_to_player": "враждебное, но дистанционное",
+      "current_actions": [
+        "проверяет реакцию штаба",
+        "сеет сомнения через сообщения и слухи"
+      ],
+      "constraints": [
+        "не получает автоматического успеха",
+        "не раскрывает процедурные offensive-детали",
+        "действия антагониста должны оставлять расследуемые следы"
+      ]
+    }
+  },
+  "locations": {
+    "war-room-10f": {
+      "description": "Переговорная на десятом этаже московского офиса, превращенная в кризисный штаб: экран с таймлайном, отдельный канал связи, юристы и ИБ за одним столом.",
+      "known_facts": [
+        {
+          "id": "fact-war-room-active",
+          "text": "В war room собираются решения, артефакты и управленческие брифинги по инциденту.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Разговоры здесь могут стать частью протокола решений.",
+        "Сильные заявления требуют фактов."
+      ]
+    },
+    "soc-floor": {
+      "description": "Открытая зона SOC с алертами, дежурной сменой и усталыми аналитиками.",
+      "known_facts": [
+        {
+          "id": "fact-soc-alerts",
+          "text": "SOC видит всплеск алертов, но пока не отделил шум от цепочки атаки.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Сырые события нельзя удалять.",
+        "Чем больше ручных задач, тем выше шанс пропустить новый сигнал."
+      ]
+    },
+    "primary-dc": {
+      "description": "Основной дата-центр компании с виртуализацией, складским обменом, внутренними сервисами и зонами с разной критичностью.",
+      "known_facts": [
+        {
+          "id": "fact-primary-dc-critical",
+          "text": "Часть критичных сервисов связана с основным дата-центром, поэтому изоляция требует бизнес-решения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "constraints": [
+        "Полная изоляция может остановить логистические операции.",
+        "Форензика должна учитывать доступность систем."
+      ]
+    },
+    "backup-vault": {
+      "description": "Сегмент резервного копирования с отдельными политиками доступа и контрольными проверками восстановления.",
+      "known_facts": [
+        {
+          "id": "fact-backups-not-yet-verified",
+          "text": "Резервные копии существуют, но их чистота и пригодность к восстановлению еще не подтверждены.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Нельзя считать бэкап чистым без проверки.",
+        "Тест восстановления требует времени и людей."
+      ]
+    },
+    "log-archive": {
+      "description": "Централизованный архив журналов, где можно восстановить временную линию, если не испортить цепочку хранения.",
+      "known_facts": [
+        {
+          "id": "fact-log-archive-partial",
+          "text": "Архив журналов содержит полезные события, но часть источников пришла с задержкой или неполными полями.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Интерпретация логов без корреляции может привести к ложному выводу.",
+        "Экспорт должен фиксироваться как доказательный артефакт."
+      ]
+    },
+    "regional-warehouse-node": {
+      "description": "Региональный складской узел, где операторы видят задержки обмена и странные ошибки в сменных заданиях.",
+      "known_facts": [
+        {
+          "id": "fact-warehouse-symptom",
+          "text": "На региональном складе есть симптомы сбоя, но пока неизвестно, являются ли они причиной, следствием или отвлекающим шумом.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "opening scene"
+        }
+      ],
+      "constraints": [
+        "Локальные сотрудники не обязаны понимать технический контекст.",
+        "Давление смены может уничтожить полезные следы обычными операционными действиями."
+      ]
+    },
+    "board-room": {
+      "description": "Комната руководства, где техническая неопределенность превращается в деньги, клиентов, договоры и страх.",
+      "known_facts": [
+        {
+          "id": "fact-board-wants-answers",
+          "text": "Руководство требует короткий план каждые несколько ходов, даже если факты еще неполные.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "constraints": [
+        "Слишком технический доклад снижает доверие.",
+        "Слишком уверенный доклад без фактов создает юридический риск."
+      ]
+    },
+    "communications-room": {
+      "description": "Небольшой кабинет PR и клиентских коммуникаций, где готовятся черновики сообщений и Q&A.",
+      "known_facts": [
+        {
+          "id": "fact-comms-waiting",
+          "text": "Коммуникации ждут подтвержденных формулировок от ИБ и юристов.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "constraints": [
+        "Любое внешнее сообщение может стать уликой, обещанием или источником паники."
+      ]
+    },
+    "legal-conference-room": {
+      "description": "Закрытая переговорная юристов с протоколом решений, договорными обязательствами и внешними советниками.",
+      "known_facts": [
+        {
+          "id": "fact-legal-channel",
+          "text": "Юридический трек отделяет подтвержденные факты от рабочих версий и фиксирует решения.",
+          "turn": 0,
+          "confidence": "confirmed",
+          "source": "campaign bible"
+        }
+      ],
+      "constraints": [
+        "Юристы не заменяют техническое расследование, но могут остановить рискованные формулировки."
+      ]
+    }
+  },
+  "resources": {
+    "turn-budget": {
+      "owner": "player",
+      "quantity": 50,
+      "state": "hard limit; decreases as party turns advance",
+      "constraints": [
+        "At turn 50 the incident receives a final outcome based on confirmed state."
+      ]
+    },
+    "siem-telemetry": {
+      "owner": "security-office",
+      "quantity": "partial",
+      "state": "noisy but available",
+      "constraints": [
+        "Requires correlation before conclusions."
+      ]
+    },
+    "edr-console": {
+      "owner": "security-office",
+      "quantity": "limited licenses",
+      "state": "active with delayed events",
+      "constraints": [
+        "Quarantine actions may disrupt business systems."
+      ]
+    },
+    "backup-snapshots": {
+      "owner": "it-operations",
+      "quantity": "unknown clean count",
+      "state": "not yet verified",
+      "constraints": [
+        "Restore cannot be trusted until tested."
+      ]
+    },
+    "chain-of-custody-log": {
+      "owner": "legal-compliance",
+      "quantity": "empty",
+      "state": "ready for evidence records",
+      "constraints": [
+        "Evidence loses value if copied or handled casually."
+      ]
+    },
+    "executive-attention": {
+      "owner": "executive-committee",
+      "quantity": "high",
+      "state": "volatile",
+      "constraints": [
+        "Consumes player time through briefings."
+      ]
+    },
+    "client-trust": {
+      "owner": "crisis-comms",
+      "quantity": 2,
+      "state": "stable but fragile",
+      "constraints": [
+        "Drops when rumors outrun facts."
+      ]
+    },
+    "attacker-pressure-channel": {
+      "owner": "adversary-cell",
+      "quantity": 1,
+      "state": "available but untrusted",
+      "constraints": [
+        "Messages are evidence and pressure, not proof by themselves."
+      ]
+    },
+    "ioc-set-alpha": {
+      "owner": "security-office",
+      "quantity": "small",
+      "state": "preliminary",
+      "constraints": [
+        "Contains indicators for defensive correlation only; not enough for attribution."
+      ]
+    }
+  },
+  "relationships": {
+    "player-marina-vorontsova": {
+      "from": "player",
+      "to": "marina-vorontsova",
+      "trust": 3,
+      "suspicion": 0,
+      "notes": [
+        "Марина доверяет игроку как фактическому ядру расследования."
+      ]
+    },
+    "player-ilya-safonov": {
+      "from": "player",
+      "to": "ilya-safonov",
+      "trust": 2,
+      "suspicion": 0,
+      "notes": [
+        "Илья готов работать под руководством игрока, но быстро выгорает без четких приоритетов."
+      ]
+    },
+    "player-oleg-shumilov": {
+      "from": "player",
+      "to": "oleg-shumilov",
+      "trust": 0,
+      "suspicion": 1,
+      "notes": [
+        "Олег опасается, что расследование сделает эксплуатацию виноватой во всем."
+      ]
+    },
+    "player-ksenia-lebedeva": {
+      "from": "player",
+      "to": "ksenia-lebedeva",
+      "trust": 2,
+      "suspicion": 0,
+      "notes": [
+        "Ксения готова защищать аккуратное расследование."
+      ]
+    },
+    "player-artem-pavlov": {
+      "from": "player",
+      "to": "artem-pavlov",
+      "trust": 0,
+      "suspicion": 1,
+      "notes": [
+        "Артем ждет понятного решения, а не только описания угроз."
+      ]
+    },
+    "player-stanislav-kireev": {
+      "from": "player",
+      "to": "stanislav-kireev",
+      "trust": -1,
+      "suspicion": 2,
+      "notes": [
+        "Станислав подозревает, что ИБ завысит масштаб проблемы и стоимость реагирования."
+      ]
+    },
+    "player-nika-belyaeva": {
+      "from": "player",
+      "to": "nika-belyaeva",
+      "trust": 0,
+      "suspicion": 0,
+      "notes": [
+        "Доверие Ники будет расти от качества артефактов и честности таймлайна."
+      ]
+    },
+    "player-pavel-menshov": {
+      "from": "player",
+      "to": "pavel-menshov",
+      "trust": -1,
+      "suspicion": 3,
+      "notes": [
+        "Старые доступы Павла всплыли как версия, но его виновность не подтверждена."
+      ]
+    },
+    "player-operator-rubin": {
+      "from": "player",
+      "to": "operator-rubin",
+      "trust": -5,
+      "suspicion": 5,
+      "notes": [
+        "Рубин - условный антагонистический оператор; контакт с ним является риском и источником доказательств."
+      ]
+    }
+  },
+  "active_threads": [
+    {
+      "id": "initial-triage",
+      "description": "Понять, какие события действительно относятся к атаке, и выделить первичный scope.",
+      "state": "open",
+      "participants": ["player", "ilya-safonov", "security-office"],
+      "deadlines": [
+        "К 8-му ходу штаб должен получить первичную картину: затронутые сегменты, риски и неизвестные."
+      ],
+      "success_conditions": [
+        "определены ключевые системы и временная линия начала",
+        "шум отделен от критичных алертов",
+        "сохранены первые артефакты без загрязнения"
+      ],
+      "failure_conditions": [
+        "SOC тонет в алертах",
+        "потеряны ранние логи",
+        "руководство принимает решение на основании неподтвержденной версии"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "containment-decision",
+      "description": "Выбрать баланс между изоляцией систем, сохранением бизнеса и доказательственной ценностью.",
+      "state": "open",
+      "participants": ["player", "marina-vorontsova", "oleg-shumilov", "artem-pavlov"],
+      "deadlines": [
+        "К 18-му ходу надо принять первую крупную containment-линию."
+      ],
+      "success_conditions": [
+        "остановлено расширение инцидента",
+        "критичные сервисы получают понятный режим работы",
+        "решение зафиксировано для юристов и руководства"
+      ],
+      "failure_conditions": [
+        "атака распространяется глубже",
+        "бизнес ломается без плана восстановления",
+        "штаб обвиняет ИБ или IT в хаосе"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "evidence-chain",
+      "description": "Собрать доказательства так, чтобы ими можно было пользоваться для отчета, страховой, клиентов и возможного обращения к внешним органам.",
+      "state": "open",
+      "participants": ["player", "ksenia-lebedeva", "nika-belyaeva"],
+      "deadlines": [
+        "К 25-му ходу должна существовать воспроизводимая временная линия с артефактами."
+      ],
+      "success_conditions": [
+        "артефакты записаны в chain-of-custody",
+        "версии отделены от фактов",
+        "внешняя IR-команда может проверить выводы"
+      ],
+      "failure_conditions": [
+        "доказательства загрязнены",
+        "версии конфликтуют",
+        "юристы блокируют публичные выводы"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "data-leak-risk",
+      "description": "Проверить, была ли утечка данных, и подготовить честную коммуникационную линию.",
+      "state": "open",
+      "participants": ["player", "alina-reznikova", "ksenia-lebedeva", "adversary-cell"],
+      "deadlines": [
+        "К 35-му ходу надо подтвердить, опровергнуть или честно классифицировать риск утечки."
+      ],
+      "success_conditions": [
+        "есть проверенная позиция по данным",
+        "клиентские сообщения не врут и не паникуют",
+        "атакующий канал не диктует повестку"
+      ],
+      "failure_conditions": [
+        "слухи выходят наружу раньше фактов",
+        "компания делает неверное заявление",
+        "клиенты узнают о риске из чужого источника"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "insider-question",
+      "description": "Разобраться, является ли след бывшего подрядчика реальным инсайдом, украденным доступом или ложным следом.",
+      "state": "open",
+      "participants": ["player", "pavel-menshov", "oleg-shumilov", "legal-compliance"],
+      "deadlines": [
+        "К 40-му ходу нужно иметь доказательную позицию: подозрение, исключение или подтверждение роли инсайдера."
+      ],
+      "success_conditions": [
+        "не обвинен невиновный",
+        "установлена судьба старых доступов",
+        "получены показания или артефакты"
+      ],
+      "failure_conditions": [
+        "штаб выбирает удобного виновного без доказательств",
+        "реальный след теряется",
+        "юридический риск растет"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "executive-pressure",
+      "description": "Давать руководству достаточно ясные решения, чтобы оно не сорвало расследование плохими приказами.",
+      "state": "open",
+      "participants": ["player", "executive-committee", "marina-vorontsova"],
+      "deadlines": [
+        "Брифинги нужны на 5, 15, 25, 35 и 45 ходах или при сильном осложнении."
+      ],
+      "success_conditions": [
+        "руководство понимает цену вариантов",
+        "решения фиксируются",
+        "доверие к игроку растет"
+      ],
+      "failure_conditions": [
+        "руководство обходит штаб",
+        "приоритеты меняются каждые несколько ходов",
+        "технические меры блокируются"
+      ],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "fifty-turn-clock",
+      "description": "Кампания ограничена 50 ходами; после 50-го хода кризис получает финальное состояние.",
+      "state": "open",
+      "participants": ["player", "all-factions"],
+      "deadlines": [
+        "Ход 50 - обязательный финал: containment, investigation, disclosure, recovery и личные последствия."
+      ],
+      "success_conditions": [
+        "на 50-м ходу есть понятная развязка по state",
+        "игрок видит цену своих решений",
+        "неразрешенные вопросы оформлены как последствия, а не как продолжение партии"
+      ],
+      "failure_conditions": [
+        "нарратор пытается продолжить после 50-го хода",
+        "финал игнорирует подтвержденные факты",
+        "неясно, что стало с компанией и персонажем игрока"
+      ],
+      "confirmed_consequences": []
+    }
+  ],
+  "completed_threads": [],
+  "world_constraints": [
+    {
+      "id": "defensive-cyber-only",
+      "text": "Киберсцены должны оставаться defensive/forensic: анализ, фиксация, сдерживание, восстановление, коммуникации. Не выдавать вредоносный код, команды атаки, инструкции обхода защиты или реальные цели.",
+      "scope": "cyber safety",
+      "turn": 0
+    },
+    {
+      "id": "fictional-company",
+      "text": "АО «Северная линия», атакующая группа и персонажи вымышлены; не привязывать события к реальным организациям или людям без явного выбора игрока и безопасного обобщения.",
+      "scope": "setting",
+      "turn": 0
+    },
+    {
+      "id": "player-agency",
+      "text": "Нарратор не решает за персонажа игрока его слова, чувства, моральный выбор, согласие, признания или профессиональные выводы.",
+      "scope": "player agency",
+      "turn": 0
+    },
+    {
+      "id": "authoritative-state",
+      "text": "Canonical state из rp-gateway является источником истины. Слухи, угрозы атакующего и версии NPC не становятся фактами без подтвержденного state update.",
+      "scope": "gateway",
+      "turn": 0
+    },
+    {
+      "id": "hard-50-turn-limit",
+      "text": "Партия ограничена 50 ходами. На 50-м ходу нарратор обязан дать финальную развязку по подтвержденному state и не продолжать кампанию как открытую бесконечную историю.",
+      "scope": "structure",
+      "turn": 0
+    },
+    {
+      "id": "no-hidden-success",
+      "text": "Провал проверки не превращается в скрытый успех. Частичный успех получает явную цену, задержку, риск или осложнение.",
+      "scope": "checks",
+      "turn": 0
+    },
+    {
+      "id": "legal-boundary",
+      "text": "Расследование ведется в правовых и корпоративных рамках: незаконная месть, взлом внешних систем, запугивание и самосуд невозможны как успешный путь.",
+      "scope": "law and ethics",
+      "turn": 0
+    },
+    {
+      "id": "evidence-integrity",
+      "text": "Сильные технические выводы, обвинения, уведомления, восстановление и публичные заявления требуют сохраненных артефактов, цепочки хранения или согласованного риска.",
+      "scope": "investigation",
+      "turn": 0
+    }
+  ],
+  "timeline": [
+    {
+      "turn": 0,
+      "event": "Вечером 21 июля 2026 года SOC АО «Северная линия» поднимает кризисный сигнал по цепочке алертов, сбоям складского обмена и признакам возможной компрометации учетных записей.",
+      "confirmed": true,
+      "participants": ["player", "ilya-safonov", "security-office"]
+    },
+    {
+      "turn": 0,
+      "event": "Марина Воронцова собирает кризисный штаб и просит игрока стать фактическим владельцем расследовательной временной линии.",
+      "confirmed": true,
+      "participants": ["player", "marina-vorontsova"]
+    },
+    {
+      "turn": 0,
+      "event": "Первые сообщения от бизнеса говорят о задержках в региональном складском узле, но связь этих симптомов с атакой пока не доказана.",
+      "confirmed": true,
+      "participants": ["artem-pavlov", "it-operations"]
+    }
+  ],
+  "last_turn": {
+    "turn": 0,
+    "player_message": "",
+    "narrator_response": "",
+    "state_patch_id": ""
+  },
+  "uncertain_facts": [
+    {
+      "id": "rumor-data-exfiltration",
+      "text": "Атакующий канал может утверждать, что данные уже украдены, но на старте это не подтверждено.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "adversary pressure"
+    },
+    {
+      "id": "rumor-former-contractor",
+      "text": "След старой подрядной учетной записи может указывать на Павла Меньшова, украденный доступ или ложную подставу.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "initial logs"
+    },
+    {
+      "id": "rumor-backup-contamination",
+      "text": "Резервные копии могут быть чистыми, частично загрязненными или просто еще не проверенными.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "it operations"
+    },
+    {
+      "id": "rumor-customer-impact",
+      "text": "Клиенты могут уже слышать о сбое через неофициальные каналы, но масштаб слухов неизвестен.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "crisis comms"
+    },
+    {
+      "id": "rumor-active-foothold",
+      "text": "Неизвестно, сохраняет ли атакующая сторона активный доступ или только имитирует присутствие.",
+      "turn": 0,
+      "confidence": "uncertain",
+      "source": "security office"
+    }
+  ]
+}
