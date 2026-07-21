@@ -13,7 +13,7 @@ const appState = {
   chatArchiveExpanded: false,
   proposals: [],
   busy: false,
-  pendingMessage: null,
+  pendingMessages: {},
 };
 
 const els = {
@@ -823,7 +823,7 @@ async function autoStartParty(partyId) {
   startPendingMessage(partyId, requestId, "Старт партии", { autoStart: true });
   appendPendingStartMessage(requestId, "GM готовит стартовую сцену...");
   try {
-    setPendingStatus("GM готовит стартовую сцену...");
+    setPendingStatus("GM готовит стартовую сцену...", partyId);
     const result = await apiPost(
       `/api/parties/${partyId}/start`,
       { idempotency_key: requestId },
@@ -831,27 +831,27 @@ async function autoStartParty(partyId) {
     );
     const content = result.message?.content || result.latest_turn?.narrative_response || "";
     if (content) {
-      replacePendingMessage(requestId, content);
+      replacePendingMessage(partyId, requestId, content);
     }
-    setPendingStatus("Старт получен. Обновляю историю...");
+    setPendingStatus("Старт получен. Обновляю историю...", partyId);
     try {
-      await reloadActiveParty();
+      await reloadPartyIfActive(partyId);
     } catch (syncError) {
       showToast(`Старт получен, но история не обновилась: ${syncError.message}`);
     }
     showToast(result.started ? "Стартовая сцена готова." : "Партия уже начата.");
   } catch (error) {
-    setPendingStatus("Стартовый запрос оборвался.");
-    replacePendingMessage(requestId, `Стартовая сцена не получена: ${error.message}`, true);
+    setPendingStatus("Стартовый запрос оборвался.", partyId);
+    replacePendingMessage(partyId, requestId, `Стартовая сцена не получена: ${error.message}`, true);
     showToast(error.message);
   } finally {
-    clearPendingMessage();
+    clearPendingMessage(partyId);
   }
 }
 
 async function sendMessage(event) {
   event.preventDefault();
-  if (appState.pendingMessage) {
+  if (activePendingMessage()) {
     showToast("Дождись ответа GM по предыдущему ходу.");
     return;
   }
@@ -864,7 +864,7 @@ async function sendMessage(event) {
   appendPendingMessage(text, requestId);
   try {
     setBusy(true);
-    setPendingStatus("GM формирует ответ...");
+    setPendingStatus("GM формирует ответ...", partyId);
     const result = await apiPost(
       `/api/parties/${partyId}/messages`,
       { content: text, idempotency_key: requestId },
@@ -872,25 +872,25 @@ async function sendMessage(event) {
     );
     const content = result.message?.content || "";
     if (content) {
-      replacePendingMessage(requestId, content);
+      replacePendingMessage(partyId, requestId, content);
     }
-    setPendingStatus("Ответ получен. Обновляю историю...");
+    setPendingStatus("Ответ получен. Обновляю историю...", partyId);
     try {
-      await reloadActiveParty();
+      await reloadPartyIfActive(partyId);
     } catch (syncError) {
       showToast(`Ответ получен, но история не обновилась: ${syncError.message}`);
     }
   } catch (error) {
-    setPendingStatus("Запрос оборвался. Проверяю историю...");
+    setPendingStatus("Запрос оборвался. Проверяю историю...", partyId);
     const recovered = await waitForRecoveredMessage(partyId, requestId).catch(() => null);
     if (recovered?.narrative_response) {
       showToast("Ответ подтянут из истории.");
     } else {
-      replacePendingMessage(requestId, `Ответ не получен: ${error.message}`, true);
+      replacePendingMessage(partyId, requestId, `Ответ не получен: ${error.message}`, true);
       showToast(error.message);
     }
   } finally {
-    clearPendingMessage();
+    clearPendingMessage(partyId);
     setBusy(false);
   }
 }
@@ -1122,8 +1122,14 @@ function makeClientRequestId() {
   return `ui_${Date.now().toString(36)}_${random}`;
 }
 
+async function reloadPartyIfActive(partyId) {
+  if (appState.activeParty?.id === partyId) {
+    await reloadActiveParty();
+  }
+}
+
 function startPendingMessage(partyId, requestId, text, options = {}) {
-  appState.pendingMessage = {
+  appState.pendingMessages[partyId] = {
     partyId,
     requestId,
     text,
@@ -1134,26 +1140,35 @@ function startPendingMessage(partyId, requestId, text, options = {}) {
 }
 
 function activePendingMessage() {
-  if (!appState.pendingMessage || appState.pendingMessage.partyId !== appState.activeParty?.id) {
-    return null;
+  return pendingMessageForParty(appState.activeParty?.id);
+}
+
+function pendingMessageForParty(partyId) {
+  return partyId ? appState.pendingMessages[partyId] || null : null;
+}
+
+function setPendingStatus(status, partyId = appState.activeParty?.id) {
+  const pendingMessage = pendingMessageForParty(partyId);
+  if (!pendingMessage) return;
+  pendingMessage.status = status;
+  if (appState.activeParty?.id === partyId) {
+    const pending = els.chatLog.querySelector(`[data-pending-id="${pendingMessage.requestId}"] .pending-text`);
+    if (pending) pending.textContent = status;
   }
-  return appState.pendingMessage;
-}
-
-function setPendingStatus(status) {
-  if (!appState.pendingMessage) return;
-  appState.pendingMessage.status = status;
-  const pending = els.chatLog.querySelector(`[data-pending-id="${appState.pendingMessage.requestId}"] .pending-text`);
-  if (pending) pending.textContent = status;
   renderMessageControls();
 }
 
-function clearPendingMessage() {
-  appState.pendingMessage = null;
+function clearPendingMessage(partyId = appState.activeParty?.id) {
+  if (partyId) {
+    delete appState.pendingMessages[partyId];
+  }
   renderMessageControls();
 }
 
-function replacePendingMessage(requestId, content, isError = false) {
+function replacePendingMessage(partyId, requestId, content, isError = false) {
+  if (appState.activeParty?.id !== partyId) {
+    return;
+  }
   const placeholder = els.chatLog.querySelector(`[data-pending-id="${requestId}"]`);
   const html = messageHtml(isError ? "assistant error" : "assistant", isError ? "Система" : "GM", content);
   if (placeholder) {
@@ -1168,13 +1183,15 @@ async function waitForRecoveredMessage(partyId, requestId) {
   const attempts = 24;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (attempt > 0) await delay(5000);
-    setPendingStatus(`Проверяю историю партии... ${attempt + 1}/${attempts}`);
+    setPendingStatus(`Проверяю историю партии... ${attempt + 1}/${attempts}`, partyId);
     const history = await apiGet(`/api/parties/${partyId}/history`);
     const turn = (history.turns || []).find((item) => item.request_id === requestId);
     if (turn?.narrative_response) {
-      appState.history = history;
-      renderAll();
-      await reloadActiveParty().catch(() => {});
+      if (appState.activeParty?.id === partyId) {
+        appState.history = history;
+        renderAll();
+        await reloadActiveParty().catch(() => {});
+      }
       return turn;
     }
   }
@@ -1182,7 +1199,8 @@ async function waitForRecoveredMessage(partyId, requestId) {
 }
 
 function renderMessageControls() {
-  const locked = Boolean(appState.pendingMessage);
+  const pendingMessage = activePendingMessage();
+  const locked = Boolean(pendingMessage);
   const hasParty = Boolean(appState.activeParty);
   if (els.messageInput) {
     els.messageInput.disabled = locked || !hasParty;
@@ -1196,7 +1214,7 @@ function renderMessageControls() {
   if (!els.messageStatus) return;
   if (locked) {
     els.messageStatus.classList.remove("hidden");
-    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(appState.pendingMessage.status)}</span>`;
+    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(pendingMessage.status)}</span>`;
   } else {
     els.messageStatus.classList.add("hidden");
     els.messageStatus.innerHTML = "";
