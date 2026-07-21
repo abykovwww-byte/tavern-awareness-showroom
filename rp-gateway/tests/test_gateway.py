@@ -792,7 +792,10 @@ def test_timeout_and_rate_limit(tmp_path: Path):
         json=chat_payload("/check stealth skill=1 difficulty=10"),
         headers={"Authorization": "Bearer test", "Idempotency-Key": "timeout"},
     )
-    assert response.status_code == 502
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "provider_fallback"
+    assert "resolves as" in body["choices"][0]["message"]["content"]
 
     c_rate = client(tmp_path / "rate", mode="rate-limit")
     response = c_rate.post(
@@ -800,10 +803,13 @@ def test_timeout_and_rate_limit(tmp_path: Path):
         json=chat_payload("/check stealth skill=1 difficulty=10"),
         headers={"Authorization": "Bearer test", "Idempotency-Key": "rate"},
     )
-    assert response.status_code == 502
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "provider_fallback"
+    assert "resolves as" in body["choices"][0]["message"]["content"]
 
 
-def test_provider_http_error_returns_502_not_500(tmp_path: Path):
+def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
     c = client(tmp_path, mode="http-503")
     response = c.post(
         "/v1/chat/completions",
@@ -811,11 +817,13 @@ def test_provider_http_error_returns_502_not_500(tmp_path: Path):
         headers={"Authorization": "Bearer test", "Idempotency-Key": "provider-http-503"},
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "Narrative provider HTTP 503"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "provider_fallback"
+    assert "resolves as" in body["choices"][0]["message"]["content"]
 
 
-def test_party_message_provider_http_error_returns_502(tmp_path: Path):
+def test_party_message_provider_http_error_returns_safe_fallback(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path, mode="http-503")
     party = create_demo_party(c)
@@ -826,8 +834,12 @@ def test_party_message_provider_http_error_returns_502(tmp_path: Path):
         headers={"Authorization": "Bearer test"},
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "Narrative provider HTTP 503"
+    assert response.status_code == 200
+    body = response.json()
+    assert body["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    assert "resolves as" in body["message"]["content"]
+    history = c.get(f"/api/parties/{party['id']}/history").json()
+    assert history["turns"][-1]["narrative_response"] == body["message"]["content"]
 
 
 def test_party_start_provider_http_error_returns_502(tmp_path: Path):

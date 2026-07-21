@@ -193,3 +193,8 @@ default. A successful player turn records state, check, turn text, and audit
 first; then the HTTP response can return to Light GUI while memory/journal
 summaries continue outside the response path. `POST_TURN_HELPERS_INLINE=true`
 exists only for deterministic debugging and tests.
+
+If every narrative provider attempt fails after the mechanical outcome is
+resolved, the gateway records a safe fallback narration instead of returning a
+502 to the player. The turn remains auditable through `llm_timeout`,
+`llm_http_error`, `llm_runtime_error`, and `llm_safe_fallback` entries.

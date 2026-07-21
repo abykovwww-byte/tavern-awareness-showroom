@@ -30,6 +30,7 @@ MEMORY_MAX_BATCH_TURNS=96
 JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS=24
 JOURNAL_MAX_BATCH_TURNS=48
 POST_TURN_HELPERS_INLINE=false
+MODEL_ATTEMPT_TIMEOUT_SECONDS=240
 ```
 
 `NARRATIVE_HISTORY_MESSAGE_LIMIT=0` means the gateway derives the message limit
@@ -54,6 +55,11 @@ persisted; auto-memory and auto-journal continue as best-effort background
 helpers. Inline helper execution is reserved for deterministic tests and
 debugging.
 
+Narrative provider attempts get a longer timeout because prompts can now carry
+more raw campaign context. If all provider attempts still fail after the
+mechanical outcome is resolved, the gateway records a safe fallback narration
+instead of surfacing HTTP 502 to the player.
+
 ## Consequences
 
 - A 50-turn scenario can stay entirely raw in the narrator prompt by default.
@@ -65,3 +71,5 @@ debugging.
   changes.
 - Slow summarization no longer makes a completed GM response appear lost in the
   browser.
+- Provider timeouts remain visible in audit logs, but the player receives a
+  mechanically consistent fallback turn instead of an nginx/502 error.

@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.models.schemas import ChatCompletionRequest
+from app.models.schemas import ChatCompletionRequest, Outcome
 from app.services.intent_parser import IntentParser
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
@@ -78,6 +78,7 @@ class Adjudicator:
 
         llm_calls = 0
         repaired = False
+        provider_fallback_reason: str | None = None
         try:
             memory_summary = self.store.latest_memory_summary()
             raw = await self.narrative.complete(
@@ -117,10 +118,23 @@ class Adjudicator:
                 {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
                 request_id,
             )
-            raise RuntimeError(f"Narrative provider HTTP {status}") from exc
+            provider_fallback_reason = f"http_{status}"
+            text = safe_fallback(outcome)
+            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
         except httpx.TimeoutException as exc:
             self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
-            raise RuntimeError("Narrative provider timeout") from exc
+            provider_fallback_reason = "timeout"
+            text = safe_fallback(outcome)
+            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+        except RuntimeError as exc:
+            provider_fallback_reason = "runtime_error"
+            self.store.audit(
+                "llm_runtime_error",
+                {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
+                request_id,
+            )
+            text = safe_fallback(outcome)
+            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         response = self.normalize_response(raw, request.model or self.settings.narrative_model)
@@ -139,6 +153,7 @@ class Adjudicator:
                 "model": self.settings.narrative_model,
                 "validator_valid": self.validator.validate(text, outcome).valid,
                 "repair": repaired,
+                "provider_fallback_reason": provider_fallback_reason,
                 "check_id": outcome.check_id,
                 "result": outcome.result,
             },
@@ -146,6 +161,32 @@ class Adjudicator:
         )
         await self.after_turn_recorded(authorization, request_id)
         return response
+
+    def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
+        self.store.audit(
+            "llm_safe_fallback",
+            {
+                "request_id": request_id,
+                "check_id": outcome.check_id,
+                "model": self.settings.narrative_model,
+                "reason": reason,
+            },
+            request_id,
+        )
+        return {
+            "id": f"fallback-{outcome.check_id}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": self.settings.narrative_model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "provider_fallback",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
         if self.settings.post_turn_helpers_inline:
