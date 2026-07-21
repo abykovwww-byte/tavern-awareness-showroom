@@ -54,6 +54,12 @@ class Settings:
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900"))
     model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "120"))
+    party_raw_turn_limit: int = env_int("PARTY_RAW_TURN_LIMIT", 96)
+    narrative_history_message_limit: int = env_int("NARRATIVE_HISTORY_MESSAGE_LIMIT", 0)
+    memory_auto_min_unsummarized_turns: int = env_int("MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS", 48)
+    memory_max_batch_turns: int = env_int("MEMORY_MAX_BATCH_TURNS", 96)
+    journal_auto_min_unsummarized_turns: int = env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
+    journal_max_batch_turns: int = env_int("JOURNAL_MAX_BATCH_TURNS", 48)
 
     @property
     def sqlite_path(self) -> str:
@@ -61,6 +67,12 @@ class Settings:
         if not self.database_url.startswith(prefix):
             raise ValueError("Only sqlite:/// DATABASE_URL values are supported in this MVP")
         return self.database_url[len(prefix) :]
+
+    @property
+    def effective_narrative_history_message_limit(self) -> int:
+        if self.narrative_history_message_limit > 0:
+            return self.narrative_history_message_limit
+        return max((self.party_raw_turn_limit * 2) + 1, 1)
 
 
 def get_settings() -> Settings:

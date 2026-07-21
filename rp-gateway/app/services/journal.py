@@ -31,11 +31,25 @@ class JournalPlan:
 class JournalBuilder:
     """Creates player-facing recaps from completed party turns."""
 
-    def __init__(self, settings: Settings, store: StateStore, min_unsummarized_turns: int = 6, max_batch_turns: int = 18):
+    def __init__(
+        self,
+        settings: Settings,
+        store: StateStore,
+        min_unsummarized_turns: int | None = None,
+        max_batch_turns: int | None = None,
+    ):
         self.settings = settings
         self.store = store
-        self.min_unsummarized_turns = min_unsummarized_turns
-        self.max_batch_turns = max_batch_turns
+        self.min_unsummarized_turns = max(
+            min_unsummarized_turns
+            if min_unsummarized_turns is not None
+            else settings.journal_auto_min_unsummarized_turns,
+            1,
+        )
+        self.max_batch_turns = max(
+            max_batch_turns if max_batch_turns is not None else settings.journal_max_batch_turns,
+            1,
+        )
 
     def stats(self) -> dict[str, Any]:
         turns = self.store.turns_for_memory()
@@ -46,6 +60,8 @@ class JournalBuilder:
             "total_turns": len(turns),
             "journaled_turns": latest_to_turn_id,
             "unsummarized_turns": len(unsummarized),
+            "min_unsummarized_turns": self.min_unsummarized_turns,
+            "max_batch_turns": self.max_batch_turns,
             "latest_entry_id": latest["id"] if latest else None,
             "latest_to_turn_id": latest_to_turn_id or None,
             "next_auto_entry_turns_remaining": max(self.min_unsummarized_turns - len(unsummarized), 0),

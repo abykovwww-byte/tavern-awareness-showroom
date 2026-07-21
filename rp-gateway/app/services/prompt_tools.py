@@ -14,9 +14,6 @@ from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 
 
-RAW_TURN_LIMIT = 8
-
-
 class PromptInspector:
     def __init__(self, settings: Any, store: StateStore):
         self.settings = settings
@@ -58,7 +55,7 @@ class PromptInspector:
 
     def chat_request(self, latest: str) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
-        for turn in self.store.turn_history(limit=RAW_TURN_LIMIT):
+        for turn in self.store.turn_history(limit=max(self.settings.party_raw_turn_limit, 0)):
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
         messages.append(ChatMessage(role="user", content=latest))

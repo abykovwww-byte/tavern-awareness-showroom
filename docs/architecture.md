@@ -167,3 +167,23 @@ Journal entries are player-facing recaps stored separately from model memory.
 Memory is optimized for narrator context; journal is optimized for humans.
 Both are party-scoped by `campaign_id`, and both keep turn coverage plus
 `state_version` metadata.
+
+## Iteration 9
+
+Light GUI memory now defaults to a long-context policy instead of early
+compression.
+
+```text
+party turn succeeds
+  -> gateway keeps up to 96 latest turns as raw dialogue context
+  -> narrator prompt derives its message limit from that raw window
+  -> memory summarizes only old turns beyond the raw window
+  -> journal recaps are also less frequent human-readable checkpoints
+```
+
+The policy is configured through environment variables rendered by Ansible:
+`PARTY_RAW_TURN_LIMIT`, `NARRATIVE_HISTORY_MESSAGE_LIMIT`,
+`MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS`, `MEMORY_MAX_BATCH_TURNS`,
+`JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS`, and `JOURNAL_MAX_BATCH_TURNS`.
+The default is tuned for current 1M-context model profiles while remaining
+server-configurable for smaller windows.

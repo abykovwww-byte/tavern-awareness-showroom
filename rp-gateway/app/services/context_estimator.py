@@ -12,8 +12,6 @@ from app.services.narrative import NarrativeClient
 from app.services.state_store import StateStore
 
 
-SOURCE_TURN_LIMIT = 8
-NARRATIVE_MESSAGE_LIMIT = 24
 TOKEN_CHARS = 3.5
 
 
@@ -24,7 +22,9 @@ def estimate_party_context(
 ) -> dict[str, Any]:
     state = store.get_state()
     all_turns = store.turn_history(limit=10000)
-    source_turns = all_turns[-SOURCE_TURN_LIMIT:]
+    source_turn_limit = max(settings.party_raw_turn_limit, 0)
+    message_prompt_limit = settings.effective_narrative_history_message_limit
+    source_turns = all_turns[-source_turn_limit:] if source_turn_limit else []
     memory_summary = store.latest_memory_summary()
     request_messages = history_messages(source_turns)
     request_messages.append(ChatMessage(role="user", content="[следующий ход игрока]"))
@@ -40,11 +40,11 @@ def estimate_party_context(
     )
     prompt_text = "\n".join(f"{message['role']}: {message['content']}" for message in prompt_messages)
 
-    retained_history_messages = min(len(source_turns) * 2, max(NARRATIVE_MESSAGE_LIMIT - 1, 0))
+    retained_history_messages = min(len(source_turns) * 2, max(message_prompt_limit - 1, 0))
     retained_history_turns_estimate = math.ceil(retained_history_messages / 2)
     omitted_history_turns_estimate = max(len(all_turns) - retained_history_turns_estimate, 0)
     state_summary_text = str(narrative_state_summary(state))
-    history_text = "\n".join(str(message.content or "") for message in request_messages[-NARRATIVE_MESSAGE_LIMIT:-1])
+    history_text = "\n".join(str(message.content or "") for message in request_messages[-message_prompt_limit:-1])
     context_limit_tokens = parse_context_limit_tokens(model_profile)
     prompt_tokens = estimate_tokens(prompt_text)
     completion_reserved_tokens = int((model_profile.params if model_profile else {}).get("max_tokens") or 0)
@@ -67,8 +67,9 @@ def estimate_party_context(
         "memory_covered_turns": [memory_summary["from_turn_id"], memory_summary["to_turn_id"]] if memory_summary else None,
         "direct_history_tokens": estimate_tokens(history_text) if history_text else 0,
         "history_turns_total": len(all_turns),
-        "history_source_turn_limit": SOURCE_TURN_LIMIT,
-        "message_prompt_limit": NARRATIVE_MESSAGE_LIMIT,
+        "history_source_turn_limit": source_turn_limit,
+        "message_prompt_limit": message_prompt_limit,
+        "raw_turns_kept": source_turn_limit,
         "direct_history_messages": retained_history_messages,
         "direct_history_turns_estimate": retained_history_turns_estimate,
         "omitted_history_turns_estimate": omitted_history_turns_estimate,

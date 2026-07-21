@@ -479,7 +479,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id)
             party_settings = settings_for_party(settings, party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
-            chat_request = party_chat_request(party_state_store, model_profile.model, request)
+            chat_request = party_chat_request(
+                party_state_store,
+                model_profile.model,
+                request,
+                party_settings.party_raw_turn_limit,
+            )
             response = await Adjudicator(party_settings, party_state_store).handle_chat(
                 chat_request,
                 authorization,
@@ -746,9 +751,14 @@ def party_start_outcome(party_id: str) -> Outcome:
     )
 
 
-def party_chat_request(store: StateStore, model: str, request: PartyMessageRequest) -> ChatCompletionRequest:
+def party_chat_request(
+    store: StateStore,
+    model: str,
+    request: PartyMessageRequest,
+    raw_turn_limit: int,
+) -> ChatCompletionRequest:
     messages: list[ChatMessage] = []
-    for turn in store.turn_history(limit=8):
+    for turn in store.turn_history(limit=max(raw_turn_limit, 0)):
         messages.append(ChatMessage(role="user", content=turn["player_message"]))
         messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
     messages.append(ChatMessage(role="user", content=request.content))

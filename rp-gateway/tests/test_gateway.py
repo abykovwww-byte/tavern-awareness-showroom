@@ -88,20 +88,22 @@ def base_state() -> dict[str, object]:
     }
 
 
-def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key") -> TestClient:
+def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **settings_overrides: object) -> TestClient:
     state_path = tmp_path / "state" / "current.json"
     state_path.parent.mkdir(parents=True)
     state_path.write_text(json.dumps(base_state(), ensure_ascii=False), encoding="utf-8")
-    settings = Settings(
-        app_env="test",
-        campaign_id="default",
-        database_url=f"sqlite:///{tmp_path / 'rp_gateway.db'}",
-        world_state_path=str(state_path),
-        party_state_root=str(tmp_path / "state" / "parties"),
-        worldpacks_path=str(tmp_path / "worldpacks"),
-        nvidia_api_base=f"mock://{mode}",
-        nvidia_api_key=api_key,
-    )
+    settings_kwargs = {
+        "app_env": "test",
+        "campaign_id": "default",
+        "database_url": f"sqlite:///{tmp_path / 'rp_gateway.db'}",
+        "world_state_path": str(state_path),
+        "party_state_root": str(tmp_path / "state" / "parties"),
+        "worldpacks_path": str(tmp_path / "worldpacks"),
+        "nvidia_api_base": f"mock://{mode}",
+        "nvidia_api_key": api_key,
+    }
+    settings_kwargs.update(settings_overrides)
+    settings = Settings(**settings_kwargs)
     return TestClient(create_app(settings))
 
 
@@ -262,6 +264,25 @@ def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     assert "reasoning" in models[0]["tags"]
 
 
+def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.MonkeyPatch):
+    for name in [
+        "PARTY_RAW_TURN_LIMIT",
+        "NARRATIVE_HISTORY_MESSAGE_LIMIT",
+        "MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS",
+        "MEMORY_MAX_BATCH_TURNS",
+        "JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS",
+        "JOURNAL_MAX_BATCH_TURNS",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings()
+    assert settings.party_raw_turn_limit == 96
+    assert settings.effective_narrative_history_message_limit == 193
+    assert settings.memory_auto_min_unsummarized_turns == 48
+    assert settings.memory_max_batch_turns == 96
+    assert settings.journal_auto_min_unsummarized_turns == 24
+    assert settings.journal_max_batch_turns == 48
+
+
 def test_party_model_can_be_changed(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
@@ -320,6 +341,8 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
     assert estimate["estimated_prompt_tokens"] > 0
     assert estimate["estimated_total_tokens"] >= estimate["estimated_prompt_tokens"]
     assert estimate["history_turns_total"] == 7
+    assert estimate["history_source_turn_limit"] == 96
+    assert estimate["message_prompt_limit"] == 193
     assert estimate["direct_history_messages"] == 14
     assert estimate["history_limited"] is False
     assert estimate["omitted_history_turns_estimate"] == 0
@@ -377,7 +400,12 @@ def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
 
 def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     write_worldpack(tmp_path)
-    c = client(tmp_path)
+    c = client(
+        tmp_path,
+        party_raw_turn_limit=8,
+        memory_auto_min_unsummarized_turns=10,
+        memory_max_batch_turns=20,
+    )
     first = create_demo_party(c, title="Memory A", character_name="A")
     second = create_demo_party(c, title="Memory B", character_name="B")
 
@@ -408,7 +436,11 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
 
 def test_party_journal_auto_summary_is_party_isolated(tmp_path: Path):
     write_worldpack(tmp_path)
-    c = client(tmp_path)
+    c = client(
+        tmp_path,
+        journal_auto_min_unsummarized_turns=6,
+        journal_max_batch_turns=18,
+    )
     first = create_demo_party(c, title="Journal A", character_name="A")
     second = create_demo_party(c, title="Journal B", character_name="B")
 
@@ -436,7 +468,12 @@ def test_party_journal_auto_summary_is_party_isolated(tmp_path: Path):
 
 def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
     write_worldpack(tmp_path)
-    c = client(tmp_path)
+    c = client(
+        tmp_path,
+        party_raw_turn_limit=8,
+        memory_auto_min_unsummarized_turns=10,
+        memory_max_batch_turns=20,
+    )
     party = create_demo_party(c, title="Manual Memory")
 
     for index in range(9):

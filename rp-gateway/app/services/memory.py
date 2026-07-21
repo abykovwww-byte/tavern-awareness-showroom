@@ -36,15 +36,23 @@ class MemorySummarizer:
         self,
         settings: Settings,
         store: StateStore,
-        raw_turn_keep: int = 8,
-        min_unsummarized_turns: int = 10,
-        max_batch_turns: int = 20,
+        raw_turn_keep: int | None = None,
+        min_unsummarized_turns: int | None = None,
+        max_batch_turns: int | None = None,
     ):
         self.settings = settings
         self.store = store
-        self.raw_turn_keep = raw_turn_keep
-        self.min_unsummarized_turns = min_unsummarized_turns
-        self.max_batch_turns = max_batch_turns
+        self.raw_turn_keep = max(raw_turn_keep if raw_turn_keep is not None else settings.party_raw_turn_limit, 0)
+        self.min_unsummarized_turns = max(
+            min_unsummarized_turns
+            if min_unsummarized_turns is not None
+            else settings.memory_auto_min_unsummarized_turns,
+            1,
+        )
+        self.max_batch_turns = max(
+            max_batch_turns if max_batch_turns is not None else settings.memory_max_batch_turns,
+            1,
+        )
 
     def stats(self) -> dict[str, Any]:
         turns = self.store.turns_for_memory()
@@ -56,6 +64,8 @@ class MemorySummarizer:
         return {
             "total_turns": len(turns),
             "raw_turns_kept": self.raw_turn_keep,
+            "min_unsummarized_turns": self.min_unsummarized_turns,
+            "max_batch_turns": self.max_batch_turns,
             "eligible_old_turns": len(old_turns),
             "unsummarized_old_turns": len(unsummarized),
             "latest_summary_id": latest["id"] if latest else None,
