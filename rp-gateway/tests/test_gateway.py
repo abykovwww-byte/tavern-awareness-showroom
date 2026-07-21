@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -180,6 +181,27 @@ def test_auth_login_allows_two_character_usernames(tmp_path: Path):
     invalid = TestClient(c.app)
     response = invalid.post("/api/auth/login", json={"username": "r", "password": "rp-secret"})
     assert response.status_code == 401
+
+
+def test_bootstrap_admin_is_added_when_configured_user_is_missing(tmp_path: Path):
+    first = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(first)
+
+    settings = replace(
+        first.app.state.settings,
+        bootstrap_admin_username="RP",
+        bootstrap_admin_password="rp-secret",
+    )
+    second = TestClient(create_app(settings))
+    users = second.app.state.auth_store.list_users()
+
+    assert {user.username for user in users} == {"admin", "rp"}
+    assert login(second, "rp", "rp-secret")["role"] == "admin"
 
 
 def test_health_and_state(tmp_path: Path):

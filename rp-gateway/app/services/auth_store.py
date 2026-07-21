@@ -158,14 +158,23 @@ class AuthStore:
             )
 
     def ensure_bootstrap_admin(self) -> None:
-        if self.user_count() > 0:
+        username = self.normalize_username(self.settings.bootstrap_admin_username)
+        existing = self.get_user_by_username(username)
+        if existing:
+            if existing.role != "admin" or existing.status != "active":
+                timestamp = now_iso()
+                with self.connect() as connection:
+                    connection.execute(
+                        "UPDATE users SET role = 'admin', status = 'active', updated_at = ? WHERE id = ?",
+                        (timestamp, existing.id),
+                    )
             return
         password = self.settings.bootstrap_admin_password
         if not password:
             if self.settings.app_env == "production":
                 raise RuntimeError("GATEWAY_BOOTSTRAP_ADMIN_PASSWORD is required for first production admin user")
             password = "admin"
-        self.create_user(self.settings.bootstrap_admin_username, password, role="admin")
+        self.create_user(username, password, role="admin")
 
     def user_count(self) -> int:
         with self.connect() as connection:
@@ -209,6 +218,12 @@ class AuthStore:
         if row is None:
             raise ValueError(f"user not found: {user_id}")
         return self.user_from_row(row)
+
+    def get_user_by_username(self, username: str) -> AuthUser | None:
+        username = self.normalize_username(username)
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return self.user_from_row(row) if row else None
 
     def authenticate(self, username: str, password: str) -> AuthUser | None:
         username = self.normalize_username(username)
