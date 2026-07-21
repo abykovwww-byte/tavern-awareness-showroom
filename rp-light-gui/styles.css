@@ -1135,14 +1135,38 @@ button:disabled {
     padding: 14px;
   }
 
-  .composer,
   .wizard-grid,
   .segmented {
     grid-template-columns: 1fr;
   }
 
+  .composer {
+    position: sticky;
+    bottom: 0;
+    z-index: 18;
+    grid-template-columns: minmax(0, 1fr) 48px;
+    align-items: stretch;
+    gap: 8px;
+    padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: rgba(17, 20, 23, 0.96);
+  }
+
+  #messageInput {
+    min-height: 48px;
+    max-height: 32dvh;
+  }
+
   .send-button {
-    min-height: 42px;
+    width: 48px;
+    min-height: 48px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
+  }
+
+  .send-button svg {
+    width: 20px;
+    height: 20px;
   }
 
   #toolsButton {
