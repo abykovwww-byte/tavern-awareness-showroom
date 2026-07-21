@@ -167,6 +167,21 @@ def login(c: TestClient, username: str = "admin", password: str = "admin-secret"
     return response.json()["user"]
 
 
+def test_auth_login_allows_two_character_usernames(tmp_path: Path):
+    c = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="RP",
+        bootstrap_admin_password="rp-secret",
+    )
+    user = login(c, "rp", "rp-secret")
+    assert user["username"] == "rp"
+
+    invalid = TestClient(c.app)
+    response = invalid.post("/api/auth/login", json={"username": "r", "password": "rp-secret"})
+    assert response.status_code == 401
+
+
 def test_health_and_state(tmp_path: Path):
     c = client(tmp_path)
     assert c.get("/health").json()["status"] == "ok"

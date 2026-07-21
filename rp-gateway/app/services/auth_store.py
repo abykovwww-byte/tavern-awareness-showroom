@@ -190,14 +190,17 @@ class AuthStore:
             raise ValueError("password must be at least 6 characters")
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
-        with self.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO users(id, username, password_hash, role, status, created_at, updated_at)
-                VALUES(?, ?, ?, ?, 'active', ?, ?)
-                """,
-                (user_id, username, hash_password(password), role, timestamp, timestamp),
-            )
+        try:
+            with self.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO users(id, username, password_hash, role, status, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (user_id, username, hash_password(password), role, timestamp, timestamp),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("username already exists") from exc
         return self.get_user(user_id)
 
     def get_user(self, user_id: str) -> AuthUser:
@@ -421,8 +424,8 @@ class AuthStore:
 
     def normalize_username(self, username: str) -> str:
         username = " ".join(username.strip().split()).lower()
-        if len(username) < 3 or len(username) > 80:
-            raise ValueError("username must be 3-80 characters")
+        if len(username) < 2 or len(username) > 80:
+            raise ValueError("username must be 2-80 characters")
         allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-@")
         if any(char not in allowed for char in username):
             raise ValueError("username may contain latin letters, digits, dot, dash, underscore, or @")

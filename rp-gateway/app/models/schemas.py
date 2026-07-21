@@ -282,7 +282,7 @@ class LoginRequest(BaseModel):
 
 
 class UserCreate(BaseModel):
-    username: str = Field(min_length=3, max_length=80)
+    username: str = Field(min_length=2, max_length=80)
     password: str = Field(min_length=6, max_length=200)
     role: Literal["admin", "user"] = "user"
 

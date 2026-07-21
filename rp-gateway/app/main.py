@@ -133,7 +133,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def auth_login(request: LoginRequest, response: Response) -> dict[str, Any]:
         if not settings.auth_enabled:
             return {"auth_enabled": False, "authenticated": True, "user": None}
-        user = auth_store.authenticate(request.username, request.password)
+        try:
+            user = auth_store.authenticate(request.username, request.password)
+        except ValueError:
+            user = None
         if user is None:
             raise HTTPException(status_code=401, detail="invalid username or password")
         token = auth_store.create_session(user.id)
