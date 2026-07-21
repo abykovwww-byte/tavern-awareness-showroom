@@ -201,6 +201,12 @@ class PartyPromptPreviewRequest(BaseModel):
     content: str = Field(default="", max_length=12000)
 
 
+class PartyStartRequest(BaseModel):
+    idempotency_key: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+
 class PartySummary(BaseModel):
     id: str
     title: str

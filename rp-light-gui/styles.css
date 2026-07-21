@@ -475,6 +475,17 @@ h3 {
   align-self: flex-start;
 }
 
+.message.system {
+  width: auto;
+  max-width: min(520px, 94%);
+  align-self: center;
+  padding: 8px 11px;
+  border-style: dashed;
+  background: rgba(24, 29, 32, 0.72);
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .message.pending {
   border-color: rgba(195, 161, 90, 0.5);
 }

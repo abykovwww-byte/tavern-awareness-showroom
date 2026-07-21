@@ -86,6 +86,7 @@ const metaHints = {
 };
 
 const CHAT_VISIBLE_TURNS = 4;
+const AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии";
 
 bindEvents();
 setupCollapsiblePanels();
@@ -599,11 +600,17 @@ function renderChat({ scrollMode = "bottom" } = {}) {
     messages.push(chatArchiveHtml(hiddenTurnCount));
   }
   for (const turn of visibleTurns) {
-    messages.push(messageHtml("user", "Игрок", turn.player_message));
+    if (isAutoStartTurn(turn)) {
+      messages.push(messageHtml("system", "Старт", "Партия началась автоматически."));
+    } else {
+      messages.push(messageHtml("user", "Игрок", turn.player_message));
+    }
     messages.push(messageHtml("assistant", "GM", turn.narrative_response));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
-    messages.push(messageHtml("user", "Игрок", pending.text));
+    if (!pending.autoStart) {
+      messages.push(messageHtml("user", "Игрок", pending.text));
+    }
     messages.push(pendingMessageHtml(pending.requestId, pending.status));
   }
   els.chatLog.innerHTML = messages.join("");
@@ -639,6 +646,10 @@ function chatArchiveHtml(hiddenTurnCount) {
       ${expanded ? "Свернуть начало" : "Показать начало"}
     </button>
   </div>`;
+}
+
+function isAutoStartTurn(turn) {
+  return String(turn?.player_message || "").startsWith(AUTO_START_HISTORY_MESSAGE);
 }
 
 function renderProposals() {
@@ -783,7 +794,8 @@ async function createParty(event) {
     closePartyDialog();
     await boot();
     await selectParty(party.party.id);
-    showToast("Партия создана.");
+    showToast("Партия создана. GM готовит стартовую сцену...");
+    await autoStartParty(party.party.id);
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -804,6 +816,37 @@ async function resolveWorldpack() {
   const result = await apiPost("/api/worldpacks/prompt", { title, prompt });
   appState.worldpacks.push(result.worldpack);
   return result.worldpack;
+}
+
+async function autoStartParty(partyId) {
+  const requestId = `party_start_${partyId}`;
+  startPendingMessage(partyId, requestId, "Старт партии", { autoStart: true });
+  appendPendingStartMessage(requestId, "GM готовит стартовую сцену...");
+  try {
+    setPendingStatus("GM готовит стартовую сцену...");
+    const result = await apiPost(
+      `/api/parties/${partyId}/start`,
+      { idempotency_key: requestId },
+      { "X-Request-ID": requestId },
+    );
+    const content = result.message?.content || result.latest_turn?.narrative_response || "";
+    if (content) {
+      replacePendingMessage(requestId, content);
+    }
+    setPendingStatus("Старт получен. Обновляю историю...");
+    try {
+      await reloadActiveParty();
+    } catch (syncError) {
+      showToast(`Старт получен, но история не обновилась: ${syncError.message}`);
+    }
+    showToast(result.started ? "Стартовая сцена готова." : "Партия уже начата.");
+  } catch (error) {
+    setPendingStatus("Стартовый запрос оборвался.");
+    replacePendingMessage(requestId, `Стартовая сцена не получена: ${error.message}`, true);
+    showToast(error.message);
+  } finally {
+    clearPendingMessage();
+  }
 }
 
 async function sendMessage(event) {
@@ -1068,17 +1111,24 @@ function appendPendingMessage(text, requestId) {
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
 }
 
+function appendPendingStartMessage(requestId, status) {
+  if (!appState.history) appState.history = { turns: [] };
+  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, status));
+  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
 function makeClientRequestId() {
   const random = Math.random().toString(36).slice(2, 10);
   return `ui_${Date.now().toString(36)}_${random}`;
 }
 
-function startPendingMessage(partyId, requestId, text) {
+function startPendingMessage(partyId, requestId, text, options = {}) {
   appState.pendingMessage = {
     partyId,
     requestId,
     text,
     status: "GM формирует ответ...",
+    autoStart: Boolean(options.autoStart),
   };
   renderMessageControls();
 }

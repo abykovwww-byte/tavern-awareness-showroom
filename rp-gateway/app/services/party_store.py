@@ -449,6 +449,20 @@ class PartyStore:
             )
         ]
 
+    def opening_scene_text(self, pack: WorldPackSummary) -> str:
+        files = pack.manifest.get("files", {}) if isinstance(pack.manifest.get("files"), dict) else {}
+        opening = files.get("opening_scene")
+        if not opening:
+            return ""
+        base = Path(pack.manifest_path).resolve().parent
+        target = (base / str(opening)).resolve()
+        if base not in target.parents:
+            return ""
+        try:
+            return target.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
     def list_player_characters(self, worldpack_id: str | None = None) -> list[PlayerCharacterSummary]:
         self.scan_worldpacks()
         sql = "SELECT * FROM player_characters"

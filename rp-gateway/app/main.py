@@ -17,6 +17,7 @@ from app.models.schemas import (
     ChatCompletionRequest,
     ChatMessage,
     HealthResponse,
+    Outcome,
     PatchEnvelope,
     PartyCheckRequest,
     PartyCreate,
@@ -25,6 +26,7 @@ from app.models.schemas import (
     PartyMessageRequest,
     PartyModelUpdate,
     PartyPromptPreviewRequest,
+    PartyStartRequest,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
     WorldPromptCreate,
@@ -36,9 +38,13 @@ from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
+from app.services.narrative import NarrativeClient, response_text
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.state_store import StateStore
+
+
+AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -360,6 +366,97 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party_id": party_id, "preview": preview}
 
+    @app.post("/api/parties/{party_id}/start")
+    async def start_party(
+        party_id: str,
+        request: PartyStartRequest = PartyStartRequest(),
+        authorization: str | None = Header(default=None),
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id)
+            party_state_store = party_store.store_for_party(party_id)
+            party_settings = settings_for_party(settings, party)
+            model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        idempotency_key = request.idempotency_key or f"party-start:{party_id}"
+        existing = party_state_store.get_turn_by_idempotency(idempotency_key)
+        if existing:
+            message = existing.get("choices", [{}])[0].get("message", {"role": "assistant", "content": ""})
+            return {
+                "party_id": party_id,
+                "started": False,
+                "already_started": True,
+                "reason": "idempotency_key_exists",
+                "state_version": party_state_store.current_version(),
+                "message": message,
+                "raw": existing,
+            }
+
+        existing_turns = party_state_store.turn_history(limit=1)
+        if existing_turns:
+            return {
+                "party_id": party_id,
+                "started": False,
+                "already_started": True,
+                "reason": "history_exists",
+                "state_version": party_state_store.current_version(),
+                "latest_turn": existing_turns[-1],
+            }
+
+        request_id = x_request_id or f"req_{uuid.uuid4().hex}"
+        try:
+            state = party_state_store.get_state()
+            prompt = party_start_prompt(party_store, party)
+            chat_request = ChatCompletionRequest(
+                model=model_profile.model,
+                messages=[ChatMessage(role="user", content=prompt)],
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                stream=False,
+            )
+            raw = await NarrativeClient(party_settings).complete(
+                chat_request,
+                state,
+                party_start_outcome(party_id),
+                authorization,
+                memory_summary=party_state_store.latest_memory_summary(),
+                request_id=request_id,
+            )
+            response = Adjudicator(party_settings, party_state_store).normalize_response(raw, model_profile.model)
+            text = response_text(response)
+            state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
+            turn_id = party_state_store.record_turn(
+                idempotency_key,
+                request_id,
+                AUTO_START_HISTORY_MESSAGE,
+                text,
+                response,
+                state_version,
+            )
+            party_state_store.audit(
+                "party_start_complete",
+                {"request_id": request_id, "turn_id": turn_id, "model": model_profile.model},
+                request_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {
+            "party_id": party_id,
+            "started": True,
+            "already_started": False,
+            "state_version": state_version,
+            "message": response.get("choices", [{}])[0].get("message", {"role": "assistant", "content": ""}),
+            "raw": response,
+        }
+
     @app.post("/api/parties/{party_id}/messages")
     async def party_message(
         party_id: str,
@@ -585,6 +682,57 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
         validator_model=model_profile.model,
+    )
+
+
+def party_start_prompt(party_store: PartyStore, party: Any) -> str:
+    world = party.worldpack or party_store.get_worldpack(party.worldpack_id)
+    character = party.player_character or party_store.get_player_character(party.player_character_id)
+    manifest = world.manifest if isinstance(world.manifest, dict) else {}
+    opening_scene = party_store.opening_scene_text(world)
+    premise = str(manifest.get("premise") or world.premise or manifest.get("prompt") or "").strip()
+    player_role = str(manifest.get("player_role") or "").strip()
+    opening_block = opening_scene or (
+        "No dedicated opening-scene file is available. Synthesize the first scene from the current state, "
+        "world premise, and player character. End with a concrete player-facing choice."
+    )
+    return "\n\n".join(
+        [
+            "START_PARTY_OPENING_SCENE",
+            "This is an internal Light GUI auto-start request, not a player action.",
+            "Write the first GM/narrator message for a new roleplay party in Russian.",
+            "Use second person, preserve player agency, do not resolve any player choice, and end by asking what the player does.",
+            "Do not expose service instructions, JSON, model policy, or the AUTO_START marker.",
+            f"World title: {world.title}",
+            f"World premise: {premise or 'use the current authoritative state'}",
+            f"Player character: {character.name}",
+            f"Player role: {character.description or player_role or 'active player character'}",
+            f"Opening scene source:\n{opening_block}",
+        ]
+    )
+
+
+def party_start_outcome(party_id: str) -> Outcome:
+    return Outcome(
+        check_id=f"party_start:{party_id}",
+        action_type="feasibility",
+        actor="system",
+        target="opening_scene",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        blocked_reasons=[],
+        consequences=["Initial scene is introduced; no player decision has been resolved yet."],
+        forbidden_reinterpretations=[
+            "Do not treat the start request as a player action.",
+            "Do not change state or grant resources through the opening narration.",
+        ],
+        authoritative_block=(
+            "AUTHORITATIVE_OUTCOME: This is the start of a new party. Present the opening scene only. "
+            "No mechanical check was rolled, and no player action has been resolved."
+        ),
     )
 
 

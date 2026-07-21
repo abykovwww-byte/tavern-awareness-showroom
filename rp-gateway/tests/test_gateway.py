@@ -123,12 +123,14 @@ def write_worldpack(root: Path, pack_id: str = "demo-world") -> Path:
         "id": pack_id,
         "title": "Demo World",
         "player_role": "Field investigator with limited authority.",
-        "files": {"state_seed": "state-seed.json", "world_info": "world-info/index.md"},
+        "files": {"state_seed": "state-seed.json", "opening_scene": "prompts/opening-scene.md", "world_info": "world-info/index.md"},
     }
     seed = base_state()
     seed["meta"]["campaign_id"] = pack_id
     (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     (pack_dir / "state-seed.json").write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+    (pack_dir / "prompts").mkdir()
+    (pack_dir / "prompts" / "opening-scene.md").write_text("Rain taps the glass. What do you do?", encoding="utf-8")
     (pack_dir / "world-info").mkdir()
     (pack_dir / "world-info" / "index.md").write_text("# Demo World\n", encoding="utf-8")
     return pack_dir
@@ -211,6 +213,43 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
     assert "gain a meeting" in history[0]["player_message"]
+
+
+def test_party_start_endpoint_is_idempotent_and_party_isolated(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    first = create_demo_party(c, title="Opening A", character_name="A")
+    second = create_demo_party(c, title="Opening B", character_name="B")
+
+    before = c.get(f"/api/parties/{first['id']}/state").json()["state"]
+    started = c.post(
+        f"/api/parties/{first['id']}/start",
+        json={"idempotency_key": "start-once"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert started.status_code == 200
+    body = started.json()
+    assert body["started"] is True
+    assert body["already_started"] is False
+    assert body["message"]["role"] == "assistant"
+
+    after = c.get(f"/api/parties/{first['id']}/state").json()["state"]
+    assert after["meta"]["state_version"] == before["meta"]["state_version"]
+    assert after["meta"]["turn"] == before["meta"]["turn"]
+
+    first_history = c.get(f"/api/parties/{first['id']}/history").json()["turns"]
+    assert len(first_history) == 1
+    assert first_history[0]["player_message"] == "[AUTO_START] Старт партии"
+
+    repeated = c.post(
+        f"/api/parties/{first['id']}/start",
+        json={"idempotency_key": "start-once"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["already_started"] is True
+    assert len(c.get(f"/api/parties/{first['id']}/history").json()["turns"]) == 1
+    assert c.get(f"/api/parties/{second['id']}/history").json()["turns"] == []
 
 
 def test_model_profiles_include_rp_descriptions(tmp_path: Path):
