@@ -31,10 +31,9 @@ class NarrativeClient:
         memory_summary: dict[str, Any] | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
+        headers = outbound_headers(self.settings, inbound_authorization)
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_completion(outcome, repair_instruction)
-
-        headers = outbound_headers(self.settings, inbound_authorization)
 
         payload = request.model_dump(exclude_none=True)
         payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)

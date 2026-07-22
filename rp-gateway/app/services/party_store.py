@@ -627,6 +627,8 @@ class PartyStore:
         }
         if profile.model in configured:
             return True
+        if provider == "local":
+            return bool(self.settings.local_llm_enabled) and profile.model == self.settings.local_llm_model_alias
         if provider == "nvidia":
             return is_rp_candidate(profile.model)
         if provider == "gemini":
