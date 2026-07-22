@@ -125,6 +125,22 @@ def chat_payload(message: str, stream: bool = False) -> dict[str, object]:
     }
 
 
+def assert_no_gateway_service_text(content: str) -> None:
+    lowered = content.lower()
+    for marker in [
+        "the action resolves as",
+        "fixed outcome",
+        "bounded desired outcome",
+        "hard world constraints",
+        "the narration preserves",
+        "gateway check",
+        "authoritative_outcome",
+        "анализ:",
+        "рекомендация:",
+    ]:
+        assert marker not in lowered
+
+
 def write_worldpack(root: Path, pack_id: str = "demo-world") -> Path:
     pack_dir = root / "worldpacks" / pack_id
     pack_dir.mkdir(parents=True)
@@ -936,8 +952,21 @@ def test_repair_failure_returns_safe_fallback(tmp_path: Path):
     )
     assert response.status_code == 200
     content = response.json()["choices"][0]["message"]["content"].lower()
-    assert "fixed outcome" in content or "resolves as" in content
+    assert_no_gateway_service_text(content)
     assert "transfers command authority" not in content
+
+
+def test_validator_repairs_meta_output_labels(tmp_path: Path):
+    c = client(tmp_path, mode="meta-leak")
+    response = c.post(
+        "/v1/chat/completions",
+        json=chat_payload("Тайм скип до ближайшего ивента"),
+        headers={"Authorization": "Bearer test", "Idempotency-Key": "meta-leak"},
+    )
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert_no_gateway_service_text(content)
+    assert "мост" in content.lower()
 
 
 def test_timeout_and_rate_limit(tmp_path: Path):
@@ -950,7 +979,7 @@ def test_timeout_and_rate_limit(tmp_path: Path):
     assert response.status_code == 200
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert "resolves as" in body["choices"][0]["message"]["content"]
+    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
 
     c_rate = client(tmp_path / "rate", mode="rate-limit")
     response = c_rate.post(
@@ -961,7 +990,7 @@ def test_timeout_and_rate_limit(tmp_path: Path):
     assert response.status_code == 200
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert "resolves as" in body["choices"][0]["message"]["content"]
+    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
 
 
 def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
@@ -975,7 +1004,7 @@ def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
     assert response.status_code == 200
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert "resolves as" in body["choices"][0]["message"]["content"]
+    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
 
 
 def test_party_message_provider_http_error_returns_safe_fallback(tmp_path: Path):
@@ -992,7 +1021,7 @@ def test_party_message_provider_http_error_returns_safe_fallback(tmp_path: Path)
     assert response.status_code == 200
     body = response.json()
     assert body["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
-    assert "resolves as" in body["message"]["content"]
+    assert_no_gateway_service_text(body["message"]["content"])
     history = c.get(f"/api/parties/{party['id']}/history").json()
     assert history["turns"][-1]["narrative_response"] == body["message"]["content"]
 

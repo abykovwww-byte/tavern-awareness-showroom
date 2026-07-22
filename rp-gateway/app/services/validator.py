@@ -2,7 +2,35 @@
 
 from __future__ import annotations
 
+import re
+
 from app.models.schemas import Outcome, ValidationResult
+
+
+SERVICE_LINE_RE = re.compile(
+    r"^\s*(?:[-—–]\s*)?"
+    r"(analysis|recommendation|diagnostics?|validator|gateway|system note|"
+    r"анализ|рекомендац(?:ия|ии|ию)|диагностик[а-я]*|служебн[а-я ]+заметк[а-я]*)\s*[:：]",
+    re.IGNORECASE | re.MULTILINE,
+)
+SERVICE_PHRASES = [
+    "the action resolves as",
+    "fixed outcome",
+    "bounded desired outcome",
+    "hard world constraints",
+    "the narration preserves",
+    "authoritative_outcome",
+    "gateway check",
+    "result field",
+]
+RESULT_NARRATION = {
+    "critical_success": "Твой ход срабатывает особенно чисто: сцена открывает лучший проход вперед.",
+    "success": "Твой ход срабатывает: ситуация складывается в твою пользу.",
+    "partial_success": "Твой ход срабатывает не полностью, но дает проход вперед с ценой, условием или задержкой.",
+    "failure_with_progress": "Желаемый результат ускользает, но сцена оставляет узкую зацепку.",
+    "failure": "Попытка не дает желаемого результата; напряжение растет, и действовать дальше придется осторожнее.",
+    "critical_failure": "Попытка оборачивается жесткой неудачей, и цена момента становится заметной сразу.",
+}
 
 
 class OutputValidator:
@@ -11,6 +39,11 @@ class OutputValidator:
         violations: list[str] = []
         if "<authoritative_outcome>" in lowered or "</authoritative_outcome>" in lowered:
             violations.append("Narrative exposed service outcome tags to the player.")
+        if SERVICE_LINE_RE.search(text):
+            violations.append("Narrative exposed analysis, recommendation, or diagnostic labels to the player.")
+        for phrase in SERVICE_PHRASES:
+            if phrase in lowered:
+                violations.append(f"Narrative exposed service wording: {phrase}")
         if outcome.result in {"failure", "critical_failure", "failure_with_progress"}:
             risky = [
                 "secretly grants",
@@ -32,15 +65,22 @@ class OutputValidator:
             return ValidationResult(
                 valid=False,
                 violations=violations,
-                repair_instruction="Remove the hidden concession, preserve the fixed result, and keep player agency intact.",
+                repair_instruction=(
+                    "Rewrite as final in-world narration only. Remove analysis, recommendation, diagnostics, "
+                    "Gateway/service wording, result labels, and hidden concessions. Keep player agency intact."
+                ),
             )
         return ValidationResult(valid=True)
 
 
 def safe_fallback(outcome: Outcome) -> str:
-    target = outcome.target or "the scene"
-    consequences = " ".join(outcome.consequences)
-    return (
-        f"The action resolves as {outcome.result}. {target} follows the fixed outcome: "
-        f"{consequences} The narration preserves the listed constraints without adding a hidden success."
-    )
+    first = RESULT_NARRATION.get(outcome.result, "Сцена сдвигается дальше, но без лишних уступок за кадром.")
+    if outcome.blocked_reasons:
+        second = "Что-то в устройстве мира упирается и не дает продавить желаемое напрямую."
+    elif outcome.result in {"critical_success", "success"}:
+        second = "Мир не делает лишних подарков, но сейчас у тебя есть честное окно для следующего шага."
+    elif outcome.result == "partial_success":
+        second = "Дальше придется выбрать, чем воспользоваться и какую цену принять."
+    else:
+        second = "Остается решить, как обойти препятствие или чем рискнуть дальше."
+    return f"{first} {second}"

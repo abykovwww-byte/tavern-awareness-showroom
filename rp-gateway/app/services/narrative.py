@@ -157,7 +157,9 @@ class NarrativeClient:
         rules = (
             "You are the narrator. The RP Gateway already decided the mechanical outcome. "
             "Describe it as fiction. Do not reroll, change the Result, create hidden success, "
-            "invent missing resources, or expose service JSON."
+            "invent missing resources, or expose service JSON. "
+            "Reply in the player's language. Output only final in-world narration and dialogue; "
+            "do not include analysis, recommendations, diagnostics, critique, result labels, or Gateway/service wording."
         )
         if repair_instruction:
             rules += f" Repair instruction: {repair_instruction}"
@@ -190,10 +192,14 @@ class NarrativeClient:
             raise RuntimeError("NVIDIA API returned 429 rate limit")
         if mode == "violate" and not repair_instruction:
             content = "Despite the failure, the king secretly grants equivalent military authority."
+        elif mode == "meta-leak" and not repair_instruction:
+            content = "— Анализ: игроку нужен таймскип.\nРекомендация: перейти к событию.\n\nТы идешь к мосту."
+        elif mode == "meta-leak":
+            content = "Телефон гаснет в кармане. Дорога к мосту сжимается до нескольких шагов, и впереди уже слышны голоса."
         elif mode == "repair-fail":
             content = "Despite the failure, the king still transfers command authority."
         else:
-            content = f"The scene follows the fixed result: {outcome.result}. {' '.join(outcome.consequences)}"
+            content = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
         return {
             "id": f"mock-{outcome.check_id}",
             "object": "chat.completion",
