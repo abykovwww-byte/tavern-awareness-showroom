@@ -97,8 +97,16 @@ class Adjudicator:
             llm_calls = 0
             repaired = False
             provider_fallback_reason: str | None = None
+            prompt_messages: list[dict[str, str]] | None = None
             try:
                 memory_summary = self.store.latest_memory_summary()
+                prompt_messages = self.narrative.narrative_messages(
+                    request,
+                    updated_state,
+                    outcome,
+                    repair_instruction=None,
+                    memory_summary=memory_summary,
+                )
                 raw = await self.narrative.complete(
                     request,
                     updated_state,
@@ -158,7 +166,7 @@ class Adjudicator:
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
             text = response_text(response)
             version = int(updated_state.get("meta", {}).get("state_version", 0))
-            turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version)
+            turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version, prompt_messages)
             self.store.complete_turn_request(idempotency_key, response)
             self.store.record_check(turn_id, outcome)
             self.store.audit(

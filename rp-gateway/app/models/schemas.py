@@ -105,6 +105,7 @@ class PatchEnvelope(BaseModel):
 class WorldInstructionRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=4000)
     confirm: bool = False
+    use_llm: bool = True
 
 
 class WorldApplyRequest(BaseModel):
@@ -201,6 +202,25 @@ class PartyJournalSummarizeRequest(BaseModel):
 
 class PartyPromptPreviewRequest(BaseModel):
     content: str = Field(default="", max_length=12000)
+    source: Literal["current", "last"] = "last"
+
+
+class PartyCharacterStateEditRequest(BaseModel):
+    target: Literal["npc", "player"] = "npc"
+    character_id: str | None = Field(default=None, max_length=120)
+    name: str | None = Field(default=None, max_length=120)
+    status: str | None = Field(default=None, max_length=80)
+    location: str | None = Field(default=None, max_length=160)
+    current_goal: str | None = Field(default=None, max_length=600)
+    attitude_to_player: str | None = Field(default=None, max_length=300)
+    loyalty: str | None = Field(default=None, max_length=200)
+    trust: int | None = Field(default=None, ge=-10, le=10)
+    fear: int | None = Field(default=None, ge=0, le=10)
+    knowledge: str | None = Field(default=None, max_length=4000)
+    obligations: str | None = Field(default=None, max_length=4000)
+    hard_constraints: str | None = Field(default=None, max_length=4000)
+    secrets: str | None = Field(default=None, max_length=4000)
+    confirm: bool = False
 
 
 class PartyStartRequest(BaseModel):

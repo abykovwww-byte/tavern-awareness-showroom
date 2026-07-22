@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -21,7 +22,38 @@ class PromptInspector:
         self.intent_parser = IntentParser()
         self.rule_engine = RuleEngine()
 
-    def preview(self, content: str) -> dict[str, Any]:
+    def preview(self, content: str, source: str = "current") -> dict[str, Any]:
+        if source == "last":
+            return self.preview_last(content)
+        return self.preview_current(content)
+
+    def preview_last(self, fallback_content: str = "") -> dict[str, Any]:
+        latest_turn = self.store.latest_turn(include_prompt=True)
+        if latest_turn and latest_turn.get("prompt_json"):
+            try:
+                messages = json.loads(str(latest_turn["prompt_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                messages = None
+            if isinstance(messages, list) and all(isinstance(message, dict) for message in messages):
+                blocks = self.blocks(messages)
+                return self.payload(
+                    latest_turn.get("player_message") or "",
+                    messages,
+                    blocks,
+                    source="recorded_last_turn",
+                    dry_run=False,
+                    turn=latest_turn,
+                )
+        if latest_turn:
+            reconstructed = self.reconstruct_last_prompt(latest_turn)
+            reconstructed["source"] = "reconstructed_last_turn"
+            reconstructed["dry_run"] = True
+            return reconstructed
+        current = self.preview_current(fallback_content)
+        current["source"] = "no_previous_turn"
+        return current
+
+    def preview_current(self, content: str) -> dict[str, Any]:
         state = self.store.get_state()
         latest = content.strip() or "[следующий ход игрока]"
         intent = self.intent_parser.parse(latest)
@@ -37,25 +69,66 @@ class PromptInspector:
             memory_summary=memory_summary,
         )
         blocks = self.blocks(messages)
-        total_prompt_tokens = sum(block["estimated_tokens"] for block in blocks)
+        payload = self.payload(latest, messages, blocks, source="current_dry_run", dry_run=True)
+        payload.update(
+            {
+                "mutation": "none",
+                "roll": 10,
+                "intent": intent.model_dump(mode="json"),
+                "outcome": outcome.model_dump(mode="json"),
+                "candidate_state_meta": candidate_state.get("meta", {}),
+            }
+        )
+        return payload
+
+    def reconstruct_last_prompt(self, latest_turn: dict[str, Any]) -> dict[str, Any]:
+        state = self.store.get_state()
+        latest = str(latest_turn.get("player_message") or "")
+        intent = self.intent_parser.parse(latest)
+        outcome, _patch = self.rule_engine.resolve(state, intent, str(latest_turn.get("request_id") or "prompt-preview"), roll=10)
+        request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
+        memory_summary = self.store.latest_memory_summary()
+        messages = NarrativeClient(self.settings).narrative_messages(
+            request,
+            state,
+            outcome,
+            repair_instruction=None,
+            memory_summary=memory_summary,
+        )
+        blocks = self.blocks(messages)
+        payload = self.payload(latest, messages, blocks, source="reconstructed_last_turn", dry_run=True, turn=latest_turn)
+        payload.update({"intent": intent.model_dump(mode="json"), "outcome": outcome.model_dump(mode="json")})
+        return payload
+
+    def payload(
+        self,
+        latest: str,
+        messages: list[dict[str, str]],
+        blocks: list[dict[str, Any]],
+        source: str,
+        dry_run: bool,
+        turn: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "input": latest,
             "model": self.settings.narrative_model,
-            "dry_run": True,
+            "source": source,
+            "dry_run": dry_run,
             "mutation": "none",
-            "roll": 10,
-            "intent": intent.model_dump(mode="json"),
-            "outcome": outcome.model_dump(mode="json"),
-            "candidate_state_meta": candidate_state.get("meta", {}),
+            "turn": turn,
             "messages": messages,
             "blocks": blocks,
-            "estimated_prompt_tokens": total_prompt_tokens,
+            "estimated_prompt_tokens": sum(block["estimated_tokens"] for block in blocks),
             "estimated_prompt_chars": sum(len(block["content"]) for block in blocks),
         }
 
-    def chat_request(self, latest: str) -> ChatCompletionRequest:
+    def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
-        for turn in self.store.turn_history(limit=max(self.settings.party_raw_turn_limit, 0)):
+        if before_turn_id is None:
+            turns = self.store.turn_history(limit=max(self.settings.party_raw_turn_limit, 0))
+        else:
+            turns = self.store.turns_before(before_turn_id, limit=max(self.settings.party_raw_turn_limit, 0))
+        for turn in turns:
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
         messages.append(ChatMessage(role="user", content=latest))

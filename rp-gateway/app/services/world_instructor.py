@@ -103,13 +103,13 @@ class WorldInstructor:
 
         return self.chat_response(self.preview_text(draft), model)
 
-    async def draft_instruction(self, instruction: str, authorization: str | None) -> WorldInstructionDraft:
+    async def draft_instruction(self, instruction: str, authorization: str | None, use_llm: bool = True) -> WorldInstructionDraft:
         instruction = instruction.strip()
         if not instruction:
             raise ValueError("world instruction is empty")
         state = self.store.get_state()
         proposal_id = f"world-{uuid.uuid4().hex[:12]}"
-        if self.settings.nvidia_api_base.startswith("mock://"):
+        if not use_llm or self.settings.nvidia_api_base.startswith("mock://"):
             draft = self.mock_draft(state, instruction, proposal_id)
         else:
             try:

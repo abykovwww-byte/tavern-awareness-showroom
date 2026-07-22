@@ -49,6 +49,22 @@ const els = {
   memorySummarizeButton: document.querySelector("#memorySummarizeButton"),
   memoryClearButton: document.querySelector("#memoryClearButton"),
   characterSheets: document.querySelector("#characterSheets"),
+  characterEditTarget: document.querySelector("#characterEditTarget"),
+  characterEditId: document.querySelector("#characterEditId"),
+  characterEditName: document.querySelector("#characterEditName"),
+  characterEditStatus: document.querySelector("#characterEditStatus"),
+  characterEditLocation: document.querySelector("#characterEditLocation"),
+  characterEditGoal: document.querySelector("#characterEditGoal"),
+  characterEditAttitude: document.querySelector("#characterEditAttitude"),
+  characterEditLoyalty: document.querySelector("#characterEditLoyalty"),
+  characterEditTrust: document.querySelector("#characterEditTrust"),
+  characterEditFear: document.querySelector("#characterEditFear"),
+  characterEditKnowledge: document.querySelector("#characterEditKnowledge"),
+  characterEditObligations: document.querySelector("#characterEditObligations"),
+  characterEditHardConstraints: document.querySelector("#characterEditHardConstraints"),
+  characterEditSecrets: document.querySelector("#characterEditSecrets"),
+  characterManualDraftButton: document.querySelector("#characterManualDraftButton"),
+  characterLlmDraftButton: document.querySelector("#characterLlmDraftButton"),
   promptPreviewButton: document.querySelector("#promptPreviewButton"),
   promptPreview: document.querySelector("#promptPreview"),
   journalSummary: document.querySelector("#journalSummary"),
@@ -72,6 +88,7 @@ const els = {
   modelPreview: document.querySelector("#modelPreview"),
   worldPreview: document.querySelector("#worldPreview"),
   worldInstruction: document.querySelector("#worldInstruction"),
+  worldPreviewLlmButton: document.querySelector("#worldPreviewLlmButton"),
   checkForm: document.querySelector("#checkForm"),
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
@@ -131,11 +148,15 @@ function bindEvents() {
   document.querySelector("#closePartyDialog").addEventListener("click", closePartyDialog);
   document.querySelector("#cancelPartyButton").addEventListener("click", closePartyDialog);
   document.querySelector("#worldPreviewButton").addEventListener("click", previewWorldInstruction);
+  els.worldPreviewLlmButton.addEventListener("click", () => previewWorldInstruction({ useLlm: true }));
   document.querySelector("#worldApplyButton").addEventListener("click", applyWorldProposal);
   document.querySelector("#worldDiscardButton").addEventListener("click", discardWorldProposal);
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
   els.memorySummarizeButton.addEventListener("click", summarizeMemory);
   els.memoryClearButton.addEventListener("click", clearLatestMemory);
+  els.characterEditTarget.addEventListener("change", fillCharacterEditorFromSelection);
+  els.characterManualDraftButton.addEventListener("click", previewCharacterManualDraft);
+  els.characterLlmDraftButton.addEventListener("click", previewCharacterLlmDraft);
   els.promptPreviewButton.addEventListener("click", previewPrompt);
   els.journalSummarizeButton.addEventListener("click", summarizeJournal);
   els.journalClearButton.addEventListener("click", clearLatestJournal);
@@ -531,13 +552,23 @@ function renderContext() {
     els.contextSummary.innerHTML = `<div class="state-item">Оценка контекста еще не загружена.</div>`;
     return;
   }
+  const source = promptSourceLabel(estimate.prompt_source);
+  if (estimate.prompt_source === "missing_recorded_prompt" || estimate.prompt_source === "invalid_recorded_prompt") {
+    const notes = Array.isArray(estimate.notes) ? estimate.notes : [];
+    els.contextSummary.innerHTML = [
+      stateItem("Prompt", source, "Фактический prompt появится после нового хода на обновленном Gateway."),
+      stateItem("История", `всего ходов ${escapeHtml(estimate.history_turns_total ?? 0)}`, "Старые ходы сохранены, но их prompt_json еще не был записан или не читается."),
+      notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : "",
+    ].join("");
+    return;
+  }
   const percent = typeof estimate.usage_ratio === "number" ? estimate.usage_ratio * 100 : null;
   const fill = percent === null ? 0 : Math.max(2, Math.min(100, percent));
   const percentLabel = percent === null ? "лимит неизвестен" : `${formatPercent(percent)} лимита`;
   const limitLabel = estimate.context_limit_tokens ? formatTokens(estimate.context_limit_tokens) : "неизвестно";
   const notes = Array.isArray(estimate.notes) ? estimate.notes : [];
   const historyText = [
-    `в prompt ${estimate.direct_history_messages ?? 0} сообщений`,
+    `в предыдущем prompt ${estimate.direct_history_messages ?? 0} сообщений`,
     `примерно ${estimate.direct_history_turns_estimate ?? 0} ходов`,
     `всего ${estimate.history_turns_total ?? 0}`,
   ].join(" · ");
@@ -553,10 +584,11 @@ function renderContext() {
     <div class="context-meter ${escapeHtml(estimate.severity || "unknown")}" title="Оценка приблизительная: tokenizer NVIDIA недоступен, считаем по размеру prompt.">
       <div class="context-meter-head">
         <strong>~${formatTokens(estimate.estimated_total_tokens)} токенов</strong>
-        <span>${escapeHtml(percentLabel)}</span>
+        <span>${escapeHtml(source)} · ${escapeHtml(percentLabel)}</span>
       </div>
       <div class="context-bar"><span style="width: ${fill}%"></span></div>
     </div>
+    ${stateItem("Запрос", escapeHtml(estimate.last_request_id || "-"), "X-Request-ID последнего сохраненного turn.")}
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
     ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
     ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · память ~${escapeHtml(memoryTokens)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
@@ -607,6 +639,7 @@ function renderMemory() {
 
 function renderCharacters() {
   if (!els.characterSheets) return;
+  renderCharacterEditor();
   if (!appState.activeParty) {
     els.characterSheets.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
     return;
@@ -631,6 +664,85 @@ function renderCharacters() {
     cards.push(`<div class="state-item">NPC в state пока нет.</div>`);
   }
   els.characterSheets.innerHTML = cards.join("");
+}
+
+function renderCharacterEditor() {
+  if (!els.characterEditTarget) return;
+  const editable = editableCharacters();
+  const previous = els.characterEditTarget.value || "__new__";
+  const values = new Set(["__new__", ...editable.map((character) => character.value)]);
+  const options = [
+    `<option value="__new__">Новый NPC</option>`,
+    ...editable.map((character) => `<option value="${escapeHtml(character.value)}">${escapeHtml(character.label)}</option>`),
+  ];
+  els.characterEditTarget.innerHTML = options.join("");
+  els.characterEditTarget.value = values.has(previous) ? previous : "__new__";
+  const disabled = !appState.activeParty;
+  [
+    els.characterEditTarget,
+    els.characterEditId,
+    els.characterEditName,
+    els.characterEditStatus,
+    els.characterEditLocation,
+    els.characterEditGoal,
+    els.characterEditAttitude,
+    els.characterEditLoyalty,
+    els.characterEditTrust,
+    els.characterEditFear,
+    els.characterEditKnowledge,
+    els.characterEditObligations,
+    els.characterEditHardConstraints,
+    els.characterEditSecrets,
+    els.characterManualDraftButton,
+    els.characterLlmDraftButton,
+  ].forEach((node) => {
+    if (node) node.disabled = disabled;
+  });
+  fillCharacterEditorFromSelection();
+}
+
+function editableCharacters() {
+  const payload = appState.characters?.characters || {};
+  const player = payload.player || {};
+  const npcs = Array.isArray(payload.characters) ? payload.characters : [];
+  return [
+    { value: "player", label: `Игрок: ${player.name || "Игрок"}`, data: { ...player, target: "player" } },
+    ...npcs.map((character) => ({
+      value: `npc:${character.id}`,
+      label: `${character.name || character.id}`,
+      data: { ...character, target: "npc" },
+    })),
+  ];
+}
+
+function fillCharacterEditorFromSelection() {
+  if (!els.characterEditTarget) return;
+  const value = els.characterEditTarget.value;
+  const selected = editableCharacters().find((character) => character.value === value)?.data || null;
+  const isNew = value === "__new__";
+  els.characterEditId.disabled = !appState.activeParty || !isNew;
+  els.characterEditId.value = isNew ? "" : selected?.id || "";
+  els.characterEditName.value = selected?.name || "";
+  els.characterEditStatus.value = selected?.status || (isNew ? "alive" : "");
+  els.characterEditLocation.value = selected?.location || appState.partyState?.player?.location || "";
+  els.characterEditGoal.value = selected?.current_goal || selected?.description || "";
+  els.characterEditAttitude.value = selected?.attitude_to_player || "";
+  els.characterEditLoyalty.value = selected?.loyalty || "";
+  els.characterEditTrust.value = selected?.trust ?? "";
+  els.characterEditFear.value = selected?.fear ?? "";
+  els.characterEditKnowledge.value = listEditorText(selected?.knowledge || selected?.known_world_facts);
+  els.characterEditObligations.value = listEditorText(selected?.obligations || selected?.constraints);
+  els.characterEditHardConstraints.value = listEditorText(selected?.hard_constraints);
+  els.characterEditSecrets.value = listEditorText(selected?.secrets);
+}
+
+function listEditorText(value) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => (typeof item === "string" ? item : item?.text || JSON.stringify(item)))
+        .filter(Boolean)
+        .join("\n")
+    : "";
 }
 
 function characterCard(character) {
@@ -666,16 +778,28 @@ function renderPromptPreview() {
   }
   const preview = appState.promptPreview;
   if (!preview) {
-    els.promptPreview.innerHTML = `<div class="state-item">Нажми «Показать prompt», чтобы собрать dry-run для текущего текста в поле хода.</div>`;
+    els.promptPreview.innerHTML = `<div class="state-item">Нажми «Показать prompt», чтобы открыть полный prompt предыдущего запроса.</div>`;
     return;
   }
   const blocks = Array.isArray(preview.blocks) ? preview.blocks : [];
   const total = formatTokens(preview.estimated_prompt_tokens || 0);
-  const dryRun = preview.dry_run ? "dry-run, state не меняется" : "preview";
+  const source = promptSourceLabel(preview.source);
   els.promptPreview.innerHTML = [
-    stateItem("Оценка", `~${escapeHtml(total)} токенов · ${escapeHtml(dryRun)}`, "Приблизительная оценка prompt по блокам."),
+    stateItem("Prompt", `~${escapeHtml(total)} токенов · ${escapeHtml(source)}`, "Полный prompt предыдущего запроса, если Gateway уже записал prompt_json."),
     ...blocks.map((block, index) => promptBlock(block, index)),
   ].join("");
+}
+
+function promptSourceLabel(source) {
+  const labels = {
+    recorded_last_turn: "последний записанный запрос",
+    invalid_recorded_prompt: "prompt_json не читается",
+    missing_recorded_prompt: "нет записанного prompt",
+    reconstructed_last_turn: "реконструкция старого запроса",
+    no_previous_turn: "ходов еще нет",
+    current_dry_run: "dry-run текущего текста",
+  };
+  return labels[source] || source || "prompt";
 }
 
 function promptBlock(block, index) {
@@ -1066,7 +1190,6 @@ async function sendMessage(event) {
   startPendingMessage(partyId, requestId, text);
   appendPendingMessage(text, requestId);
   try {
-    setBusy(true);
     setPendingStatus("GM формирует ответ...", partyId);
     const result = await apiPost(
       `/api/parties/${partyId}/messages`,
@@ -1094,25 +1217,102 @@ async function sendMessage(event) {
     }
   } finally {
     clearPendingMessage(partyId);
-    setBusy(false);
   }
 }
 
-async function previewWorldInstruction() {
+async function previewWorldInstruction(options = {}) {
   const text = els.worldInstruction.value.trim();
   if (!text || !appState.activeParty) return;
   try {
     setBusy(true);
-    await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction: text });
+    await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction: text, use_llm: Boolean(options.useLlm) });
     els.worldInstruction.value = "";
     await reloadActiveParty();
     openPanelFor(els.proposalList);
-    showToast("Черновик изменений создан.");
+    showToast(options.useLlm ? "LLM-черновик изменений создан." : "Быстрый черновик изменений создан.");
   } catch (error) {
     showToast(error.message);
   } finally {
     setBusy(false);
   }
+}
+
+async function previewCharacterManualDraft() {
+  if (!appState.activeParty) return;
+  try {
+    setBusy(true);
+    await apiPost(`/api/parties/${appState.activeParty.id}/characters/edit`, characterEditorPayload());
+    await reloadActiveParty();
+    openPanelFor(els.proposalList);
+    showToast("Черновик персонажа создан.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function previewCharacterLlmDraft() {
+  if (!appState.activeParty) return;
+  const instruction = characterEditorInstruction();
+  if (!instruction) return;
+  try {
+    setBusy(true);
+    await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction, use_llm: true });
+    await reloadActiveParty();
+    openPanelFor(els.proposalList);
+    showToast("LLM-черновик персонажа создан.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function characterEditorPayload() {
+  const selection = els.characterEditTarget.value;
+  const isPlayer = selection === "player";
+  const selectedNpc = selection.startsWith("npc:") ? selection.slice(4) : "";
+  const trust = els.characterEditTrust.value === "" ? null : Number(els.characterEditTrust.value);
+  const fear = els.characterEditFear.value === "" ? null : Number(els.characterEditFear.value);
+  return {
+    target: isPlayer ? "player" : "npc",
+    character_id: isPlayer ? null : (selectedNpc || els.characterEditId.value.trim()),
+    name: els.characterEditName.value.trim() || null,
+    status: els.characterEditStatus.value.trim() || null,
+    location: els.characterEditLocation.value.trim() || null,
+    current_goal: els.characterEditGoal.value.trim() || null,
+    attitude_to_player: els.characterEditAttitude.value.trim() || null,
+    loyalty: els.characterEditLoyalty.value.trim() || null,
+    trust,
+    fear,
+    knowledge: els.characterEditKnowledge.value.trim() ? els.characterEditKnowledge.value : null,
+    obligations: els.characterEditObligations.value.trim() ? els.characterEditObligations.value : null,
+    hard_constraints: els.characterEditHardConstraints.value.trim() ? els.characterEditHardConstraints.value : null,
+    secrets: els.characterEditSecrets.value.trim() ? els.characterEditSecrets.value : null,
+    confirm: false,
+  };
+}
+
+function characterEditorInstruction() {
+  const payload = characterEditorPayload();
+  const label = payload.target === "player" ? "игрока" : `NPC ${payload.character_id || payload.name || ""}`.trim();
+  const lines = [
+    `Создай или обнови персонажа ${label}.`,
+    payload.name ? `Имя: ${payload.name}` : "",
+    payload.status ? `Статус: ${payload.status}` : "",
+    payload.location ? `Локация: ${payload.location}` : "",
+    payload.current_goal ? `Цель/роль: ${payload.current_goal}` : "",
+    payload.attitude_to_player ? `Отношение к игроку: ${payload.attitude_to_player}` : "",
+    payload.loyalty ? `Лояльность/фракция: ${payload.loyalty}` : "",
+    payload.trust !== null ? `Доверие к игроку: ${payload.trust}` : "",
+    payload.fear !== null ? `Страх: ${payload.fear}` : "",
+    payload.knowledge ? `Знания:\n${payload.knowledge}` : "",
+    payload.obligations ? `Обязательства/ограничения:\n${payload.obligations}` : "",
+    payload.hard_constraints ? `Жесткие ограничения:\n${payload.hard_constraints}` : "",
+    payload.secrets ? `Секреты:\n${payload.secrets}` : "",
+  ].filter(Boolean);
+  return lines.join("\n");
 }
 
 async function createAdminUser(event) {
@@ -1299,7 +1499,7 @@ async function previewPrompt() {
   const content = els.messageInput.value.trim();
   try {
     setBusy(true);
-    const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content });
+    const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content, source: "last" });
     appState.promptPreview = result.preview;
     renderPromptPreview();
     openPanelFor(els.promptPreview);

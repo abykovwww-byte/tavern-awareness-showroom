@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -21,6 +22,8 @@ from app.models.schemas import (
     LoginRequest,
     Outcome,
     PatchEnvelope,
+    PatchOperation,
+    PartyCharacterStateEditRequest,
     PartyCheckRequest,
     PartyCreate,
     PartyJournalSummarizeRequest,
@@ -40,6 +43,7 @@ from app.models.schemas import (
     WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
+    StatePatch,
 )
 from app.services.adjudicator import Adjudicator, RequestAlreadyRunning
 from app.services.auth_store import AuthStore, AuthUser
@@ -521,6 +525,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "characters": party_character_sheets(party_state_store.get_state()),
         }
 
+    @app.post("/api/parties/{party_id}/characters/edit")
+    def party_character_edit(http_request: Request, party_id: str, request: PartyCharacterStateEditRequest) -> dict[str, Any]:
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            patch = character_state_patch(party_state_store.get_state(), request)
+            party_state_store.create_patch_proposal(patch)
+            candidate = party_state_store.preview_patch(patch)
+            if request.confirm:
+                state = party_state_store.apply_pending_patch(patch.check_id or "latest", reason="party_character_edit_confirm")
+                return {"party_id": party_id, "applied": True, "proposal_id": patch.check_id, "state": state}
+        except (PatchError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "applied": False,
+            "proposal_id": patch.check_id,
+            "proposal": patch.model_dump(mode="json"),
+            "candidate": candidate,
+        }
+
     @app.get("/api/parties/{party_id}/journal")
     def get_party_journal(request: Request, party_id: str, limit: int = 8) -> dict[str, Any]:
         try:
@@ -592,7 +617,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
-            preview = PromptInspector(party_settings, party_state_store).preview(request.content)
+            preview = PromptInspector(party_settings, party_state_store).preview(request.content, source=request.source)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party_id": party_id, "preview": preview}
@@ -674,12 +699,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_tokens=request.max_tokens,
                 stream=False,
             )
-            raw = await NarrativeClient(party_settings).complete(
+            start_outcome = party_start_outcome(party_id)
+            memory_summary = party_state_store.latest_memory_summary()
+            narrative = NarrativeClient(party_settings)
+            prompt_messages = narrative.narrative_messages(
                 chat_request,
                 state,
-                party_start_outcome(party_id),
+                start_outcome,
+                repair_instruction=None,
+                memory_summary=memory_summary,
+            )
+            raw = await narrative.complete(
+                chat_request,
+                state,
+                start_outcome,
                 authorization,
-                memory_summary=party_state_store.latest_memory_summary(),
+                memory_summary=memory_summary,
                 request_id=request_id,
             )
             response = Adjudicator(party_settings, party_state_store).normalize_response(raw, model_profile.model)
@@ -692,6 +727,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text,
                 response,
                 state_version,
+                prompt_messages,
             )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
@@ -799,7 +835,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             world = Adjudicator(party_settings, party_state_store).world
-            draft = await world.draft_instruction(request.instruction, authorization)
+            draft = await world.draft_instruction(request.instruction, authorization, use_llm=request.use_llm)
             party_state_store.create_patch_proposal(draft.patch)
             candidate = party_state_store.preview_patch(draft.patch)
             if request.confirm:
@@ -893,7 +929,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         require_admin(http_request)
         try:
-            draft = await Adjudicator(settings_with_provider_key(settings), store).world.draft_instruction(request.instruction, authorization)
+            draft = await Adjudicator(settings_with_provider_key(settings), store).world.draft_instruction(
+                request.instruction,
+                authorization,
+                use_llm=request.use_llm,
+            )
             store.create_patch_proposal(draft.patch)
             candidate = store.preview_patch(draft.patch)
             if request.confirm:
@@ -1055,6 +1095,151 @@ def party_chat_request(
         max_tokens=request.max_tokens,
         stream=False,
     )
+
+
+def character_state_patch(state: dict[str, Any], request: PartyCharacterStateEditRequest) -> StatePatch:
+    turn = int(state.get("meta", {}).get("turn", 0)) + 1
+    proposal_id = f"character-{uuid.uuid4().hex[:12]}"
+    operations: list[PatchOperation] = []
+    if request.target == "player":
+        for field, value in [
+            ("name", request.name),
+            ("status", request.status),
+            ("location", request.location),
+            ("description", request.current_goal),
+        ]:
+            add_value_patch(operations, state, f"/player/{field}", value, turn, f"Updates player {field} from Light GUI character editor.")
+        if request.knowledge is not None:
+            add_value_patch(
+                operations,
+                state,
+                "/player/known_world_facts",
+                split_editor_lines(request.knowledge),
+                turn,
+                "Updates player known facts from Light GUI character editor.",
+            )
+        if request.obligations is not None:
+            add_value_patch(
+                operations,
+                state,
+                "/player/constraints",
+                split_editor_lines(request.obligations),
+                turn,
+                "Updates player constraints from Light GUI character editor.",
+            )
+        participant = "player"
+    else:
+        character_id = stable_character_id(request.character_id or request.name or "")
+        if not character_id:
+            raise ValueError("character_id or name is required for NPC edits")
+        characters = state.get("characters", {}) if isinstance(state.get("characters"), dict) else {}
+        participant = character_id
+        base_path = f"/characters/{pointer_escape(character_id)}"
+        if character_id not in characters:
+            operations.append(
+                PatchOperation(
+                    op="add",
+                    path=base_path,
+                    value={
+                        "name": request.name or character_id,
+                        "status": request.status or "alive",
+                        "location": request.location or state.get("player", {}).get("location", "unknown"),
+                        "attitude_to_player": request.attitude_to_player or "",
+                        "trust": request.trust if request.trust is not None else 0,
+                        "fear": request.fear if request.fear is not None else 0,
+                        "loyalty": request.loyalty or "unknown",
+                        "current_goal": request.current_goal or "",
+                        "knowledge": split_editor_lines(request.knowledge),
+                        "secrets": split_editor_lines(request.secrets),
+                        "obligations": split_editor_lines(request.obligations),
+                        "hard_constraints": split_editor_lines(request.hard_constraints),
+                        "last_confirmed_update": turn,
+                    },
+                    reason="Creates NPC from Light GUI character editor.",
+                    turn=turn,
+                )
+            )
+        else:
+            for field, value in [
+                ("name", request.name),
+                ("status", request.status),
+                ("location", request.location),
+                ("current_goal", request.current_goal),
+                ("attitude_to_player", request.attitude_to_player),
+                ("loyalty", request.loyalty),
+                ("trust", request.trust),
+                ("fear", request.fear),
+            ]:
+                add_value_patch(operations, state, f"{base_path}/{field}", value, turn, f"Updates NPC {field} from Light GUI character editor.")
+            for field, value in [
+                ("knowledge", split_editor_lines(request.knowledge)),
+                ("obligations", split_editor_lines(request.obligations)),
+                ("hard_constraints", split_editor_lines(request.hard_constraints)),
+                ("secrets", split_editor_lines(request.secrets)),
+            ]:
+                if value:
+                    add_value_patch(operations, state, f"{base_path}/{field}", value, turn, f"Updates NPC {field} from Light GUI character editor.")
+            add_value_patch(operations, state, f"{base_path}/last_confirmed_update", turn, turn, "Marks NPC update turn.")
+    if not operations:
+        raise ValueError("no character fields to update")
+    operations.append(
+        PatchOperation(
+            op="add",
+            path="/timeline/-",
+            value={"turn": turn, "event": f"Character editor updated {participant}.", "confirmed": True, "participants": [participant]},
+            reason="Records Light GUI character edit.",
+            turn=turn,
+        )
+    )
+    return StatePatch(turn=turn, check_id=proposal_id, source="character-editor", patch=operations)
+
+
+def add_value_patch(
+    operations: list[PatchOperation],
+    state: dict[str, Any],
+    path: str,
+    value: Any,
+    turn: int,
+    reason: str,
+) -> None:
+    if value is None:
+        return
+    if isinstance(value, str) and not value.strip():
+        return
+    operations.append(
+        PatchOperation(
+            op="replace" if path_exists(state, path) else "add",
+            path=path,
+            value=value.strip() if isinstance(value, str) else value,
+            reason=reason,
+            turn=turn,
+        )
+    )
+
+
+def path_exists(document: Any, path: str) -> bool:
+    current = document
+    for part in [part.replace("~1", "/").replace("~0", "~") for part in path.strip("/").split("/")]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        return False
+    return True
+
+
+def split_editor_lines(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [line.strip(" -•\t") for line in value.splitlines() if line.strip(" -•\t")]
+
+
+def stable_character_id(value: str) -> str:
+    clean = re.sub(r"[^\w\-]+", "-", value.strip().lower(), flags=re.UNICODE).strip("-")
+    return clean[:80]
+
+
+def pointer_escape(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
 
 
 def check_command(request: PartyCheckRequest) -> str:

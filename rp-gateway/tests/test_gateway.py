@@ -557,7 +557,8 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
     assert estimate["history_turns_total"] == 7
     assert estimate["history_source_turn_limit"] == 96
     assert estimate["message_prompt_limit"] == 193
-    assert estimate["direct_history_messages"] == 14
+    assert estimate["prompt_source"] == "recorded_last_turn"
+    assert estimate["direct_history_messages"] == 12
     assert estimate["history_limited"] is False
     assert estimate["omitted_history_turns_estimate"] == 0
     assert estimate["memory_summary_tokens"] == 0
@@ -582,7 +583,7 @@ def test_party_prompt_preview_returns_blocks_without_mutating_state(tmp_path: Pa
     before_version = before["meta"]["state_version"]
     preview = c.post(
         f"/api/parties/{party['id']}/prompt/preview",
-        json={"content": '/check persuasion target=advisor skill=1 difficulty=8 goal="borrow the map"'},
+        json={"content": '/check persuasion target=advisor skill=1 difficulty=8 goal="borrow the map"', "source": "current"},
     )
     assert preview.status_code == 200
     body = preview.json()["preview"]
@@ -595,6 +596,27 @@ def test_party_prompt_preview_returns_blocks_without_mutating_state(tmp_path: Pa
     after = c.get(f"/api/parties/{party['id']}/state").json()["state"]
     assert after["meta"]["state_version"] == before_version
     assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 1
+
+
+def test_party_prompt_preview_defaults_to_last_recorded_prompt(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Last Prompt")
+
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": '/check information skill=1 difficulty=5 goal="find the old map"'},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert turn.status_code == 200
+
+    preview = c.post(f"/api/parties/{party['id']}/prompt/preview", json={})
+    assert preview.status_code == 200
+    body = preview.json()["preview"]
+    assert body["source"] == "recorded_last_turn"
+    assert body["dry_run"] is False
+    assert body["input"] == '/check information skill=1 difficulty=5 goal="find the old map"'
+    assert body["estimated_prompt_tokens"] > 0
 
 
 def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
@@ -610,6 +632,43 @@ def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
     assert {"advisor", "king"}.issubset(by_id)
     assert by_id["advisor"]["relationship"]["id"] == "player_advisor"
     assert by_id["king"]["hard_constraints"]
+
+
+def test_party_character_manual_edit_creates_pending_patch(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Character Edit")
+
+    draft = c.post(
+        f"/api/parties/{party['id']}/characters/edit",
+        json={
+            "target": "npc",
+            "character_id": "varn",
+            "name": "Varn",
+            "status": "alive",
+            "location": "north gate",
+            "current_goal": "watch the player",
+            "attitude_to_player": "wary but professional",
+            "loyalty": "north-watch",
+            "knowledge": "Varn saw the player near the archive.",
+            "hard_constraints": "Varn cannot leave the gate without a captain order.",
+            "secrets": "Varn hides a forged pass.",
+        },
+    )
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["applied"] is False
+    assert c.get(f"/api/parties/{party['id']}/characters").json()["characters"]["counts"]["characters"] == 2
+
+    applied = c.post(f"/api/parties/{party['id']}/world/apply", json={"proposal_id": "latest", "confirm": True})
+    assert applied.status_code == 200, applied.text
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert by_id["varn"]["name"] == "Varn"
+    assert by_id["varn"]["location"] == "north gate"
+    assert by_id["varn"]["attitude_to_player"] == "wary but professional"
+    assert by_id["varn"]["loyalty"] == "north-watch"
+    assert by_id["varn"]["hard_constraints"] == ["Varn cannot leave the gate without a captain order."]
+    assert by_id["varn"]["secrets"] == ["Varn hides a forged pass."]
 
 
 def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):

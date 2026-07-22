@@ -112,21 +112,62 @@
         <section class="summary-panel">
           <div class="section-label">Персонажи</div>
           <p class="panel-hint">Карточки игрока и заметных NPC из structured state: статус, отношения, обязательства, нитки и последнее появление.</p>
+          <div class="character-editor">
+            <div class="split-row">
+              <label>
+                <span>Кого правим</span>
+                <select id="characterEditTarget"></select>
+              </label>
+              <label>
+                <span>ID NPC</span>
+                <input id="characterEditId" placeholder="new-npc-id" />
+              </label>
+            </div>
+            <label>
+              <span>Имя</span>
+              <input id="characterEditName" placeholder="Имя или отображаемое имя" />
+            </label>
+            <div class="split-row">
+              <input id="characterEditStatus" placeholder="status" />
+              <input id="characterEditLocation" placeholder="location" />
+            </div>
+            <textarea id="characterEditGoal" rows="2" placeholder="Цель, описание или текущая роль"></textarea>
+            <textarea id="characterEditAttitude" rows="2" placeholder="Отношение к игроку"></textarea>
+            <div class="split-row">
+              <input id="characterEditLoyalty" placeholder="loyalty / фракция" />
+              <input id="characterEditTrust" type="number" min="-10" max="10" placeholder="trust" />
+              <input id="characterEditFear" type="number" min="0" max="10" placeholder="fear" />
+            </div>
+            <textarea id="characterEditKnowledge" rows="3" placeholder="Знания / факты, по одному на строку"></textarea>
+            <textarea id="characterEditObligations" rows="2" placeholder="Обязательства / ограничения, по одному на строку"></textarea>
+            <textarea id="characterEditHardConstraints" rows="2" placeholder="Жесткие ограничения, по одному на строку"></textarea>
+            <textarea id="characterEditSecrets" rows="2" placeholder="Секреты, по одному на строку"></textarea>
+            <div class="button-grid">
+              <button id="characterManualDraftButton" class="tool-button" type="button" title="Создать быстрый черновик правки персонажа без LLM">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                Черновик
+              </button>
+              <button id="characterLlmDraftButton" class="tool-button" type="button" title="Попросить LLM собрать world patch по полям персонажа">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3"/><path d="M12 18v3"/><path d="m4.2 4.2 2.1 2.1"/><path d="m17.7 17.7 2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="m4.2 19.8 2.1-2.1"/><path d="m17.7 6.3 2.1-2.1"/><circle cx="12" cy="12" r="4"/></svg>
+                Через LLM
+              </button>
+            </div>
+          </div>
           <div id="characterSheets" class="character-sheets"></div>
         </section>
 
         <section class="summary-panel">
           <div class="section-label">Контекст</div>
-          <p class="panel-hint">Оценка prompt на следующий ход: state, правила и прямое окно истории.</p>
+          <p class="panel-hint">Фактический prompt предыдущего запроса: state, правила и прямое окно истории из записанного Gateway prompt_json.</p>
           <div id="contextSummary" class="context-summary"></div>
         </section>
 
         <section class="summary-panel">
           <div class="panel-head">
             <div class="section-label">Prompt inspector</div>
-            <button class="text-button" id="promptPreviewButton" type="button" title="Показать prompt, который уйдет в модель">Показать prompt</button>
+            <button class="text-button" id="promptPreviewButton" type="button" title="Показать полный prompt предыдущего запроса">Показать prompt</button>
           </div>
-          <p class="panel-hint">Dry-run без хода: показывает system rules, long-term memory, state summary, AUTHORITATIVE_OUTCOME и raw turns, которые уйдут в модель.</p>
+          <p class="panel-hint">Показывает полный prompt последнего запроса: system rules, long-term memory, state summary, AUTHORITATIVE_OUTCOME и raw turns.</p>
           <div id="promptPreview" class="prompt-preview"></div>
         </section>
 
@@ -170,6 +211,10 @@
             <button id="worldPreviewButton" class="tool-button" title="Сгенерировать черновик JSON Patch без применения">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
               Предпросмотр
+            </button>
+            <button id="worldPreviewLlmButton" class="tool-button" title="Сгенерировать черновик через LLM, если нужен сложный patch">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>
+              LLM
             </button>
             <button id="worldApplyButton" class="tool-button" title="Применить последний pending preview к state партии">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 6-11 11-5-5"/></svg>

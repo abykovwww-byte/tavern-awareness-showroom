@@ -67,6 +67,7 @@ class StateStore:
                     player_message TEXT NOT NULL,
                     narrative_response TEXT NOT NULL,
                     response_json TEXT NOT NULL,
+                    prompt_json TEXT,
                     state_version INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
                     UNIQUE(campaign_id, idempotency_key),
@@ -156,10 +157,16 @@ class StateStore:
                     ON journal_entries(campaign_id, to_turn_id DESC);
                 """
             )
+            self.migrate_turn_columns(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
             )
+
+    def migrate_turn_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)").fetchall()}
+        if "prompt_json" not in columns:
+            connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
 
     def bootstrap_state(self) -> None:
         if self.current_version() is not None:
@@ -249,6 +256,35 @@ class StateStore:
                 LIMIT ?
                 """,
                 (self.campaign_id, limit),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def latest_turn(self, include_prompt: bool = False) -> dict[str, Any] | None:
+        prompt_column = ", prompt_json" if include_prompt else ""
+        with self.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT id, request_id, player_message, narrative_response, state_version, created_at{prompt_column}
+                FROM turns
+                WHERE campaign_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def turns_before(self, turn_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, request_id, player_message, narrative_response, state_version, created_at
+                FROM turns
+                WHERE campaign_id = ? AND id < ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (self.campaign_id, turn_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
@@ -881,15 +917,16 @@ class StateStore:
         narrative_response: str,
         response_json: dict[str, Any],
         state_version: int,
+        prompt_messages: list[dict[str, str]] | None = None,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO turns(
                     campaign_id, idempotency_key, request_id, player_message,
-                    narrative_response, response_json, state_version, created_at
+                    narrative_response, response_json, prompt_json, state_version, created_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.campaign_id,
@@ -898,6 +935,7 @@ class StateStore:
                     player_message,
                     narrative_response,
                     json.dumps(response_json, ensure_ascii=False),
+                    json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
                     state_version,
                     now_ts(),
                 ),

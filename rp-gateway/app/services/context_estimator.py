@@ -1,14 +1,14 @@
-"""Approximate LLM context accounting for party prompts."""
+"""LLM context accounting for recorded party prompts."""
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
 
 from app.core.config import Settings
-from app.models.schemas import ChatCompletionRequest, ChatMessage, ModelProfileSummary, Outcome
-from app.services.narrative import NarrativeClient
+from app.models.schemas import ModelProfileSummary
 from app.services.state_store import StateStore
 
 
@@ -20,31 +20,28 @@ def estimate_party_context(
     settings: Settings,
     model_profile: ModelProfileSummary | None,
 ) -> dict[str, Any]:
-    state = store.get_state()
     all_turns = store.turn_history(limit=10000)
-    source_turn_limit = max(settings.party_raw_turn_limit, 0)
-    message_prompt_limit = settings.effective_narrative_history_message_limit
-    source_turns = all_turns[-source_turn_limit:] if source_turn_limit else []
-    memory_summary = store.latest_memory_summary()
-    request_messages = history_messages(source_turns)
-    request_messages.append(ChatMessage(role="user", content="[следующий ход игрока]"))
+    latest_turn = store.latest_turn(include_prompt=True)
+    if latest_turn and latest_turn.get("prompt_json"):
+        prompt_messages = load_prompt_messages(latest_turn["prompt_json"])
+        if prompt_messages is None:
+            return empty_recorded_context(settings, model_profile, len(all_turns), latest_turn, source="invalid_recorded_prompt")
+        prompt_source = "recorded_last_turn"
+        source_turn_limit = max(settings.party_raw_turn_limit, 0)
+        message_prompt_limit = settings.effective_narrative_history_message_limit
+    else:
+        return empty_recorded_context(settings, model_profile, len(all_turns), latest_turn)
 
-    request = ChatCompletionRequest(model=settings.narrative_model, messages=request_messages, stream=False)
-    outcome = placeholder_outcome()
-    prompt_messages = NarrativeClient(settings).narrative_messages(
-        request,
-        state,
-        outcome,
-        repair_instruction=None,
-        memory_summary=memory_summary,
-    )
     prompt_text = "\n".join(f"{message['role']}: {message['content']}" for message in prompt_messages)
 
-    retained_history_messages = min(len(source_turns) * 2, max(message_prompt_limit - 1, 0))
+    non_system_messages = [message for message in prompt_messages if message.get("role") != "system"]
+    retained_history_messages = max(len(non_system_messages) - 1, 0)
     retained_history_turns_estimate = math.ceil(retained_history_messages / 2)
-    omitted_history_turns_estimate = max(len(all_turns) - retained_history_turns_estimate, 0)
-    state_summary_text = str(narrative_state_summary(state))
-    history_text = "\n".join(str(message.content or "") for message in request_messages[-message_prompt_limit:-1])
+    prior_turns_total = max(len(all_turns) - 1, 0)
+    omitted_history_turns_estimate = max(prior_turns_total - retained_history_turns_estimate, 0)
+    state_summary_text = first_system_content(prompt_messages, "Relevant state summary:")
+    memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
+    history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
     context_limit_tokens = parse_context_limit_tokens(model_profile)
     prompt_tokens = estimate_tokens(prompt_text)
     completion_reserved_tokens = int((model_profile.params if model_profile else {}).get("max_tokens") or 0)
@@ -63,8 +60,8 @@ def estimate_party_context(
         "usage_ratio": usage_ratio,
         "severity": severity_for_usage(usage_ratio),
         "state_summary_tokens": estimate_tokens(state_summary_text),
-        "memory_summary_tokens": estimate_tokens(str(memory_summary)) if memory_summary else 0,
-        "memory_covered_turns": [memory_summary["from_turn_id"], memory_summary["to_turn_id"]] if memory_summary else None,
+        "memory_summary_tokens": estimate_tokens(memory_text) if memory_text else 0,
+        "memory_covered_turns": None,
         "direct_history_tokens": estimate_tokens(history_text) if history_text else 0,
         "history_turns_total": len(all_turns),
         "history_source_turn_limit": source_turn_limit,
@@ -74,44 +71,80 @@ def estimate_party_context(
         "direct_history_turns_estimate": retained_history_turns_estimate,
         "omitted_history_turns_estimate": omitted_history_turns_estimate,
         "history_limited": omitted_history_turns_estimate > 0,
+        "prompt_source": prompt_source,
+        "last_turn_id": latest_turn.get("id") if latest_turn else None,
+        "last_request_id": latest_turn.get("request_id") if latest_turn else None,
         "notes": notes_for_context(context_limit_tokens, omitted_history_turns_estimate, retained_history_messages),
     }
 
 
-def history_messages(turns: list[dict[str, Any]]) -> list[ChatMessage]:
-    messages: list[ChatMessage] = []
-    for turn in turns:
-        messages.append(ChatMessage(role="user", content=turn["player_message"]))
-        messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
-    return messages
-
-
-def narrative_state_summary(state: dict[str, Any]) -> dict[str, Any]:
+def empty_recorded_context(
+    settings: Settings,
+    model_profile: ModelProfileSummary | None,
+    history_turns_total: int,
+    latest_turn: dict[str, Any] | None,
+    source: str = "missing_recorded_prompt",
+) -> dict[str, Any]:
+    context_limit_tokens = parse_context_limit_tokens(model_profile)
+    if source == "invalid_recorded_prompt":
+        note = "Записанный prompt_json последнего хода не удалось прочитать. Новые ходы будут считаться по свежему фактическому prompt."
+    else:
+        note = (
+            "Для последнего хода еще нет записанного prompt_json. Новые ходы после обновления Gateway будут считаться по фактическому prompt."
+            if latest_turn
+            else "Ходов еще нет: фактический предыдущий prompt отсутствует."
+        )
     return {
-        "campaign_id": state.get("meta", {}).get("campaign_id"),
-        "turn": state.get("meta", {}).get("turn"),
-        "player": state.get("player", {}),
-        "relationships": state.get("relationships", {}),
-        "constraints": state.get("world_constraints", []),
+        "model": model_profile.model if model_profile else settings.narrative_model,
+        "model_title": model_profile.title if model_profile else settings.narrative_model,
+        "context_window": model_profile.context_window if model_profile else "",
+        "context_limit_tokens": context_limit_tokens,
+        "estimated_prompt_tokens": 0,
+        "estimated_prompt_chars": 0,
+        "completion_reserved_tokens": int((model_profile.params if model_profile else {}).get("max_tokens") or 0),
+        "estimated_total_tokens": 0,
+        "usage_ratio": None,
+        "severity": "unknown",
+        "state_summary_tokens": 0,
+        "memory_summary_tokens": 0,
+        "memory_covered_turns": None,
+        "direct_history_tokens": 0,
+        "history_turns_total": history_turns_total,
+        "history_source_turn_limit": max(settings.party_raw_turn_limit, 0),
+        "message_prompt_limit": settings.effective_narrative_history_message_limit,
+        "raw_turns_kept": max(settings.party_raw_turn_limit, 0),
+        "direct_history_messages": 0,
+        "direct_history_turns_estimate": 0,
+        "omitted_history_turns_estimate": 0,
+        "history_limited": False,
+        "prompt_source": source,
+        "last_turn_id": latest_turn.get("id") if latest_turn else None,
+        "last_request_id": latest_turn.get("request_id") if latest_turn else None,
+        "notes": [note],
     }
 
 
-def placeholder_outcome() -> Outcome:
-    return Outcome(
-        check_id="context-estimate",
-        action_type="feasibility",
-        actor="player",
-        result="partial_success",
-        roll=10,
-        difficulty=10,
-        modifiers={},
-        final_score=10,
-        consequences=["Placeholder outcome for prompt size estimation."],
-        authoritative_block=(
-            "Mechanical outcome placeholder for context estimate. "
-            "Actual turns include the real check result, consequences and forbidden reinterpretations."
-        ),
-    )
+def first_system_content(messages: list[dict[str, Any]], prefix: str) -> str:
+    for message in messages:
+        content = str(message.get("content") or "")
+        if message.get("role") == "system" and content.startswith(prefix):
+            return content
+    return ""
+
+
+def load_prompt_messages(value: Any) -> list[dict[str, Any]] | None:
+    try:
+        messages = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(messages, list):
+        return None
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            return None
+        normalized.append(message)
+    return normalized
 
 
 def estimate_tokens(text: str) -> int:
