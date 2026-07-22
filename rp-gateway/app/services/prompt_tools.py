@@ -194,6 +194,8 @@ class PromptInspector:
             return "world_system_prompt", "World system prompt"
         if content.startswith("WORLD_AUTHORS_NOTE"):
             return "world_authors_note", "World author's note"
+        if content.startswith("RELEVANT_CHARACTERS"):
+            return "relevant_characters", "Relevant characters"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:

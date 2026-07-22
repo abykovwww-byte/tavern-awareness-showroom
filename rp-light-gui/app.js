@@ -625,6 +625,7 @@ function renderContext() {
     ? `Еще ${omitted} старых ходов не попадут в прямой prompt; они остаются в storage/state.`
     : "Все сохраненные ходы сейчас помещаются в прямое окно prompt.";
   const stateTokens = estimate.state_summary_tokens ? formatTokens(estimate.state_summary_tokens) : "0";
+  const characterTokens = estimate.relevant_characters_tokens ? formatTokens(estimate.relevant_characters_tokens) : "0";
   const historyTokens = estimate.direct_history_tokens ? formatTokens(estimate.direct_history_tokens) : "0";
   const memoryTokens = estimate.memory_summary_tokens ? formatTokens(estimate.memory_summary_tokens) : "0";
   const memoryCoverage = Array.isArray(estimate.memory_covered_turns) ? ` · память ${estimate.memory_covered_turns.join("-")}` : "";
@@ -640,6 +641,7 @@ function renderContext() {
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
     ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
     ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · память ~${escapeHtml(memoryTokens)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
+    ${stateItem("NPC", `~${escapeHtml(characterTokens)}`, "Выбранные карточки персонажей в фактическом prompt.")}
     ${notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : ""}
   `;
 }

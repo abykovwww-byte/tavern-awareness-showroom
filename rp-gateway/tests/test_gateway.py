@@ -1257,6 +1257,58 @@ def test_narrative_prompt_includes_long_term_party_memory():
     assert "AUTHORITATIVE_OUTCOME" in "\n".join(message["content"] for message in messages)
 
 
+def test_narrative_prompt_retrieves_only_relevant_character_state():
+    state = base_state()
+    state["characters"]["archivist"] = {  # type: ignore[index]
+        "name": "Archivist",
+        "status": "alive",
+        "location": "sealed_archive",
+        "current_goal": "protect the forbidden index",
+        "secrets": ["The archive door is already open."],
+    }
+    state["relationships"]["player_archivist"] = {  # type: ignore[index]
+        "from": "player",
+        "to": "archivist",
+        "trust": 0,
+        "notes": ["They met years ago."],
+    }
+    outcome = Outcome(
+        check_id="character-retrieval",
+        action_type="feasibility",
+        actor="player",
+        result="partial_success",
+        roll=10,
+        difficulty=10,
+        modifiers={},
+        final_score=10,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
+    )
+    request = ChatCompletionRequest(
+        model="z-ai/glm-5.2",
+        messages=[ChatMessage(role="user", content="I ask the king about the missing envoy.")],
+    )
+
+    messages = NarrativeClient(Settings(nvidia_api_base="mock://success")).narrative_messages(
+        request,
+        state,
+        outcome,
+        repair_instruction=None,
+    )
+
+    character_blocks = [message["content"] for message in messages if message["content"].startswith("RELEVANT_CHARACTERS")]
+    assert len(character_blocks) == 1
+    character_block = character_blocks[0]
+    assert '"id": "king"' in character_block
+    assert '"id": "advisor"' in character_block
+    assert "archivist" not in character_block
+    assert "archive door" not in character_block
+    state_summary = next(message["content"] for message in messages if message["content"].startswith("Relevant state summary:"))
+    assert "player_king" in state_summary
+    assert "player_advisor" in state_summary
+    assert "player_archivist" not in state_summary
+
+
 def test_build_catalog_parser_discards_non_rp_models():
     html = """
     <a href="/meta/llama-3_3-70b-instruct">Llama</a>

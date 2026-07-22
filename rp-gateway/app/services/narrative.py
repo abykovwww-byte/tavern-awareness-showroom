@@ -12,6 +12,11 @@ import httpx
 
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, Outcome
+from app.services.character_retrieval import (
+    latest_player_action,
+    retrieve_relevant_characters,
+    selected_character_relationships,
+)
 from app.services.context_budget import estimate_tokens
 from app.services.provider_auth import outbound_headers
 
@@ -197,12 +202,17 @@ class NarrativeClient:
         repair_instruction: str | None,
         memory_summary: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
+        relevant_characters = retrieve_relevant_characters(
+            state,
+            latest_player_action(request.messages),
+            outcome_target=outcome.target,
+        )
         state_summary = {
             "campaign_id": state.get("meta", {}).get("campaign_id"),
             "worldpack_id": self.settings.campaign_id,
             "turn": state.get("meta", {}).get("turn"),
             "player": state.get("player", {}),
-            "relationships": state.get("relationships", {}),
+            "relationships": selected_character_relationships(state, relevant_characters),
             "constraints": state.get("world_constraints", []),
         }
         rules = self.scenario_rules()
@@ -231,6 +241,13 @@ class NarrativeClient:
             )
         if memory_summary:
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
+        if relevant_characters:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": relevant_characters_block(relevant_characters),
+                }
+            )
         messages.extend(
             [
                 {"role": "system", "content": f"Relevant state summary: {state_summary}"},
@@ -413,4 +430,13 @@ def long_term_memory_block(memory_summary: dict[str, Any]) -> str:
         "Use this as campaign context only. Current authoritative state and AUTHORITATIVE_OUTCOME override it. "
         "Do not promote unresolved or player-claimed events into facts.\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def relevant_characters_block(characters: list[dict[str, Any]]) -> str:
+    return (
+        "RELEVANT_CHARACTERS\n"
+        "These are the only retrieved canonical NPC records relevant to this turn. "
+        "Use them for continuity; do not reveal hidden fields or invent unlisted NPC facts.\n"
+        f"{json.dumps(characters, ensure_ascii=False, indent=2)}"
     )

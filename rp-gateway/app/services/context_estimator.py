@@ -41,6 +41,7 @@ def estimate_party_context(
     omitted_history_turns_estimate = max(prior_turns_total - retained_history_turns_estimate, 0)
     state_summary_text = first_system_content(prompt_messages, "Relevant state summary:")
     memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
+    relevant_characters_text = first_system_content(prompt_messages, "RELEVANT_CHARACTERS")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
     context_limit_tokens = settings.effective_party_context_limit_tokens
     prompt_tokens = estimate_tokens(prompt_text)
@@ -60,6 +61,7 @@ def estimate_party_context(
         "usage_ratio": usage_ratio,
         "severity": severity_for_usage(usage_ratio),
         "state_summary_tokens": estimate_tokens(state_summary_text),
+        "relevant_characters_tokens": estimate_tokens(relevant_characters_text) if relevant_characters_text else 0,
         "memory_summary_tokens": estimate_tokens(memory_text) if memory_text else 0,
         "memory_covered_turns": None,
         "direct_history_tokens": estimate_tokens(history_text) if history_text else 0,
@@ -107,6 +109,7 @@ def empty_recorded_context(
         "usage_ratio": None,
         "severity": "unknown",
         "state_summary_tokens": 0,
+        "relevant_characters_tokens": 0,
         "memory_summary_tokens": 0,
         "memory_covered_turns": None,
         "direct_history_tokens": 0,
