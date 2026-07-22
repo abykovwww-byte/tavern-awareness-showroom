@@ -15,6 +15,7 @@ const appState = {
   chatArchiveExpanded: false,
   proposals: [],
   busy: false,
+  busyText: "",
   pendingMessages: {},
   adminUsers: [],
   adminApiKeys: [],
@@ -93,6 +94,7 @@ const els = {
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
+  operationStatus: document.querySelector("#operationStatus"),
   adminPanel: document.querySelector("#adminPanel"),
   adminUsersList: document.querySelector("#adminUsersList"),
   adminUserForm: document.querySelector("#adminUserForm"),
@@ -522,6 +524,7 @@ function renderState() {
   }
   const meta = state.meta || {};
   const player = state.player || {};
+  const playerLocation = locationLabel(player.location);
   const resources = compactJson(player.resources || {});
   const threads = Array.isArray(state.active_threads) ? state.active_threads.slice(0, 4) : [];
   const relationships = state.relationships || {};
@@ -530,7 +533,7 @@ function renderState() {
     .map(([key, value]) => `${escapeHtml(key)}: доверие ${escapeHtml(value.trust ?? "-")}, подозрение ${escapeHtml(value.suspicion ?? "-")}`);
   els.stateSummary.innerHTML = [
     stateItem("Версия", `v${meta.state_version ?? "-"} · ход ${meta.turn ?? "-"}`, "Номер сохраненного state и текущий ход партии."),
-    stateItem("Локация", player.location || "unknown", "Где сейчас находится персонаж."),
+    stateItem("Локация", playerLocation, "Где сейчас находится персонаж."),
     stateItem("Ресурсы", resources, "Подтвержденные ресурсы игрока; их нельзя выдумывать в ходе."),
     stateItem("Отношения", relRows.length ? relRows.join("<br>") : "нет записей", "Доверие/подозрение NPC и фракций к игроку."),
     stateItem(
@@ -653,6 +656,7 @@ function renderCharacters() {
       id: player.id || "player",
       status: player.status,
       location: player.location,
+      location_label: player.location_label || locationLabel(player.location),
       current_goal: player.description,
       knowledge: player.known_world_facts,
       obligations: player.constraints,
@@ -745,12 +749,26 @@ function listEditorText(value) {
     : "";
 }
 
+function locationLabel(location) {
+  const locationText = String(location || "unknown");
+  const locations = appState.partyState?.locations || {};
+  const details = locations[locationText];
+  if (details && typeof details === "object") {
+    const direct = details.name || details.title || details.label;
+    if (direct) return String(direct);
+    const description = String(details.description || "").trim();
+    if (description) return description.split(":")[0].split(".")[0].split(";")[0].slice(0, 90);
+  }
+  if (locationText === "unknown") return "unknown";
+  return locationText.replace(/[-_]+/g, " ");
+}
+
 function characterCard(character) {
   const relation = relationshipText(character.relationship);
   const lastSeen = character.last_seen ? `ход ${character.last_seen.turn ?? "-"} · ${character.last_seen.event || ""}` : "нет отметки";
   const metrics = [
     character.status ? `статус: ${character.status}` : "",
-    character.location ? `место: ${character.location}` : "",
+    character.location ? `место: ${character.location_label || locationLabel(character.location)}` : "",
     relation,
   ].filter(Boolean);
   const details = [
@@ -1091,7 +1109,7 @@ async function createParty(event) {
   const modelProfileId = els.modelSelect.value;
   const characterPrompt = selectedRadioValue("characterSource") === "prompt";
   try {
-    setBusy(true);
+    setBusy(true, "Создаю партию и стартового персонажа...");
     if (!modelProfileId) throw new Error("Нет доступной модели для партии.");
     const worldpack = await resolveWorldpack();
     const concept = characterPrompt
@@ -1224,7 +1242,7 @@ async function previewWorldInstruction(options = {}) {
   const text = els.worldInstruction.value.trim();
   if (!text || !appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, options.useLlm ? "LLM готовит черновик правки мира..." : "Готовлю быстрый черновик правки мира...");
     await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction: text, use_llm: Boolean(options.useLlm) });
     els.worldInstruction.value = "";
     await reloadActiveParty();
@@ -1239,12 +1257,18 @@ async function previewWorldInstruction(options = {}) {
 
 async function previewCharacterManualDraft() {
   if (!appState.activeParty) return;
+  const payload = characterEditorPayload();
+  const error = validateCharacterPayload(payload);
+  if (error) {
+    showToast(error);
+    return;
+  }
   try {
-    setBusy(true);
-    await apiPost(`/api/parties/${appState.activeParty.id}/characters/edit`, characterEditorPayload());
+    setBusy(true, "Сохраняю персонажа в state...");
+    await apiPost(`/api/parties/${appState.activeParty.id}/characters/edit`, { ...payload, confirm: true });
     await reloadActiveParty();
-    openPanelFor(els.proposalList);
-    showToast("Черновик персонажа создан.");
+    openPanelFor(els.characterSheets);
+    showToast("Персонаж сохранен.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1254,14 +1278,20 @@ async function previewCharacterManualDraft() {
 
 async function previewCharacterLlmDraft() {
   if (!appState.activeParty) return;
-  const instruction = characterEditorInstruction();
+  const payload = characterEditorPayload();
+  const error = validateCharacterPayload(payload);
+  if (error) {
+    showToast(error);
+    return;
+  }
+  const instruction = characterEditorInstruction(payload);
   if (!instruction) return;
   try {
-    setBusy(true);
+    setBusy(true, "LLM генерирует черновик персонажа...");
     await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction, use_llm: true });
     await reloadActiveParty();
     openPanelFor(els.proposalList);
-    showToast("LLM-черновик персонажа создан.");
+    showToast("LLM-черновик персонажа создан. Проверь и примени.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1294,8 +1324,28 @@ function characterEditorPayload() {
   };
 }
 
-function characterEditorInstruction() {
-  const payload = characterEditorPayload();
+function validateCharacterPayload(payload) {
+  if (payload.target === "npc" && !payload.character_id && !payload.name) {
+    return "Заполни имя нового NPC. ID создастся автоматически.";
+  }
+  const hasContent = [
+    payload.name,
+    payload.status,
+    payload.location,
+    payload.current_goal,
+    payload.attitude_to_player,
+    payload.loyalty,
+    payload.trust,
+    payload.fear,
+    payload.knowledge,
+    payload.obligations,
+    payload.hard_constraints,
+    payload.secrets,
+  ].some((value) => value !== null && value !== "");
+  return hasContent ? "" : "Заполни хотя бы одно поле персонажа.";
+}
+
+function characterEditorInstruction(payload = characterEditorPayload()) {
   const label = payload.target === "player" ? "игрока" : `NPC ${payload.character_id || payload.name || ""}`.trim();
   const lines = [
     `Создай или обнови персонажа ${label}.`,
@@ -1319,7 +1369,7 @@ async function createAdminUser(event) {
   event.preventDefault();
   if (!isAdmin()) return;
   try {
-    setBusy(true);
+    setBusy(true, "Создаю пользователя Gateway...");
     await apiPost("/api/admin/users", {
       username: els.adminUsernameInput.value.trim(),
       password: els.adminPasswordInput.value,
@@ -1343,7 +1393,7 @@ async function handleAdminUserAction(event) {
   const userId = button.dataset.userId;
   const action = button.dataset.adminUserAction;
   try {
-    setBusy(true);
+    setBusy(true, "Обновляю пользователя Gateway...");
     if (action === "password") {
       const password = window.prompt("Новый пароль пользователя");
       if (!password) return;
@@ -1370,7 +1420,7 @@ async function createAdminApiKey(event) {
   event.preventDefault();
   if (!isAdmin()) return;
   try {
-    setBusy(true);
+    setBusy(true, "Сохраняю API ключ провайдера...");
     await apiPost("/api/admin/api-keys", {
       label: els.adminApiKeyLabelInput.value.trim(),
       api_key: els.adminApiKeyInput.value,
@@ -1394,7 +1444,7 @@ async function handleAdminApiKeyAction(event) {
   const keyId = button.dataset.keyId;
   const action = button.dataset.adminKeyAction;
   try {
-    setBusy(true);
+    setBusy(true, "Обновляю API ключ провайдера...");
     if (action === "default") {
       await apiPatch(`/api/admin/api-keys/${keyId}`, { is_default: true });
       showToast("Default API ключ обновлен.");
@@ -1415,7 +1465,7 @@ async function handleAdminApiKeyAction(event) {
 async function applyWorldProposal() {
   if (!appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, "Применяю черновик к state...");
     await apiPost(`/api/parties/${appState.activeParty.id}/world/apply`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
     openPanelFor(els.proposalList);
@@ -1430,7 +1480,7 @@ async function applyWorldProposal() {
 async function discardWorldProposal() {
   if (!appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, "Отменяю последний черновик...");
     await apiPost(`/api/parties/${appState.activeParty.id}/world/discard`, { proposal_id: "latest", confirm: true });
     await reloadActiveParty();
     openPanelFor(els.proposalList);
@@ -1447,7 +1497,7 @@ async function rollbackParty() {
   const ok = window.confirm("Откатить последний примененный state этой партии?");
   if (!ok) return;
   try {
-    setBusy(true);
+    setBusy(true, "Откатываю последний примененный state...");
     await apiPost(`/api/parties/${appState.activeParty.id}/rollback`, {});
     await reloadActiveParty();
     showToast("Откат выполнен.");
@@ -1461,7 +1511,7 @@ async function rollbackParty() {
 async function summarizeMemory() {
   if (!appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, "LLM собирает long-term memory...");
     const result = await apiPost(`/api/parties/${appState.activeParty.id}/memory/summarize`, { force: true });
     appState.memory = result;
     renderMemory();
@@ -1480,7 +1530,7 @@ async function clearLatestMemory() {
   const ok = window.confirm("Удалить последнюю сводку памяти этой партии?");
   if (!ok) return;
   try {
-    setBusy(true);
+    setBusy(true, "Удаляю последнюю сводку памяти...");
     const result = await apiDelete(`/api/parties/${appState.activeParty.id}/memory/latest`);
     appState.memory = result;
     renderMemory();
@@ -1498,7 +1548,7 @@ async function previewPrompt() {
   if (!appState.activeParty) return;
   const content = els.messageInput.value.trim();
   try {
-    setBusy(true);
+    setBusy(true, "Открываю prompt предыдущего запроса...");
     const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content, source: "last" });
     appState.promptPreview = result.preview;
     renderPromptPreview();
@@ -1514,7 +1564,7 @@ async function previewPrompt() {
 async function summarizeJournal() {
   if (!appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, "LLM собирает журнал партии...");
     const result = await apiPost(`/api/parties/${appState.activeParty.id}/journal/summarize`, { force: true });
     appState.journal = result;
     renderJournal();
@@ -1533,7 +1583,7 @@ async function clearLatestJournal() {
   const ok = window.confirm("Удалить последнюю запись журнала этой партии?");
   if (!ok) return;
   try {
-    setBusy(true);
+    setBusy(true, "Удаляю последнюю запись журнала...");
     const result = await apiDelete(`/api/parties/${appState.activeParty.id}/journal/latest`);
     appState.journal = result;
     renderJournal();
@@ -1553,7 +1603,7 @@ async function deleteActiveParty() {
   const ok = window.confirm(`Удалить партию "${party.title}" и ее историю ходов?`);
   if (!ok) return;
   try {
-    setBusy(true);
+    setBusy(true, "Удаляю партию и связанную историю...");
     await apiDelete(`/api/parties/${party.id}`);
     localStorage.removeItem(ACTIVE_PARTY_STORAGE_KEY);
     await boot();
@@ -1571,7 +1621,7 @@ async function changePartyModel() {
   if (!party || !modelProfileId || modelProfileId === party.model_profile_id) return;
   const profile = appState.modelProfiles.find((item) => item.id === modelProfileId);
   try {
-    setBusy(true);
+    setBusy(true, "Меняю модель партии...");
     await apiPatch(`/api/parties/${party.id}/model`, { model_profile_id: modelProfileId });
     await boot();
     await selectParty(party.id);
@@ -1587,7 +1637,7 @@ async function runCheck(event) {
   event.preventDefault();
   if (!appState.activeParty) return;
   try {
-    setBusy(true);
+    setBusy(true, "Провожу проверку и обновляю state...");
     await apiPost(`/api/parties/${appState.activeParty.id}/checks`, {
       check_type: document.querySelector("#checkType").value,
       target: document.querySelector("#checkTarget").value.trim() || null,
@@ -1985,9 +2035,18 @@ function setGatewayStatus(text, ok) {
   els.gatewayDot.classList.toggle("ok", ok);
 }
 
-function setBusy(value) {
+function setBusy(value, text = "Запрос выполняется...") {
   appState.busy = value;
+  appState.busyText = value ? text : "";
   document.body.classList.toggle("busy", value);
+  if (!els.operationStatus) return;
+  if (value) {
+    els.operationStatus.classList.remove("hidden");
+    els.operationStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(text)}</span>`;
+  } else {
+    els.operationStatus.classList.add("hidden");
+    els.operationStatus.innerHTML = "";
+  }
 }
 
 function showToast(message) {

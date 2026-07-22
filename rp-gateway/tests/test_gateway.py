@@ -634,6 +634,7 @@ def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
     assert {"advisor", "king"}.issubset(by_id)
     assert by_id["advisor"]["relationship"]["id"] == "player_advisor"
     assert by_id["king"]["hard_constraints"]
+    assert by_id["king"]["location_label"] == "throne room"
 
 
 def test_party_character_manual_edit_creates_pending_patch(tmp_path: Path):
@@ -671,6 +672,30 @@ def test_party_character_manual_edit_creates_pending_patch(tmp_path: Path):
     assert by_id["varn"]["loyalty"] == "north-watch"
     assert by_id["varn"]["hard_constraints"] == ["Varn cannot leave the gate without a captain order."]
     assert by_id["varn"]["secrets"] == ["Varn hides a forged pass."]
+
+
+def test_party_character_manual_edit_can_apply_immediately(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Character Apply")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/characters/edit",
+        json={
+            "target": "npc",
+            "name": "Gate Clerk",
+            "status": "alive",
+            "location": "ledger archive",
+            "current_goal": "verify travel papers",
+            "confirm": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert by_id["gate-clerk"]["name"] == "Gate Clerk"
+    assert by_id["gate-clerk"]["current_goal"] == "verify travel papers"
 
 
 def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
@@ -904,6 +929,12 @@ def test_prompt_world_party_and_delete(tmp_path: Path):
     assert any(item["id"] == "world_prompt" for item in state["world_constraints"])
     assert state["player"]["name"] == "Ника"
     assert "стеклянном дожде" in state["player"]["description"]
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "/check information skill=1 difficulty=5 goal=\"inspect the rain\""},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert turn.status_code == 200
 
     deleted = c.delete(f"/api/parties/{party['id']}")
     assert deleted.status_code == 200

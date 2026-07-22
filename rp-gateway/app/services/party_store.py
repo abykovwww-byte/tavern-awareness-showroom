@@ -693,9 +693,9 @@ class PartyStore:
     def delete_party(self, party_id: str, owner_user_id: str | None = None) -> None:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         with self.connect() as connection:
-            connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
             for table in (
                 "turns",
+                "turn_requests",
                 "checks",
                 "state_patches",
                 "state_versions",
@@ -704,6 +704,7 @@ class PartyStore:
                 "journal_entries",
             ):
                 connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (party.state_campaign_id,))
+            connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
             connection.execute("DELETE FROM campaigns WHERE id = ?", (party.state_campaign_id,))
         self.delete_party_state_dir(party.state_campaign_id)
 
