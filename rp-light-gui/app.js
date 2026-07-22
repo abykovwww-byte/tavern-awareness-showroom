@@ -1182,12 +1182,17 @@ async function autoStartParty(partyId) {
     showToast(result.started ? "Стартовая сцена готова." : "Партия уже начата.");
   } catch (error) {
     setPendingStatus("Стартовый запрос оборвался. Проверяю историю...", partyId);
-    const recovered = await waitForRecoveredMessage(partyId, requestId).catch(() => null);
+    let recoveryError = null;
+    const recovered = await waitForRecoveredMessage(partyId, requestId).catch((recoverError) => {
+      recoveryError = recoverError;
+      return null;
+    });
     if (recovered?.narrative_response) {
       showToast("Старт подтянут из истории.");
     } else {
-      replacePendingMessage(partyId, requestId, `Стартовая сцена не получена: ${error.message}`, true);
-      showToast(error.message);
+      const message = recoveryError?.message || error.message;
+      replacePendingMessage(partyId, requestId, `Стартовая сцена не получена: ${message}`, true);
+      showToast(message);
     }
   } finally {
     clearPendingMessage(partyId);
@@ -1226,12 +1231,17 @@ async function sendMessage(event) {
     }
   } catch (error) {
     setPendingStatus("Запрос оборвался. Проверяю историю...", partyId);
-    const recovered = await waitForRecoveredMessage(partyId, requestId).catch(() => null);
+    let recoveryError = null;
+    const recovered = await waitForRecoveredMessage(partyId, requestId).catch((recoverError) => {
+      recoveryError = recoverError;
+      return null;
+    });
     if (recovered?.narrative_response) {
       showToast("Ответ подтянут из истории.");
     } else {
-      replacePendingMessage(partyId, requestId, `Ответ не получен: ${error.message}`, true);
-      showToast(error.message);
+      const message = recoveryError?.message || error.message;
+      replacePendingMessage(partyId, requestId, `Ответ не получен: ${message}`, true);
+      showToast(message);
     }
   } finally {
     clearPendingMessage(partyId);
@@ -1287,11 +1297,11 @@ async function previewCharacterLlmDraft() {
   const instruction = characterEditorInstruction(payload);
   if (!instruction) return;
   try {
-    setBusy(true, "LLM генерирует черновик персонажа...");
-    await apiPost(`/api/parties/${appState.activeParty.id}/world/instruct`, { instruction, use_llm: true });
+    setBusy(true, "LLM генерирует и сохраняет персонажа...");
+    await apiPost(`/api/parties/${appState.activeParty.id}/characters/generate`, payload);
     await reloadActiveParty();
-    openPanelFor(els.proposalList);
-    showToast("LLM-черновик персонажа создан. Проверь и примени.");
+    openPanelFor(els.characterSheets);
+    showToast("Персонаж сгенерирован и добавлен.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1821,12 +1831,22 @@ function ensurePendingRecovery(partyId) {
           showToast("Ответ восстановлен из истории.");
         }
       } else if (pendingMessageForParty(partyId)) {
-        setPendingStatus("Запрос все еще не найден в истории. Обнови страницу чуть позже: повтор не отправляется.", partyId);
+        replacePendingMessage(
+          partyId,
+          pending.requestId,
+          "Ответ не найден после проверки. Запрос больше не блокирует ввод; можно повторить ход.",
+          true,
+        );
+        clearPendingMessage(partyId);
       }
     })
     .catch((error) => {
       if (pendingMessageForParty(partyId)) {
-        setPendingStatus(`Не удалось проверить ход: ${error.message}`, partyId);
+        replacePendingMessage(partyId, pending.requestId, `Ответ не получен: ${error.message}`, true);
+        clearPendingMessage(partyId);
+        if (appState.activeParty?.id === partyId) {
+          showToast(error.message);
+        }
       }
     })
     .finally(() => {

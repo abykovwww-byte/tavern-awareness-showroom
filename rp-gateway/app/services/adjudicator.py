@@ -52,6 +52,7 @@ class Adjudicator:
         authorization: str | None,
         idempotency_key: str | None,
         request_id: str | None = None,
+        allow_gateway_fallback: bool = True,
     ) -> dict[str, Any]:
         request_id = request_id or f"req_{uuid.uuid4().hex}"
         idempotency_key = idempotency_key or request_id
@@ -91,8 +92,7 @@ class Adjudicator:
             state = self.store.get_state()
             intent = self.intent_parser.parse(latest)
             outcome, patch = self.rule_engine.resolve(state, intent, request_id)
-            updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
-            self.store.record_check(None, outcome)
+            narrative_state = self.preview_applied_state(patch)
 
             llm_calls = 0
             repaired = False
@@ -102,14 +102,14 @@ class Adjudicator:
                 memory_summary = self.store.latest_memory_summary()
                 prompt_messages = self.narrative.narrative_messages(
                     request,
-                    updated_state,
+                    narrative_state,
                     outcome,
                     repair_instruction=None,
                     memory_summary=memory_summary,
                 )
                 raw = await self.narrative.complete(
                     request,
-                    updated_state,
+                    narrative_state,
                     outcome,
                     authorization,
                     memory_summary=memory_summary,
@@ -117,12 +117,12 @@ class Adjudicator:
                 )
                 llm_calls += 1
                 text = response_text(raw)
-                validation = self.validator.validate(text, outcome, updated_state)
+                validation = self.validator.validate(text, outcome, narrative_state)
                 if not validation.valid and self.settings.max_repair_attempts > 0:
                     repaired = True
                     raw = await self.narrative.complete(
                         request,
-                        updated_state,
+                        narrative_state,
                         outcome,
                         authorization,
                         validation.repair_instruction,
@@ -131,9 +131,16 @@ class Adjudicator:
                     )
                     llm_calls += 1
                     text = response_text(raw)
-                    validation = self.validator.validate(text, outcome, updated_state)
+                    validation = self.validator.validate(text, outcome, narrative_state)
                 if not validation.valid:
-                    text = safe_fallback(outcome, updated_state, latest)
+                    self.store.audit(
+                        "llm_validation_failed",
+                        {"request_id": request_id, "model": self.settings.narrative_model, "violations": validation.violations},
+                        request_id,
+                    )
+                    if not allow_gateway_fallback:
+                        raise RuntimeError("LLM response failed narrative validation")
+                    text = safe_fallback(outcome, narrative_state, latest)
                     raw = with_text(raw, text)
             except PermissionError:
                 raise
@@ -144,27 +151,34 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
                     request_id,
                 )
+                if not allow_gateway_fallback:
+                    raise RuntimeError(f"Narrative provider HTTP {status}") from exc
                 provider_fallback_reason = f"http_{status}"
-                text = safe_fallback(outcome, updated_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
+                if not allow_gateway_fallback:
+                    raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
-                text = safe_fallback(outcome, updated_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
+                if not allow_gateway_fallback:
+                    raise
                 provider_fallback_reason = "runtime_error"
                 self.store.audit(
                     "llm_runtime_error",
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
                     request_id,
                 )
-                text = safe_fallback(outcome, updated_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
             text = response_text(response)
+            updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
             version = int(updated_state.get("meta", {}).get("state_version", 0))
             turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version, prompt_messages)
             self.store.complete_turn_request(idempotency_key, response)
@@ -191,6 +205,18 @@ class Adjudicator:
         except Exception as exc:
             self.store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise
+
+    def preview_applied_state(self, patch: Any) -> dict[str, Any]:
+        candidate = self.store.preview_patch(patch)
+        version = self.store.current_version() or int(candidate.get("meta", {}).get("state_version", 1))
+        candidate.setdefault("meta", {})
+        candidate["meta"]["state_version"] = version + 1
+        candidate["meta"]["turn"] = max(int(candidate["meta"].get("turn", 0)) + 1, patch.turn)
+        candidate["meta"]["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        candidate.setdefault("last_turn", {})
+        candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
+        candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
+        return candidate
 
     def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
         self.store.audit(

@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -52,15 +53,17 @@ from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, response_text, with_text
+from app.services.narrative import NarrativeClient, response_text
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
 from app.services.state_store import StateStore
-from app.services.validator import OutputValidator, awareness_opening_fallback
+from app.services.validator import OutputValidator
+from app.services.world_instructor import WorldInstructor
 
 
 AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии"
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -549,6 +552,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "candidate": candidate,
         }
 
+    @app.post("/api/parties/{party_id}/characters/generate")
+    async def party_character_generate(
+        http_request: Request,
+        party_id: str,
+        request: PartyCharacterStateEditRequest,
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        request_id = f"character_generate_{uuid.uuid4().hex[:12]}"
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_settings = runtime_settings_for_party(party)
+            generated = await generate_character_edit(party_settings, party_state_store, request, authorization, request_id)
+            patch = character_state_patch(party_state_store.get_state(), generated)
+            state = party_state_store.apply_state_patch(patch, reason=f"party_character_generate:{request_id}")
+            character_id = stable_character_id(generated.character_id or generated.name or "")
+            party_state_store.audit(
+                "party_character_generate",
+                {"request_id": request_id, "character_id": character_id, "model": party_settings.intent_model},
+                request_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=502, detail="Narrative provider timed out") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except (PatchError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "applied": True,
+            "request_id": request_id,
+            "character_id": character_id,
+            "generated": generated.model_dump(mode="json"),
+            "patch": patch.model_dump(mode="json"),
+            "state": state,
+        }
+
     @app.get("/api/parties/{party_id}/journal")
     def get_party_journal(request: Request, party_id: str, limit: int = 8) -> dict[str, Any]:
         try:
@@ -742,8 +787,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     text = response_text(response)
                     validation = validator.validate(text, start_outcome, narrative_state)
                 if not validation.valid:
-                    text = awareness_opening_fallback(narrative_state)
-                    response = with_text(response, text)
+                    party_state_store.audit(
+                        "party_start_validation_failed",
+                        {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
+                        request_id,
+                    )
+                    raise RuntimeError("LLM response failed narrative validation")
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -809,6 +858,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 authorization,
                 request.idempotency_key,
                 x_request_id,
+                allow_gateway_fallback=False,
             )
         except RequestAlreadyRunning as exc:
             raise HTTPException(
@@ -1186,6 +1236,282 @@ def party_chat_request(
         max_tokens=request.max_tokens,
         stream=False,
     )
+
+
+async def generate_character_edit(
+    settings: Settings,
+    store: StateStore,
+    request: PartyCharacterStateEditRequest,
+    authorization: str | None,
+    request_id: str,
+) -> PartyCharacterStateEditRequest:
+    state = store.get_state()
+    if settings.nvidia_api_base.startswith("mock://"):
+        return mock_generated_character_edit(settings, state, request)
+
+    outbound_authorization = authorization
+    if settings.nvidia_api_key:
+        outbound_authorization = f"Bearer {settings.nvidia_api_key}"
+    if not outbound_authorization:
+        raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+
+    world = WorldInstructor(settings, store)
+    payload: dict[str, Any] = {
+        "model": settings.intent_model,
+        "temperature": 0.35,
+        "max_tokens": 1200,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": character_generation_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "input_fields": request.model_dump(mode="json", exclude_none=True),
+                        "state_excerpt": character_generation_state_excerpt(state, request),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+    timeout = httpx.Timeout(settings.model_attempt_timeout_seconds, connect=15.0)
+    attempts = world.model_attempts(settings.intent_model)
+    last_timeout: httpx.TimeoutException | None = None
+    last_status: httpx.HTTPStatusError | None = None
+    last_parse_error: ValueError | None = None
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for index, model in enumerate(attempts):
+            payload["model"] = model
+            started = time.perf_counter()
+            logger.info(
+                "character_llm_attempt_start request_id=%s model=%s attempt=%s/%s timeout_seconds=%s",
+                request_id,
+                model,
+                index + 1,
+                len(attempts),
+                settings.model_attempt_timeout_seconds,
+            )
+            try:
+                response = await client.post(
+                    f"{settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                    json=payload,
+                    headers={"Authorization": outbound_authorization, "Content-Type": "application/json"},
+                )
+            except httpx.TimeoutException as exc:
+                last_timeout = exc
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.warning(
+                    "character_llm_attempt_timeout request_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
+                    request_id,
+                    model,
+                    index + 1,
+                    len(attempts),
+                    elapsed_ms,
+                    index < len(attempts) - 1,
+                )
+                if index < len(attempts) - 1:
+                    continue
+                raise
+            if response.status_code == 429:
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.warning(
+                    "character_llm_attempt_rate_limited request_id=%s model=%s elapsed_ms=%s",
+                    request_id,
+                    model,
+                    elapsed_ms,
+                )
+                raise RuntimeError("NVIDIA API returned 429 rate limit")
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_status = exc
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.warning(
+                    "character_llm_attempt_http_error request_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                    request_id,
+                    model,
+                    response.status_code,
+                    elapsed_ms,
+                    index < len(attempts) - 1,
+                )
+                if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
+                    continue
+                raise
+            try:
+                data = world.extract_json(response_text(response.json()))
+            except ValueError as exc:
+                last_parse_error = exc
+                logger.warning(
+                    "character_llm_attempt_parse_error request_id=%s model=%s attempt=%s/%s fallback=%s error=%s",
+                    request_id,
+                    model,
+                    index + 1,
+                    len(attempts),
+                    index < len(attempts) - 1,
+                    exc,
+                )
+                if index < len(attempts) - 1:
+                    continue
+                raise RuntimeError("LLM did not return character JSON") from exc
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            logger.info(
+                "character_llm_attempt_success request_id=%s model=%s elapsed_ms=%s fallback_used=%s",
+                request_id,
+                model,
+                elapsed_ms,
+                index > 0 or model != settings.intent_model,
+            )
+            return coerce_generated_character_edit(data, request, state)
+    if last_status:
+        raise last_status
+    if last_timeout:
+        raise last_timeout
+    if last_parse_error:
+        raise RuntimeError("LLM did not return character JSON") from last_parse_error
+    raise RuntimeError("No NVIDIA model attempts configured")
+
+
+def character_generation_prompt() -> str:
+    return (
+        "Generate exactly one structured tabletop-RP character edit for RP Gateway. "
+        "Return only a JSON object, no markdown and no explanations. "
+        "Allowed keys: target, character_id, name, status, location, current_goal, attitude_to_player, "
+        "loyalty, trust, fear, knowledge, obligations, hard_constraints, secrets. "
+        "knowledge, obligations, hard_constraints, and secrets may be arrays of short strings. "
+        "trust must be an integer from -10 to 10; fear must be an integer from 0 to 10. "
+        "Preserve every non-empty user-provided field exactly; only fill missing fields. "
+        "Use the user's language for generated prose. Do not invent resolved plot outcomes, only character traits, "
+        "social posture, knowledge, duties, and constraints that fit the current state."
+    )
+
+
+def character_generation_state_excerpt(state: dict[str, Any], request: PartyCharacterStateEditRequest) -> dict[str, Any]:
+    character_id = stable_character_id(request.character_id or request.name or "")
+    characters = state.get("characters", {}) if isinstance(state.get("characters"), dict) else {}
+    return {
+        "turn": state.get("meta", {}).get("turn"),
+        "player": state.get("player", {}),
+        "target_character_id": character_id,
+        "existing_character": characters.get(character_id),
+        "nearby_characters": [
+            {"id": key, "name": value.get("name") if isinstance(value, dict) else key}
+            for key, value in list(characters.items())[:20]
+        ],
+        "world_constraints": state.get("world_constraints", [])[:20],
+        "timeline_tail": state.get("timeline", [])[-8:],
+    }
+
+
+def coerce_generated_character_edit(
+    data: dict[str, Any],
+    source: PartyCharacterStateEditRequest,
+    state: dict[str, Any],
+) -> PartyCharacterStateEditRequest:
+    payload = data.get("character") if isinstance(data.get("character"), dict) else data
+    normalized: dict[str, Any] = {
+        "target": source.target,
+        "character_id": normalize_optional_string(payload.get("character_id")),
+        "name": normalize_optional_string(payload.get("name")),
+        "status": normalize_optional_string(payload.get("status")),
+        "location": normalize_optional_string(payload.get("location")),
+        "current_goal": normalize_optional_string(payload.get("current_goal")),
+        "attitude_to_player": normalize_optional_string(payload.get("attitude_to_player")),
+        "loyalty": normalize_optional_string(payload.get("loyalty")),
+        "trust": clamp_optional_int(payload.get("trust"), -10, 10),
+        "fear": clamp_optional_int(payload.get("fear"), 0, 10),
+        "knowledge": normalize_line_field(payload.get("knowledge")),
+        "obligations": normalize_line_field(payload.get("obligations")),
+        "hard_constraints": normalize_line_field(payload.get("hard_constraints")),
+        "secrets": normalize_line_field(payload.get("secrets")),
+        "confirm": True,
+    }
+    for field in [
+        "character_id",
+        "name",
+        "status",
+        "location",
+        "current_goal",
+        "attitude_to_player",
+        "loyalty",
+        "trust",
+        "fear",
+        "knowledge",
+        "obligations",
+        "hard_constraints",
+        "secrets",
+    ]:
+        value = getattr(source, field)
+        if value is not None and (not isinstance(value, str) or value.strip()):
+            normalized[field] = value
+    if source.target == "player":
+        normalized["character_id"] = None
+    elif not normalized.get("character_id") and normalized.get("name"):
+        normalized["character_id"] = stable_character_id(str(normalized["name"]))
+    if not normalized.get("location"):
+        normalized["location"] = normalize_optional_string(state.get("player", {}).get("location"))
+    return PartyCharacterStateEditRequest.model_validate(normalized)
+
+
+def mock_generated_character_edit(
+    settings: Settings,
+    state: dict[str, Any],
+    source: PartyCharacterStateEditRequest,
+) -> PartyCharacterStateEditRequest:
+    mode = settings.nvidia_api_base.removeprefix("mock://")
+    if mode == "timeout":
+        raise httpx.TimeoutException("mock timeout")
+    if mode == "http-503":
+        request = httpx.Request("POST", "https://mock.nvidia.local/chat/completions")
+        response = httpx.Response(503, request=request)
+        raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
+    if mode == "rate-limit":
+        raise RuntimeError("NVIDIA API returned 429 rate limit")
+    name = source.name or source.character_id or ("Игрок" if source.target == "player" else "NPC")
+    generated = {
+        "target": source.target,
+        "character_id": source.character_id or (stable_character_id(name) if source.target == "npc" else None),
+        "name": name,
+        "status": source.status or ("active" if source.target == "player" else "alive"),
+        "location": source.location or state.get("player", {}).get("location") or "unknown",
+        "current_goal": source.current_goal or f"держать свою роль в сцене как {name}",
+        "attitude_to_player": source.attitude_to_player or ("самоконтроль" if source.target == "player" else "нейтральное любопытство"),
+        "loyalty": source.loyalty or "локальная рутина",
+        "trust": source.trust if source.trust is not None else 0,
+        "fear": source.fear if source.fear is not None else 0,
+        "knowledge": source.knowledge or f"{name} замечает детали текущей сцены.",
+        "obligations": source.obligations or f"{name} не нарушает явные ограничения мира.",
+        "hard_constraints": source.hard_constraints or "",
+        "secrets": source.secrets or "",
+        "confirm": True,
+    }
+    return PartyCharacterStateEditRequest.model_validate(generated)
+
+
+def normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def normalize_line_field(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        lines = [str(item).strip(" -•\t") for item in value if str(item).strip(" -•\t")]
+        return "\n".join(lines) or None
+    return normalize_optional_string(value)
+
+
+def clamp_optional_int(value: Any, lower: int, upper: int) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(lower, min(upper, number))
 
 
 def character_state_patch(state: dict[str, Any], request: PartyCharacterStateEditRequest) -> StatePatch:

@@ -61,7 +61,6 @@ body.busy select {
 
 body.busy button {
   opacity: 0.72;
-  pointer-events: none;
 }
 
 svg {

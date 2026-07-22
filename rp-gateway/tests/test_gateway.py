@@ -698,6 +698,50 @@ def test_party_character_manual_edit_can_apply_immediately(tmp_path: Path):
     assert by_id["gate-clerk"]["current_goal"] == "verify travel papers"
 
 
+def test_party_character_llm_generate_applies_immediately(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Character LLM Generate")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/characters/generate",
+        json={
+            "target": "npc",
+            "name": "Трактирщик",
+            "location": "таверна",
+        },
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    assert response.json()["character_id"] == "трактирщик"
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert by_id["трактирщик"]["name"] == "Трактирщик"
+    assert by_id["трактирщик"]["location"] == "таверна"
+    assert by_id["трактирщик"]["current_goal"]
+    assert c.get(f"/api/parties/{party['id']}/world/proposals").json()["proposals"] == []
+
+
+def test_party_character_llm_generate_provider_http_error_does_not_apply(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path, mode="http-503")
+    party = create_demo_party(c, title="Character LLM Failure")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/characters/generate",
+        json={"target": "npc", "name": "Трактирщик"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert "трактирщик" not in by_id
+
+
 def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
@@ -1210,23 +1254,47 @@ def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
     assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
 
 
-def test_party_message_provider_http_error_returns_safe_fallback(tmp_path: Path):
+def test_party_message_provider_http_error_fails_without_gateway_fallback(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path, mode="http-503")
     party = create_demo_party(c)
 
     response = c.post(
         f"/api/parties/{party['id']}/messages",
-        json={"content": "/check stealth skill=1 difficulty=10"},
-        headers={"Authorization": "Bearer test"},
+        json={"content": "/check stealth skill=1 difficulty=10", "idempotency_key": "party-http-503"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_party_http_503"},
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
-    assert_no_gateway_service_text(body["message"]["content"])
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
     history = c.get(f"/api/parties/{party['id']}/history").json()
-    assert history["turns"][-1]["narrative_response"] == body["message"]["content"]
+    assert history["turns"] == []
+    status = c.get(f"/api/parties/{party['id']}/requests/req_party_http_503").json()
+    assert status["status"] == "failed"
+    assert "Narrative provider HTTP 503" in status["error"]
+
+
+def test_party_message_validation_failure_fails_without_gateway_fallback(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path, mode="repair-fail")
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": '/check persuasion target=king skill=0 difficulty=30 goal="transfer command"',
+            "idempotency_key": "party-repair-fail",
+        },
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_party_repair_fail"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "LLM response failed narrative validation"
+    history = c.get(f"/api/parties/{party['id']}/history").json()
+    assert history["turns"] == []
+    status = c.get(f"/api/parties/{party['id']}/requests/req_party_repair_fail").json()
+    assert status["status"] == "failed"
+    assert "LLM response failed narrative validation" in status["error"]
 
 
 def test_party_start_provider_http_error_returns_502(tmp_path: Path):

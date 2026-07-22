@@ -41,19 +41,23 @@ class Settings:
     nvidia_model_catalog_live: bool = env_bool("NVIDIA_MODEL_CATALOG_LIVE", True)
     nvidia_model_catalog_url: str = os.getenv("NVIDIA_MODEL_CATALOG_URL", "https://build.nvidia.com/models?q=llm")
     nvidia_model_catalog_ttl_seconds: int = env_int("NVIDIA_MODEL_CATALOG_TTL_SECONDS", 86400)
-    narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
-    intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
-    validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
+    narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
+    intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
+    validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
     nvidia_fallback_models: tuple[str, ...] = env_list(
         "NVIDIA_FALLBACK_MODELS",
-        "deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash",
+        "openai/gpt-oss-20b",
     )
-    nvidia_disabled_models: tuple[str, ...] = env_list("NVIDIA_DISABLED_MODELS", "")
+    nvidia_disabled_models: tuple[str, ...] = env_list(
+        "NVIDIA_DISABLED_MODELS",
+        "z-ai/glm-5.2,qwen/qwen3.5-397b-a17b,deepseek-ai/deepseek-v4-pro,"
+        "deepseek-ai/deepseek-v4-flash,mistralai/ministral-14b-instruct-2512,meta/llama-3.3-70b-instruct",
+    )
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_prompts: bool = env_bool("LOG_PROMPTS", False)
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900"))
-    model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "120"))
+    model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "45"))
     post_turn_helpers_inline: bool = env_bool("POST_TURN_HELPERS_INLINE", False)
     party_raw_turn_limit: int = env_int("PARTY_RAW_TURN_LIMIT", 96)
     narrative_history_message_limit: int = env_int("NARRATIVE_HISTORY_MESSAGE_LIMIT", 0)
