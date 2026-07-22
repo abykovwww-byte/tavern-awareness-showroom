@@ -12,10 +12,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import create_app, party_start_narrative_state, party_start_state_patch, settings_for_party
-from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome
+from app.main import create_app, party_chat_request, party_start_narrative_state, party_start_state_patch, settings_for_party
+from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome, PartyMessageRequest
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
+from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog, prices_are_free, provider_model_is_suitable
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
@@ -379,7 +380,10 @@ def test_novel_party_has_no_checks_and_loads_world_prompts(tmp_path: Path):
     state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
     assert state["timeline"][-1]["event"].startswith("novel turn")
 
-    preview = c.post(f"/api/parties/{party['id']}/prompt/preview", json={"content": "Продолжить сцену"})
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "Продолжить сцену", "source": "current"},
+    )
     assert preview.status_code == 200
     payload = preview.json()["preview"]
     assert payload["outcome"]["result"] == "narrative_continuation"
@@ -631,10 +635,12 @@ def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks(
 
 def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.MonkeyPatch):
     for name in [
-        "PARTY_RAW_TURN_LIMIT",
-        "NARRATIVE_HISTORY_MESSAGE_LIMIT",
-        "MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS",
-        "MEMORY_MAX_BATCH_TURNS",
+        "PARTY_CONTEXT_MAX_TOKENS",
+        "PARTY_CONTEXT_LIMIT_TOKENS",
+        "PARTY_CONTEXT_COMPLETION_RESERVE_TOKENS",
+        "PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS",
+        "PARTY_CONTEXT_MIN_HISTORY_TOKENS",
+        "MEMORY_SUMMARY_BATCH_TOKENS",
         "JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS",
         "JOURNAL_MAX_BATCH_TURNS",
         "POST_TURN_HELPERS_INLINE",
@@ -642,12 +648,47 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
         monkeypatch.delenv(name, raising=False)
     settings = Settings()
     assert settings.post_turn_helpers_inline is False
-    assert settings.party_raw_turn_limit == 96
-    assert settings.effective_narrative_history_message_limit == 193
-    assert settings.memory_auto_min_unsummarized_turns == 48
-    assert settings.memory_max_batch_turns == 96
+    assert settings.party_context_max_tokens == 131_072
+    assert settings.effective_party_context_limit_tokens == 131_072
+    assert settings.effective_party_history_token_budget == 81_920
+    assert settings.memory_summary_batch_tokens == 65_536
     assert settings.journal_auto_min_unsummarized_turns == 24
     assert settings.journal_max_batch_turns == 48
+
+
+def test_context_overflow_starts_summary_without_hiding_pending_turns(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(
+        tmp_path,
+        party_context_max_tokens=512,
+        party_context_completion_reserve_tokens=128,
+        party_context_system_reserve_tokens=256,
+        party_context_min_history_tokens=64,
+        memory_summary_batch_tokens=2_048,
+    )
+    party = create_demo_party(c, title="Token Overflow")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    old_player = "old-player-" + ("x" * 150)
+    old_gm = "old-gm-" + ("y" * 150)
+    recent_player = "recent-player-" + ("z" * 150)
+    recent_gm = "recent-gm-" + ("w" * 150)
+    store.record_turn("overflow-1", "overflow-1", old_player, old_gm, {}, 1)
+    store.record_turn("overflow-2", "overflow-2", recent_player, recent_gm, {}, 2)
+
+    request = party_chat_request(
+        store,
+        "z-ai/glm-5.2",
+        PartyMessageRequest(content="next action"),
+        c.app.state.settings,
+    )
+    prompt_text = "\n".join(str(message.content) for message in request.messages)
+    assert old_player in prompt_text
+    assert recent_player in prompt_text
+
+    plan, reason = MemorySummarizer(c.app.state.settings, store).build_plan()
+    assert reason == "ready"
+    assert plan is not None
+    assert [turn["id"] for turn in plan.turns] == [1]
 
 
 def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -742,12 +783,13 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
         assert response.status_code == 200
 
     estimate = c.get(f"/api/parties/{party['id']}/context").json()["context"]
-    assert estimate["context_limit_tokens"] == 1_000_000
+    assert estimate["context_limit_tokens"] == 131_072
     assert estimate["estimated_prompt_tokens"] > 0
     assert estimate["estimated_total_tokens"] >= estimate["estimated_prompt_tokens"]
     assert estimate["history_turns_total"] == 7
-    assert estimate["history_source_turn_limit"] == 96
-    assert estimate["message_prompt_limit"] == 193
+    assert estimate["history_source_turn_limit"] is None
+    assert estimate["message_prompt_limit"] is None
+    assert estimate["history_token_budget"] == 81_920
     assert estimate["prompt_source"] == "recorded_last_turn"
     assert estimate["direct_history_messages"] == 12
     assert estimate["history_limited"] is False
@@ -968,9 +1010,11 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
         tmp_path,
-        party_raw_turn_limit=8,
-        memory_auto_min_unsummarized_turns=10,
-        memory_max_batch_turns=20,
+        party_context_max_tokens=512,
+        party_context_completion_reserve_tokens=128,
+        party_context_system_reserve_tokens=256,
+        party_context_min_history_tokens=64,
+        memory_summary_batch_tokens=2_048,
     )
     first = create_demo_party(c, title="Memory A", character_name="A")
     second = create_demo_party(c, title="Memory B", character_name="B")
@@ -992,7 +1036,7 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     first_memory = c.get(f"/api/parties/{first['id']}/memory").json()
     assert first_memory["memory"] is not None
     assert first_memory["memory"]["from_turn_id"] == 1
-    assert first_memory["memory"]["to_turn_id"] == 10
+    assert first_memory["memory"]["to_turn_id"] < 18
     assert "old clue 0" in first_memory["memory"]["summary_text"]
 
     second_memory = c.get(f"/api/parties/{second['id']}/memory").json()
@@ -1036,9 +1080,11 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
         tmp_path,
-        party_raw_turn_limit=8,
-        memory_auto_min_unsummarized_turns=10,
-        memory_max_batch_turns=20,
+        party_context_max_tokens=512,
+        party_context_completion_reserve_tokens=128,
+        party_context_system_reserve_tokens=256,
+        party_context_min_history_tokens=64,
+        memory_summary_batch_tokens=2_048,
     )
     party = create_demo_party(c, title="Manual Memory")
 
@@ -1054,8 +1100,8 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
         assert response.status_code == 200
 
     before = c.get(f"/api/parties/{party['id']}/memory").json()
-    assert before["memory"] is None
-    assert before["stats"]["eligible_old_turns"] == 1
+    assert before["memory"] is not None
+    assert before["stats"]["history_token_budget"] == 128
 
     generated = c.post(
         f"/api/parties/{party['id']}/memory/summarize",
@@ -1063,13 +1109,14 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
         headers={"Authorization": "Bearer test"},
     )
     assert generated.status_code == 200
-    assert generated.json()["generated"] is True
-    assert generated.json()["memory"]["to_turn_id"] == 1
+    assert generated.json()["generated"] is False
+    assert generated.json()["reason"] == "up_to_date"
 
     deleted = c.delete(f"/api/parties/{party['id']}/memory/latest")
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
-    assert deleted.json()["memory"] is None
+    assert deleted.json()["memory"] is not None
+    assert deleted.json()["memory"]["to_turn_id"] < before["memory"]["to_turn_id"]
 
 
 def test_party_journal_manual_summarize_and_clear_latest(tmp_path: Path):

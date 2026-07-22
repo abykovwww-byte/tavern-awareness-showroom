@@ -182,23 +182,25 @@ Both are party-scoped by `campaign_id`, and both keep turn coverage plus
 
 ## Iteration 9
 
-Light GUI memory now defaults to a long-context policy instead of early
-compression.
+Light GUI memory now uses a token budget instead of a fixed turn count.
 
 ```text
 party turn succeeds
-  -> gateway keeps up to 96 latest turns as raw dialogue context
-  -> narrator prompt derives its message limit from that raw window
-  -> memory summarizes only old turns beyond the raw window
+  -> gateway measures the actual raw player/GM text
+  -> newest complete turns remain raw while they fit the working context budget
+  -> memory summarizes only the overflow, immediately after it appears
+  -> unsummarized overflow remains in the prompt until its background summary succeeds
   -> journal recaps are also less frequent human-readable checkpoints
 ```
 
 The policy is configured through environment variables rendered by Ansible:
-`PARTY_RAW_TURN_LIMIT`, `NARRATIVE_HISTORY_MESSAGE_LIMIT`,
-`MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS`, `MEMORY_MAX_BATCH_TURNS`,
+`PARTY_CONTEXT_MAX_TOKENS`, `PARTY_CONTEXT_COMPLETION_RESERVE_TOKENS`,
+`PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS`, `PARTY_CONTEXT_MIN_HISTORY_TOKENS`,
+`MEMORY_SUMMARY_BATCH_TOKENS`,
 `JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS`, and `JOURNAL_MAX_BATCH_TURNS`.
-The default is tuned for current 1M-context model profiles while remaining
-server-configurable for smaller windows.
+The working limit is capped at 128k tokens by default, reserving 16k for the
+answer and 32k for rules, state, and memory. Smaller provider model windows
+lower that cap automatically.
 
 Post-turn memory and journal helpers are best-effort background work by
 default. A successful player turn records state, check, turn text, and audit

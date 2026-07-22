@@ -20,34 +20,36 @@ sessions, not as the normal substitute for recent play.
 
 ## Decision
 
-Make the memory policy configurable and default it for long-context models:
+Make the memory policy configurable and measure text size rather than turns:
 
 ```text
-PARTY_RAW_TURN_LIMIT=96
-NARRATIVE_HISTORY_MESSAGE_LIMIT=0
-MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS=48
-MEMORY_MAX_BATCH_TURNS=96
+PARTY_CONTEXT_MAX_TOKENS=131072
+PARTY_CONTEXT_COMPLETION_RESERVE_TOKENS=16384
+PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS=32768
+PARTY_CONTEXT_MIN_HISTORY_TOKENS=8192
+MEMORY_SUMMARY_BATCH_TOKENS=65536
 JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS=24
 JOURNAL_MAX_BATCH_TURNS=48
 POST_TURN_HELPERS_INLINE=false
 MODEL_ATTEMPT_TIMEOUT_SECONDS=240
 ```
 
-`NARRATIVE_HISTORY_MESSAGE_LIMIT=0` means the gateway derives the message limit
-from `PARTY_RAW_TURN_LIMIT` as `2 * raw_turn_limit + 1`, preserving complete
-user/GM pairs plus the next player turn.
+The selected model's known context window caps the working budget when it is
+smaller than `PARTY_CONTEXT_MAX_TOKENS`. Gateway reserves 16k tokens for the
+answer and 32k for rules, state, and long-term memory; the remainder holds the
+newest complete user/GM turn pairs.
 
-The same raw-turn limit feeds:
+The same token budget feeds:
 
 - party chat request construction;
 - narrator message slicing;
 - prompt preview;
 - context estimation;
-- memory's protected raw tail.
+- memory's protected raw history.
 
-Manual memory force still respects the protected raw tail. It bypasses the
-minimum unsummarized threshold, but it does not summarize turns that are still
-inside the direct raw window.
+As soon as a turn leaves the token-budgeted raw history, it is eligible for a
+background summary. Until that request succeeds, Gateway keeps the unsummarized
+overflow in the narrator prompt so no turn disappears during the handoff.
 
 Post-turn helpers run outside the gameplay response path by default. A turn can
 return to Light GUI as soon as state, checks, turn history, and audit are
@@ -62,9 +64,10 @@ instead of surfacing HTTP 502 to the player.
 
 ## Consequences
 
-- A 50-turn scenario can stay entirely raw in the narrator prompt by default.
-- Auto-memory first appears only after there are enough old turns beyond the raw
-  window.
+- Raw history adapts to message length: terse campaigns retain more turns;
+  dense scenes summarize sooner.
+- Auto-memory starts as soon as context overflows, without a fixed 16/48-turn
+  waiting window.
 - Existing `memory_summaries` and `journal_entries` remain valid; no migration
   is required.
 - Smaller-context models can lower the limits through Ansible/env without code

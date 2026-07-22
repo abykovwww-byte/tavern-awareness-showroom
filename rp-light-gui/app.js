@@ -660,13 +660,14 @@ function renderMemory() {
   }
   if (!memory) {
     const oldTurns = stats.eligible_old_turns ?? 0;
-    const waiting = stats.next_auto_summary_turns_remaining ?? 0;
+    const overflowTokens = formatTokens(stats.unsummarized_old_tokens || 0);
+    const budget = formatTokens(stats.history_token_budget || 0);
     els.memorySummary.innerHTML = [
-      stateItem("Сводка", "еще не собрана", "Summary появится, когда накопятся старые ходы за пределами raw окна."),
+      stateItem("Сводка", oldTurns ? "готовится в фоне" : "пока не нужна", "Gateway начинает сводку, только когда реальная история перестает помещаться в токеновый бюджет."),
       stateItem(
         "Покрытие",
-        `старых ходов ${escapeHtml(oldTurns)} · до auto ${escapeHtml(waiting)}`,
-        "Gateway хранит последние raw ходы напрямую, а более старые сжимает в long-term memory.",
+        `вне raw ${escapeHtml(oldTurns)} ходов · ~${escapeHtml(overflowTokens)} · raw бюджет ~${escapeHtml(budget)}`,
+        "Пока фоновая сводка не готова, выпавшие несводные ходы временно остаются в prompt, чтобы не терять контекст.",
       ),
     ].join("");
     return;

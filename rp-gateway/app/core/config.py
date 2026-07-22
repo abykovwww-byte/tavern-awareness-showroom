@@ -74,10 +74,12 @@ class Settings:
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900"))
     model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "45"))
     post_turn_helpers_inline: bool = env_bool("POST_TURN_HELPERS_INLINE", False)
-    party_raw_turn_limit: int = env_int("PARTY_RAW_TURN_LIMIT", 96)
-    narrative_history_message_limit: int = env_int("NARRATIVE_HISTORY_MESSAGE_LIMIT", 0)
-    memory_auto_min_unsummarized_turns: int = env_int("MEMORY_AUTO_MIN_UNSUMMARIZED_TURNS", 48)
-    memory_max_batch_turns: int = env_int("MEMORY_MAX_BATCH_TURNS", 96)
+    party_context_max_tokens: int = env_int("PARTY_CONTEXT_MAX_TOKENS", 131_072)
+    party_context_limit_tokens: int = env_int("PARTY_CONTEXT_LIMIT_TOKENS", 0)
+    party_context_completion_reserve_tokens: int = env_int("PARTY_CONTEXT_COMPLETION_RESERVE_TOKENS", 16_384)
+    party_context_system_reserve_tokens: int = env_int("PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS", 32_768)
+    party_context_min_history_tokens: int = env_int("PARTY_CONTEXT_MIN_HISTORY_TOKENS", 8_192)
+    memory_summary_batch_tokens: int = env_int("MEMORY_SUMMARY_BATCH_TOKENS", 65_536)
     journal_auto_min_unsummarized_turns: int = env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
     journal_max_batch_turns: int = env_int("JOURNAL_MAX_BATCH_TURNS", 48)
     auth_enabled: bool = env_bool("GATEWAY_AUTH_ENABLED", True)
@@ -95,10 +97,18 @@ class Settings:
         return self.database_url[len(prefix) :]
 
     @property
-    def effective_narrative_history_message_limit(self) -> int:
-        if self.narrative_history_message_limit > 0:
-            return self.narrative_history_message_limit
-        return max((self.party_raw_turn_limit * 2) + 1, 1)
+    def effective_party_context_limit_tokens(self) -> int:
+        configured = self.party_context_limit_tokens or self.party_context_max_tokens
+        return max(configured, self.party_context_min_history_tokens)
+
+    @property
+    def effective_party_history_token_budget(self) -> int:
+        available = (
+            self.effective_party_context_limit_tokens
+            - self.party_context_completion_reserve_tokens
+            - self.party_context_system_reserve_tokens
+        )
+        return max(available, self.party_context_min_history_tokens)
 
 
 def get_settings() -> Settings:

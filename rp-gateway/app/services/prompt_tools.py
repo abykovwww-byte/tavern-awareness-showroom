@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.json_patch import PatchError, apply_patch
 from app.models.schemas import ChatCompletionRequest, ChatMessage
+from app.services.context_budget import split_turns_by_token_budget
 from app.services.context_estimator import estimate_tokens
 from app.services.intent_parser import IntentParser
 from app.services.narrative import NarrativeClient
@@ -139,9 +140,13 @@ class PromptInspector:
     def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
         if before_turn_id is None:
-            turns = self.store.turn_history(limit=max(self.settings.party_raw_turn_limit, 0))
+            turns = self.store.turns_for_memory()
         else:
-            turns = self.store.turns_before(before_turn_id, limit=max(self.settings.party_raw_turn_limit, 0))
+            turns = self.store.turns_before(before_turn_id, limit=10_000)
+        _, turns = split_turns_by_token_budget(
+            turns,
+            max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
+        )
         for turn in turns:
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))

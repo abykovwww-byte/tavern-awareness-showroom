@@ -51,6 +51,7 @@ from app.models.schemas import (
 from app.services.adjudicator import Adjudicator, RequestAlreadyRunning
 from app.services.auth_store import AuthStore, AuthUser
 from app.services.character_view import party_character_sheets
+from app.services.context_budget import estimate_tokens, model_context_limit_tokens, split_turns_by_token_budget
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
@@ -875,7 +876,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 party_state_store,
                 model_profile.model,
                 request,
-                party_settings.party_raw_turn_limit,
+                party_settings,
             )
             response = await Adjudicator(party_settings, party_state_store).handle_chat(
                 chat_request,
@@ -1140,6 +1141,10 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
         validator_model=model_profile.model,
         nvidia_fallback_models=settings.nvidia_fallback_models if provider == "nvidia" else (),
         nvidia_disabled_models=settings.nvidia_disabled_models if provider == "nvidia" else (),
+        party_context_limit_tokens=min(
+            model_context_limit_tokens(model_profile) or settings.party_context_max_tokens,
+            settings.party_context_max_tokens,
+        ),
     )
 
 
@@ -1308,10 +1313,18 @@ def party_chat_request(
     store: StateStore,
     model: str,
     request: PartyMessageRequest,
-    raw_turn_limit: int,
+    settings: Settings,
 ) -> ChatCompletionRequest:
+    turns = store.turns_for_memory()
+    current_message_tokens = estimate_tokens(request.content)
+    history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
+    overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
+    latest_memory = store.latest_memory_summary()
+    latest_memory_turn = int(latest_memory["to_turn_id"]) if latest_memory else 0
+    # Avoid a continuity gap while background summarization is still running.
+    pending_turns = [turn for turn in overflow_turns if int(turn["id"]) > latest_memory_turn]
     messages: list[ChatMessage] = []
-    for turn in store.turn_history(limit=max(raw_turn_limit, 0)):
+    for turn in [*pending_turns, *raw_turns]:
         messages.append(ChatMessage(role="user", content=turn["player_message"]))
         messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
     messages.append(ChatMessage(role="user", content=request.content))

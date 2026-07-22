@@ -12,7 +12,7 @@ from app.models.schemas import ModelProfileSummary
 from app.services.state_store import StateStore
 
 
-TOKEN_CHARS = 3.5
+TOKEN_CHARS = 2.5
 
 
 def estimate_party_context(
@@ -27,8 +27,8 @@ def estimate_party_context(
         if prompt_messages is None:
             return empty_recorded_context(settings, model_profile, len(all_turns), latest_turn, source="invalid_recorded_prompt")
         prompt_source = "recorded_last_turn"
-        source_turn_limit = max(settings.party_raw_turn_limit, 0)
-        message_prompt_limit = settings.effective_narrative_history_message_limit
+        source_turn_limit = None
+        message_prompt_limit = None
     else:
         return empty_recorded_context(settings, model_profile, len(all_turns), latest_turn)
 
@@ -42,7 +42,7 @@ def estimate_party_context(
     state_summary_text = first_system_content(prompt_messages, "Relevant state summary:")
     memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
-    context_limit_tokens = parse_context_limit_tokens(model_profile)
+    context_limit_tokens = settings.effective_party_context_limit_tokens
     prompt_tokens = estimate_tokens(prompt_text)
     completion_reserved_tokens = int((model_profile.params if model_profile else {}).get("max_tokens") or 0)
     total_with_reserved = prompt_tokens + completion_reserved_tokens
@@ -66,7 +66,8 @@ def estimate_party_context(
         "history_turns_total": len(all_turns),
         "history_source_turn_limit": source_turn_limit,
         "message_prompt_limit": message_prompt_limit,
-        "raw_turns_kept": source_turn_limit,
+        "raw_turns_kept": retained_history_turns_estimate,
+        "history_token_budget": settings.effective_party_history_token_budget,
         "direct_history_messages": retained_history_messages,
         "direct_history_turns_estimate": retained_history_turns_estimate,
         "omitted_history_turns_estimate": omitted_history_turns_estimate,
@@ -85,7 +86,7 @@ def empty_recorded_context(
     latest_turn: dict[str, Any] | None,
     source: str = "missing_recorded_prompt",
 ) -> dict[str, Any]:
-    context_limit_tokens = parse_context_limit_tokens(model_profile)
+    context_limit_tokens = settings.effective_party_context_limit_tokens
     if source == "invalid_recorded_prompt":
         note = "Записанный prompt_json последнего хода не удалось прочитать. Новые ходы будут считаться по свежему фактическому prompt."
     else:
@@ -110,9 +111,10 @@ def empty_recorded_context(
         "memory_covered_turns": None,
         "direct_history_tokens": 0,
         "history_turns_total": history_turns_total,
-        "history_source_turn_limit": max(settings.party_raw_turn_limit, 0),
-        "message_prompt_limit": settings.effective_narrative_history_message_limit,
-        "raw_turns_kept": max(settings.party_raw_turn_limit, 0),
+        "history_source_turn_limit": None,
+        "message_prompt_limit": None,
+        "raw_turns_kept": 0,
+        "history_token_budget": settings.effective_party_history_token_budget,
         "direct_history_messages": 0,
         "direct_history_turns_estimate": 0,
         "omitted_history_turns_estimate": 0,

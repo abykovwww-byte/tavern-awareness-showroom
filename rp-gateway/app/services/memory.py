@@ -11,6 +11,11 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
+from app.services.context_budget import (
+    oldest_turns_within_token_budget,
+    split_turns_by_token_budget,
+    turns_token_count,
+)
 from app.services.narrative import response_text
 from app.services.state_store import StateStore
 
@@ -30,47 +35,37 @@ class SummaryPlan:
 
 
 class MemorySummarizer:
-    """Creates cumulative party memory from older raw turns."""
+    """Creates cumulative memory once raw history exceeds its token budget."""
 
     def __init__(
         self,
         settings: Settings,
         store: StateStore,
-        raw_turn_keep: int | None = None,
-        min_unsummarized_turns: int | None = None,
-        max_batch_turns: int | None = None,
     ):
         self.settings = settings
         self.store = store
-        self.raw_turn_keep = max(raw_turn_keep if raw_turn_keep is not None else settings.party_raw_turn_limit, 0)
-        self.min_unsummarized_turns = max(
-            min_unsummarized_turns
-            if min_unsummarized_turns is not None
-            else settings.memory_auto_min_unsummarized_turns,
-            1,
-        )
-        self.max_batch_turns = max(
-            max_batch_turns if max_batch_turns is not None else settings.memory_max_batch_turns,
-            1,
-        )
+        self.history_token_budget = settings.effective_party_history_token_budget
+        self.summary_batch_token_budget = max(settings.memory_summary_batch_tokens, 1)
 
     def stats(self) -> dict[str, Any]:
         turns = self.store.turns_for_memory()
         latest = self.store.latest_memory_summary()
-        cutoff_index = max(len(turns) - self.raw_turn_keep, 0)
-        old_turns = turns[:cutoff_index]
+        old_turns, raw_turns = split_turns_by_token_budget(turns, self.history_token_budget)
         latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
         unsummarized = [turn for turn in old_turns if int(turn["id"]) > latest_to_turn_id]
         return {
             "total_turns": len(turns),
-            "raw_turns_kept": self.raw_turn_keep,
-            "min_unsummarized_turns": self.min_unsummarized_turns,
-            "max_batch_turns": self.max_batch_turns,
+            "context_limit_tokens": self.settings.effective_party_context_limit_tokens,
+            "history_token_budget": self.history_token_budget,
+            "raw_history_tokens": turns_token_count(raw_turns),
+            "raw_turns_kept": len(raw_turns),
+            "summary_batch_token_budget": self.summary_batch_token_budget,
             "eligible_old_turns": len(old_turns),
             "unsummarized_old_turns": len(unsummarized),
+            "unsummarized_old_tokens": turns_token_count(unsummarized),
             "latest_summary_id": latest["id"] if latest else None,
             "latest_to_turn_id": latest_to_turn_id or None,
-            "next_auto_summary_turns_remaining": max(self.min_unsummarized_turns - len(unsummarized), 0),
+            "auto_summary_pending": bool(unsummarized),
         }
 
     async def summarize(
@@ -141,19 +136,15 @@ class MemorySummarizer:
     def build_plan(self, force: bool = False) -> tuple[SummaryPlan | None, str]:
         turns = self.store.turns_for_memory()
         latest = self.store.latest_memory_summary()
-        cutoff_index = max(len(turns) - self.raw_turn_keep, 0)
-        old_turns = turns[:cutoff_index]
+        old_turns, _ = split_turns_by_token_budget(turns, self.history_token_budget)
         if not old_turns:
-            return None, "not_enough_old_turns"
+            return None, "within_context_budget"
 
         latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
         unsummarized = [turn for turn in old_turns if int(turn["id"]) > latest_to_turn_id]
         if not unsummarized:
             return None, "up_to_date"
-        if not force and len(unsummarized) < self.min_unsummarized_turns:
-            return None, "not_enough_unsummarized_turns"
-
-        batch = unsummarized[: self.max_batch_turns]
+        batch = oldest_turns_within_token_budget(unsummarized, self.summary_batch_token_budget)
         from_turn_id = int(latest["from_turn_id"]) if latest else int(batch[0]["id"])
         to_turn_id = int(batch[-1]["id"])
         stats = self.stats()

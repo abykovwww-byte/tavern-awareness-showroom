@@ -187,8 +187,7 @@ class NarrativeClient:
                 {"role": "system", "content": outcome.authoritative_block},
             ]
         )
-        message_limit = self.settings.effective_narrative_history_message_limit
-        for message in request.messages[-message_limit:]:
+        for message in request.messages:
             if isinstance(message.content, str):
                 messages.append({"role": message.role, "content": message.content})
         return messages
