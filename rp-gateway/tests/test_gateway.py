@@ -395,6 +395,25 @@ def test_party_start_endpoint_is_idempotent_and_party_isolated(tmp_path: Path):
     assert c.get(f"/api/parties/{second['id']}/history").json()["turns"] == []
 
 
+def test_party_start_reports_running_idempotency_request(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Opening Pending")
+    party_store = c.app.state.party_store
+    party_state_store = party_store.store_for_party(party["id"])
+    party_state_store.begin_turn_request("start-pending", "req_start_pending")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "start-pending"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_start_pending"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["status"] == "running"
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+
+
 def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
@@ -1017,6 +1036,46 @@ def test_idempotency_prevents_duplicate_turn(tmp_path: Path):
     assert second.status_code == 200
     state = c.get("/api/state").json()["state"]
     assert state["meta"]["state_version"] == 2
+
+
+def test_party_message_reports_running_idempotency_request(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Message Pending")
+    party_store = c.app.state.party_store
+    party_state_store = party_store.store_for_party(party["id"])
+    party_state_store.begin_turn_request("message-pending", "req_message_pending")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "/check stealth skill=1 difficulty=10", "idempotency_key": "message-pending"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_message_pending"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["status"] == "running"
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+
+
+def test_party_request_status_recovers_completed_turn(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Recover Turn")
+
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "/check stealth skill=1 difficulty=10", "idempotency_key": "recover-turn"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_recover_turn"},
+    )
+    assert turn.status_code == 200, turn.text
+
+    status = c.get(f"/api/parties/{party['id']}/requests/req_recover_turn")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["status"] == "completed"
+    assert body["turn"]["request_id"] == "req_recover_turn"
+    assert body["turn"]["narrative_response"] == turn.json()["message"]["content"]
+    assert body["request"]["status"] == "completed"
 
 
 def test_patch_preview_apply_and_rollback(tmp_path: Path):

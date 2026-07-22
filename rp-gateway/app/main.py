@@ -41,7 +41,7 @@ from app.models.schemas import (
     WorldApplyRequest,
     WorldInstructionRequest,
 )
-from app.services.adjudicator import Adjudicator
+from app.services.adjudicator import Adjudicator, RequestAlreadyRunning
 from app.services.auth_store import AuthStore, AuthUser
 from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
@@ -400,6 +400,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "state_versions": party_state_store.history(limit=limit),
         }
 
+    @app.get("/api/parties/{party_id}/requests/{request_id}")
+    def get_party_request(request: Request, party_id: str, request_id: str) -> dict[str, Any]:
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        turn = party_state_store.get_turn_by_request_id(request_id)
+        status = party_state_store.get_turn_request(request_id)
+        if turn:
+            return {
+                "party_id": party_id,
+                "request_id": request_id,
+                "status": "completed",
+                "turn": turn,
+                "request": status,
+            }
+        if status:
+            return {
+                "party_id": party_id,
+                "request_id": request_id,
+                "status": status.get("status"),
+                "error": status.get("error"),
+                "turn": None,
+                "request": status,
+            }
+        return {
+            "party_id": party_id,
+            "request_id": request_id,
+            "status": "unknown",
+            "turn": None,
+            "request": None,
+        }
+
     @app.get("/api/parties/{party_id}/memory")
     def get_party_memory(request: Request, party_id: str, limit: int = 5) -> dict[str, Any]:
         try:
@@ -580,6 +614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
         idempotency_key = request.idempotency_key or f"party-start:{party_id}"
+        request_id = x_request_id or f"req_{uuid.uuid4().hex}"
         existing = party_state_store.get_turn_by_idempotency(idempotency_key)
         if existing:
             message = existing.get("choices", [{}])[0].get("message", {"role": "assistant", "content": ""})
@@ -604,7 +639,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "latest_turn": existing_turns[-1],
             }
 
-        request_id = x_request_id or f"req_{uuid.uuid4().hex}"
+        request_status = party_state_store.begin_turn_request(idempotency_key, request_id)
+        if not request_status.get("acquired"):
+            if request_status.get("status") == "completed" and request_status.get("response"):
+                response = request_status["response"]
+                message = response.get("choices", [{}])[0].get("message", {"role": "assistant", "content": ""})
+                return {
+                    "party_id": party_id,
+                    "started": False,
+                    "already_started": True,
+                    "reason": "request_completed",
+                    "state_version": party_state_store.current_version(),
+                    "message": message,
+                    "raw": response,
+                }
+            if request_status.get("status") == "running":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "status": "running",
+                        "request_id": request_status.get("request_id") or request_id,
+                        "idempotency_key": idempotency_key,
+                        "message": "request is already running",
+                    },
+                )
+
         try:
             state = party_state_store.get_state()
             prompt = party_start_prompt(party_store, party)
@@ -634,19 +693,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response,
                 state_version,
             )
+            party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
                 "party_start_complete",
                 {"request_id": request_id, "turn_id": turn_id, "model": model_profile.model},
                 request_id,
             )
         except PermissionError as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except httpx.HTTPStatusError as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             status = exc.response.status_code if exc.response is not None else "unknown"
             raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
         except RuntimeError as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return {
@@ -683,6 +747,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request.idempotency_key,
                 x_request_id,
             )
+        except RequestAlreadyRunning as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "status": "running",
+                    "request_id": exc.request_id,
+                    "idempotency_key": exc.idempotency_key,
+                    "message": "request is already running",
+                },
+            ) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -874,6 +948,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_id = x_request_id or f"req_{uuid.uuid4().hex}"
         try:
             response = await Adjudicator(settings_with_provider_key(settings), store).handle_chat(request, authorization, idempotency_key, request_id)
+        except RequestAlreadyRunning as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "status": "running",
+                    "request_id": exc.request_id,
+                    "idempotency_key": exc.idempotency_key,
+                    "message": "request is already running",
+                },
+            ) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except RuntimeError as exc:

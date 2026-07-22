@@ -25,6 +25,13 @@ from app.services.world_instructor import WorldInstructor
 logger = logging.getLogger(__name__)
 
 
+class RequestAlreadyRunning(RuntimeError):
+    def __init__(self, request_id: str, idempotency_key: str):
+        super().__init__("request is already running")
+        self.request_id = request_id
+        self.idempotency_key = idempotency_key
+
+
 class Adjudicator:
     _post_turn_helper_campaigns: set[str] = set()
 
@@ -51,116 +58,131 @@ class Adjudicator:
         existing = self.store.get_turn_by_idempotency(idempotency_key)
         if existing:
             return existing
+        request_status = self.store.begin_turn_request(idempotency_key, request_id)
+        if not request_status.get("acquired"):
+            if request_status.get("status") == "completed" and request_status.get("response"):
+                return request_status["response"]
+            if request_status.get("status") == "running":
+                raise RequestAlreadyRunning(
+                    str(request_status.get("request_id") or request_id),
+                    idempotency_key,
+                )
 
         started = time.perf_counter()
-        latest = self.latest_user_message(request)
-        if self.world.is_world_command(latest):
-            response = await self.world.handle_chat_command(
-                latest,
-                authorization,
-                request.model or self.settings.narrative_model,
-                request_id,
-            )
-            text = response_text(response)
-            state_version = self.store.current_version() or 1
-            self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
-            await self.after_turn_recorded(authorization, request_id)
-            return response
-
-        if not authorization and not self.settings.nvidia_api_key:
-            raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
-
-        state = self.store.get_state()
-        intent = self.intent_parser.parse(latest)
-        outcome, patch = self.rule_engine.resolve(state, intent, request_id)
-        updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
-        self.store.record_check(None, outcome)
-
-        llm_calls = 0
-        repaired = False
-        provider_fallback_reason: str | None = None
         try:
-            memory_summary = self.store.latest_memory_summary()
-            raw = await self.narrative.complete(
-                request,
-                updated_state,
-                outcome,
-                authorization,
-                memory_summary=memory_summary,
-                request_id=request_id,
-            )
-            llm_calls += 1
-            text = response_text(raw)
-            validation = self.validator.validate(text, outcome)
-            if not validation.valid and self.settings.max_repair_attempts > 0:
-                repaired = True
+            latest = self.latest_user_message(request)
+            if self.world.is_world_command(latest):
+                response = await self.world.handle_chat_command(
+                    latest,
+                    authorization,
+                    request.model or self.settings.narrative_model,
+                    request_id,
+                )
+                text = response_text(response)
+                state_version = self.store.current_version() or 1
+                self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
+                self.store.complete_turn_request(idempotency_key, response)
+                await self.after_turn_recorded(authorization, request_id)
+                return response
+
+            if not authorization and not self.settings.nvidia_api_key:
+                raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+
+            state = self.store.get_state()
+            intent = self.intent_parser.parse(latest)
+            outcome, patch = self.rule_engine.resolve(state, intent, request_id)
+            updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
+            self.store.record_check(None, outcome)
+
+            llm_calls = 0
+            repaired = False
+            provider_fallback_reason: str | None = None
+            try:
+                memory_summary = self.store.latest_memory_summary()
                 raw = await self.narrative.complete(
                     request,
                     updated_state,
                     outcome,
                     authorization,
-                    validation.repair_instruction,
                     memory_summary=memory_summary,
                     request_id=request_id,
                 )
                 llm_calls += 1
                 text = response_text(raw)
                 validation = self.validator.validate(text, outcome)
-            if not validation.valid:
+                if not validation.valid and self.settings.max_repair_attempts > 0:
+                    repaired = True
+                    raw = await self.narrative.complete(
+                        request,
+                        updated_state,
+                        outcome,
+                        authorization,
+                        validation.repair_instruction,
+                        memory_summary=memory_summary,
+                        request_id=request_id,
+                    )
+                    llm_calls += 1
+                    text = response_text(raw)
+                    validation = self.validator.validate(text, outcome)
+                if not validation.valid:
+                    text = safe_fallback(outcome)
+                    raw = with_text(raw, text)
+            except PermissionError:
+                raise
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else "unknown"
+                self.store.audit(
+                    "llm_http_error",
+                    {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
+                    request_id,
+                )
+                provider_fallback_reason = f"http_{status}"
                 text = safe_fallback(outcome)
-                raw = with_text(raw, text)
-        except PermissionError:
-            raise
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            self.store.audit(
-                "llm_http_error",
-                {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
-                request_id,
-            )
-            provider_fallback_reason = f"http_{status}"
-            text = safe_fallback(outcome)
-            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
-        except httpx.TimeoutException as exc:
-            self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
-            provider_fallback_reason = "timeout"
-            text = safe_fallback(outcome)
-            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
-        except RuntimeError as exc:
-            provider_fallback_reason = "runtime_error"
-            self.store.audit(
-                "llm_runtime_error",
-                {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
-                request_id,
-            )
-            text = safe_fallback(outcome)
-            raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+            except httpx.TimeoutException as exc:
+                self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
+                provider_fallback_reason = "timeout"
+                text = safe_fallback(outcome)
+                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+            except RuntimeError as exc:
+                provider_fallback_reason = "runtime_error"
+                self.store.audit(
+                    "llm_runtime_error",
+                    {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
+                    request_id,
+                )
+                text = safe_fallback(outcome)
+                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
-        duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        response = self.normalize_response(raw, request.model or self.settings.narrative_model)
-        text = response_text(response)
-        version = int(updated_state.get("meta", {}).get("state_version", 0))
-        turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version)
-        self.store.record_check(turn_id, outcome)
-        self.store.audit(
-            "turn_complete",
-            {
-                "request_id": request_id,
-                "turn_id": turn_id,
-                "campaign_id": self.settings.campaign_id,
-                "duration_ms": duration_ms,
-                "llm_calls": llm_calls,
-                "model": self.settings.narrative_model,
-                "validator_valid": self.validator.validate(text, outcome).valid,
-                "repair": repaired,
-                "provider_fallback_reason": provider_fallback_reason,
-                "check_id": outcome.check_id,
-                "result": outcome.result,
-            },
-            request_id,
-        )
-        await self.after_turn_recorded(authorization, request_id)
-        return response
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            response = self.normalize_response(raw, request.model or self.settings.narrative_model)
+            text = response_text(response)
+            version = int(updated_state.get("meta", {}).get("state_version", 0))
+            turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version)
+            self.store.complete_turn_request(idempotency_key, response)
+            self.store.record_check(turn_id, outcome)
+            self.store.audit(
+                "turn_complete",
+                {
+                    "request_id": request_id,
+                    "turn_id": turn_id,
+                    "campaign_id": self.settings.campaign_id,
+                    "duration_ms": duration_ms,
+                    "llm_calls": llm_calls,
+                    "model": self.settings.narrative_model,
+                    "validator_valid": self.validator.validate(text, outcome).valid,
+                    "repair": repaired,
+                    "provider_fallback_reason": provider_fallback_reason,
+                    "check_id": outcome.check_id,
+                    "result": outcome.result,
+                },
+                request_id,
+            )
+            await self.after_turn_recorded(authorization, request_id)
+            return response
+        except Exception as exc:
+            self.store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            raise
 
     def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
         self.store.audit(

@@ -72,6 +72,21 @@ class StateStore:
                     UNIQUE(campaign_id, idempotency_key),
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
+                CREATE TABLE IF NOT EXISTS turn_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    response_json TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, idempotency_key),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_requests_campaign_request
+                    ON turn_requests(campaign_id, request_id);
                 CREATE TABLE IF NOT EXISTS checks (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -750,6 +765,113 @@ class StateStore:
                 (self.campaign_id, idempotency_key),
             ).fetchone()
             return json.loads(row["response_json"]) if row else None
+
+    def get_turn_by_request_id(self, request_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, request_id, player_message, narrative_response, state_version, created_at
+                FROM turns
+                WHERE campaign_id = ? AND request_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id, request_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def begin_turn_request(self, idempotency_key: str, request_id: str) -> dict[str, Any]:
+        timestamp = now_ts()
+        with self.connect() as connection:
+            existing_turn = connection.execute(
+                "SELECT response_json FROM turns WHERE campaign_id = ? AND idempotency_key = ?",
+                (self.campaign_id, idempotency_key),
+            ).fetchone()
+            if existing_turn:
+                return {
+                    "acquired": False,
+                    "status": "completed",
+                    "response": json.loads(existing_turn["response_json"]),
+                }
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO turn_requests(
+                        campaign_id, idempotency_key, request_id, status,
+                        response_json, error, created_at, updated_at
+                    )
+                    VALUES(?, ?, ?, 'running', NULL, NULL, ?, ?)
+                    """,
+                    (self.campaign_id, idempotency_key, request_id, timestamp, timestamp),
+                )
+                return {
+                    "acquired": True,
+                    "status": "running",
+                    "request_id": request_id,
+                    "idempotency_key": idempotency_key,
+                }
+            except sqlite3.IntegrityError:
+                row = connection.execute(
+                    """
+                    SELECT * FROM turn_requests
+                    WHERE campaign_id = ? AND idempotency_key = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (self.campaign_id, idempotency_key),
+                ).fetchone()
+        status = self.turn_request_from_row(row) if row else {"status": "unknown"}
+        status["acquired"] = False
+        return status
+
+    def complete_turn_request(self, idempotency_key: str, response_json: dict[str, Any]) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE turn_requests
+                SET status = 'completed', response_json = ?, error = NULL, updated_at = ?
+                WHERE campaign_id = ? AND idempotency_key = ?
+                """,
+                (json.dumps(response_json, ensure_ascii=False), now_ts(), self.campaign_id, idempotency_key),
+            )
+
+    def fail_turn_request(self, idempotency_key: str, error: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE turn_requests
+                SET status = 'failed', error = ?, updated_at = ?
+                WHERE campaign_id = ? AND idempotency_key = ?
+                """,
+                (error[:500], now_ts(), self.campaign_id, idempotency_key),
+            )
+
+    def get_turn_request(self, request_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM turn_requests
+                WHERE campaign_id = ? AND request_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id, request_id),
+            ).fetchone()
+        return self.turn_request_from_row(row) if row else None
+
+    def turn_request_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        response = json.loads(row["response_json"]) if row["response_json"] else None
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "idempotency_key": row["idempotency_key"],
+            "request_id": row["request_id"],
+            "status": row["status"],
+            "response": response,
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def record_turn(
         self,

@@ -108,6 +108,12 @@ const metaHints = {
 
 const CHAT_VISIBLE_TURNS = 4;
 const AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии";
+const ACTIVE_PARTY_STORAGE_KEY = "rp-light-gui-active-party";
+const PENDING_STORAGE_KEY = "rp-light-gui-pending-messages";
+const PENDING_MAX_AGE_MS = 60 * 60 * 1000;
+const PENDING_RECOVERY_ATTEMPTS = 180;
+const PENDING_RECOVERY_INTERVAL_MS = 5000;
+const pendingRecoveryTasks = {};
 
 bindEvents();
 setupCollapsiblePanels();
@@ -253,7 +259,9 @@ async function boot() {
       renderCreationModes();
     }
     renderPartyList();
-    const savedPartyId = localStorage.getItem("rp-light-gui-active-party");
+    restorePendingMessages();
+    prunePendingMessages(appState.parties.map((party) => party.id));
+    const savedPartyId = localStorage.getItem(ACTIVE_PARTY_STORAGE_KEY);
     const active = appState.parties.find((party) => party.id === savedPartyId) || appState.parties[0] || null;
     if (active) {
       await selectParty(active.id);
@@ -376,7 +384,7 @@ function isAdmin() {
 async function selectParty(partyId) {
   const party = appState.parties.find((item) => item.id === partyId) || (await apiGet(`/api/parties/${partyId}`)).party;
   appState.activeParty = party;
-  localStorage.setItem("rp-light-gui-active-party", party.id);
+  localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
 }
 
@@ -406,6 +414,8 @@ async function reloadActiveParty() {
   appState.journal = journal;
   appState.promptPreview = null;
   appState.chatArchiveExpanded = false;
+  reconcilePendingFromHistory(partyId, history);
+  ensurePendingRecovery(partyId);
   renderAll();
 }
 
@@ -1029,9 +1039,14 @@ async function autoStartParty(partyId) {
     }
     showToast(result.started ? "Стартовая сцена готова." : "Партия уже начата.");
   } catch (error) {
-    setPendingStatus("Стартовый запрос оборвался.", partyId);
-    replacePendingMessage(partyId, requestId, `Стартовая сцена не получена: ${error.message}`, true);
-    showToast(error.message);
+    setPendingStatus("Стартовый запрос оборвался. Проверяю историю...", partyId);
+    const recovered = await waitForRecoveredMessage(partyId, requestId).catch(() => null);
+    if (recovered?.narrative_response) {
+      showToast("Старт подтянут из истории.");
+    } else {
+      replacePendingMessage(partyId, requestId, `Стартовая сцена не получена: ${error.message}`, true);
+      showToast(error.message);
+    }
   } finally {
     clearPendingMessage(partyId);
   }
@@ -1340,7 +1355,7 @@ async function deleteActiveParty() {
   try {
     setBusy(true);
     await apiDelete(`/api/parties/${party.id}`);
-    localStorage.removeItem("rp-light-gui-active-party");
+    localStorage.removeItem(ACTIVE_PARTY_STORAGE_KEY);
     await boot();
     showToast("Партия удалена.");
   } catch (error) {
@@ -1420,7 +1435,9 @@ function startPendingMessage(partyId, requestId, text, options = {}) {
     text,
     status: "GM формирует ответ...",
     autoStart: Boolean(options.autoStart),
+    createdAt: Date.now(),
   };
+  savePendingMessages();
   renderMessageControls();
 }
 
@@ -1436,6 +1453,7 @@ function setPendingStatus(status, partyId = appState.activeParty?.id) {
   const pendingMessage = pendingMessageForParty(partyId);
   if (!pendingMessage) return;
   pendingMessage.status = status;
+  savePendingMessages();
   if (appState.activeParty?.id === partyId) {
     const pending = els.chatLog.querySelector(`[data-pending-id="${pendingMessage.requestId}"] .pending-text`);
     if (pending) pending.textContent = status;
@@ -1447,6 +1465,8 @@ function clearPendingMessage(partyId = appState.activeParty?.id) {
   if (partyId) {
     delete appState.pendingMessages[partyId];
   }
+  delete pendingRecoveryTasks[partyId];
+  savePendingMessages();
   renderMessageControls();
 }
 
@@ -1465,22 +1485,119 @@ function replacePendingMessage(partyId, requestId, content, isError = false) {
 }
 
 async function waitForRecoveredMessage(partyId, requestId) {
-  const attempts = 24;
+  const attempts = PENDING_RECOVERY_ATTEMPTS;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (attempt > 0) await delay(5000);
-    setPendingStatus(`Проверяю историю партии... ${attempt + 1}/${attempts}`, partyId);
-    const history = await apiGet(`/api/parties/${partyId}/history`);
-    const turn = (history.turns || []).find((item) => item.request_id === requestId);
+    if (attempt > 0) await delay(PENDING_RECOVERY_INTERVAL_MS);
+    setPendingStatus(`Проверяю уже отправленный ход... ${attempt + 1}/${attempts}`, partyId);
+    const turn = await recoverTurn(partyId, requestId);
     if (turn?.narrative_response) {
       if (appState.activeParty?.id === partyId) {
-        appState.history = history;
-        renderAll();
         await reloadActiveParty().catch(() => {});
       }
       return turn;
     }
   }
   return null;
+}
+
+function restorePendingMessages() {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(PENDING_STORAGE_KEY) || "{}");
+  } catch {
+    stored = {};
+  }
+  const now = Date.now();
+  appState.pendingMessages = {};
+  Object.entries(stored || {}).forEach(([partyId, pending]) => {
+    if (!pending || typeof pending !== "object") return;
+    if (!pending.requestId || !pending.text) return;
+    const createdAt = Number(pending.createdAt || 0);
+    if (createdAt && now - createdAt > PENDING_MAX_AGE_MS) return;
+    appState.pendingMessages[partyId] = {
+      partyId,
+      requestId: String(pending.requestId),
+      text: String(pending.text),
+      status: String(pending.status || "Восстанавливаю ожидание ответа..."),
+      autoStart: Boolean(pending.autoStart),
+      createdAt: createdAt || now,
+    };
+  });
+  savePendingMessages();
+}
+
+function savePendingMessages() {
+  const pending = {};
+  Object.entries(appState.pendingMessages).forEach(([partyId, value]) => {
+    if (value?.requestId) pending[partyId] = value;
+  });
+  if (Object.keys(pending).length) {
+    localStorage.setItem(PENDING_STORAGE_KEY, JSON.stringify(pending));
+  } else {
+    localStorage.removeItem(PENDING_STORAGE_KEY);
+  }
+}
+
+function prunePendingMessages(validPartyIds) {
+  const valid = new Set(validPartyIds);
+  let changed = false;
+  Object.keys(appState.pendingMessages).forEach((partyId) => {
+    if (!valid.has(partyId)) {
+      delete appState.pendingMessages[partyId];
+      changed = true;
+    }
+  });
+  if (changed) savePendingMessages();
+}
+
+function reconcilePendingFromHistory(partyId, history) {
+  const pending = pendingMessageForParty(partyId);
+  if (!pending) return;
+  const turn = (history?.turns || []).find((item) => item.request_id === pending.requestId);
+  if (turn?.narrative_response) {
+    clearPendingMessage(partyId);
+  }
+}
+
+function ensurePendingRecovery(partyId) {
+  const pending = pendingMessageForParty(partyId);
+  if (!pending || pendingRecoveryTasks[partyId]) return;
+  pendingRecoveryTasks[partyId] = true;
+  waitForRecoveredMessage(partyId, pending.requestId)
+    .then((turn) => {
+      if (turn?.narrative_response) {
+        clearPendingMessage(partyId);
+        if (appState.activeParty?.id === partyId) {
+          showToast("Ответ восстановлен из истории.");
+        }
+      } else if (pendingMessageForParty(partyId)) {
+        setPendingStatus("Запрос все еще не найден в истории. Обнови страницу чуть позже: повтор не отправляется.", partyId);
+      }
+    })
+    .catch((error) => {
+      if (pendingMessageForParty(partyId)) {
+        setPendingStatus(`Не удалось проверить ход: ${error.message}`, partyId);
+      }
+    })
+    .finally(() => {
+      delete pendingRecoveryTasks[partyId];
+    });
+}
+
+async function recoverTurn(partyId, requestId) {
+  try {
+    const status = await apiGet(`/api/parties/${partyId}/requests/${requestId}`);
+    if (status.turn?.narrative_response) return status.turn;
+    if (status.status === "failed") {
+      throw new Error(status.error || "Запрос завершился ошибкой.");
+    }
+  } catch (error) {
+    if (error.status !== 404 && !String(error.message || "").includes("404")) {
+      throw error;
+    }
+  }
+  const history = await apiGet(`/api/parties/${partyId}/history`);
+  return (history.turns || []).find((item) => item.request_id === requestId) || null;
 }
 
 function renderMessageControls() {
@@ -1565,7 +1682,11 @@ async function api(path, options = {}) {
       renderAll();
       showLoginScreen();
     }
-    throw new Error(typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`);
+    const error = new Error(typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`);
+    error.status = response.status;
+    error.detail = data.detail;
+    error.response = data;
+    throw error;
   }
   return data;
 }
