@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, Outcome
+from app.services.context_budget import estimate_tokens
 from app.services.provider_auth import outbound_headers
 
 
@@ -239,7 +240,14 @@ class NarrativeClient:
         for message in request.messages:
             if isinstance(message.content, str):
                 messages.append({"role": message.role, "content": message.content})
-        return messages
+        return fit_messages_to_context(messages, self.input_token_budget(request))
+
+    def input_token_budget(self, request: ChatCompletionRequest) -> int:
+        reserve = max(
+            self.settings.party_context_completion_reserve_tokens,
+            int(request.max_tokens or 0),
+        )
+        return max(self.settings.effective_party_context_limit_tokens - reserve, 1)
 
     def scenario_rules(self) -> str:
         common = (
@@ -341,6 +349,39 @@ def parse_retry_after(value: str | None) -> float | None:
     except ValueError:
         return None
     return seconds if seconds > 0 else None
+
+
+def fit_messages_to_context(messages: list[dict[str, str]], token_budget: int) -> list[dict[str, str]]:
+    """Keep the latest action and mandatory instructions inside the real provider input budget."""
+    fitted = [dict(message) for message in messages]
+    while fitted and estimate_tokens("\n".join(message["content"] for message in fitted)) > token_budget:
+        oldest_history = next(
+            (index for index, message in enumerate(fitted[:-1]) if message.get("role") != "system"),
+            None,
+        )
+        if oldest_history is not None:
+            fitted.pop(oldest_history)
+            continue
+        trim_index = next(
+            (
+                index
+                for index, message in enumerate(fitted)
+                if "LONG_TERM_PARTY_MEMORY" in message.get("content", "")
+            ),
+            None,
+        )
+        if trim_index is None:
+            trim_index = next((index for index, message in enumerate(fitted[:-1]) if message.get("role") == "system"), None)
+        if trim_index is None:
+            trim_index = len(fitted) - 1
+        content = fitted[trim_index].get("content", "")
+        excess_chars = max((estimate_tokens("\n".join(message["content"] for message in fitted)) - token_budget) * 3, 1)
+        retained = max(len(content) - excess_chars, 0)
+        if retained == 0:
+            fitted.pop(trim_index)
+        else:
+            fitted[trim_index]["content"] = content[:retained]
+    return fitted
 
 
 def with_text(response: dict[str, Any], text: str) -> dict[str, Any]:

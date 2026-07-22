@@ -877,6 +877,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
+            await summarize_party_overflow(party_settings, party_state_store, authorization, x_request_id)
             chat_request = party_chat_request(
                 party_state_store,
                 model_profile.model,
@@ -1328,13 +1329,9 @@ def party_chat_request(
     turns = store.turns_for_memory()
     current_message_tokens = estimate_tokens(request.content)
     history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
-    overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
-    latest_memory = store.latest_memory_summary()
-    latest_memory_turn = int(latest_memory["to_turn_id"]) if latest_memory else 0
-    # Avoid a continuity gap while background summarization is still running.
-    pending_turns = [turn for turn in overflow_turns if int(turn["id"]) > latest_memory_turn]
+    _, raw_turns = split_turns_by_token_budget(turns, history_budget)
     messages: list[ChatMessage] = []
-    for turn in [*pending_turns, *raw_turns]:
+    for turn in raw_turns:
         messages.append(ChatMessage(role="user", content=turn["player_message"]))
         messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
     messages.append(ChatMessage(role="user", content=request.content))
@@ -1345,6 +1342,24 @@ def party_chat_request(
         max_tokens=request.max_tokens,
         stream=False,
     )
+
+
+async def summarize_party_overflow(
+    settings: Settings,
+    store: StateStore,
+    authorization: str | None,
+    request_id: str | None,
+) -> None:
+    """Ensure every omitted turn is covered by durable cumulative memory before narration."""
+    summarizer = MemorySummarizer(settings, store)
+    for _ in range(64):
+        plan, reason = summarizer.build_plan()
+        if plan is None:
+            return
+        result = await summarizer.summarize(authorization, fail_open=False, request_id=request_id)
+        if not result.get("generated"):
+            raise RuntimeError(f"party memory consolidation did not advance: {reason}")
+    raise RuntimeError("party memory consolidation exceeded 64 summary batches")
 
 
 async def generate_character_edit(

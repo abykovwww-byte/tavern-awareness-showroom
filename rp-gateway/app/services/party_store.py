@@ -26,6 +26,7 @@ from app.models.schemas import (
     WorldPackSummary,
 )
 from app.services.nvidia_catalog import (
+    MIN_RP_CONTEXT_TOKENS,
     fetch_build_nvidia_profiles,
     fetch_integrate_api_profiles,
     fetch_provider_api_profiles,
@@ -35,6 +36,7 @@ from app.services.nvidia_catalog import (
     normalize_provider,
     static_model_profiles,
 )
+from app.services.context_budget import model_context_limit_tokens
 from app.services.state_store import StateStore
 
 
@@ -619,6 +621,8 @@ class PartyStore:
 
     def model_profile_is_visible(self, profile: ModelProfileSummary) -> bool:
         provider = normalize_provider(profile.provider)
+        if (model_context_limit_tokens(profile) or 0) < MIN_RP_CONTEXT_TOKENS:
+            return False
         configured = {
             self.settings.narrative_model,
             *self.settings.nvidia_fallback_models,

@@ -187,9 +187,10 @@ Light GUI memory now uses a token budget instead of a fixed turn count.
 ```text
 party turn succeeds
   -> gateway measures the actual raw player/GM text
-  -> newest complete turns remain raw while they fit the working context budget
-  -> memory summarizes only the overflow, immediately after it appears
-  -> unsummarized overflow remains in the prompt until its background summary succeeds
+  -> only newest complete turns that fit the working context budget remain raw
+  -> before the next turn, gateway advances cumulative memory for overflow batches
+  -> unsummarized overflow is omitted rather than allowed to exceed the model window
+  -> the final serialized prompt is trimmed again against the model input budget
   -> journal recaps are also less frequent human-readable checkpoints
 ```
 
@@ -198,9 +199,10 @@ The policy is configured through environment variables rendered by Ansible:
 `PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS`, `PARTY_CONTEXT_MIN_HISTORY_TOKENS`,
 `MEMORY_SUMMARY_BATCH_TOKENS`,
 `JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS`, and `JOURNAL_MAX_BATCH_TURNS`.
-The working limit is capped at 128k tokens by default, reserving 16k for the
-answer and 32k for rules, state, and memory. Smaller provider model windows
-lower that cap automatically.
+The working limit targets a 131072-token model window by default, reserving
+16k for the answer. Model selectors exclude profiles whose known context window
+is smaller than 131072 tokens. The final prompt is budgeted after state, memory,
+world instructions, raw history, and the new player action are assembled.
 
 Post-turn memory and journal helpers are best-effort background work by
 default. A successful player turn records state, check, turn text, and audit

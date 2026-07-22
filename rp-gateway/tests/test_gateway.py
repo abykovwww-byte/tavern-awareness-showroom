@@ -581,7 +581,7 @@ def test_party_start_reports_running_idempotency_request(tmp_path: Path):
 def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
-    assert len(models) >= 8
+    assert len(models) >= 3
     assert models[0]["model"] == "z-ai/glm-5.2"
     assert models[0]["rp_fit"]
     assert models[0]["context_window"]
@@ -592,14 +592,12 @@ def test_model_profiles_are_grouped_by_supported_providers_and_filter_small_mode
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
 
-    assert {model["provider"] for model in models} == {"nvidia", "gemini", "openrouter"}
+    assert {model["provider"] for model in models} == {"nvidia"}
+    assert all("1M" in model["context_window"] for model in models)
     assert not any(model["model"] == "openai/gpt-oss-20b" for model in models)
-    free_router = next(model for model in models if model["model"] == "openrouter/free")
-    assert free_router["is_free"] is True
-    assert "free" in [tag.lower() for tag in free_router["tags"]]
 
 
-def test_local_vulkan_profile_has_no_browser_visible_runner_url(tmp_path: Path):
+def test_small_context_local_vulkan_profile_is_not_selectable(tmp_path: Path):
     c = client(
         tmp_path,
         api_key="",
@@ -609,11 +607,7 @@ def test_local_vulkan_profile_has_no_browser_visible_runner_url(tmp_path: Path):
     )
 
     models = c.get("/api/model-profiles").json()["model_profiles"]
-    local = next(model for model in models if model["provider"] == "local")
-
-    assert local["model"] == "gemma-4-26b-a4b-it-rp-q4"
-    assert local["api_key_source"] == "none"
-    assert "base_url" not in local
+    assert not any(model["provider"] == "local" for model in models)
 
 
 def test_openrouter_rp_specialists_bypass_generic_size_filter_but_gpt_oss_20b_does_not():
@@ -693,7 +687,7 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
     assert settings.journal_max_batch_turns == 48
 
 
-def test_context_overflow_starts_summary_without_hiding_pending_turns(tmp_path: Path):
+def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
         tmp_path,
@@ -719,13 +713,43 @@ def test_context_overflow_starts_summary_without_hiding_pending_turns(tmp_path: 
         c.app.state.settings,
     )
     prompt_text = "\n".join(str(message.content) for message in request.messages)
-    assert old_player in prompt_text
+    assert old_player not in prompt_text
     assert recent_player in prompt_text
 
     plan, reason = MemorySummarizer(c.app.state.settings, store).build_plan()
     assert reason == "ready"
     assert plan is not None
     assert [turn["id"] for turn in plan.turns] == [1]
+
+
+def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    async def fail_summary(*_args, **_kwargs):
+        raise RuntimeError("summary unavailable")
+
+    monkeypatch.setattr(MemorySummarizer, "generate", fail_summary)
+    write_worldpack(tmp_path)
+    c = client(
+        tmp_path,
+        party_context_max_tokens=512,
+        party_context_completion_reserve_tokens=128,
+        party_context_system_reserve_tokens=256,
+        party_context_min_history_tokens=64,
+        memory_summary_batch_tokens=2_048,
+    )
+    party = create_demo_party(c, title="Memory must not drop context")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    store.record_turn("memory-failure-1", "memory-failure-1", "old-" + ("x" * 150), "old-" + ("y" * 150), {}, 1)
+    store.record_turn("memory-failure-2", "memory-failure-2", "recent-" + ("z" * 150), "recent-" + ("w" * 150), {}, 2)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "continue", "idempotency_key": "memory-failure-turn"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_memory_failure"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Memory summary provider failed"
+    assert [turn["id"] for turn in store.turn_history(limit=10)] == [1, 2]
 
 
 def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

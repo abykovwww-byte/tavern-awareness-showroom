@@ -339,7 +339,7 @@ LOW_CAPACITY_MODEL_TERMS = {
     "llama-2",
 }
 MIN_RP_MODEL_BILLIONS = 30.0
-MIN_RP_CONTEXT_TOKENS = 65536
+MIN_RP_CONTEXT_TOKENS = 131072
 SPECIALIZED_RP_TERMS = {
     "roleplay",
     "roleplaying",
@@ -829,8 +829,7 @@ def provider_model_is_suitable(provider: str, model_id: str, raw: dict[str, Any]
     rp_specialized = has_specialized_rp_signal(model_id, description)
     if not rp_specialized and not is_quality_rp_model(model_id):
         return False
-    minimum_context = 32768 if rp_specialized else MIN_RP_CONTEXT_TOKENS
-    return not isinstance(context_length, (int, float)) or context_length >= minimum_context
+    return isinstance(context_length, (int, float)) and context_length >= MIN_RP_CONTEXT_TOKENS
 
 
 def has_specialized_rp_signal(model_id: str, description: str) -> bool:
