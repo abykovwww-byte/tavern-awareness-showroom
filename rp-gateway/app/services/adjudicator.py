@@ -133,7 +133,7 @@ class Adjudicator:
                     text = response_text(raw)
                     validation = self.validator.validate(text, outcome)
                 if not validation.valid:
-                    text = safe_fallback(outcome)
+                    text = safe_fallback(outcome, updated_state, latest)
                     raw = with_text(raw, text)
             except PermissionError:
                 raise
@@ -145,12 +145,12 @@ class Adjudicator:
                     request_id,
                 )
                 provider_fallback_reason = f"http_{status}"
-                text = safe_fallback(outcome)
+                text = safe_fallback(outcome, updated_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
                 provider_fallback_reason = "timeout"
-                text = safe_fallback(outcome)
+                text = safe_fallback(outcome, updated_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
                 provider_fallback_reason = "runtime_error"
@@ -159,7 +159,7 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
                     request_id,
                 )
-                text = safe_fallback(outcome)
+                text = safe_fallback(outcome, updated_state, latest)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)

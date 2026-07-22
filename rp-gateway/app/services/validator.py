@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from app.models.schemas import Outcome, ValidationResult
 
@@ -24,13 +25,15 @@ SERVICE_PHRASES = [
     "result field",
 ]
 RESULT_NARRATION = {
-    "critical_success": "Твой ход срабатывает особенно чисто: сцена открывает лучший проход вперед.",
-    "success": "Твой ход срабатывает: ситуация складывается в твою пользу.",
-    "partial_success": "Твой ход срабатывает не полностью, но дает проход вперед с ценой, условием или задержкой.",
-    "failure_with_progress": "Желаемый результат ускользает, но сцена оставляет узкую зацепку.",
-    "failure": "Попытка не дает желаемого результата; напряжение растет, и действовать дальше придется осторожнее.",
-    "critical_failure": "Попытка оборачивается жесткой неудачей, и цена момента становится заметной сразу.",
+    "critical_success": "Сцена открывает ясный проход вперед.",
+    "success": "Сцена продолжает двигаться в выбранном направлении.",
+    "partial_success": "Сцена сдвигается вперед, но часть результата остается неустойчивой.",
+    "failure_with_progress": "Желаемое сразу не складывается, но остается узкая зацепка.",
+    "failure": "Попытка не дает прямого результата; напряжение удерживается в сцене.",
+    "critical_failure": "Попытка резко ухудшает положение, и последствия становятся заметны сразу.",
 }
+DOUBLE_EXTENSION_RE = re.compile(r"\b[\w.-]+\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\.exe\b", re.IGNORECASE)
+DANGEROUS_FILE_ACTION_MARKERS = ("откры", "запуск", "запуст", "скач", "open", "run", "download")
 
 
 class OutputValidator:
@@ -73,7 +76,9 @@ class OutputValidator:
         return ValidationResult(valid=True)
 
 
-def safe_fallback(outcome: Outcome) -> str:
+def safe_fallback(outcome: Outcome, state: dict[str, Any] | None = None, latest_user_message: str = "") -> str:
+    if state and state.get("meta", {}).get("campaign_id") == "awareness":
+        return awareness_safe_fallback(state, latest_user_message)
     first = RESULT_NARRATION.get(outcome.result, "Сцена сдвигается дальше, но без лишних уступок за кадром.")
     if outcome.blocked_reasons:
         second = "Что-то в устройстве мира упирается и не дает продавить желаемое напрямую."
@@ -84,3 +89,24 @@ def safe_fallback(outcome: Outcome) -> str:
     else:
         second = "Остается решить, как обойти препятствие или чем рискнуть дальше."
     return f"{first} {second}"
+
+
+def awareness_safe_fallback(state: dict[str, Any], latest_user_message: str) -> str:
+    resources = state.get("player", {}).get("resources", {})
+    window = resources.get("current-turn-window") if isinstance(resources, dict) else None
+    window_text = f" ({window})" if isinstance(window, str) and window else ""
+    if DOUBLE_EXTENSION_RE.search(latest_user_message) and has_dangerous_file_action(latest_user_message):
+        return (
+            f"Рабочий блок{window_text} продолжается без заметных окон, ошибок или немедленных внешних изменений. "
+            "Календарь и переписка остаются в обычном ритме: текущие задачи ждут решения, а коллеги рассчитывают на твой статус. "
+            "Что делаешь дальше?"
+        )
+    return (
+        f"Рабочий блок{window_text} продолжается в обычном ритме: сообщения, письма и календарь остаются перед тобой. "
+        "Что делаешь дальше?"
+    )
+
+
+def has_dangerous_file_action(text: str) -> bool:
+    lowered = text.casefold()
+    return any(marker in lowered for marker in DANGEROUS_FILE_ACTION_MARKERS)

@@ -11,12 +11,14 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
-from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
+from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog
+from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
+from app.services.validator import safe_fallback
 
 
 def base_state() -> dict[str, object]:
@@ -1013,6 +1015,51 @@ def test_repair_failure_returns_safe_fallback(tmp_path: Path):
     content = response.json()["choices"][0]["message"]["content"].lower()
     assert_no_gateway_service_text(content)
     assert "transfers command authority" not in content
+
+
+def test_awareness_attachment_fallback_is_stealthy():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
+    outcome = Outcome(
+        check_id="awareness-file",
+        action_type="feasibility",
+        actor="player",
+        result="partial_success",
+        roll=10,
+        difficulty=10,
+        modifiers={},
+        final_score=4,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
+    )
+
+    text = safe_fallback(outcome, state, "Открываю Vacation_Bonus_Q3.xlsx.exe")
+
+    assert "Твой ход" not in text
+    assert "ценой" not in text.lower()
+    assert "цену" not in text.lower()
+    assert "вирус" not in text.lower()
+    assert "подозр" not in text.lower()
+    assert "без заметных" in text
+
+
+def test_awareness_double_extension_action_updates_score_counters():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["player"]["resources"]["suspicious-artifacts-opened"] = 0  # type: ignore[index]
+    state["player"]["resources"]["unsafe-actions"] = 0  # type: ignore[index]
+    intent = Intent(
+        action_type="feasibility",
+        desired_outcome="Открываю Vacation_Bonus_Q3.xlsx.exe и продолжаю работу",
+        methods=["free_text"],
+    )
+
+    _, patch = RuleEngine().resolve(state, intent, "awareness-file", roll=10)
+    values = {operation.path: operation.value for operation in patch.patch}
+
+    assert values["/player/resources/suspicious-artifacts-opened"] == 1
+    assert values["/player/resources/unsafe-actions"] == 1
 
 
 def test_validator_repairs_meta_output_labels(tmp_path: Path):

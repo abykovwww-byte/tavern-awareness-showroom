@@ -12,6 +12,8 @@ from app.models.schemas import Intent, Outcome, PatchOperation, StatePatch
 
 TARGETED_CHECKS = {"persuasion", "intimidation", "deception", "trust", "conflict"}
 SOCIAL_CHECKS = {"persuasion", "intimidation", "deception", "trust"}
+DOUBLE_EXTENSION_RE = re.compile(r"\b[\w.-]+\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\.exe\b", re.IGNORECASE)
+DANGEROUS_FILE_ACTION_MARKERS = ("откры", "запуск", "запуст", "скач", "open", "run", "download")
 
 
 def clamp(value: int, low: int, high: int) -> int:
@@ -232,6 +234,7 @@ class RuleEngine:
                         turn=turn,
                     )
                 )
+        operations.extend(self.awareness_security_operations(state, intent, turn))
         trust_delta, suspicion_delta = self.relationship_delta(intent.action_type, outcome.result)
         if relationship_key and intent.target and (trust_delta or suspicion_delta):
             if relationship:
@@ -273,6 +276,29 @@ class RuleEngine:
                 )
         return StatePatch(turn=turn, check_id=outcome.check_id, patch=operations, contradictions=outcome.blocked_reasons)
 
+    def awareness_security_operations(self, state: dict[str, Any], intent: Intent, turn: int) -> list[PatchOperation]:
+        if state.get("meta", {}).get("campaign_id") != "awareness":
+            return []
+        text = intent.desired_outcome
+        if not (DOUBLE_EXTENSION_RE.search(text) and self.has_dangerous_file_action(text)):
+            return []
+        return [
+            self.resource_delta_operation(state, "suspicious-artifacts-opened", 1, "Player opened or ran a double-extension attachment.", turn),
+            self.resource_delta_operation(state, "unsafe-actions", 1, "Player performed an unsafe action with a suspicious attachment.", turn),
+        ]
+
+    def resource_delta_operation(self, state: dict[str, Any], resource_id: str, delta: int, reason: str, turn: int) -> PatchOperation:
+        resources = state.get("player", {}).get("resources", {})
+        current = resources.get(resource_id) if isinstance(resources, dict) else 0
+        value = int(current) + delta if isinstance(current, (int, float)) else delta
+        return PatchOperation(
+            op="replace",
+            path=f"/player/resources/{pointer_escape(resource_id)}",
+            value=value,
+            reason=reason,
+            turn=turn,
+        )
+
     def relationship_delta(self, action_type: str, result: str) -> tuple[int, int]:
         if action_type not in SOCIAL_CHECKS:
             return 0, 0
@@ -289,3 +315,7 @@ class RuleEngine:
         if result == "critical_success":
             return 2, -1
         return 0, 0
+
+    def has_dangerous_file_action(self, text: str) -> bool:
+        lowered = text.casefold()
+        return any(marker in lowered for marker in DANGEROUS_FILE_ACTION_MARKERS)
