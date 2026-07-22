@@ -183,6 +183,10 @@ class ModelProfileSummary(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source: str = "static"
     availability: str = ""
+    is_free: bool = False
+    pricing_prompt: str = ""
+    pricing_completion: str = ""
+    rp_specialized: bool = False
 
 
 class PartyCreate(BaseModel):
@@ -326,9 +330,9 @@ class UserDeleteRequest(BaseModel):
 
 
 class ProviderApiKeyCreate(BaseModel):
-    label: str = Field(default="NVIDIA key", min_length=1, max_length=120)
+    label: str = Field(default="Provider key", min_length=1, max_length=120)
     api_key: str = Field(min_length=1, max_length=400)
-    provider: str = Field(default="nvidia", min_length=1, max_length=40)
+    provider: Literal["nvidia", "gemini", "openrouter"] = "nvidia"
     base_url: str | None = Field(default=None, max_length=300)
     is_default: bool = True
 

@@ -28,6 +28,10 @@ from app.models.schemas import (
 from app.services.nvidia_catalog import (
     fetch_build_nvidia_profiles,
     fetch_integrate_api_profiles,
+    fetch_provider_api_profiles,
+    is_quality_rp_model,
+    is_rp_candidate,
+    normalize_provider,
     static_model_profiles,
 )
 from app.services.state_store import StateStore
@@ -148,7 +152,6 @@ class PartyStore:
             connection.execute("UPDATE parties SET scenario_type = 'training' WHERE worldpack_id = 'awareness'")
 
     def seed_model_profiles(self) -> None:
-        self.prune_unused_live_model_profiles()
         for profile in static_model_profiles(self.settings):
             self.upsert_model_profile(profile)
         self.refresh_live_model_profiles_if_due()
@@ -162,6 +165,8 @@ class PartyStore:
                   AND (
                     params_json LIKE '%"source": "nvidia_api_live"%'
                     OR params_json LIKE '%"source": "build_nvidia_live"%'
+                    OR params_json LIKE '%"source": "gemini_api_live"%'
+                    OR params_json LIKE '%"source": "openrouter_api_live"%'
                   )
                 """
             )
@@ -200,11 +205,17 @@ class PartyStore:
             )
 
     def refresh_live_model_profiles_if_due(self) -> None:
-        if not self.settings.nvidia_model_catalog_live:
-            return
         if self.settings.app_env == "test" or self.settings.nvidia_api_base.startswith("mock://"):
             return
-        cache_key = "nvidia_model_catalog_refresh_v2"
+        if self.settings.nvidia_model_catalog_live:
+            self.refresh_nvidia_catalog_if_due()
+        if self.settings.gemini_model_catalog_live and self.settings.gemini_api_key:
+            self.refresh_provider_catalog_if_due("gemini")
+        if self.settings.openrouter_model_catalog_live:
+            self.refresh_provider_catalog_if_due("openrouter")
+
+    def refresh_nvidia_catalog_if_due(self) -> None:
+        cache_key = "nvidia_model_catalog_refresh_v3"
         if not self.cache_due(cache_key, self.settings.nvidia_model_catalog_ttl_seconds):
             return
         profiles: list[dict[str, Any]] = []
@@ -218,19 +229,35 @@ class PartyStore:
                 profiles.extend(fetch_integrate_api_profiles(self.settings))
             except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
                 errors.append(f"api:{type(exc).__name__}")
+        self.store_catalog_refresh(cache_key, profiles, errors)
 
+    def refresh_provider_catalog_if_due(self, provider: str) -> None:
+        cache_key = f"{provider}_model_catalog_refresh_v1"
+        if not self.cache_due(cache_key, self.settings.provider_model_catalog_ttl_seconds):
+            return
+        profiles: list[dict[str, Any]] = []
+        errors: list[str] = []
+        try:
+            profiles.extend(fetch_provider_api_profiles(self.settings, provider))
+        except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
+            errors.append(f"api:{type(exc).__name__}")
+        self.store_catalog_refresh(cache_key, profiles, errors)
+
+    def store_catalog_refresh(self, cache_key: str, profiles: list[dict[str, Any]], errors: list[str]) -> None:
         seen: set[str] = set()
         for profile in profiles:
             if profile["id"] in seen:
                 continue
             seen.add(profile["id"])
             self.upsert_model_profile(profile)
-        status = {
-            "source": "live" if seen else "static_fallback",
-            "error": ";".join(errors),
-            "profiles": len(seen),
-        }
-        self.cache_set(cache_key, status)
+        self.cache_set(
+            cache_key,
+            {
+                "source": "live" if seen else "static_fallback",
+                "error": ";".join(errors),
+                "profiles": len(seen),
+            },
+        )
 
     def cache_due(self, key: str, ttl_seconds: int) -> bool:
         if ttl_seconds <= 0:
@@ -586,7 +613,26 @@ class PartyStore:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM model_profiles ORDER BY title").fetchall()
         profiles = [self.model_profile_from_row(row) for row in rows]
+        profiles = [profile for profile in profiles if self.model_profile_is_visible(profile)]
         return sorted(profiles, key=lambda profile: (int(profile.params.get("rank", 9999)), profile.title))
+
+    def model_profile_is_visible(self, profile: ModelProfileSummary) -> bool:
+        provider = normalize_provider(profile.provider)
+        configured = {
+            self.settings.narrative_model,
+            *self.settings.nvidia_fallback_models,
+            *self.settings.gemini_models,
+            *self.settings.openrouter_models,
+        }
+        if profile.model in configured:
+            return True
+        if provider == "nvidia":
+            return is_rp_candidate(profile.model)
+        if provider == "gemini":
+            return profile.model.startswith("gemini-") and is_quality_rp_model(profile.model)
+        if provider == "openrouter":
+            return profile.rp_specialized or is_quality_rp_model(profile.model)
+        return False
 
     def get_model_profile(self, model_profile_id: str) -> ModelProfileSummary:
         with self.connect() as connection:
@@ -611,6 +657,10 @@ class PartyStore:
             tags=[str(tag) for tag in params.get("tags", [])],
             source=str(params.get("source") or "static"),
             availability=str(params.get("availability") or ""),
+            is_free=bool(params.get("is_free", False)),
+            pricing_prompt=str(params.get("pricing_prompt") or ""),
+            pricing_completion=str(params.get("pricing_completion") or ""),
+            rp_specialized=bool(params.get("rp_specialized", False)),
         )
 
     def list_parties(self, owner_user_id: str | None = None) -> list[PartySummary]:

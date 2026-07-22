@@ -1,4 +1,4 @@
-"""NVIDIA model catalog helpers for the Light GUI."""
+"""Model catalog helpers for the OpenAI-compatible LLM providers."""
 
 from __future__ import annotations
 
@@ -9,6 +9,56 @@ import httpx
 
 
 DEFAULT_CATALOG_URL = "https://build.nvidia.com/models?q=llm"
+PROVIDER_TITLES = {
+    "nvidia": "NVIDIA",
+    "gemini": "Gemini",
+    "openrouter": "OpenRouter",
+}
+
+STATIC_GEMINI_MODELS: list[dict[str, Any]] = [
+    {
+        "model": "gemini-3.6-flash",
+        "title": "Gemini 3.6 Flash",
+        "publisher": "Google",
+        "description": "Google Gemini fast reasoning model exposed through the OpenAI-compatible API.",
+        "rp_fit": "Fast option for interactive scenes and utility actions.",
+        "tags": ["reasoning", "fast", "live catalog"],
+        "availability": "Gemini API",
+    },
+    {
+        "model": "gemini-3.5-flash",
+        "title": "Gemini 3.5 Flash",
+        "publisher": "Google",
+        "description": "Google Gemini model exposed through the OpenAI-compatible API.",
+        "rp_fit": "Balanced option for narration and frequent utility calls.",
+        "tags": ["fast", "live catalog"],
+        "availability": "Gemini API",
+    },
+]
+
+STATIC_OPENROUTER_MODELS: list[dict[str, Any]] = [
+    {
+        "model": "openrouter/auto",
+        "title": "Auto Router",
+        "publisher": "OpenRouter",
+        "description": "OpenRouter automatically selects a compatible text model.",
+        "rp_fit": "Useful as a broad availability fallback; a specific model is more predictable for a campaign.",
+        "tags": ["router", "automatic"],
+        "availability": "OpenRouter API",
+    },
+    {
+        "model": "openrouter/free",
+        "title": "Free Models Router",
+        "publisher": "OpenRouter",
+        "description": "OpenRouter selects a currently available free text model.",
+        "rp_fit": "Zero-cost testing option; model identity and narrative style can change between requests.",
+        "tags": ["router", "automatic", "free"],
+        "availability": "OpenRouter free router",
+        "is_free": True,
+        "pricing_prompt": "0",
+        "pricing_completion": "0",
+    },
+]
 
 
 STATIC_NVIDIA_MODELS: list[dict[str, Any]] = [
@@ -280,6 +330,41 @@ SKIP_MODEL_TERMS = {
     "palmyra-med",
 }
 
+LOW_CAPACITY_MODEL_TERMS = {
+    "gpt-oss-20b",
+    "flash-lite",
+    "gpt-3.5",
+    "gpt-4-turbo-preview",
+    "llama-2",
+}
+MIN_RP_MODEL_BILLIONS = 30.0
+MIN_RP_CONTEXT_TOKENS = 65536
+SPECIALIZED_RP_TERMS = {
+    "roleplay",
+    "roleplaying",
+    "storytelling",
+    "creative writing",
+    "interactive fiction",
+    "character chat",
+    "narrative-rich",
+    "narrative structure",
+}
+OPENROUTER_RP_PREFERENCE = (
+    "aion-3.0",
+    "euryale",
+    "cydonia",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "mimo-v2.5",
+    "minimax-m3",
+    "glm-5.2",
+    "claude-opus",
+    "claude-sonnet",
+    "nemotron-3-ultra",
+    "nemotron-3-super",
+    "openrouter/free",
+)
+
 CHAT_MODEL_TERMS = {
     "baichuan",
     "chat",
@@ -314,8 +399,43 @@ def profile_id_for_model(model_id: str) -> str:
     return clean or "nvidia-model"
 
 
+def normalize_provider(provider: str) -> str:
+    value = provider.strip().lower()
+    if value in {"nvidia", "nvidia-openai-compatible"}:
+        return "nvidia"
+    return value
+
+
+def profile_id_for_provider_model(provider: str, model_id: str) -> str:
+    clean_provider = normalize_provider(provider)
+    model_slug = profile_id_for_model(model_id)
+    return model_slug if clean_provider == "nvidia" else f"{clean_provider}-{model_slug}"
+
+
+def provider_base_url(settings: Any, provider: str) -> str:
+    clean_provider = normalize_provider(provider)
+    if clean_provider == "gemini":
+        return str(settings.gemini_api_base)
+    if clean_provider == "openrouter":
+        return str(settings.openrouter_api_base)
+    return str(settings.nvidia_api_base)
+
+
+def provider_api_key(settings: Any, provider: str) -> str:
+    clean_provider = normalize_provider(provider)
+    if clean_provider == "gemini":
+        return str(settings.gemini_api_key)
+    if clean_provider == "openrouter":
+        return str(settings.openrouter_api_key)
+    return str(settings.nvidia_api_key)
+
+
 def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
-    profiles = [profile_payload(settings, item, rank=index + 10, source="static_build_nvidia_fallback") for index, item in enumerate(STATIC_NVIDIA_MODELS)]
+    curated_nvidia = [item for item in STATIC_NVIDIA_MODELS if is_rp_candidate(str(item["model"]))]
+    profiles = [
+        profile_payload(settings, item, rank=index + 10, source="static_build_nvidia_fallback", provider="nvidia")
+        for index, item in enumerate(curated_nvidia)
+    ]
     disabled = set(getattr(settings, "nvidia_disabled_models", ()))
     for profile in profiles:
         if profile["model"] == getattr(settings, "narrative_model", "") and profile["model"] not in disabled:
@@ -323,7 +443,7 @@ def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
         if profile["model"] in disabled:
             profile["params"]["rank"] = max(int(profile["params"].get("rank", 9999)), 900)
             profile["params"]["availability"] = f"{profile['params'].get('availability', '').strip()} / disabled on this server".strip(" /")
-    known = {profile["model"] for profile in profiles}
+    known = {profile["model"] for profile in profiles if profile["provider"] == "nvidia"}
     if settings.narrative_model not in known:
         profiles.insert(
             0,
@@ -344,12 +464,69 @@ def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
                 },
                 rank=0,
                 source="server_env",
+                provider="nvidia",
             ),
+        )
+
+    profiles.extend(
+        configured_provider_profiles(
+            settings,
+            provider="gemini",
+            configured_models=settings.gemini_models,
+            static_items=STATIC_GEMINI_MODELS,
+            rank_start=1000,
+        )
+    )
+    profiles.extend(
+        configured_provider_profiles(
+            settings,
+            provider="openrouter",
+            configured_models=settings.openrouter_models,
+            static_items=STATIC_OPENROUTER_MODELS,
+            rank_start=2900,
+        )
+    )
+    return profiles
+
+
+def configured_provider_profiles(
+    settings: Any,
+    provider: str,
+    configured_models: tuple[str, ...],
+    static_items: list[dict[str, Any]],
+    rank_start: int,
+) -> list[dict[str, Any]]:
+    known = {str(item["model"]): item for item in static_items}
+    profiles: list[dict[str, Any]] = []
+    for index, model_id in enumerate(configured_models):
+        item = dict(known.get(model_id, {}))
+        item.setdefault("model", model_id)
+        item.setdefault("title", display_title_from_model(model_id))
+        item.setdefault("publisher", PROVIDER_TITLES[provider])
+        item.setdefault("description", f"Server-configured {PROVIDER_TITLES[provider]} model.")
+        item.setdefault("rp_fit", "Explicit server model; validate style on a short scene before a long campaign.")
+        item.setdefault("tags", ["server configured"])
+        item.setdefault("availability", f"{PROVIDER_TITLES[provider]} API")
+        profiles.append(
+            profile_payload(
+                settings,
+                item,
+                rank=rank_start + index,
+                source=f"{provider}_server_config",
+                provider=provider,
+            )
         )
     return profiles
 
 
-def profile_payload(settings: Any, item: dict[str, Any], rank: int, source: str) -> dict[str, Any]:
+def profile_payload(
+    settings: Any,
+    item: dict[str, Any],
+    rank: int,
+    source: str,
+    provider: str = "nvidia",
+) -> dict[str, Any]:
+    provider = normalize_provider(provider)
     model_id = str(item["model"])
     title = str(item.get("title") or model_id)
     description = str(item.get("description") or "Модель из каталога NVIDIA NIM.")
@@ -365,17 +542,29 @@ def profile_payload(settings: Any, item: dict[str, Any], rank: int, source: str)
         "source": source,
         "publisher": item.get("publisher", publisher_from_model(model_id)),
         "availability": item.get("availability", ""),
-        "catalog_url": item.get("catalog_url", f"https://build.nvidia.com/{model_id}"),
+        "catalog_url": item.get("catalog_url", provider_catalog_url(provider, model_id)),
+        "is_free": bool(item.get("is_free", False)),
+        "pricing_prompt": str(item.get("pricing_prompt", "")),
+        "pricing_completion": str(item.get("pricing_completion", "")),
+        "rp_specialized": bool(item.get("rp_specialized", False)),
     }
     return {
-        "id": profile_id_for_model(model_id),
-        "title": f"{title} (NVIDIA)",
-        "provider": "nvidia-openai-compatible",
-        "base_url": settings.nvidia_api_base,
+        "id": profile_id_for_provider_model(provider, model_id),
+        "title": f"{title} ({PROVIDER_TITLES.get(provider, provider.title())})",
+        "provider": provider,
+        "base_url": provider_base_url(settings, provider),
         "model": model_id,
         "params": params,
-        "api_key_source": "server_env_or_authorization_header",
+        "api_key_source": "server_env_or_managed_key",
     }
+
+
+def provider_catalog_url(provider: str, model_id: str) -> str:
+    if provider == "gemini":
+        return "https://ai.google.dev/gemini-api/docs/models"
+    if provider == "openrouter":
+        return f"https://openrouter.ai/{model_id}"
+    return f"https://build.nvidia.com/{model_id}"
 
 
 def publisher_from_model(model_id: str) -> str:
@@ -448,6 +637,115 @@ def fetch_integrate_api_profiles(settings: Any) -> list[dict[str, Any]]:
     return profiles
 
 
+def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, Any]]:
+    provider = normalize_provider(provider)
+    if provider not in {"gemini", "openrouter"}:
+        return []
+    api_key = provider_api_key(settings, provider)
+    if provider == "gemini" and not api_key:
+        return []
+
+    base_url = provider_base_url(settings, provider).rstrip("/")
+    headers = {"User-Agent": "rp-gateway/0.7"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    timeout = httpx.Timeout(8.0, connect=3.0)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(f"{base_url}/models", headers=headers)
+    response.raise_for_status()
+
+    profiles: list[dict[str, Any]] = []
+    for index, raw in enumerate(response.json().get("data", [])):
+        model_id = str(raw.get("id") or "").strip()
+        if not provider_model_is_suitable(provider, model_id, raw):
+            continue
+        context_length = raw.get("context_length")
+        context_label = f"{int(context_length):,} tokens" if isinstance(context_length, (int, float)) else "provider catalog"
+        supported_raw = raw.get("supported_parameters") or []
+        supported = [str(value) for value in supported_raw[:6]] if isinstance(supported_raw, list) else []
+        description = str(raw.get("description") or f"Model returned by the {PROVIDER_TITLES[provider]} catalog.")
+        rp_specialized = has_specialized_rp_signal(model_id, description)
+        pricing = raw.get("pricing") or {}
+        prompt_price = str(pricing.get("prompt") or "")
+        completion_price = str(pricing.get("completion") or "")
+        is_free = model_id.endswith(":free") or model_id == "openrouter/free" or prices_are_free(prompt_price, completion_price)
+        item = {
+            "model": model_id,
+            "title": str(raw.get("name") or display_title_from_model(model_id)),
+            "publisher": publisher_from_model(model_id) if "/" in model_id else PROVIDER_TITLES[provider],
+            "description": description,
+            "rp_fit": (
+                f"RP-specialized: {description[:420]}{'...' if len(description) > 420 else ''}"
+                if rp_specialized
+                else "Long-context text model available from the selected provider; validate prose style before a long campaign."
+            ),
+            "context_window": context_label,
+            "tags": ["live api", *( ["RP specialized"] if rp_specialized else []), *( ["FREE"] if is_free else []), *supported],
+            "availability": f"{PROVIDER_TITLES[provider]} /models",
+            "catalog_url": provider_catalog_url(provider, model_id),
+            "is_free": is_free,
+            "pricing_prompt": prompt_price,
+            "pricing_completion": completion_price,
+            "rp_specialized": rp_specialized,
+        }
+        profiles.append(
+            profile_payload(
+                settings,
+                item,
+                rank=(1100 + index if provider == "gemini" else openrouter_rp_rank(model_id, description, index)),
+                source=f"{provider}_api_live",
+                provider=provider,
+            )
+        )
+    return profiles
+
+
+def provider_model_is_suitable(provider: str, model_id: str, raw: dict[str, Any]) -> bool:
+    if not model_id:
+        return False
+    if provider == "gemini":
+        return (
+            is_quality_rp_model(model_id)
+            and model_id.startswith("gemini-")
+            and not any(term in model_id for term in {"image", "audio", "embedding", "tts"})
+        )
+    if "/" not in model_id:
+        return False
+    architecture = raw.get("architecture") or {}
+    output_modalities = architecture.get("output_modalities") or []
+    if output_modalities and "text" not in output_modalities:
+        return False
+    context_length = raw.get("context_length")
+    description = str(raw.get("description") or "")
+    rp_specialized = has_specialized_rp_signal(model_id, description)
+    if not rp_specialized and not is_quality_rp_model(model_id):
+        return False
+    minimum_context = 32768 if rp_specialized else MIN_RP_CONTEXT_TOKENS
+    return not isinstance(context_length, (int, float)) or context_length >= minimum_context
+
+
+def has_specialized_rp_signal(model_id: str, description: str) -> bool:
+    haystack = f"{model_id} {description}".lower()
+    return any(term in haystack for term in SPECIALIZED_RP_TERMS)
+
+
+def prices_are_free(prompt_price: str, completion_price: str) -> bool:
+    try:
+        return float(prompt_price) == 0 and float(completion_price) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def openrouter_rp_rank(model_id: str, description: str, catalog_index: int) -> int:
+    haystack = f"{model_id} {description}".lower()
+    for index, term in enumerate(OPENROUTER_RP_PREFERENCE):
+        if term in haystack:
+            return 2000 + index
+    if has_specialized_rp_signal(model_id, description):
+        return 2050 + catalog_index
+    return 3000 + catalog_index
+
+
 def parse_build_catalog(html: str) -> list[str]:
     models: list[str] = []
     for href in re.findall(r'href=["\'](/[^"\']+)["\']', html):
@@ -473,9 +771,19 @@ def model_id_from_href(href: str) -> str | None:
 
 def is_rp_candidate(model_id: str) -> bool:
     lower = model_id.lower()
-    return "/" in lower and not any(term in lower for term in SKIP_MODEL_TERMS) and any(term in lower for term in CHAT_MODEL_TERMS)
+    return "/" in lower and is_quality_rp_model(lower) and any(term in lower for term in CHAT_MODEL_TERMS)
+
+
+def is_quality_rp_model(model_id: str) -> bool:
+    lower = model_id.lower()
+    if any(term in lower for term in SKIP_MODEL_TERMS | LOW_CAPACITY_MODEL_TERMS):
+        return False
+    if re.search(r"(?:^|[-_/:])(mini|nano|small|lite)(?:[-_/:]|$)", lower):
+        return False
+    sizes = [float(value) for value in re.findall(r"(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)", lower)]
+    return not sizes or max(sizes) >= MIN_RP_MODEL_BILLIONS
 
 
 def display_title_from_model(model_id: str) -> str:
-    _, _, model = model_id.partition("/")
+    model = model_id.rpartition("/")[2]
     return model.replace("-", " ").replace("_", " ").title()

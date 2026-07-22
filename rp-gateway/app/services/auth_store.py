@@ -348,7 +348,7 @@ class AuthStore:
                     key_id,
                     label,
                     provider,
-                    base_url or self.settings.nvidia_api_base,
+                    base_url or self.provider_base_url(provider),
                     secret_value,
                     1 if is_default else 0,
                     timestamp,
@@ -356,6 +356,13 @@ class AuthStore:
                 ),
             )
         return self.get_provider_api_key(key_id)
+
+    def provider_base_url(self, provider: str) -> str:
+        if provider == "gemini":
+            return self.settings.gemini_api_base
+        if provider == "openrouter":
+            return self.settings.openrouter_api_base
+        return self.settings.nvidia_api_base
 
     def update_provider_api_key(
         self,

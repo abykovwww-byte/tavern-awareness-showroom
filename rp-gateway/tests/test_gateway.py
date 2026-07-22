@@ -17,7 +17,7 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outco
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.narrative import NarrativeClient
-from app.services.nvidia_catalog import parse_build_catalog
+from app.services.nvidia_catalog import parse_build_catalog, prices_are_free, provider_model_is_suitable
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
@@ -575,6 +575,58 @@ def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     assert models[0]["rp_fit"]
     assert models[0]["context_window"]
     assert "reasoning" in models[0]["tags"]
+
+
+def test_model_profiles_are_grouped_by_supported_providers_and_filter_small_models(tmp_path: Path):
+    c = client(tmp_path)
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+
+    assert {model["provider"] for model in models} == {"nvidia", "gemini", "openrouter"}
+    assert not any(model["model"] == "openai/gpt-oss-20b" for model in models)
+    free_router = next(model for model in models if model["model"] == "openrouter/free")
+    assert free_router["is_free"] is True
+    assert "free" in [tag.lower() for tag in free_router["tags"]]
+
+
+def test_openrouter_rp_specialists_bypass_generic_size_filter_but_gpt_oss_20b_does_not():
+    specialist = {
+        "description": "A multi-model roleplaying and storytelling system.",
+        "context_length": 131072,
+        "architecture": {"output_modalities": ["text"]},
+    }
+    generic_small = {
+        "description": "A small general-purpose reasoning model.",
+        "context_length": 131072,
+        "architecture": {"output_modalities": ["text"]},
+    }
+
+    assert provider_model_is_suitable("openrouter", "aion-labs/aion-3.0-mini", specialist) is True
+    assert provider_model_is_suitable("openrouter", "openai/gpt-oss-20b", generic_small) is False
+    assert prices_are_free("0", "0.000000") is True
+
+
+def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks():
+    settings = Settings(
+        nvidia_fallback_models=("deepseek-ai/deepseek-v4-pro",),
+        nvidia_disabled_models=("openai/gpt-oss-20b",),
+    )
+    party = SimpleNamespace(
+        scenario_type="rp",
+        worldpack_id="demo-world",
+        worldpack=None,
+        model_profile=SimpleNamespace(
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-3.6-flash",
+        ),
+    )
+
+    selected = settings_for_party(settings, party)
+
+    assert selected.llm_provider == "gemini"
+    assert selected.narrative_model == "gemini-3.6-flash"
+    assert selected.nvidia_fallback_models == ()
+    assert selected.nvidia_disabled_models == ()
 
 
 def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.MonkeyPatch):

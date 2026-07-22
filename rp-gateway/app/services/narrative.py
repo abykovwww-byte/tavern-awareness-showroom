@@ -37,7 +37,7 @@ class NarrativeClient:
         if self.settings.nvidia_api_key:
             authorization = f"Bearer {self.settings.nvidia_api_key}"
         if not authorization:
-            raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+            raise PermissionError(f"API key is required for provider {self.settings.llm_provider}")
 
         payload = request.model_dump(exclude_none=True)
         payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)
@@ -92,7 +92,7 @@ class NarrativeClient:
                         model,
                         elapsed_ms,
                     )
-                    raise RuntimeError("NVIDIA API returned 429 rate limit")
+                    raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError as exc:
@@ -127,7 +127,7 @@ class NarrativeClient:
             raise last_status
         if last_timeout:
             raise last_timeout
-        raise RuntimeError("No NVIDIA model attempts configured")
+        raise RuntimeError(f"No model attempts configured for provider {self.settings.llm_provider}")
 
     def model_attempts(self, primary_model: str) -> list[str]:
         disabled = set(self.settings.nvidia_disabled_models)
@@ -234,7 +234,7 @@ class NarrativeClient:
             response = httpx.Response(503, request=request)
             raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
         if mode == "rate-limit":
-            raise RuntimeError("NVIDIA API returned 429 rate limit")
+            raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
         if mode == "violate" and not repair_instruction:
             content = "Despite the failure, the king secretly grants equivalent military authority."
         elif mode == "meta-leak" and not repair_instruction:

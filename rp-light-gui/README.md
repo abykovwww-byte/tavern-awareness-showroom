@@ -26,11 +26,15 @@ The client uses only party-scoped API routes:
 
 Model dropdown behavior:
 
-- gateway first seeds a curated static NVIDIA NIM catalog with RP-focused
-  descriptions;
+- the UI first selects `NVIDIA`, `Gemini`, or `OpenRouter`, then shows only
+  models from that provider;
+- gateway seeds a curated static catalog and refreshes each provider through
+  its OpenAI-compatible `/models` endpoint;
 - when enabled, gateway tries to refresh from `build.nvidia.com/models?q=llm`;
-- when `NVIDIA_API_KEY` is set, gateway also tries the OpenAI-compatible
-  `/v1/models` endpoint;
+- OpenRouter models are filtered for text output, useful context, and RP quality;
+  specialized storytelling models are ranked first and free models are marked;
+- provider keys can come from server environment variables or the admin key
+  store, and are never sent to the browser;
 - if live refresh fails, the static catalog remains available.
 
 Party creation supports installed worldpacks or prompt-generated worlds. Prompt

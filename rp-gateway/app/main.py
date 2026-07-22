@@ -55,6 +55,7 @@ from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient, response_text
+from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
@@ -82,10 +83,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.party_store = party_store
 
     def settings_with_provider_key(base: Settings) -> Settings:
-        secret = auth_store.default_provider_secret(base.nvidia_api_base)
-        if secret:
-            return replace(base, nvidia_api_key=secret)
-        return base
+        updates: dict[str, Any] = {}
+        key_fields = {
+            "nvidia": "nvidia_api_key",
+            "gemini": "gemini_api_key",
+            "openrouter": "openrouter_api_key",
+        }
+        for provider, field_name in key_fields.items():
+            secret = auth_store.default_provider_secret(provider_base_url(base, provider), provider=provider)
+            if secret:
+                updates[field_name] = secret
+        hydrated = replace(base, **updates) if updates else base
+        selected_key = provider_api_key(hydrated, hydrated.llm_provider)
+        if selected_key != hydrated.nvidia_api_key:
+            hydrated = replace(hydrated, nvidia_api_key=selected_key)
+        return hydrated
 
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party))
@@ -1117,13 +1129,17 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     }
     if model_profile is None:
         return replace(settings, **prompt_values)
+    provider = normalize_provider(model_profile.provider)
     return replace(
         settings,
         **prompt_values,
+        llm_provider=provider,
         nvidia_api_base=model_profile.base_url,
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
         validator_model=model_profile.model,
+        nvidia_fallback_models=settings.nvidia_fallback_models if provider == "nvidia" else (),
+        nvidia_disabled_models=settings.nvidia_disabled_models if provider == "nvidia" else (),
     )
 
 
@@ -1323,7 +1339,7 @@ async def generate_character_edit(
     if settings.nvidia_api_key:
         outbound_authorization = f"Bearer {settings.nvidia_api_key}"
     if not outbound_authorization:
-        raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+        raise PermissionError(f"API key is required for provider {settings.llm_provider}")
 
     world = WorldInstructor(settings, store)
     payload: dict[str, Any] = {
@@ -1391,7 +1407,7 @@ async def generate_character_edit(
                     model,
                     elapsed_ms,
                 )
-                raise RuntimeError("NVIDIA API returned 429 rate limit")
+                raise RuntimeError(f"{settings.llm_provider} API returned 429 rate limit")
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -1439,7 +1455,7 @@ async def generate_character_edit(
         raise last_timeout
     if last_parse_error:
         raise RuntimeError("LLM did not return character JSON") from last_parse_error
-    raise RuntimeError("No NVIDIA model attempts configured")
+    raise RuntimeError(f"No model attempts configured for provider {settings.llm_provider}")
 
 
 def character_generation_prompt() -> str:
@@ -1536,7 +1552,7 @@ def mock_generated_character_edit(
         response = httpx.Response(503, request=request)
         raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
     if mode == "rate-limit":
-        raise RuntimeError("NVIDIA API returned 429 rate limit")
+        raise RuntimeError(f"{settings.llm_provider} API returned 429 rate limit")
     name = source.name or source.character_id or ("Игрок" if source.target == "player" else "NPC")
     default_location = "unknown" if source.target == "npc" else state.get("player", {}).get("location") or "unknown"
     generated = {

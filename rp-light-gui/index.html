@@ -257,8 +257,12 @@
           <div class="section-label">Управление</div>
           <p class="panel-hint">Операции над текущей партией. Миры и персонажи не удаляются этой кнопкой.</p>
           <label class="management-field">
+            <span>Провайдер</span>
+            <select id="partyModelProviderSelect" title="Провайдер LLM для следующих ходов этой партии"></select>
+          </label>
+          <label class="management-field">
             <span>Модель партии</span>
-            <select id="partyModelSelect" title="Сменить NVIDIA model profile для следующих ходов этой партии"></select>
+            <select id="partyModelSelect" title="Сменить модель для следующих ходов этой партии"></select>
           </label>
           <button id="changePartyModelButton" class="tool-button wide-button" type="button" title="Применить выбранную модель к этой партии">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h4v4"/><path d="M21 3 13 11"/><path d="M7 21H3v-4"/><path d="M3 21l8-8"/></svg>
@@ -292,6 +296,11 @@
             <h4>API ключи</h4>
             <div id="adminApiKeysList" class="admin-list"></div>
             <form id="adminApiKeyForm" class="admin-form">
+              <select id="adminApiKeyProviderSelect" title="Провайдер для этого API key">
+                <option value="nvidia">NVIDIA</option>
+                <option value="gemini">Gemini</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
               <input id="adminApiKeyLabelInput" placeholder="Название" required />
               <input id="adminApiKeyInput" type="password" placeholder="API key" autocomplete="off" required />
               <button class="tool-button" type="submit">
@@ -319,13 +328,17 @@
         </div>
 
         <div class="wizard-grid">
-          <label>
+          <label class="wide">
             <span>Название</span>
             <input id="partyTitleInput" required title="Название отображается в списке партий слева" />
           </label>
           <label>
+            <span>Провайдер</span>
+            <select id="modelProviderSelect" required title="API-провайдер, через которого будет работать выбранная модель"></select>
+          </label>
+          <label>
             <span>Модель</span>
-            <select id="modelSelect" required title="Модель NVIDIA, которая будет вести партию"></select>
+            <select id="modelSelect" required title="Модель выбранного провайдера, которая будет вести партию"></select>
           </label>
           <div class="wide" id="modelPreview"></div>
 

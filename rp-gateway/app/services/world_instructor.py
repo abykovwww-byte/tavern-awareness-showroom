@@ -134,7 +134,7 @@ class WorldInstructor:
         if self.settings.nvidia_api_key:
             authorization = f"Bearer {self.settings.nvidia_api_key}"
         if not authorization:
-            raise PermissionError("NVIDIA API key is required to draft world JSON from natural language")
+            raise PermissionError(f"API key is required for {self.settings.llm_provider} to draft world JSON")
 
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         payload = {
@@ -203,7 +203,7 @@ class WorldInstructor:
                         model,
                         elapsed_ms,
                     )
-                    raise RuntimeError("NVIDIA API returned 429 rate limit")
+                    raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError:

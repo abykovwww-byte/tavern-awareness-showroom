@@ -85,6 +85,7 @@ const els = {
   characterDescriptionInput: document.querySelector("#characterDescriptionInput"),
   characterDescriptionLabel: document.querySelector("#characterDescriptionLabel"),
   characterDescriptionHint: document.querySelector("#characterDescriptionHint"),
+  modelProviderSelect: document.querySelector("#modelProviderSelect"),
   modelSelect: document.querySelector("#modelSelect"),
   modelPreview: document.querySelector("#modelPreview"),
   worldPreview: document.querySelector("#worldPreview"),
@@ -92,6 +93,7 @@ const els = {
   worldPreviewLlmButton: document.querySelector("#worldPreviewLlmButton"),
   checkForm: document.querySelector("#checkForm"),
   checkPanel: document.querySelector("#checkPanel"),
+  partyModelProviderSelect: document.querySelector("#partyModelProviderSelect"),
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
@@ -104,6 +106,7 @@ const els = {
   adminRoleSelect: document.querySelector("#adminRoleSelect"),
   adminApiKeysList: document.querySelector("#adminApiKeysList"),
   adminApiKeyForm: document.querySelector("#adminApiKeyForm"),
+  adminApiKeyProviderSelect: document.querySelector("#adminApiKeyProviderSelect"),
   adminApiKeyLabelInput: document.querySelector("#adminApiKeyLabelInput"),
   adminApiKeyInput: document.querySelector("#adminApiKeyInput"),
 };
@@ -122,7 +125,8 @@ const metaHints = {
   "Сценарий": "Режим исполнения Gateway, выбранный при создании партии.",
   "Мир": "Worldpack или prompt-мир, из которого взят стартовый state.",
   "Персонаж": "Активный игроковый персонаж этой партии.",
-  "Модель": "NVIDIA model profile, выбранный для нарратива, проверок и world edits.",
+  "Провайдер": "API-провайдер выбранной модели.",
+  "Модель": "Модель, выбранная для нарратива, проверок и world edits.",
   "ID партии": "Стабильный party_id; он связывает историю, state и выбранные профили.",
   "State": "campaign_id изолированного состояния партии.",
 };
@@ -132,6 +136,13 @@ const scenarioTypeLabels = {
   novel: "Роман",
   training: "Обучение",
 };
+
+const providerLabels = {
+  nvidia: "NVIDIA",
+  gemini: "Gemini",
+  openrouter: "OpenRouter",
+};
+const providerOrder = ["nvidia", "gemini", "openrouter"];
 
 const CHAT_VISIBLE_TURNS = 4;
 const AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии";
@@ -179,7 +190,9 @@ function bindEvents() {
   });
   els.worldPromptTitleInput.addEventListener("input", renderWorldPreview);
   els.worldPromptInput.addEventListener("input", renderWorldPreview);
+  els.modelProviderSelect.addEventListener("change", renderDialogModelOptions);
   els.modelSelect.addEventListener("change", renderModelPreview);
+  els.partyModelProviderSelect.addEventListener("change", renderPartyModelOptions);
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
@@ -518,6 +531,7 @@ function renderMeta() {
     ["Сценарий", scenarioTypeLabels[party.scenario_type] || party.scenario_type],
     ["Мир", party.worldpack?.title || party.worldpack_id],
     ["Персонаж", party.player_character?.name || party.player_character_id],
+    ["Провайдер", providerLabel(party.model_profile?.provider)],
     ["Модель", party.model_profile?.model || party.model_profile_id],
     ["ID партии", party.id],
     ["State", party.state_campaign_id],
@@ -528,13 +542,21 @@ function renderMeta() {
 }
 
 function renderPartyModelSelect() {
-  if (!els.partyModelSelect) return;
-  els.partyModelSelect.innerHTML = appState.modelProfiles
-    .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.title)}</option>`)
-    .join("");
-  els.partyModelSelect.disabled = !appState.activeParty || !appState.modelProfiles.length;
-  if (appState.activeParty?.model_profile_id) {
-    els.partyModelSelect.value = appState.activeParty.model_profile_id;
+  if (!els.partyModelSelect || !els.partyModelProviderSelect) return;
+  const currentProvider = normalizeProvider(appState.activeParty?.model_profile?.provider);
+  renderProviderOptions(els.partyModelProviderSelect, currentProvider);
+  els.partyModelProviderSelect.disabled = !appState.activeParty || !availableProviders().length;
+  renderPartyModelOptions();
+}
+
+function renderPartyModelOptions() {
+  const provider = normalizeProvider(els.partyModelProviderSelect?.value);
+  const profiles = profilesForProvider(provider);
+  els.partyModelSelect.innerHTML = profiles.map(modelOptionHtml).join("");
+  els.partyModelSelect.disabled = !appState.activeParty || !profiles.length;
+  const current = appState.activeParty?.model_profile_id;
+  if (profiles.some((profile) => profile.id === current)) {
+    els.partyModelSelect.value = current;
   }
 }
 
@@ -1020,7 +1042,7 @@ function adminApiKeyRow(key) {
   return `<div class="admin-row">
     <div>
       <strong>${escapeHtml(key.label)}</strong>
-      <span>${escapeHtml(key.provider)} · ${escapeHtml(key.is_default ? "default" : "backup")} · ...${escapeHtml(key.secret_hint || "----")}</span>
+      <span>${escapeHtml(providerLabel(key.provider))} · ${escapeHtml(key.is_default ? "default" : "backup")} · ...${escapeHtml(key.secret_hint || "----")}</span>
     </div>
     <div class="row-actions">
       <button class="text-button" type="button" data-admin-key-action="default" data-key-id="${escapeHtml(key.id)}" ${key.is_default ? "disabled" : ""}>Default</button>
@@ -1048,9 +1070,8 @@ function renderDialogOptions() {
     input.checked = false;
   });
   renderWorldOptions();
-  els.modelSelect.innerHTML = appState.modelProfiles
-    .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.title)}</option>`)
-    .join("");
+  renderProviderOptions(els.modelProviderSelect, "nvidia");
+  renderDialogModelOptions();
   const pack = selectedWorldpack();
   els.partyTitleInput.value = pack ? `${pack.title}: партия` : "Новая партия";
   els.partyTitleInput.dataset.autoValue = els.partyTitleInput.value;
@@ -1059,6 +1080,18 @@ function renderDialogOptions() {
   els.characterNameInput.value = "Игрок";
   els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
   renderWorldPreview();
+  renderModelPreview();
+}
+
+function renderDialogModelOptions() {
+  const provider = normalizeProvider(els.modelProviderSelect?.value);
+  const profiles = profilesForProvider(provider);
+  const previous = els.modelSelect.value;
+  els.modelSelect.innerHTML = profiles.map(modelOptionHtml).join("");
+  els.modelSelect.disabled = !profiles.length;
+  if (profiles.some((profile) => profile.id === previous)) {
+    els.modelSelect.value = previous;
+  }
   renderModelPreview();
 }
 
@@ -1141,10 +1174,12 @@ function renderModelPreview() {
   els.modelPreview.innerHTML = `<strong>${escapeHtml(profile.title)}</strong>
     <p>${escapeHtml(profile.rp_fit || profile.description || "Описание пока не задано.")}</p>
     <dl>
+      <dt>Провайдер</dt><dd>${escapeHtml(providerLabel(profile.provider))}</dd>
       <dt>Alias</dt><dd>${escapeHtml(profile.model)}</dd>
       <dt>Контекст</dt><dd>${escapeHtml(profile.context_window || "уточняется")}</dd>
+      <dt>Цена</dt><dd>${escapeHtml(modelPricingLabel(profile))}</dd>
       <dt>Источник</dt><dd>${escapeHtml(sourceLabel(profile.source))}</dd>
-      <dt>Доступность</dt><dd>${escapeHtml(profile.availability || "зависит от ключа NVIDIA")}</dd>
+      <dt>Доступность</dt><dd>${escapeHtml(profile.availability || "зависит от ключа провайдера")}</dd>
     </dl>
     <div class="tag-row">${tags}</div>`;
 }
@@ -1488,12 +1523,15 @@ async function createAdminApiKey(event) {
     await apiPost("/api/admin/api-keys", {
       label: els.adminApiKeyLabelInput.value.trim(),
       api_key: els.adminApiKeyInput.value,
-      provider: "nvidia",
+      provider: els.adminApiKeyProviderSelect.value,
       is_default: true,
     });
     els.adminApiKeyLabelInput.value = "";
     els.adminApiKeyInput.value = "";
     await reloadAdminData();
+    const models = await apiGet("/api/model-profiles");
+    appState.modelProfiles = models.model_profiles || [];
+    renderMeta();
     showToast("API ключ сохранен.");
   } catch (error) {
     showToast(error.message);
@@ -2020,7 +2058,63 @@ function selectedWorldpack() {
 }
 
 function selectedModelProfile() {
-  return appState.modelProfiles.find((profile) => profile.id === els.modelSelect.value) || appState.modelProfiles[0] || null;
+  return appState.modelProfiles.find((profile) => profile.id === els.modelSelect.value) || profilesForProvider(els.modelProviderSelect?.value)[0] || null;
+}
+
+function normalizeProvider(provider) {
+  const value = String(provider || "").toLowerCase();
+  return value === "nvidia-openai-compatible" ? "nvidia" : value;
+}
+
+function providerLabel(provider) {
+  const normalized = normalizeProvider(provider);
+  return providerLabels[normalized] || normalized || "не выбран";
+}
+
+function availableProviders() {
+  const found = new Set(appState.modelProfiles.map((profile) => normalizeProvider(profile.provider)).filter(Boolean));
+  return [...found].sort((left, right) => {
+    const leftRank = providerOrder.indexOf(left);
+    const rightRank = providerOrder.indexOf(right);
+    return (leftRank < 0 ? 999 : leftRank) - (rightRank < 0 ? 999 : rightRank) || left.localeCompare(right);
+  });
+}
+
+function profilesForProvider(provider) {
+  const normalized = normalizeProvider(provider);
+  return appState.modelProfiles.filter((profile) => normalizeProvider(profile.provider) === normalized);
+}
+
+function renderProviderOptions(select, preferred) {
+  if (!select) return;
+  const providers = availableProviders();
+  select.innerHTML = providers.map((provider) => `<option value="${escapeHtml(provider)}">${escapeHtml(providerLabel(provider))}</option>`).join("");
+  const normalizedPreferred = normalizeProvider(preferred);
+  if (providers.includes(normalizedPreferred)) {
+    select.value = normalizedPreferred;
+  }
+  select.disabled = !providers.length;
+}
+
+function modelOptionHtml(profile) {
+  const markers = [profile.is_free ? "FREE" : "", profile.rp_specialized ? "RP" : ""].filter(Boolean);
+  const prefix = markers.length ? `[${markers.join(" · ")}] ` : "";
+  return `<option value="${escapeHtml(profile.id)}">${escapeHtml(prefix + profile.title)}</option>`;
+}
+
+function modelPricingLabel(profile) {
+  if (profile.is_free) return "FREE";
+  const prompt = perMillionPrice(profile.pricing_prompt);
+  const completion = perMillionPrice(profile.pricing_completion);
+  if (!prompt && !completion) return "не указана каталогом";
+  return `$${prompt || "?"}/M input · $${completion || "?"}/M output`;
+}
+
+function perMillionPrice(value) {
+  if (String(value ?? "").trim() === "") return "";
+  const price = Number(value);
+  if (!Number.isFinite(price) || price < 0) return "";
+  return (price * 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
 function selectedRadioValue(name) {
@@ -2032,6 +2126,10 @@ function sourceLabel(source) {
     static_build_nvidia_fallback: "статичный fallback build.nvidia.com",
     build_nvidia_live: "live build.nvidia.com",
     nvidia_api_live: "live NVIDIA /v1/models",
+    gemini_server_config: "настроено на сервере",
+    gemini_api_live: "live Gemini /models",
+    openrouter_server_config: "настроено на сервере",
+    openrouter_api_live: "live OpenRouter /models",
     server_env: "server env",
   };
   return labels[source] || source || "неизвестно";

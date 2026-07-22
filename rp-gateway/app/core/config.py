@@ -41,6 +41,22 @@ class Settings:
     worldpacks_path: str = os.getenv("WORLD_PACKS_PATH", "/worldpacks")
     nvidia_api_base: str = os.getenv("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
+    llm_provider: str = os.getenv("LLM_PROVIDER", "nvidia")
+    gemini_api_base: str = os.getenv(
+        "GEMINI_API_BASE",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+    )
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_models: tuple[str, ...] = env_list(
+        "GEMINI_MODELS",
+        "gemini-3.6-flash,gemini-3.5-flash",
+    )
+    gemini_model_catalog_live: bool = env_bool("GEMINI_MODEL_CATALOG_LIVE", True)
+    openrouter_api_base: str = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_models: tuple[str, ...] = env_list("OPENROUTER_MODELS", "openrouter/auto,openrouter/free")
+    openrouter_model_catalog_live: bool = env_bool("OPENROUTER_MODEL_CATALOG_LIVE", True)
+    provider_model_catalog_ttl_seconds: int = env_int("PROVIDER_MODEL_CATALOG_TTL_SECONDS", 86400)
     nvidia_model_catalog_live: bool = env_bool("NVIDIA_MODEL_CATALOG_LIVE", True)
     nvidia_model_catalog_url: str = os.getenv("NVIDIA_MODEL_CATALOG_URL", "https://build.nvidia.com/models?q=llm")
     nvidia_model_catalog_ttl_seconds: int = env_int("NVIDIA_MODEL_CATALOG_TTL_SECONDS", 86400)

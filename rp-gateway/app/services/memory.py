@@ -178,7 +178,7 @@ class MemorySummarizer:
         if self.settings.nvidia_api_key:
             request_authorization = f"Bearer {self.settings.nvidia_api_key}"
         if not request_authorization:
-            raise PermissionError("NVIDIA API key is required to generate party memory")
+            raise PermissionError(f"API key is required for {self.settings.llm_provider} to generate party memory")
 
         payload = self.summary_payload(plan)
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
@@ -194,7 +194,7 @@ class MemorySummarizer:
                         headers={"Authorization": request_authorization, "Content-Type": "application/json"},
                     )
                     if response.status_code == 429:
-                        raise RuntimeError("NVIDIA API returned 429 rate limit")
+                        raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
                     response.raise_for_status()
                     data = response.json()
                     parsed = self.parse_summary(response_text(data))
@@ -213,7 +213,7 @@ class MemorySummarizer:
                     if index < len(attempts) - 1:
                         continue
                     raise
-        raise RuntimeError("No NVIDIA model attempts configured for memory summarization")
+        raise RuntimeError(f"No model attempts configured for {self.settings.llm_provider} memory summarization")
 
     def summary_payload(self, plan: SummaryPlan) -> dict[str, Any]:
         context = {

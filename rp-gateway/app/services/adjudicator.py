@@ -87,7 +87,7 @@ class Adjudicator:
                 return response
 
             if not authorization and not self.settings.nvidia_api_key:
-                raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
+                raise PermissionError(f"API key is required for provider {self.settings.llm_provider}")
 
             state = self.store.get_state()
             if self.settings.scenario_type == "training":
