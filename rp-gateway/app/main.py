@@ -55,7 +55,7 @@ from app.services.context_budget import estimate_tokens, model_context_limit_tok
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, response_text
+from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
@@ -844,6 +844,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             status = exc.response.status_code if exc.response is not None else "unknown"
             raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
+        except ProviderRateLimitError as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            party_state_store.audit("party_start_rate_limited", {"request_id": request_id, **exc.details}, request_id)
+            raise HTTPException(status_code=429, detail=exc.public_detail()) from exc
         except RuntimeError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -898,6 +902,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except ProviderRateLimitError as exc:
+            raise HTTPException(status_code=429, detail=exc.public_detail()) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:

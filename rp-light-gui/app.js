@@ -2047,13 +2047,24 @@ async function api(path, options = {}) {
       renderAll();
       showLoginScreen();
     }
-    const error = new Error(typeof data.detail === "string" ? data.detail : `HTTP ${response.status}`);
+    const error = new Error(apiErrorMessage(data.detail, response.status));
     error.status = response.status;
     error.detail = data.detail;
     error.response = data;
     throw error;
   }
   return data;
+}
+
+function apiErrorMessage(detail, status) {
+  if (detail && typeof detail === "object" && detail.code === "provider_rate_limited") {
+    const retryAfter = Number(detail.retry_after_seconds);
+    const retryHint = Number.isFinite(retryAfter) && retryAfter > 0
+      ? ` \u041f\u043e\u0432\u0442\u043e\u0440\u0438 \u0447\u0435\u0440\u0435\u0437 ${Math.ceil(retryAfter)} \u0441.`
+      : " \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439 \u0447\u0443\u0442\u044c \u043f\u043e\u0437\u0436\u0435 \u0438\u043b\u0438 \u0432\u044b\u0431\u0435\u0440\u0438 \u0434\u0440\u0443\u0433\u0443\u044e \u043c\u043e\u0434\u0435\u043b\u044c.";
+    return `\u041c\u043e\u0434\u0435\u043b\u044c ${detail.model || ""} \u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e \u043e\u0433\u0440\u0430\u043d\u0438\u0447\u0438\u043b\u0430 \u0437\u0430\u043f\u0440\u043e\u0441\u044b.${retryHint}`;
+  }
+  return typeof detail === "string" ? detail : `HTTP ${status}`;
 }
 
 function selectedWorldpack() {

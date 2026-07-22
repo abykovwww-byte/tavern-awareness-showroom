@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 import time
@@ -15,6 +16,39 @@ from app.services.provider_auth import outbound_headers
 
 
 logger = logging.getLogger(__name__)
+
+
+class ProviderRateLimitError(RuntimeError):
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        retry_after_seconds: float | None,
+        error_type: str | None,
+        provider_code: str | None,
+        response_message: str | None,
+    ):
+        self.details = {
+            "provider": provider,
+            "model": model,
+            "status": 429,
+            "retry_after_seconds": retry_after_seconds,
+            "error_type": error_type,
+            "provider_code": provider_code,
+            "response_message": response_message,
+        }
+        retry_hint = f" Retry after {retry_after_seconds:g}s." if retry_after_seconds else ""
+        super().__init__(f"{provider} API returned 429 rate limit for {model}.{retry_hint}")
+
+    def public_detail(self) -> dict[str, Any]:
+        return {
+            "code": "provider_rate_limited",
+            "message": "The selected model is temporarily rate limited.",
+            "provider": self.details["provider"],
+            "model": self.details["model"],
+            "retry_after_seconds": self.details["retry_after_seconds"],
+            "error_type": self.details["error_type"],
+        }
 
 
 class NarrativeClient:
@@ -43,82 +77,101 @@ class NarrativeClient:
         attempts = self.model_attempts(self.settings.narrative_model)
         last_timeout: httpx.TimeoutException | None = None
         last_status: httpx.HTTPStatusError | None = None
+        rate_limit_retries = 0
         async with httpx.AsyncClient(timeout=timeout) as client:
             for index, model in enumerate(attempts):
-                payload["model"] = model
-                started = time.perf_counter()
-                logger.info(
-                    "llm_attempt_start request_id=%s check_id=%s model=%s attempt=%s/%s timeout_seconds=%s repair=%s",
-                    request_id,
-                    outcome.check_id,
-                    model,
-                    index + 1,
-                    len(attempts),
-                    self.settings.model_attempt_timeout_seconds,
-                    bool(repair_instruction),
-                )
-                try:
-                    response = await client.post(
-                        f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    )
-                except httpx.TimeoutException as exc:
-                    last_timeout = exc
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                    logger.warning(
-                        "llm_attempt_timeout request_id=%s check_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
+                while True:
+                    payload["model"] = model
+                    started = time.perf_counter()
+                    logger.info(
+                        "llm_attempt_start request_id=%s check_id=%s model=%s attempt=%s/%s timeout_seconds=%s repair=%s",
                         request_id,
                         outcome.check_id,
                         model,
                         index + 1,
                         len(attempts),
-                        elapsed_ms,
-                        index < len(attempts) - 1,
+                        self.settings.model_attempt_timeout_seconds,
+                        bool(repair_instruction),
                     )
-                    if index < len(attempts) - 1:
-                        continue
-                    raise
-                if response.status_code == 429:
+                    try:
+                        response = await client.post(
+                            f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                            json=payload,
+                            headers=headers,
+                        )
+                    except httpx.TimeoutException as exc:
+                        last_timeout = exc
+                        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                        logger.warning(
+                            "llm_attempt_timeout request_id=%s check_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
+                            request_id,
+                            outcome.check_id,
+                            model,
+                            index + 1,
+                            len(attempts),
+                            elapsed_ms,
+                            index < len(attempts) - 1,
+                        )
+                        if index < len(attempts) - 1:
+                            break
+                        raise
+                    if response.status_code == 429:
+                        error = provider_rate_limit_error(response, self.settings.llm_provider, model)
+                        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                        retry_delay = error.details["retry_after_seconds"] or self.settings.rate_limit_retry_default_wait_seconds
+                        can_retry = (
+                            rate_limit_retries < self.settings.rate_limit_retry_attempts
+                            and 0 < retry_delay <= self.settings.rate_limit_retry_max_wait_seconds
+                        )
+                        logger.warning(
+                            "llm_attempt_rate_limited request_id=%s check_id=%s model=%s elapsed_ms=%s retry_after_seconds=%s error_type=%s provider_code=%s retry=%s fallback=%s",
+                            request_id,
+                            outcome.check_id,
+                            model,
+                            elapsed_ms,
+                            error.details["retry_after_seconds"],
+                            error.details["error_type"],
+                            error.details["provider_code"],
+                            can_retry,
+                            index < len(attempts) - 1,
+                        )
+                        if can_retry:
+                            rate_limit_retries += 1
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        if index < len(attempts) - 1:
+                            break
+                        raise error
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        last_status = exc
+                        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                        logger.warning(
+                            "llm_attempt_http_error request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                            request_id,
+                            outcome.check_id,
+                            model,
+                            response.status_code,
+                            elapsed_ms,
+                            index < len(attempts) - 1,
+                        )
+                        if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
+                            break
+                        raise
+                    data = response.json()
+                    data.setdefault("model", model)
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                    logger.warning(
-                        "llm_attempt_rate_limited request_id=%s check_id=%s model=%s elapsed_ms=%s",
-                        request_id,
-                        outcome.check_id,
-                        model,
-                        elapsed_ms,
-                    )
-                    raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    last_status = exc
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                    logger.warning(
-                        "llm_attempt_http_error request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                    logger.info(
+                        "llm_attempt_success request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback_used=%s",
                         request_id,
                         outcome.check_id,
                         model,
                         response.status_code,
                         elapsed_ms,
-                        index < len(attempts) - 1,
+                        index > 0 or model != self.settings.narrative_model,
                     )
-                    if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
-                        continue
-                    raise
-                data = response.json()
-                data.setdefault("model", model)
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                logger.info(
-                    "llm_attempt_success request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback_used=%s",
-                    request_id,
-                    outcome.check_id,
-                    model,
-                    response.status_code,
-                    elapsed_ms,
-                    index > 0 or model != self.settings.narrative_model,
-                )
-                return data
+                    return data
         if last_status:
             raise last_status
         if last_timeout:
@@ -229,7 +282,14 @@ class NarrativeClient:
             response = httpx.Response(503, request=request)
             raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
         if mode == "rate-limit":
-            raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
+            raise ProviderRateLimitError(
+                provider=self.settings.llm_provider,
+                model=self.settings.narrative_model,
+                retry_after_seconds=3,
+                error_type="rate_limit_exceeded",
+                provider_code="mock_rate_limited",
+                response_message="mock rate limit",
+            )
         if mode == "violate" and not repair_instruction:
             content = "Despite the failure, the king secretly grants equivalent military authority."
         elif mode == "meta-leak" and not repair_instruction:
@@ -252,6 +312,35 @@ class NarrativeClient:
 
 def response_text(response: dict[str, Any]) -> str:
     return str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+
+
+def provider_rate_limit_error(response: httpx.Response, provider: str, model: str) -> ProviderRateLimitError:
+    payload: dict[str, Any] = {}
+    try:
+        decoded = response.json()
+        if isinstance(decoded, dict):
+            payload = decoded
+    except (ValueError, json.JSONDecodeError):
+        pass
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    metadata = error.get("metadata") if isinstance(error.get("metadata"), dict) else {}
+    message = str(error.get("message") or payload.get("message") or "").strip()[:500] or None
+    return ProviderRateLimitError(
+        provider=provider,
+        model=model,
+        retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+        error_type=str(metadata.get("error_type") or error.get("error_type") or "").strip() or None,
+        provider_code=str(metadata.get("provider_code") or "").strip() or None,
+        response_message=message,
+    )
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    try:
+        seconds = float(value or "")
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
 
 
 def with_text(response: dict[str, Any], text: str) -> dict[str, Any]:

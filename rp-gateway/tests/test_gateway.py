@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,7 +18,7 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outco
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient
+from app.services.narrative import NarrativeClient, provider_rate_limit_error
 from app.services.nvidia_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
@@ -1711,6 +1712,34 @@ def test_timeout_and_rate_limit(tmp_path: Path):
     assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
 
 
+def test_provider_rate_limit_error_preserves_retry_metadata():
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    response = httpx.Response(
+        429,
+        request=request,
+        headers={"Retry-After": "12"},
+        json={
+            "error": {
+                "message": "Rate limit exceeded",
+                "metadata": {"error_type": "rate_limit_exceeded", "provider_code": "rate_limited"},
+            }
+        },
+    )
+
+    error = provider_rate_limit_error(response, "openrouter", "sao10k/l3.3-euryale-70b")
+
+    assert error.details == {
+        "provider": "openrouter",
+        "model": "sao10k/l3.3-euryale-70b",
+        "status": 429,
+        "retry_after_seconds": 12,
+        "error_type": "rate_limit_exceeded",
+        "provider_code": "rate_limited",
+        "response_message": "Rate limit exceeded",
+    }
+    assert error.public_detail()["retry_after_seconds"] == 12
+
+
 def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
     c = client(tmp_path, mode="http-503")
     response = c.post(
@@ -1723,6 +1752,35 @@ def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "provider_fallback"
     assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
+
+
+def test_party_rate_limit_is_saved_and_reported_to_gui(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path, mode="rate-limit")
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "/check stealth skill=1 difficulty=10", "idempotency_key": "party-rate-limit"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_party_rate_limit"},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["detail"] == {
+        "code": "provider_rate_limited",
+        "message": "The selected model is temporarily rate limited.",
+        "provider": "nvidia",
+        "model": "z-ai/glm-5.2",
+        "retry_after_seconds": 3,
+        "error_type": "rate_limit_exceeded",
+    }
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        row = connection.execute(
+            "SELECT event_json FROM audit_events WHERE event_type = 'llm_rate_limited' AND request_id = ?",
+            ("req_party_rate_limit",),
+        ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["provider_code"] == "mock_rate_limited"
 
 
 def test_party_message_provider_http_error_fails_without_gateway_fallback(tmp_path: Path):

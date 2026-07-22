@@ -15,7 +15,7 @@ from app.models.schemas import ChatCompletionRequest, Outcome
 from app.services.intent_parser import IntentParser
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, response_text, with_text
+from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, safe_fallback
@@ -190,6 +190,13 @@ class Adjudicator:
                 if not allow_gateway_fallback:
                     raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
+                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+            except ProviderRateLimitError as exc:
+                self.store.audit("llm_rate_limited", {"request_id": request_id, **exc.details}, request_id)
+                if not allow_gateway_fallback:
+                    raise
+                provider_fallback_reason = "rate_limited"
                 text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
