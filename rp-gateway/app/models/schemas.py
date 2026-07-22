@@ -173,7 +173,7 @@ class ModelProfileSummary(BaseModel):
     id: str
     title: str
     provider: str
-    base_url: str
+    base_url: str = Field(exclude=True, repr=False)
     model: str
     params: dict[str, Any] = Field(default_factory=dict)
     api_key_source: str

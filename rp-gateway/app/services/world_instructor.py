@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
+from app.services.provider_auth import outbound_headers
 from app.core.json_patch import PatchError
 from app.models.schemas import PatchOperation, StatePatch, WorldInstructionDraft
 from app.services.narrative import response_text
@@ -130,11 +131,7 @@ class WorldInstructor:
         proposal_id: str,
         inbound_authorization: str | None,
     ) -> WorldInstructionDraft:
-        authorization = inbound_authorization
-        if self.settings.nvidia_api_key:
-            authorization = f"Bearer {self.settings.nvidia_api_key}"
-        if not authorization:
-            raise PermissionError(f"API key is required for {self.settings.llm_provider} to draft world JSON")
+        headers = outbound_headers(self.settings, inbound_authorization)
 
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         payload = {
@@ -179,7 +176,7 @@ class WorldInstructor:
                     response = await client.post(
                         f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
-                        headers={"Authorization": authorization, "Content-Type": "application/json"},
+                        headers=headers,
                     )
                 except httpx.TimeoutException:
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)

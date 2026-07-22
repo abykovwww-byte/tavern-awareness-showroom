@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
+from app.services.provider_auth import outbound_headers
 from app.services.memory import as_list, clip, strip_code_fence
 from app.services.narrative import response_text
 from app.services.state_store import StateStore
@@ -162,11 +163,7 @@ class JournalBuilder:
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_entry(plan)
 
-        request_authorization = authorization
-        if self.settings.nvidia_api_key:
-            request_authorization = f"Bearer {self.settings.nvidia_api_key}"
-        if not request_authorization:
-            raise PermissionError(f"API key is required for {self.settings.llm_provider} to generate party journal")
+        headers = outbound_headers(self.settings, authorization)
 
         payload = self.payload(plan)
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
@@ -179,7 +176,7 @@ class JournalBuilder:
                     response = await client.post(
                         f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
-                        headers={"Authorization": request_authorization, "Content-Type": "application/json"},
+                        headers=headers,
                     )
                     if response.status_code == 429:
                         raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")

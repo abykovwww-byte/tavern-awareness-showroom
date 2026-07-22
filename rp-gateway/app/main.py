@@ -57,6 +57,7 @@ from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient, response_text
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
+from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
@@ -1141,6 +1142,9 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
         validator_model=model_profile.model,
         nvidia_fallback_models=settings.nvidia_fallback_models if provider == "nvidia" else (),
         nvidia_disabled_models=settings.nvidia_disabled_models if provider == "nvidia" else (),
+        model_attempt_timeout_seconds=(
+            settings.local_llm_timeout_seconds if provider == "local" else settings.model_attempt_timeout_seconds
+        ),
         party_context_limit_tokens=min(
             model_context_limit_tokens(model_profile) or settings.party_context_max_tokens,
             settings.party_context_max_tokens,
@@ -1348,11 +1352,7 @@ async def generate_character_edit(
     if settings.nvidia_api_base.startswith("mock://"):
         return mock_generated_character_edit(settings, state, request)
 
-    outbound_authorization = authorization
-    if settings.nvidia_api_key:
-        outbound_authorization = f"Bearer {settings.nvidia_api_key}"
-    if not outbound_authorization:
-        raise PermissionError(f"API key is required for provider {settings.llm_provider}")
+    headers = outbound_headers(settings, authorization)
 
     world = WorldInstructor(settings, store)
     payload: dict[str, Any] = {
@@ -1395,7 +1395,7 @@ async def generate_character_edit(
                 response = await client.post(
                     f"{settings.nvidia_api_base.rstrip('/')}/chat/completions",
                     json=payload,
-                    headers={"Authorization": outbound_authorization, "Content-Type": "application/json"},
+                    headers=headers,
                 )
             except httpx.TimeoutException as exc:
                 last_timeout = exc

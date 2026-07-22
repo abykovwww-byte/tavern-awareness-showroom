@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
+from app.services.provider_auth import outbound_headers
 from app.services.context_budget import (
     oldest_turns_within_token_budget,
     split_turns_by_token_budget,
@@ -165,11 +166,7 @@ class MemorySummarizer:
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_summary(plan)
 
-        request_authorization = authorization
-        if self.settings.nvidia_api_key:
-            request_authorization = f"Bearer {self.settings.nvidia_api_key}"
-        if not request_authorization:
-            raise PermissionError(f"API key is required for {self.settings.llm_provider} to generate party memory")
+        headers = outbound_headers(self.settings, authorization)
 
         payload = self.summary_payload(plan)
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
@@ -182,7 +179,7 @@ class MemorySummarizer:
                     response = await client.post(
                         f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
-                        headers={"Authorization": request_authorization, "Content-Type": "application/json"},
+                        headers=headers,
                     )
                     if response.status_code == 429:
                         raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")

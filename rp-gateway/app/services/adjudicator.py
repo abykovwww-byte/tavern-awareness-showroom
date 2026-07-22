@@ -86,9 +86,6 @@ class Adjudicator:
                 await self.after_turn_recorded(authorization, request_id)
                 return response
 
-            if not authorization and not self.settings.nvidia_api_key:
-                raise PermissionError(f"API key is required for provider {self.settings.llm_provider}")
-
             state = self.store.get_state()
             if self.settings.scenario_type == "training":
                 state = awareness_state_after_auto_start(

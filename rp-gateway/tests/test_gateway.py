@@ -592,6 +592,23 @@ def test_model_profiles_are_grouped_by_supported_providers_and_filter_small_mode
     assert "free" in [tag.lower() for tag in free_router["tags"]]
 
 
+def test_local_vulkan_profile_has_no_browser_visible_runner_url(tmp_path: Path):
+    c = client(
+        tmp_path,
+        api_key="",
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        local_llm_model_alias="gemma-4-26b-a4b-it-rp-q4",
+    )
+
+    models = c.get("/api/model-profiles").json()["model_profiles"]
+    local = next(model for model in models if model["provider"] == "local")
+
+    assert local["model"] == "gemma-4-26b-a4b-it-rp-q4"
+    assert local["api_key_source"] == "none"
+    assert "base_url" not in local
+
+
 def test_openrouter_rp_specialists_bypass_generic_size_filter_but_gpt_oss_20b_does_not():
     specialist = {
         "description": "A multi-model roleplaying and storytelling system.",

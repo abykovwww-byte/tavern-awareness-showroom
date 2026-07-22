@@ -11,6 +11,7 @@ import httpx
 
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, Outcome
+from app.services.provider_auth import outbound_headers
 
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,7 @@ class NarrativeClient:
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_completion(outcome, repair_instruction)
 
-        authorization = inbound_authorization
-        if self.settings.nvidia_api_key:
-            authorization = f"Bearer {self.settings.nvidia_api_key}"
-        if not authorization:
-            raise PermissionError(f"API key is required for provider {self.settings.llm_provider}")
+        headers = outbound_headers(self.settings, inbound_authorization)
 
         payload = request.model_dump(exclude_none=True)
         payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)
@@ -65,7 +62,7 @@ class NarrativeClient:
                     response = await client.post(
                         f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
-                        headers={"Authorization": authorization, "Content-Type": "application/json"},
+                        headers=headers,
                     )
                 except httpx.TimeoutException as exc:
                     last_timeout = exc

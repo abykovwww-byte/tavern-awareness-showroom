@@ -138,11 +138,12 @@ const scenarioTypeLabels = {
 };
 
 const providerLabels = {
+  local: "Локальная Vulkan",
   nvidia: "NVIDIA",
   gemini: "Gemini",
   openrouter: "OpenRouter",
 };
-const providerOrder = ["nvidia", "gemini", "openrouter"];
+const providerOrder = ["local", "nvidia", "gemini", "openrouter"];
 
 const CHAT_VISIBLE_TURNS = 4;
 const AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии";
@@ -2131,6 +2132,7 @@ function sourceLabel(source) {
     gemini_api_live: "live Gemini /models",
     openrouter_server_config: "настроено на сервере",
     openrouter_api_live: "live OpenRouter /models",
+    local_vulkan: "локальный Vulkan runner",
     server_env: "server env",
   };
   return labels[source] || source || "неизвестно";

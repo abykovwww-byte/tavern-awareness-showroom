@@ -13,6 +13,7 @@ PROVIDER_TITLES = {
     "nvidia": "NVIDIA",
     "gemini": "Gemini",
     "openrouter": "OpenRouter",
+    "local": "Local Vulkan",
 }
 
 STATIC_GEMINI_MODELS: list[dict[str, Any]] = [
@@ -414,6 +415,8 @@ def profile_id_for_provider_model(provider: str, model_id: str) -> str:
 
 def provider_base_url(settings: Any, provider: str) -> str:
     clean_provider = normalize_provider(provider)
+    if clean_provider == "local":
+        return str(settings.local_llm_base_url)
     if clean_provider == "gemini":
         return str(settings.gemini_api_base)
     if clean_provider == "openrouter":
@@ -423,6 +426,8 @@ def provider_base_url(settings: Any, provider: str) -> str:
 
 def provider_api_key(settings: Any, provider: str) -> str:
     clean_provider = normalize_provider(provider)
+    if clean_provider == "local":
+        return ""
     if clean_provider == "gemini":
         return str(settings.gemini_api_key)
     if clean_provider == "openrouter":
@@ -486,6 +491,30 @@ def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
             rank_start=2900,
         )
     )
+    if getattr(settings, "local_llm_enabled", False):
+        profiles.insert(
+            0,
+            profile_payload(
+                settings,
+                {
+                    "model": settings.local_llm_model_alias,
+                    "title": "Gemma 4 26B A4B QAT Q4",
+                    "publisher": "Google",
+                    "description": "Локальная Gemma 4 на Radeon 780M через Vulkan; модель доступна только Gateway внутри Docker.",
+                    "rp_fit": "Локальный одиночный RP-рассказчик: 32k рабочий контекст, без неявного cloud fallback.",
+                    "context_window": f"{settings.local_llm_context_tokens:,} tokens (working budget)",
+                    "context_tokens": settings.local_llm_context_tokens,
+                    "tags": ["local", "Vulkan", "Radeon 780M", "no cloud fallback"],
+                    "temperature": 0.85,
+                    "max_tokens": 1200,
+                    "availability": "Local runner / Vulkan",
+                    "catalog_url": "",
+                },
+                rank=-10,
+                source="local_vulkan",
+                provider="local",
+            ),
+        )
     return profiles
 
 
@@ -556,7 +585,7 @@ def profile_payload(
         "base_url": provider_base_url(settings, provider),
         "model": model_id,
         "params": params,
-        "api_key_source": "server_env_or_managed_key",
+        "api_key_source": "none" if provider == "local" else "server_env_or_managed_key",
     }
 
 
