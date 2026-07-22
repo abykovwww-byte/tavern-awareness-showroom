@@ -18,7 +18,13 @@ from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient
-from app.services.nvidia_catalog import parse_build_catalog, prices_are_free, provider_model_is_suitable
+from app.services.nvidia_catalog import (
+    OPENROUTER_FEATURED_MODELS,
+    enrich_openrouter_profile_params,
+    parse_build_catalog,
+    prices_are_free,
+    provider_model_is_suitable,
+)
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
@@ -624,6 +630,19 @@ def test_openrouter_rp_specialists_bypass_generic_size_filter_but_gpt_oss_20b_do
     assert provider_model_is_suitable("openrouter", "aion-labs/aion-3.0-mini", specialist) is True
     assert provider_model_is_suitable("openrouter", "openai/gpt-oss-20b", generic_small) is False
     assert prices_are_free("0", "0.000000") is True
+
+
+def test_featured_openrouter_models_enrich_cached_catalog_profiles():
+    params = {"tags": ["live OpenRouter"], "rp_fit": "stale description"}
+
+    enriched = enrich_openrouter_profile_params("z-ai/glm-5.2", params)
+
+    assert len(OPENROUTER_FEATURED_MODELS) == 10
+    assert params == {"tags": ["live OpenRouter"], "rp_fit": "stale description"}
+    assert enriched["featured_rank"] == 1
+    assert enriched["title_override"] == "GLM 5.2"
+    assert enriched["rp_fit"] != "stale description"
+    assert enriched["tags"][:2] == ["Избранное", "длинная кампания"]
 
 
 def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks():

@@ -29,6 +29,7 @@ from app.services.nvidia_catalog import (
     fetch_build_nvidia_profiles,
     fetch_integrate_api_profiles,
     fetch_provider_api_profiles,
+    enrich_openrouter_profile_params,
     is_quality_rp_model,
     is_rp_candidate,
     normalize_provider,
@@ -643,10 +644,13 @@ class PartyStore:
 
     def model_profile_from_row(self, row: sqlite3.Row) -> ModelProfileSummary:
         params = json.loads(row["params_json"])
+        provider = normalize_provider(row["provider"])
+        if provider == "openrouter":
+            params = enrich_openrouter_profile_params(row["model"], params)
         return ModelProfileSummary(
             id=row["id"],
-            title=row["title"],
-            provider=row["provider"],
+            title=str(params.get("title_override") or row["title"]),
+            provider=provider,
             base_url=row["base_url"],
             model=row["model"],
             params=params,

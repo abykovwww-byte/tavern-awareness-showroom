@@ -553,7 +553,7 @@ function renderPartyModelSelect() {
 function renderPartyModelOptions() {
   const provider = normalizeProvider(els.partyModelProviderSelect?.value);
   const profiles = profilesForProvider(provider);
-  els.partyModelSelect.innerHTML = profiles.map(modelOptionHtml).join("");
+  els.partyModelSelect.innerHTML = modelOptionsHtml(profiles, provider);
   els.partyModelSelect.disabled = !appState.activeParty || !profiles.length;
   const current = appState.activeParty?.model_profile_id;
   if (profiles.some((profile) => profile.id === current)) {
@@ -1089,7 +1089,7 @@ function renderDialogModelOptions() {
   const provider = normalizeProvider(els.modelProviderSelect?.value);
   const profiles = profilesForProvider(provider);
   const previous = els.modelSelect.value;
-  els.modelSelect.innerHTML = profiles.map(modelOptionHtml).join("");
+  els.modelSelect.innerHTML = modelOptionsHtml(profiles, provider);
   els.modelSelect.disabled = !profiles.length;
   if (profiles.some((profile) => profile.id === previous)) {
     els.modelSelect.value = previous;
@@ -1179,6 +1179,7 @@ function renderModelPreview() {
       <dt>Провайдер</dt><dd>${escapeHtml(providerLabel(profile.provider))}</dd>
       <dt>Alias</dt><dd>${escapeHtml(profile.model)}</dd>
       <dt>Контекст</dt><dd>${escapeHtml(profile.context_window || "уточняется")}</dd>
+      <dt>Уровень цены</dt><dd>${escapeHtml(modelCostTierLabel(profile))}</dd>
       <dt>Цена</dt><dd>${escapeHtml(modelPricingLabel(profile))}</dd>
       <dt>Источник</dt><dd>${escapeHtml(sourceLabel(profile.source))}</dd>
       <dt>Доступность</dt><dd>${escapeHtml(profile.availability || "зависит от ключа провайдера")}</dd>
@@ -2087,6 +2088,30 @@ function profilesForProvider(provider) {
   return appState.modelProfiles.filter((profile) => normalizeProvider(profile.provider) === normalized);
 }
 
+function featuredOpenRouterRank(profile) {
+  if (normalizeProvider(profile?.provider || "") !== "openrouter") return 0;
+  const rank = Number(profile?.params?.featured_rank);
+  return Number.isInteger(rank) && rank > 0 ? rank : 0;
+}
+
+function modelOptionsHtml(profiles, provider) {
+  if (normalizeProvider(provider) !== "openrouter") {
+    return profiles.map(modelOptionHtml).join("");
+  }
+  const featured = profiles
+    .filter((profile) => featuredOpenRouterRank(profile))
+    .sort((left, right) => featuredOpenRouterRank(left) - featuredOpenRouterRank(right));
+  const remaining = profiles.filter((profile) => !featuredOpenRouterRank(profile));
+  const groups = [];
+  if (featured.length) {
+    groups.push(`<optgroup label="\u0418\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435 \u0434\u043b\u044f RP">${featured.map(modelOptionHtml).join("")}</optgroup>`);
+  }
+  if (remaining.length) {
+    groups.push(`<optgroup label="\u0412\u0441\u0435 \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u043c\u043e\u0434\u0435\u043b\u0438 OpenRouter">${remaining.map(modelOptionHtml).join("")}</optgroup>`);
+  }
+  return groups.join("");
+}
+
 function renderProviderOptions(select, preferred) {
   if (!select) return;
   const providers = availableProviders();
@@ -2099,9 +2124,41 @@ function renderProviderOptions(select, preferred) {
 }
 
 function modelOptionHtml(profile) {
-  const markers = [profile.is_free ? "FREE" : "", profile.rp_specialized ? "RP" : ""].filter(Boolean);
+  const markers = [
+    featuredOpenRouterRank(profile) ? "TOP" : "",
+    profile.is_free ? "FREE" : modelCostTier(profile),
+    profile.rp_specialized ? "RP" : "",
+  ].filter(Boolean);
   const prefix = markers.length ? `[${markers.join(" · ")}] ` : "";
   return `<option value="${escapeHtml(profile.id)}">${escapeHtml(prefix + profile.title)}</option>`;
+}
+
+function modelCostTierLabel(profile) {
+  if (profile.is_free) return "FREE";
+  const tier = modelCostTier(profile);
+  return tier || "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d";
+}
+
+function modelCostTier(profile) {
+  if (normalizeProvider(profile?.provider || "") !== "openrouter" || profile?.is_free) return "";
+  const cost = modelCostPerMillion(profile);
+  if (cost === null) return "";
+  const costs = profilesForProvider("openrouter")
+    .filter((candidate) => !candidate.is_free)
+    .map(modelCostPerMillion)
+    .filter((candidate) => candidate !== null)
+    .sort((left, right) => left - right);
+  if (!costs.length) return "";
+  const position = costs.filter((candidate) => candidate <= cost).length;
+  const tier = Math.min(5, Math.max(1, Math.ceil((position / costs.length) * 5)));
+  return "$".repeat(tier);
+}
+
+function modelCostPerMillion(profile) {
+  const prompt = perMillionPriceValue(profile?.pricing_prompt);
+  const completion = perMillionPriceValue(profile?.pricing_completion);
+  if (prompt === null && completion === null) return null;
+  return (prompt || 0) + (completion || 0);
 }
 
 function modelPricingLabel(profile) {
@@ -2113,10 +2170,15 @@ function modelPricingLabel(profile) {
 }
 
 function perMillionPrice(value) {
-  if (String(value ?? "").trim() === "") return "";
+  const price = perMillionPriceValue(value);
+  return price === null ? "" : price.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function perMillionPriceValue(value) {
+  if (String(value ?? "").trim() === "") return null;
   const price = Number(value);
-  if (!Number.isFinite(price) || price < 0) return "";
-  return (price * 1_000_000).toLocaleString("en-US", { maximumFractionDigits: 4 });
+  if (!Number.isFinite(price) || price < 0) return null;
+  return price * 1_000_000;
 }
 
 function selectedRadioValue(name) {

@@ -366,6 +366,71 @@ OPENROUTER_RP_PREFERENCE = (
     "openrouter/free",
 )
 
+# Presentation metadata is deliberately kept separate from the live catalogue:
+# availability, context, and pricing continue to come from OpenRouter /models.
+OPENROUTER_FEATURED_MODELS: dict[str, dict[str, Any]] = {
+    "z-ai/glm-5.2": {
+        "rank": 1,
+        "title": "GLM 5.2",
+        "rp_fit": "Главный выбор для длинной кампании: хорошо держит канон, причинность, NPC-мотивы и многоходовые планы.",
+        "tags": ["длинная кампания", "канон", "сложный GM"],
+    },
+    "deepseek/deepseek-v4-pro": {
+        "rank": 2,
+        "title": "DeepSeek V4 Pro",
+        "rp_fit": "Для расследований, фракций и правил мира: сильнее всего там, где важны последствия и логика сцены.",
+        "tags": ["причинность", "расследование", "правила"],
+    },
+    "deepseek/deepseek-v4-flash": {
+        "rank": 3,
+        "title": "DeepSeek V4 Flash",
+        "rp_fit": "Быстрый и экономный рабочий GM для обычных ходов; выбирай, когда темп важнее литературной полировки.",
+        "tags": ["быстро", "экономно", "длинный контекст"],
+    },
+    "qwen/qwen3.5-397b-a17b": {
+        "rank": 4,
+        "title": "Qwen3.5 397B A17B",
+        "rp_fit": "Насыщенный GM для больших сцен и нескольких NPC: хороший баланс диалогов, следования инструкциям и масштаба.",
+        "tags": ["богатая сцена", "NPC", "баланс"],
+    },
+    "aion-labs/aion-3.0": {
+        "rank": 5,
+        "title": "Aion 3.0",
+        "rp_fit": "Специализированный multi-model рассказчик для ролевой игры и сторителлинга; дорогой, но уместен для ключевых сцен.",
+        "tags": ["RP-специализация", "сторителлинг", "премиум"],
+    },
+    "sao10k/l3.3-euryale-70b": {
+        "rank": 6,
+        "title": "Euryale 70B",
+        "rp_fit": "Творческая RP-модель для живых диалогов, характерных голосов и атмосферной прозы.",
+        "tags": ["RP-специализация", "персонажи", "проза"],
+    },
+    "thedrummer/cydonia-24b-v4.1": {
+        "rank": 7,
+        "title": "Cydonia 24B V4.1",
+        "rp_fit": "Недорогой креативный вариант с хорошим следованием prompt и памятью деталей сцены.",
+        "tags": ["RP-специализация", "креатив", "экономно"],
+    },
+    "minimax/minimax-m3": {
+        "rank": 8,
+        "title": "MiniMax M3",
+        "rp_fit": "Длинный контекст и сильная работа с текстом и изображениями; подходит для кампаний с картами и референсами.",
+        "tags": ["мультимодальность", "длинная кампания", "референсы"],
+    },
+    "anthropic/claude-sonnet-4.6": {
+        "rank": 9,
+        "title": "Claude Sonnet 4.6",
+        "rp_fit": "Премиальный универсальный GM для аккуратной прозы, сложных инструкций и важных поворотных сцен.",
+        "tags": ["премиум", "инструкции", "поворотная сцена"],
+    },
+    "moonshotai/kimi-k3": {
+        "rank": 10,
+        "title": "Kimi K3",
+        "rp_fit": "Сильная long-context альтернатива для масштабной кампании; полезна, когда нужен широкий контекст и сложное рассуждение.",
+        "tags": ["длинный контекст", "сложный сюжет", "альтернатива"],
+    },
+}
+
 CHAT_MODEL_TERMS = {
     "baichuan",
     "chat",
@@ -433,6 +498,19 @@ def provider_api_key(settings: Any, provider: str) -> str:
     if clean_provider == "openrouter":
         return str(settings.openrouter_api_key)
     return str(settings.nvidia_api_key)
+
+
+def enrich_openrouter_profile_params(model_id: str, params: dict[str, Any]) -> dict[str, Any]:
+    featured = OPENROUTER_FEATURED_MODELS.get(model_id)
+    if not featured:
+        return params
+    enriched = dict(params)
+    enriched["featured_rank"] = featured["rank"]
+    enriched["title_override"] = featured["title"]
+    enriched["rp_fit"] = featured["rp_fit"]
+    tags = ["Избранное", *featured["tags"], *list(enriched.get("tags") or [])]
+    enriched["tags"] = list(dict.fromkeys(str(tag) for tag in tags if tag))
+    return enriched
 
 
 def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
