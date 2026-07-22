@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import random
 import re
@@ -48,8 +49,36 @@ def awareness_turns_remaining(turn: int) -> int:
     return max(10 - turn, 0)
 
 
+def is_awareness_campaign(state: dict[str, Any], campaign_id: str | None = None) -> bool:
+    return campaign_id == "awareness" or state.get("meta", {}).get("campaign_id") == "awareness"
+
+
+def awareness_state_after_auto_start(
+    state: dict[str, Any],
+    campaign_id: str | None,
+    has_auto_start: bool,
+) -> dict[str, Any]:
+    if not is_awareness_campaign(state, campaign_id) or not has_auto_start:
+        return state
+    if int(state.get("meta", {}).get("turn", 0) or 0) != 0:
+        return state
+    cloned = copy.deepcopy(state)
+    cloned.setdefault("meta", {})["turn"] = 1
+    resources = cloned.setdefault("player", {}).setdefault("resources", {})
+    resources["current-turn-window"] = awareness_turn_window(1)
+    resources["turns-remaining"] = awareness_turns_remaining(1)
+    return cloned
+
+
 class RuleEngine:
-    def resolve(self, state: dict[str, Any], intent: Intent, request_id: str, roll: int | None = None) -> tuple[Outcome, StatePatch]:
+    def resolve(
+        self,
+        state: dict[str, Any],
+        intent: Intent,
+        request_id: str,
+        roll: int | None = None,
+        campaign_id: str | None = None,
+    ) -> tuple[Outcome, StatePatch]:
         if intent.action_type in TARGETED_CHECKS and not intent.target:
             intent.ambiguities.append(f"{intent.action_type} has no target; outcome is constrained.")
         check_id = self.check_id(intent, request_id)
@@ -81,7 +110,7 @@ class RuleEngine:
             forbidden_reinterpretations=forbidden,
             authoritative_block=self.authoritative_block(check_id, intent, result, roll_value, final_score, consequences, forbidden),
         )
-        patch = self.patch_for_outcome(state, intent, outcome, relationship_key, relationship)
+        patch = self.patch_for_outcome(state, intent, outcome, relationship_key, relationship, campaign_id)
         return outcome, patch
 
     def check_id(self, intent: Intent, request_id: str) -> str:
@@ -223,6 +252,7 @@ class RuleEngine:
         outcome: Outcome,
         relationship_key: str | None,
         relationship: dict[str, Any] | None,
+        campaign_id: str | None = None,
     ) -> StatePatch:
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         participants = [intent.actor] + ([intent.target] if intent.target else [])
@@ -254,8 +284,8 @@ class RuleEngine:
                         turn=turn,
                     )
                 )
-        operations.extend(self.awareness_security_operations(state, intent, turn))
-        operations.extend(self.awareness_turn_operations(state, turn))
+        operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
+        operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
         trust_delta, suspicion_delta = self.relationship_delta(intent.action_type, outcome.result)
         if relationship_key and intent.target and (trust_delta or suspicion_delta):
             if relationship:
@@ -297,8 +327,14 @@ class RuleEngine:
                 )
         return StatePatch(turn=turn, check_id=outcome.check_id, patch=operations, contradictions=outcome.blocked_reasons)
 
-    def awareness_security_operations(self, state: dict[str, Any], intent: Intent, turn: int) -> list[PatchOperation]:
-        if state.get("meta", {}).get("campaign_id") != "awareness":
+    def awareness_security_operations(
+        self,
+        state: dict[str, Any],
+        intent: Intent,
+        turn: int,
+        campaign_id: str | None = None,
+    ) -> list[PatchOperation]:
+        if not is_awareness_campaign(state, campaign_id):
             return []
         text = intent.desired_outcome
         if not (DOUBLE_EXTENSION_RE.search(text) and self.has_dangerous_file_action(text)):
@@ -308,8 +344,13 @@ class RuleEngine:
             self.resource_delta_operation(state, "unsafe-actions", 1, "Player performed an unsafe action with a suspicious attachment.", turn),
         ]
 
-    def awareness_turn_operations(self, state: dict[str, Any], turn: int) -> list[PatchOperation]:
-        if state.get("meta", {}).get("campaign_id") != "awareness":
+    def awareness_turn_operations(
+        self,
+        state: dict[str, Any],
+        turn: int,
+        campaign_id: str | None = None,
+    ) -> list[PatchOperation]:
+        if not is_awareness_campaign(state, campaign_id):
             return []
         window = awareness_turn_window(turn)
         if not window:

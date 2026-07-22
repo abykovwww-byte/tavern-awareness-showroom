@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from app.models.schemas import Outcome, ValidationResult
+from app.services.rule_engine import is_awareness_campaign
 
 
 SERVICE_LINE_RE = re.compile(
@@ -47,15 +48,49 @@ MESSENGER_DESCRIPTION_RE = re.compile(
 )
 AWARENESS_HINT_RE = re.compile(
     r"(домен\s+(?:не|отлича)|двойн\w+\s+расширени|красн\w+\s+флаг|это\s+фишинг|"
-    r"это\s+подозритель|выглядит\s+подозритель|вспомина\w+\s+стандарт|лучше\s+отправить)",
+    r"это\s+подозритель|выглядит\s+(?:подозритель|безопасн)|никак\w+\s+подозрительност|"
+    r"вспомина\w+\s+стандарт|стандартн\w+\s+ход|лучше\s+отправить|сообщить\s+в\s+SOC|"
+    r"по\s+правилам\s+PT\s+Security|не\s+наруша\w+\s+правил|цель\s*[-—–:]\s*запустить\s+вредоносн)",
     re.IGNORECASE,
+)
+AWARENESS_META_RE = re.compile(
+    r"^\s*\*{0,2}(?:мессенджер|блок[-‑–— ]?сценарий|сценарный\s+блок|разбор\s+хода|итоги\s+хода)\*{0,2}\s*:|"
+    r"\b(?:всё|все)\s+в\s+пределах\s+шаблона\b|\bдва\s+письма,?\s+одно\s+сообщение\b|"
+    r"\bточк[аи]\s+решения\b|\bследующ\w*\s+проверк\w*\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+AWARENESS_INTERNAL_PROCESS_RE = re.compile(
+    r"(бэкэнд|backend|дашборд|инцидент[-‑–— ]?трекинг|incident[-‑–— ]?tracking|уровень\s+опасности|логиру\w*|"
+    r"SOC\s+будет\s+анализировать|системн\w+\s+подтверждени|сервис\s+.*(?:строк|задерж))",
+    re.IGNORECASE,
+)
+AWARENESS_MENTAL_STATE_RE = re.compile(
+    r"\bты\s+(?:понимаешь|осозна[её]шь|вспоминаешь|считаешь|решаешь|доверяешь|сомневаешься|"
+    r"намечаешь|нормализуешься)\b",
+    re.IGNORECASE,
+)
+AWARENESS_PLAYER_ACTION_PATTERNS = (
+    ("откры", re.compile(r"\bты\s+(?:сам\s+)?открываешь\b", re.IGNORECASE)),
+    ("скач", re.compile(r"\bты\s+(?:сам\s+)?скачиваешь\b", re.IGNORECASE)),
+    ("запус", re.compile(r"\bты\s+(?:сам\s+)?запускаешь\b", re.IGNORECASE)),
+    ("пересыл", re.compile(r"\bты\s+(?:сам\s+)?пересылаешь\b", re.IGNORECASE)),
+    ("отправ", re.compile(r"\bты\s+(?:сам\s+)?отправляешь\b", re.IGNORECASE)),
+    ("ввод", re.compile(r"\bты\s+(?:сам\s+)?вводишь\b", re.IGNORECASE)),
+    ("перех", re.compile(r"\bты\s+(?:сам\s+)?переходишь\b", re.IGNORECASE)),
 )
 EMAIL_REQUIRED_FIELDS = ("Канал:", "От:", "Кому:", "Дата/время:", "Тема:", "Вложения:", "Ссылки:", "Тело:", "Подпись:")
 MESSENGER_REQUIRED_FIELDS = ("Канал:", "Чат:", "От:", "Кому:", "Дата/время:", "Вложения:", "Ссылки:", "Текст:")
 
 
 class OutputValidator:
-    def validate(self, text: str, outcome: Outcome, state: dict[str, Any] | None = None) -> ValidationResult:
+    def validate(
+        self,
+        text: str,
+        outcome: Outcome,
+        state: dict[str, Any] | None = None,
+        campaign_id: str | None = None,
+        latest_user_message: str = "",
+    ) -> ValidationResult:
         lowered = text.lower()
         violations: list[str] = []
         if "<authoritative_outcome>" in lowered or "</authoritative_outcome>" in lowered:
@@ -82,12 +117,20 @@ class OutputValidator:
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
-        if state and state.get("meta", {}).get("campaign_id") == "awareness":
-            expected_header = awareness_expected_header(state)
+        if is_awareness_campaign(state or {}, campaign_id):
+            expected_header = awareness_expected_header(state) if state else None
+            final_summary = awareness_final_summary(state)
             if expected_header and not text.lstrip().startswith(expected_header):
                 violations.append(f"Awareness narrative must start with the scheduled header: {expected_header}")
-            if AWARENESS_HINT_RE.search(text):
+            if not final_summary and AWARENESS_HINT_RE.search(text):
                 violations.append("Awareness narrative exposed explicit security hints or player reasoning.")
+            if AWARENESS_META_RE.search(text):
+                violations.append("Awareness narrative exposed scenario-template or facilitator-only wording.")
+            if AWARENESS_INTERNAL_PROCESS_RE.search(text):
+                violations.append("Awareness narrative invented internal SOC, tracking, dashboard, or backend details.")
+            if AWARENESS_MENTAL_STATE_RE.search(text):
+                violations.append("Awareness narrative assigned thoughts or security conclusions to the player.")
+            violations.extend(awareness_player_action_violations(text, latest_user_message))
             email_blocks = structured_blocks(text, "ПИСЬМО")
             messenger_blocks = structured_blocks(text, "СООБЩЕНИЕ")
             if EMAIL_DESCRIPTION_RE.search(text) and not email_blocks:
@@ -112,16 +155,22 @@ class OutputValidator:
                 valid=False,
                 violations=violations,
                 repair_instruction=(
-                    "Rewrite as final in-world narration only. Remove analysis, recommendation, diagnostics, "
-                    "Gateway/service wording, result labels, explicit security hints, and hidden concessions. "
-                    "Keep player agency intact, use required structured message blocks, and keep the scheduled turn header."
+                    "Перепиши ответ как обычную русскую офисную сцену для игрока. Начни с точного заголовка текущего хода. "
+                    "Удали анализ признаков атаки, размышления игрока, подсказки про SOC/ДИБ, внутренние процессы, backend, "
+                    "дашборды, оценку риска и служебные секции вроде 'Мессенджер' или 'Блок-сценарий'. "
+                    "Не принимай решений за игрока. Письма и сообщения показывай только полными блоками ПИСЬМО и СООБЩЕНИЕ."
                 ),
             )
         return ValidationResult(valid=True)
 
 
-def safe_fallback(outcome: Outcome, state: dict[str, Any] | None = None, latest_user_message: str = "") -> str:
-    if state and state.get("meta", {}).get("campaign_id") == "awareness":
+def safe_fallback(
+    outcome: Outcome,
+    state: dict[str, Any] | None = None,
+    latest_user_message: str = "",
+    campaign_id: str | None = None,
+) -> str:
+    if state and is_awareness_campaign(state, campaign_id):
         return awareness_safe_fallback(state, latest_user_message)
     first = RESULT_NARRATION.get(outcome.result, "Сцена сдвигается дальше, но без лишних уступок за кадром.")
     if outcome.blocked_reasons:
@@ -218,6 +267,21 @@ def awareness_expected_header(state: dict[str, Any]) -> str | None:
     if not isinstance(window, str):
         return None
     return awareness_header_from_window(window)
+
+
+def awareness_final_summary(state: dict[str, Any] | None) -> bool:
+    if not state:
+        return False
+    return int(state.get("meta", {}).get("turn", 0) or 0) > 10
+
+
+def awareness_player_action_violations(text: str, latest_user_message: str) -> list[str]:
+    latest = latest_user_message.casefold()
+    violations: list[str] = []
+    for marker, pattern in AWARENESS_PLAYER_ACTION_PATTERNS:
+        if pattern.search(text) and marker not in latest:
+            violations.append(f"Awareness narrative invented a player security action: {marker}")
+    return violations
 
 
 def awareness_header_from_window(window: str) -> str | None:

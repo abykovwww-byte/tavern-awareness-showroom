@@ -149,6 +149,7 @@ class NarrativeClient:
     ) -> list[dict[str, str]]:
         state_summary = {
             "campaign_id": state.get("meta", {}).get("campaign_id"),
+            "worldpack_id": self.settings.campaign_id,
             "turn": state.get("meta", {}).get("turn"),
             "player": state.get("player", {}),
             "relationships": state.get("relationships", {}),

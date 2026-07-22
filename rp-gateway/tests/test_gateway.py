@@ -5,18 +5,19 @@ import json
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import create_app, party_start_narrative_state, party_start_state_patch
+from app.main import create_app, party_start_narrative_state, party_start_state_patch, settings_for_party
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog
-from app.services.rule_engine import RuleEngine
+from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
 
@@ -1157,11 +1158,47 @@ def test_awareness_turn_progression_updates_current_window():
     assert values["/player/resources/turns-remaining"] == 8
 
 
+def test_party_settings_keep_worldpack_id_for_awareness_rules():
+    party = SimpleNamespace(worldpack_id="awareness", state_campaign_id="party_123", model_profile=None)
+
+    configured = settings_for_party(Settings(campaign_id="default"), party)
+
+    assert configured.campaign_id == "awareness"
+
+
+def test_awareness_party_state_id_still_enables_turn_progression():
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_123"  # type: ignore[index]
+    state["meta"]["turn"] = 1  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
+    state["player"]["resources"]["turns-remaining"] = 9  # type: ignore[index]
+    intent = Intent(action_type="feasibility", desired_outcome="Завершаю первую половину дня", methods=["free_text"])
+
+    _, patch = RuleEngine().resolve(state, intent, "awareness-party-next", roll=10, campaign_id="awareness")
+    values = {operation.path: operation.value for operation in patch.patch}
+
+    assert patch.turn == 2
+    assert values["/player/resources/current-turn-window"] == "ход 2, понедельник, 15:00-18:00"
+
+
+def test_awareness_existing_party_auto_start_is_migrated_before_player_turn():
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_old"  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
+    state["player"]["resources"]["turns-remaining"] = 10  # type: ignore[index]
+
+    migrated = awareness_state_after_auto_start(state, "awareness", has_auto_start=True)
+
+    assert state["meta"]["turn"] == 0  # type: ignore[index]
+    assert migrated["meta"]["turn"] == 1
+    assert migrated["player"]["resources"]["turns-remaining"] == 9
+
+
 def test_awareness_party_start_narrative_state_sets_opening_window_without_mutating_original():
     state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["meta"]["campaign_id"] = "party_awareness_new"  # type: ignore[index]
 
-    patch = party_start_state_patch(state, "party-awareness")
+    patch = party_start_state_patch(state, "party-awareness", "awareness")
     narrative_state = party_start_narrative_state(state, patch)
 
     assert patch is not None
@@ -1201,6 +1238,51 @@ def test_awareness_validator_rejects_summarized_opening_and_accepts_structured_f
     assert OutputValidator().validate(fallback, outcome, state).valid
     assert fallback.count("ПИСЬМО") >= 2
     assert "СООБЩЕНИЕ" in fallback
+
+
+def test_awareness_validator_rejects_facilitator_blocks_backend_and_repeated_turn():
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_456"  # type: ignore[index]
+    state["meta"]["turn"] = 2  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 2, понедельник, 15:00-18:00"  # type: ignore[index]
+    outcome = Outcome(
+        check_id="awareness-messy-output",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=10,
+        difficulty=10,
+        modifiers={},
+        final_score=10,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: continue.",
+    )
+    messy = """**Ход 1. Понедельник, 10:00–14:00.**
+
+Первое письмо выглядит безопасно. Ты понимаешь, что второе имеет двойное расширение и надо сообщить в SOC.
+В incident-tracking появляется запись, backend добавляет строку в дашборд с уровнем опасности.
+
+**Мессенджер:**
+Руководитель просит статус.
+
+**Блок-сценарий:**
+- Пересылаешь письмо в SOC.
+- Всё в пределах шаблона: два письма, одно сообщение и точка решения.
+"""
+
+    validation = OutputValidator().validate(
+        messy,
+        outcome,
+        state,
+        campaign_id="awareness",
+        latest_user_message="Отправляю письмо на проверку",
+    )
+
+    assert not validation.valid
+    assert any("scheduled header" in violation for violation in validation.violations)
+    assert any("facilitator-only" in violation for violation in validation.violations)
+    assert any("backend" in violation for violation in validation.violations)
+    assert any("thoughts" in violation for violation in validation.violations)
 
 
 def test_validator_repairs_meta_output_labels(tmp_path: Path):

@@ -57,7 +57,13 @@ class PromptInspector:
         state = self.store.get_state()
         latest = content.strip() or "[следующий ход игрока]"
         intent = self.intent_parser.parse(latest)
-        outcome, patch = self.rule_engine.resolve(state, intent, "prompt-preview", roll=10)
+        outcome, patch = self.rule_engine.resolve(
+            state,
+            intent,
+            "prompt-preview",
+            roll=10,
+            campaign_id=self.settings.campaign_id,
+        )
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
         memory_summary = self.store.latest_memory_summary()
@@ -85,7 +91,13 @@ class PromptInspector:
         state = self.store.get_state()
         latest = str(latest_turn.get("player_message") or "")
         intent = self.intent_parser.parse(latest)
-        outcome, _patch = self.rule_engine.resolve(state, intent, str(latest_turn.get("request_id") or "prompt-preview"), roll=10)
+        outcome, _patch = self.rule_engine.resolve(
+            state,
+            intent,
+            str(latest_turn.get("request_id") or "prompt-preview"),
+            roll=10,
+            campaign_id=self.settings.campaign_id,
+        )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
         memory_summary = self.store.latest_memory_summary()
         messages = NarrativeClient(self.settings).narrative_messages(

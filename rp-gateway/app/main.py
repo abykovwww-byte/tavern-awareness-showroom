@@ -739,7 +739,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             state = party_state_store.get_state()
-            start_patch = party_start_state_patch(state, party_id)
+            start_patch = party_start_state_patch(state, party_id, party.worldpack_id)
             narrative_state = party_start_narrative_state(state, start_patch)
             prompt = party_start_prompt(party_store, party)
             chat_request = ChatCompletionRequest(
@@ -772,7 +772,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             text = response_text(response)
             if start_patch:
                 validator = OutputValidator()
-                validation = validator.validate(text, start_outcome, narrative_state)
+                validation = validator.validate(
+                    text,
+                    start_outcome,
+                    narrative_state,
+                    campaign_id=party.worldpack_id,
+                )
                 if not validation.valid and party_settings.max_repair_attempts > 0:
                     raw = await narrative.complete(
                         chat_request,
@@ -785,7 +790,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                     response = adjudicator.normalize_response(raw, model_profile.model)
                     text = response_text(response)
-                    validation = validator.validate(text, start_outcome, narrative_state)
+                    validation = validator.validate(
+                        text,
+                        start_outcome,
+                        narrative_state,
+                        campaign_id=party.worldpack_id,
+                    )
                 if not validation.valid:
                     party_state_store.audit(
                         "party_start_validation_failed",
@@ -1092,10 +1102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 def settings_for_party(settings: Settings, party: Any) -> Settings:
     model_profile = party.model_profile
     if model_profile is None:
-        return replace(settings, campaign_id=party.state_campaign_id)
+        return replace(settings, campaign_id=party.worldpack_id)
     return replace(
         settings,
-        campaign_id=party.state_campaign_id,
+        campaign_id=party.worldpack_id,
         nvidia_api_base=model_profile.base_url,
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
@@ -1154,8 +1164,12 @@ def party_start_outcome(party_id: str) -> Outcome:
     )
 
 
-def party_start_state_patch(state: dict[str, Any], party_id: str) -> StatePatch | None:
-    if state.get("meta", {}).get("campaign_id") != "awareness":
+def party_start_state_patch(
+    state: dict[str, Any],
+    party_id: str,
+    worldpack_id: str | None = None,
+) -> StatePatch | None:
+    if worldpack_id != "awareness" and state.get("meta", {}).get("campaign_id") != "awareness":
         return None
     turn = 1
     window = awareness_turn_window(turn)

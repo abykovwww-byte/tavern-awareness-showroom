@@ -304,6 +304,22 @@
       "probability": 100,
       "useProbability": true,
       "depth": 4
+    },
+    "19": {
+      "uid": 19,
+      "key": ["Блок-сценарий", "служебный вывод", "backend", "дашборд", "SOC"],
+      "keysecondary": [],
+      "comment": "Player-facing narration only",
+      "content": "Пользовательский ответ содержит только заголовок текущего хода, обычную офисную сцену, полные блоки ПИСЬМО/СООБЩЕНИЕ и один естественный вопрос. Не выводить секции Мессенджер, Блок-сценарий, Разбор хода, Итоги хода и списки действий игрока. Не назначать игроку мысли или выводы. Не показывать логи, backend, incident tracking, дашборды, уровни риска и внутренние процессы SOC/ДИБ.",
+      "constant": true,
+      "selective": true,
+      "selectiveLogic": 0,
+      "order": 119,
+      "position": 1,
+      "disable": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4
     }
   }
 }

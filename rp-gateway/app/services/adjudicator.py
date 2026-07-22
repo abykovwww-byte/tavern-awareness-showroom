@@ -16,7 +16,7 @@ from app.services.intent_parser import IntentParser
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient, response_text, with_text
-from app.services.rule_engine import RuleEngine
+from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
@@ -89,9 +89,18 @@ class Adjudicator:
             if not authorization and not self.settings.nvidia_api_key:
                 raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
 
-            state = self.store.get_state()
+            state = awareness_state_after_auto_start(
+                self.store.get_state(),
+                self.settings.campaign_id,
+                self.has_auto_start_history(),
+            )
             intent = self.intent_parser.parse(latest)
-            outcome, patch = self.rule_engine.resolve(state, intent, request_id)
+            outcome, patch = self.rule_engine.resolve(
+                state,
+                intent,
+                request_id,
+                campaign_id=self.settings.campaign_id,
+            )
             narrative_state = self.preview_applied_state(patch)
 
             llm_calls = 0
@@ -117,7 +126,13 @@ class Adjudicator:
                 )
                 llm_calls += 1
                 text = response_text(raw)
-                validation = self.validator.validate(text, outcome, narrative_state)
+                validation = self.validator.validate(
+                    text,
+                    outcome,
+                    narrative_state,
+                    campaign_id=self.settings.campaign_id,
+                    latest_user_message=latest,
+                )
                 if not validation.valid and self.settings.max_repair_attempts > 0:
                     repaired = True
                     raw = await self.narrative.complete(
@@ -131,7 +146,13 @@ class Adjudicator:
                     )
                     llm_calls += 1
                     text = response_text(raw)
-                    validation = self.validator.validate(text, outcome, narrative_state)
+                    validation = self.validator.validate(
+                        text,
+                        outcome,
+                        narrative_state,
+                        campaign_id=self.settings.campaign_id,
+                        latest_user_message=latest,
+                    )
                 if not validation.valid:
                     self.store.audit(
                         "llm_validation_failed",
@@ -140,7 +161,7 @@ class Adjudicator:
                     )
                     if not allow_gateway_fallback:
                         raise RuntimeError("LLM response failed narrative validation")
-                    text = safe_fallback(outcome, narrative_state, latest)
+                    text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
                     raw = with_text(raw, text)
             except PermissionError:
                 raise
@@ -154,14 +175,14 @@ class Adjudicator:
                 if not allow_gateway_fallback:
                     raise RuntimeError(f"Narrative provider HTTP {status}") from exc
                 provider_fallback_reason = f"http_{status}"
-                text = safe_fallback(outcome, narrative_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
                 if not allow_gateway_fallback:
                     raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
-                text = safe_fallback(outcome, narrative_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
                 if not allow_gateway_fallback:
@@ -172,7 +193,7 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
                     request_id,
                 )
-                text = safe_fallback(outcome, narrative_state, latest)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -192,7 +213,13 @@ class Adjudicator:
                     "duration_ms": duration_ms,
                     "llm_calls": llm_calls,
                     "model": self.settings.narrative_model,
-                    "validator_valid": self.validator.validate(text, outcome, updated_state).valid,
+                    "validator_valid": self.validator.validate(
+                        text,
+                        outcome,
+                        updated_state,
+                        campaign_id=self.settings.campaign_id,
+                        latest_user_message=latest,
+                    ).valid,
                     "repair": repaired,
                     "provider_fallback_reason": provider_fallback_reason,
                     "check_id": outcome.check_id,
@@ -217,6 +244,12 @@ class Adjudicator:
         candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
         candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
         return candidate
+
+    def has_auto_start_history(self) -> bool:
+        turns = self.store.turn_history(limit=1)
+        if not turns:
+            return False
+        return str(turns[-1].get("player_message") or "").startswith("[AUTO_START]")
 
     def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
         self.store.audit(
