@@ -14,6 +14,18 @@ TARGETED_CHECKS = {"persuasion", "intimidation", "deception", "trust", "conflict
 SOCIAL_CHECKS = {"persuasion", "intimidation", "deception", "trust"}
 DOUBLE_EXTENSION_RE = re.compile(r"\b[\w.-]+\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\.exe\b", re.IGNORECASE)
 DANGEROUS_FILE_ACTION_MARKERS = ("откры", "запуск", "запуст", "скач", "open", "run", "download")
+AWARENESS_TURN_WINDOWS = {
+    1: "ход 1, понедельник, 10:00-14:00",
+    2: "ход 2, понедельник, 15:00-18:00",
+    3: "ход 3, вторник, 10:00-14:00",
+    4: "ход 4, вторник, 15:00-18:00",
+    5: "ход 5, среда, 10:00-14:00",
+    6: "ход 6, среда, 15:00-18:00",
+    7: "ход 7, четверг, 10:00-14:00",
+    8: "ход 8, четверг, 15:00-18:00",
+    9: "ход 9, пятница, 10:00-14:00",
+    10: "ход 10, пятница, 15:00-18:00",
+}
 
 
 def clamp(value: int, low: int, high: int) -> int:
@@ -26,6 +38,14 @@ def pointer_escape(value: str) -> str:
 
 def normalize_tokens(value: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", value.lower()) if len(token) >= 4}
+
+
+def awareness_turn_window(turn: int) -> str | None:
+    return AWARENESS_TURN_WINDOWS.get(turn)
+
+
+def awareness_turns_remaining(turn: int) -> int:
+    return max(10 - turn, 0)
 
 
 class RuleEngine:
@@ -235,6 +255,7 @@ class RuleEngine:
                     )
                 )
         operations.extend(self.awareness_security_operations(state, intent, turn))
+        operations.extend(self.awareness_turn_operations(state, turn))
         trust_delta, suspicion_delta = self.relationship_delta(intent.action_type, outcome.result)
         if relationship_key and intent.target and (trust_delta or suspicion_delta):
             if relationship:
@@ -287,12 +308,40 @@ class RuleEngine:
             self.resource_delta_operation(state, "unsafe-actions", 1, "Player performed an unsafe action with a suspicious attachment.", turn),
         ]
 
+    def awareness_turn_operations(self, state: dict[str, Any], turn: int) -> list[PatchOperation]:
+        if state.get("meta", {}).get("campaign_id") != "awareness":
+            return []
+        window = awareness_turn_window(turn)
+        if not window:
+            return []
+        return [
+            self.resource_value_operation(
+                state,
+                "current-turn-window",
+                window,
+                "Advances Awareness to the scheduled half-day window.",
+                turn,
+            ),
+            self.resource_value_operation(
+                state,
+                "turns-remaining",
+                awareness_turns_remaining(turn),
+                "Tracks remaining Awareness half-day turns.",
+                turn,
+            ),
+        ]
+
     def resource_delta_operation(self, state: dict[str, Any], resource_id: str, delta: int, reason: str, turn: int) -> PatchOperation:
         resources = state.get("player", {}).get("resources", {})
         current = resources.get(resource_id) if isinstance(resources, dict) else 0
         value = int(current) + delta if isinstance(current, (int, float)) else delta
+        return self.resource_value_operation(state, resource_id, value, reason, turn)
+
+    def resource_value_operation(self, state: dict[str, Any], resource_id: str, value: Any, reason: str, turn: int) -> PatchOperation:
+        resources = state.get("player", {}).get("resources", {})
+        op = "replace" if isinstance(resources, dict) and resource_id in resources else "add"
         return PatchOperation(
-            op="replace",
+            op=op,
             path=f"/player/resources/{pointer_escape(resource_id)}",
             value=value,
             reason=reason,

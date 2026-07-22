@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import create_app
+from app.main import create_app, party_start_narrative_state, party_start_state_patch
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
@@ -18,7 +18,7 @@ from app.services.narrative import NarrativeClient
 from app.services.nvidia_catalog import parse_build_catalog
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
-from app.services.validator import safe_fallback
+from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
 
 
 def base_state() -> dict[str, object]:
@@ -1034,7 +1034,7 @@ def test_awareness_attachment_fallback_is_stealthy():
         authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
     )
 
-    text = safe_fallback(outcome, state, "Открываю Vacation_Bonus_Q3.xlsx.exe")
+    text = safe_fallback(outcome, state, "Открываю WorkSchedule_Update.xlsx.exe")
 
     assert "Твой ход" not in text
     assert "ценой" not in text.lower()
@@ -1051,7 +1051,7 @@ def test_awareness_double_extension_action_updates_score_counters():
     state["player"]["resources"]["unsafe-actions"] = 0  # type: ignore[index]
     intent = Intent(
         action_type="feasibility",
-        desired_outcome="Открываю Vacation_Bonus_Q3.xlsx.exe и продолжаю работу",
+        desired_outcome="Открываю WorkSchedule_Update.xlsx.exe и продолжаю работу",
         methods=["free_text"],
     )
 
@@ -1060,6 +1060,72 @@ def test_awareness_double_extension_action_updates_score_counters():
 
     assert values["/player/resources/suspicious-artifacts-opened"] == 1
     assert values["/player/resources/unsafe-actions"] == 1
+
+
+def test_awareness_turn_progression_updates_current_window():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["meta"]["turn"] = 1  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
+    state["player"]["resources"]["turns-remaining"] = 9  # type: ignore[index]
+    intent = Intent(
+        action_type="feasibility",
+        desired_outcome="Закрываю рабочие вопросы первой половины дня и отвечаю в рамках процедур",
+        methods=["free_text"],
+    )
+
+    _, patch = RuleEngine().resolve(state, intent, "awareness-next", roll=10)
+    values = {operation.path: operation.value for operation in patch.patch}
+
+    assert patch.turn == 2
+    assert values["/player/resources/current-turn-window"] == "ход 2, понедельник, 15:00-18:00"
+    assert values["/player/resources/turns-remaining"] == 8
+
+
+def test_awareness_party_start_narrative_state_sets_opening_window_without_mutating_original():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+
+    patch = party_start_state_patch(state, "party-awareness")
+    narrative_state = party_start_narrative_state(state, patch)
+
+    assert patch is not None
+    assert state["meta"]["turn"] == 0  # type: ignore[index]
+    assert "current-turn-window" not in state["player"]["resources"]  # type: ignore[index]
+    assert narrative_state["meta"]["turn"] == 1
+    assert narrative_state["player"]["resources"]["current-turn-window"] == "ход 1, понедельник, 10:00-14:00"
+    assert narrative_state["player"]["resources"]["turns-remaining"] == 9
+
+
+def test_awareness_validator_rejects_summarized_opening_and_accepts_structured_fallback():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
+    outcome = Outcome(
+        check_id="awareness-start",
+        action_type="feasibility",
+        actor="system",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: opening scene.",
+    )
+
+    summarized = (
+        "Ход 1. Понедельник, 10:00-14:00.\n\n"
+        "Во входящих два письма от коллег, а в рабочем мессенджере Максим просит статус до обеда."
+    )
+    validation = OutputValidator().validate(summarized, outcome, state)
+
+    assert not validation.valid
+    assert any("summarized" in violation or "opening" in violation for violation in validation.violations)
+    fallback = awareness_opening_fallback(state)
+    assert OutputValidator().validate(fallback, outcome, state).valid
+    assert fallback.count("ПИСЬМО") >= 2
+    assert "СООБЩЕНИЕ" in fallback
 
 
 def test_validator_repairs_meta_output_labels(tmp_path: Path):

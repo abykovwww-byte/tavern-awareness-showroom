@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -51,10 +52,12 @@ from app.services.character_view import party_character_sheets
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, response_text
+from app.services.narrative import NarrativeClient, response_text, with_text
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
+from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
 from app.services.state_store import StateStore
+from app.services.validator import OutputValidator, awareness_opening_fallback
 
 
 AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии"
@@ -691,6 +694,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             state = party_state_store.get_state()
+            start_patch = party_start_state_patch(state, party_id)
+            narrative_state = party_start_narrative_state(state, start_patch)
             prompt = party_start_prompt(party_store, party)
             chat_request = ChatCompletionRequest(
                 model=model_profile.model,
@@ -704,21 +709,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             narrative = NarrativeClient(party_settings)
             prompt_messages = narrative.narrative_messages(
                 chat_request,
-                state,
+                narrative_state,
                 start_outcome,
                 repair_instruction=None,
                 memory_summary=memory_summary,
             )
             raw = await narrative.complete(
                 chat_request,
-                state,
+                narrative_state,
                 start_outcome,
                 authorization,
                 memory_summary=memory_summary,
                 request_id=request_id,
             )
-            response = Adjudicator(party_settings, party_state_store).normalize_response(raw, model_profile.model)
+            adjudicator = Adjudicator(party_settings, party_state_store)
+            response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
+            if start_patch:
+                validator = OutputValidator()
+                validation = validator.validate(text, start_outcome, narrative_state)
+                if not validation.valid and party_settings.max_repair_attempts > 0:
+                    raw = await narrative.complete(
+                        chat_request,
+                        narrative_state,
+                        start_outcome,
+                        authorization,
+                        validation.repair_instruction,
+                        memory_summary=memory_summary,
+                        request_id=request_id,
+                    )
+                    response = adjudicator.normalize_response(raw, model_profile.model)
+                    text = response_text(response)
+                    validation = validator.validate(text, start_outcome, narrative_state)
+                if not validation.valid:
+                    text = awareness_opening_fallback(narrative_state)
+                    response = with_text(response, text)
+            if start_patch:
+                state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
             turn_id = party_state_store.record_turn(
                 idempotency_key,
@@ -1074,6 +1101,70 @@ def party_start_outcome(party_id: str) -> Outcome:
             "AUTHORITATIVE_OUTCOME: This is the start of a new party. Present the opening scene only. "
             "No mechanical check was rolled, and no player action has been resolved."
         ),
+    )
+
+
+def party_start_state_patch(state: dict[str, Any], party_id: str) -> StatePatch | None:
+    if state.get("meta", {}).get("campaign_id") != "awareness":
+        return None
+    turn = 1
+    window = awareness_turn_window(turn)
+    if not window:
+        return None
+    resources = state.get("player", {}).get("resources", {})
+    operations = [
+        resource_value_patch(
+            resources,
+            "current-turn-window",
+            window,
+            "Marks Awareness opening scene as the first scheduled half-day.",
+            turn,
+        ),
+        resource_value_patch(
+            resources,
+            "turns-remaining",
+            awareness_turns_remaining(turn),
+            "Tracks remaining Awareness half-day turns after opening.",
+            turn,
+        ),
+        PatchOperation(
+            op="add",
+            path="/timeline/-",
+            value={
+                "turn": turn,
+                "event": "Ход 1 Awareness открыт: понедельник, 10:00-14:00.",
+                "confirmed": True,
+                "participants": ["player"],
+            },
+            reason="Records the first Awareness turn opened by party start.",
+            turn=turn,
+        ),
+    ]
+    return StatePatch(turn=turn, check_id=f"party_start_state:{party_id}", source="party-start", patch=operations)
+
+
+def party_start_narrative_state(state: dict[str, Any], patch: StatePatch | None) -> dict[str, Any]:
+    if not patch:
+        return state
+    cloned = copy.deepcopy(state)
+    meta = cloned.setdefault("meta", {})
+    meta["turn"] = max(int(meta.get("turn", 0) or 0), patch.turn)
+    resources = cloned.setdefault("player", {}).setdefault("resources", {})
+    for operation in patch.patch:
+        prefix = "/player/resources/"
+        if operation.path.startswith(prefix):
+            resources[operation.path.removeprefix(prefix)] = operation.value
+    return cloned
+
+
+def resource_value_patch(resources: Any, resource_id: str, value: Any, reason: str, turn: int) -> PatchOperation:
+    op = "replace" if isinstance(resources, dict) and resource_id in resources else "add"
+    return PatchOperation(
+        op=op,
+        path=f"/player/resources/{resource_id}",
+        value=value,
+        reason=reason,
+        turn=turn,
     )
 
 

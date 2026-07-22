@@ -34,10 +34,28 @@ RESULT_NARRATION = {
 }
 DOUBLE_EXTENSION_RE = re.compile(r"\b[\w.-]+\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\.exe\b", re.IGNORECASE)
 DANGEROUS_FILE_ACTION_MARKERS = ("откры", "запуск", "запуст", "скач", "open", "run", "download")
+EMAIL_BLOCK_RE = re.compile(r"(?m)^ПИСЬМО\s*$")
+MESSENGER_BLOCK_RE = re.compile(r"(?m)^СООБЩЕНИЕ\s*$")
+EMAIL_DESCRIPTION_RE = re.compile(
+    r"(письм[оа]\s+от|во\s+входящих|в\s+папке\s+['\"«„]?входящие|приходит\s+письмо|открываешь\s+письмо)",
+    re.IGNORECASE,
+)
+MESSENGER_DESCRIPTION_RE = re.compile(
+    r"(в\s+(?:рабочем|личном)\s+мессенджере|в\s+чате|сообщение\s+от|"
+    r"(?:пишет|написал[аи]?)\s+(?:в\s+)?мессенджер|открываешь\s+сообщение)",
+    re.IGNORECASE,
+)
+AWARENESS_HINT_RE = re.compile(
+    r"(домен\s+(?:не|отлича)|двойн\w+\s+расширени|красн\w+\s+флаг|это\s+фишинг|"
+    r"это\s+подозритель|выглядит\s+подозритель|вспомина\w+\s+стандарт|лучше\s+отправить)",
+    re.IGNORECASE,
+)
+EMAIL_REQUIRED_FIELDS = ("Канал:", "От:", "Кому:", "Дата/время:", "Тема:", "Вложения:", "Ссылки:", "Тело:", "Подпись:")
+MESSENGER_REQUIRED_FIELDS = ("Канал:", "Чат:", "От:", "Кому:", "Дата/время:", "Вложения:", "Ссылки:", "Текст:")
 
 
 class OutputValidator:
-    def validate(self, text: str, outcome: Outcome) -> ValidationResult:
+    def validate(self, text: str, outcome: Outcome, state: dict[str, Any] | None = None) -> ValidationResult:
         lowered = text.lower()
         violations: list[str] = []
         if "<authoritative_outcome>" in lowered or "</authoritative_outcome>" in lowered:
@@ -64,13 +82,39 @@ class OutputValidator:
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
+        if state and state.get("meta", {}).get("campaign_id") == "awareness":
+            expected_header = awareness_expected_header(state)
+            if expected_header and not text.lstrip().startswith(expected_header):
+                violations.append(f"Awareness narrative must start with the scheduled header: {expected_header}")
+            if AWARENESS_HINT_RE.search(text):
+                violations.append("Awareness narrative exposed explicit security hints or player reasoning.")
+            email_blocks = structured_blocks(text, "ПИСЬМО")
+            messenger_blocks = structured_blocks(text, "СООБЩЕНИЕ")
+            if EMAIL_DESCRIPTION_RE.search(text) and not email_blocks:
+                violations.append("Awareness email event was summarized instead of rendered as a PISMO block.")
+            if MESSENGER_DESCRIPTION_RE.search(text) and not messenger_blocks:
+                violations.append("Awareness messenger event was summarized instead of rendered as a SOOBSCHENIE block.")
+            for index, block in enumerate(email_blocks, start=1):
+                missing = missing_fields(block, EMAIL_REQUIRED_FIELDS)
+                if missing:
+                    violations.append(f"Awareness email block {index} is missing required fields: {', '.join(missing)}")
+            for index, block in enumerate(messenger_blocks, start=1):
+                missing = missing_fields(block, MESSENGER_REQUIRED_FIELDS)
+                if missing:
+                    violations.append(f"Awareness messenger block {index} is missing required fields: {', '.join(missing)}")
+            if expected_header and expected_header.startswith("Ход 1."):
+                if len(email_blocks) < 2:
+                    violations.append("Awareness opening must include at least two full PISMO blocks.")
+                if len(messenger_blocks) < 1:
+                    violations.append("Awareness opening must include at least one full SOOBSCHENIE block.")
         if violations:
             return ValidationResult(
                 valid=False,
                 violations=violations,
                 repair_instruction=(
                     "Rewrite as final in-world narration only. Remove analysis, recommendation, diagnostics, "
-                    "Gateway/service wording, result labels, and hidden concessions. Keep player agency intact."
+                    "Gateway/service wording, result labels, explicit security hints, and hidden concessions. "
+                    "Keep player agency intact, use required structured message blocks, and keep the scheduled turn header."
                 ),
             )
         return ValidationResult(valid=True)
@@ -94,19 +138,104 @@ def safe_fallback(outcome: Outcome, state: dict[str, Any] | None = None, latest_
 def awareness_safe_fallback(state: dict[str, Any], latest_user_message: str) -> str:
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
-    window_text = f" ({window})" if isinstance(window, str) and window else ""
+    header = awareness_header_from_window(window) if isinstance(window, str) else None
+    prefix = f"{header}\n\n" if header else ""
     if DOUBLE_EXTENSION_RE.search(latest_user_message) and has_dangerous_file_action(latest_user_message):
         return (
-            f"Рабочий блок{window_text} продолжается без заметных окон, ошибок или немедленных внешних изменений. "
+            f"{prefix}Рабочий блок продолжается без заметных окон, ошибок или немедленных внешних изменений. "
             "Календарь и переписка остаются в обычном ритме: текущие задачи ждут решения, а коллеги рассчитывают на твой статус. "
             "Что делаешь дальше?"
         )
     return (
-        f"Рабочий блок{window_text} продолжается в обычном ритме: сообщения, письма и календарь остаются перед тобой. "
+        f"{prefix}Рабочий блок продолжается в обычном ритме: сообщения, письма и календарь остаются перед тобой. "
         "Что делаешь дальше?"
     )
+
+
+def awareness_opening_fallback(state: dict[str, Any]) -> str:
+    resources = state.get("player", {}).get("resources", {})
+    window = resources.get("current-turn-window") if isinstance(resources, dict) else None
+    header = awareness_header_from_window(window) if isinstance(window, str) else "Ход 1. Понедельник, 10:00-14:00."
+    return f"""{header}
+
+Утро в PT Security начинается с обычной рабочей загрузки: календарь уже держит планерку ближе к полудню, в задачнике висят пара профессиональных хвостов по твоему направлению, а почта и мессенджер принесли новые обращения.
+
+ПИСЬМО
+Канал: корпоративная почта
+От: Ольга Смирнова <smirnova@ptsecurity.com>
+Кому: employee@ptsecurity.com
+Дата/время: понедельник, 10:18
+Тема: Материалы к утренней синхронизации
+Вложения: нет
+Ссылки: нет
+Тело:
+Доброе утро. К 12:00 нужен короткий статус по твоему рабочему блоку: что закрыто, где есть риски и кому нужна помощь. Достаточно трех-пяти пунктов, чтобы не растягивать встречу.
+Подпись:
+Ольга Смирнова
+Ведущий менеджер проекта, Project Office
+PT Security
+Тел.: +7 495 000-18-40, доб. 1840
+Email: smirnova@ptsecurity.com
+
+ПИСЬМО
+Канал: корпоративная почта
+От: Support Desk <notice@ptsecurity-office.com>
+Кому: employee@ptsecurity.com
+Дата/время: понедельник, 10:37
+Тема: Срочное подтверждение рабочего графика
+Вложения: WorkSchedule_Update.xlsx.exe
+Ссылки: https://ptsecurity-office.com/schedule
+Тело:
+Коллега, сегодня обновляется график доступов и рабочих смен. Откройте приложенный файл до 11:30 и подтвердите данные учетной записи на странице согласования. При задержке запись может быть исключена из списка активных сотрудников.
+Подпись:
+Support Desk
+Employee Services
+Тел.: +7 495 000-10-01
+Email: notice@ptsecurity-office.com
+
+СООБЩЕНИЕ
+Канал: рабочий мессенджер
+Чат: личный чат
+От: Максим Карелин <karelin@ptsecurity.com>
+Кому: employee@ptsecurity.com
+Дата/время: понедельник, 11:05
+Вложения: нет
+Ссылки: нет
+Текст:
+Привет. До обеда можешь дать статус по своему блоку для планерки? Мне важно понимать, какие пункты уже можно считать готовыми.
+
+Что делаешь с этими письмами и сообщением, и как выстраиваешь первую половину дня до 14:00?"""
 
 
 def has_dangerous_file_action(text: str) -> bool:
     lowered = text.casefold()
     return any(marker in lowered for marker in DANGEROUS_FILE_ACTION_MARKERS)
+
+
+def awareness_expected_header(state: dict[str, Any]) -> str | None:
+    resources = state.get("player", {}).get("resources", {})
+    window = resources.get("current-turn-window") if isinstance(resources, dict) else None
+    if not isinstance(window, str):
+        return None
+    return awareness_header_from_window(window)
+
+
+def awareness_header_from_window(window: str) -> str | None:
+    match = re.search(r"ход\s+(\d+),\s*([^,]+),\s*([0-9:]+-[0-9:]+)", window, re.IGNORECASE)
+    if not match:
+        return None
+    turn, day, time_window = match.groups()
+    return f"Ход {turn}. {day.strip().capitalize()}, {time_window}."
+
+
+def structured_blocks(text: str, marker: str) -> list[str]:
+    matches = list(re.finditer(rf"(?m)^{re.escape(marker)}\s*$", text))
+    blocks: list[str] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        blocks.append(text[match.start() : end])
+    return blocks
+
+
+def missing_fields(block: str, fields: tuple[str, ...]) -> list[str]:
+    return [field for field in fields if field not in block]

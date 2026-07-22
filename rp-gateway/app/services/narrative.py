@@ -158,6 +158,8 @@ class NarrativeClient:
             "You are the narrator. The RP Gateway already decided the mechanical outcome. "
             "Describe it as fiction. Do not reroll, change the Result, create hidden success, "
             "invent missing resources, or expose service JSON. "
+            "For the awareness campaign, if player.resources.current-turn-window is present, begin with that exact "
+            "scheduled turn as a player-facing Russian header and do not remain in the previous half-day. "
             "Reply in the player's language. Output only final in-world narration and dialogue; "
             "do not include analysis, recommendations, diagnostics, critique, result labels, or Gateway/service wording."
         )

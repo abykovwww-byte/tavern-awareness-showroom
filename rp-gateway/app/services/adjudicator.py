@@ -117,7 +117,7 @@ class Adjudicator:
                 )
                 llm_calls += 1
                 text = response_text(raw)
-                validation = self.validator.validate(text, outcome)
+                validation = self.validator.validate(text, outcome, updated_state)
                 if not validation.valid and self.settings.max_repair_attempts > 0:
                     repaired = True
                     raw = await self.narrative.complete(
@@ -131,7 +131,7 @@ class Adjudicator:
                     )
                     llm_calls += 1
                     text = response_text(raw)
-                    validation = self.validator.validate(text, outcome)
+                    validation = self.validator.validate(text, outcome, updated_state)
                 if not validation.valid:
                     text = safe_fallback(outcome, updated_state, latest)
                     raw = with_text(raw, text)
@@ -178,7 +178,7 @@ class Adjudicator:
                     "duration_ms": duration_ms,
                     "llm_calls": llm_calls,
                     "model": self.settings.narrative_model,
-                    "validator_valid": self.validator.validate(text, outcome).valid,
+                    "validator_valid": self.validator.validate(text, outcome, updated_state).valid,
                     "repair": repaired,
                     "provider_fallback_reason": provider_fallback_reason,
                     "check_id": outcome.check_id,
