@@ -2119,10 +2119,41 @@ function modelOptionsHtml(profiles, provider) {
   if (featured.length) {
     groups.push(`<optgroup label="\u0418\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435 \u0434\u043b\u044f RP">${featured.map(modelOptionHtml).join("")}</optgroup>`);
   }
-  if (remaining.length) {
-    groups.push(`<optgroup label="\u0412\u0441\u0435 \u043e\u0441\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u043c\u043e\u0434\u0435\u043b\u0438 OpenRouter">${remaining.map(modelOptionHtml).join("")}</optgroup>`);
+  for (const [family, familyProfiles] of openRouterFamilyGroups(remaining)) {
+    groups.push(`<optgroup label="${escapeHtml(family)}">${familyProfiles.map(modelOptionHtml).join("")}</optgroup>`);
   }
   return groups.join("");
+}
+
+function openRouterFamilyGroups(profiles) {
+  const families = new Map();
+  for (const profile of profiles) {
+    const family = openRouterFamilyLabel(profile);
+    const group = families.get(family) || [];
+    group.push(profile);
+    families.set(family, group);
+  }
+  return [...families.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([family, familyProfiles]) => [
+      family,
+      familyProfiles.sort((left, right) => String(left.title || "").localeCompare(String(right.title || ""))),
+    ]);
+}
+
+function openRouterFamilyLabel(profile) {
+  const model = String(profile?.model || "").toLowerCase();
+  const publisher = String(profile?.params?.publisher || "").trim();
+  if (model.startsWith("anthropic/")) return "Anthropic / Claude";
+  if (model.startsWith("google/")) return "Google / Gemini \u0438 Gemma";
+  if (model.startsWith("deepseek/")) return "DeepSeek";
+  if (model.startsWith("qwen/")) return "Qwen";
+  if (model.startsWith("meta-llama/") || model.startsWith("meta/")) return "Meta / Llama";
+  if (model.startsWith("mistralai/")) return "Mistral";
+  if (model.startsWith("openai/")) return "OpenAI";
+  if (model.startsWith("sao10k/")) return "Sao10K / Euryale";
+  if (model.startsWith("thedrummer/")) return "TheDrummer";
+  return publisher || model.split("/")[0] || "\u041f\u0440\u043e\u0447\u0438\u0435 OpenRouter";
 }
 
 function renderProviderOptions(select, preferred) {
