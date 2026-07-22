@@ -90,6 +90,7 @@ class OutputValidator:
         state: dict[str, Any] | None = None,
         campaign_id: str | None = None,
         latest_user_message: str = "",
+        scenario_type: str = "rp",
     ) -> ValidationResult:
         lowered = text.lower()
         violations: list[str] = []
@@ -100,7 +101,7 @@ class OutputValidator:
         for phrase in SERVICE_PHRASES:
             if phrase in lowered:
                 violations.append(f"Narrative exposed service wording: {phrase}")
-        if outcome.result in {"failure", "critical_failure", "failure_with_progress"}:
+        if scenario_type == "rp" and outcome.result in {"failure", "critical_failure", "failure_with_progress"}:
             risky = [
                 "secretly grants",
                 "equivalent authority",
@@ -117,7 +118,7 @@ class OutputValidator:
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
-        if is_awareness_campaign(state or {}, campaign_id):
+        if scenario_type == "training" and is_awareness_campaign(state or {}, campaign_id):
             expected_header = awareness_expected_header(state) if state else None
             final_summary = awareness_final_summary(state)
             if expected_header and not text.lstrip().startswith(expected_header):
@@ -169,9 +170,17 @@ def safe_fallback(
     state: dict[str, Any] | None = None,
     latest_user_message: str = "",
     campaign_id: str | None = None,
+    scenario_type: str = "rp",
 ) -> str:
-    if state and is_awareness_campaign(state, campaign_id):
+    if scenario_type == "training" and state and is_awareness_campaign(state, campaign_id):
         return awareness_safe_fallback(state, latest_user_message)
+    if scenario_type == "novel":
+        return (
+            "Сцена сохраняет набранный ритм: собеседник реагирует на сказанное, а напряжение между героями "
+            "остается в воздухе, не подменяя твоего следующего решения."
+        )
+    if scenario_type == "training":
+        return "Ситуация меняется только в пределах явно выбранного действия. Следующий этап сценария готов к продолжению."
     first = RESULT_NARRATION.get(outcome.result, "Сцена сдвигается дальше, но без лишних уступок за кадром.")
     if outcome.blocked_reasons:
         second = "Что-то в устройстве мира упирается и не дает продавить желаемое напрямую."

@@ -988,6 +988,10 @@ button:disabled {
   gap: 8px;
 }
 
+.scenario-type-segmented {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .segmented label {
   display: flex;
   min-height: 38px;
@@ -1261,7 +1265,8 @@ button:disabled {
   }
 
   .wizard-grid,
-  .segmented {
+  .segmented,
+  .scenario-type-segmented {
     grid-template-columns: 1fr;
   }
 

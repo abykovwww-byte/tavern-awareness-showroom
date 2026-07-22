@@ -2,6 +2,15 @@
 
 FastAPI arbitration gateway for the SillyTavern RP stack.
 
+Light GUI parties persist an explicit `scenario_type` selected at creation:
+
+- `rp`: D20 checks and fixed mechanical outcomes;
+- `novel`: collaborative prose without rolls or check records;
+- `training`: deterministic authored turns, scoring, and strict validators.
+
+Worldpack system prompts and author's notes supplement this party-level
+contract. They cannot silently select or change the scenario type.
+
 SillyTavern connects to this service as an OpenAI-compatible endpoint:
 
 ```text
@@ -31,16 +40,18 @@ POST /v1/chat/completions
 
 ## Explicit Check Syntax
 
-The MVP parser understands explicit commands embedded in the latest user
-message:
+`/check` is available only to `rp` parties and the legacy
+`/v1/chat/completions` RP flow. The parser understands explicit commands
+embedded in the latest user message:
 
 ```text
 /check persuasion target=king skill=2 difficulty=14 goal="secure a private meeting"
 /check resource resource=coin amount=1 difficulty=8 goal="bribe the guard"
 ```
 
-Free-form text is treated as a low-confidence `feasibility` check. Claimed facts
-remain unconfirmed until state is updated by the gateway.
+In `rp`, free-form text is treated as a low-confidence `feasibility` check. In
+`novel` and `training`, free-form text is resolved without a roll according to
+the selected scenario contract.
 
 ## World UI Commands
 

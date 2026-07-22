@@ -1,26 +1,15 @@
 # Quick Reply Notes: Awareness
 
-Do not rewrite global Quick Reply presets for this world pack. Avoid labels that directly reveal the expected security action during play.
+Do not add scenario-specific Quick Replies during turns 1-9. Buttons such as "report", "check sender", "follow the standard", or "do not open" reveal the expected security decision and invalidate the assessment.
 
-Suggested neutral labels:
+Awareness uses free-text player responses in the `training` scenario type. Do not expose `/check`, skill, difficulty, D20, scoring, or prewritten answer choices.
 
-```text
-По стандарту
-Проверить канал
-Собрать факты
-Не торопиться
-Уточнить у отправителя
-Официальный процесс
-Дать общий ответ
-Отложить действие
-Завершить неделю
-```
-
-Suggested player-facing commands:
+Only mode-neutral interface commands are acceptable outside the decision surface:
 
 ```text
-/check information target=message skill=2 difficulty=10 goal="разобрать факты сообщения"
-/check trust target=sender skill=1 difficulty=10 goal="проверить отправителя через независимый канал"
-/check persuasion target=colleague skill=2 difficulty=11 goal="объяснить необходимость официального процесса"
-/check conflict target=deadline-pressure skill=2 difficulty=12 goal="сохранить стандарт компании под давлением срочности"
+Журнал
+Показать персонажа
+Продолжить
 ```
+
+The final debrief on turn 10 may offer a command to review the completed session, because scoring is no longer hidden at that point.

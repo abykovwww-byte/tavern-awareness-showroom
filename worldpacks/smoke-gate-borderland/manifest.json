@@ -6,6 +6,7 @@
   "tone": ["dark fantasy", "frontier intrigue", "survival mystery"],
   "player_role": "Временный поверенный Пограничной Канцелярии с ограниченным правом расследования",
   "created_for": "sillytavern-rp-gateway",
+  "scenario_types": {"recommended": "rp", "supported": ["rp", "novel"]},
   "assumptions": [
     "Оригинальный мир без привязки к существующим франшизам.",
     "Игра идет на русском языке.",

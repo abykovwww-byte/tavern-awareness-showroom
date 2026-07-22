@@ -108,6 +108,7 @@ class PartyStore:
                 CREATE TABLE IF NOT EXISTS parties (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
+                    scenario_type TEXT NOT NULL DEFAULT 'rp',
                     worldpack_id TEXT NOT NULL REFERENCES worldpacks(id),
                     player_character_id TEXT NOT NULL REFERENCES player_characters(id),
                     model_profile_id TEXT NOT NULL REFERENCES model_profiles(id),
@@ -124,6 +125,7 @@ class PartyStore:
                 """
             )
             self.migrate_owner_columns(connection)
+            self.migrate_scenario_type(connection)
 
     def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
         worldpack_columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
@@ -138,6 +140,12 @@ class PartyStore:
                     f"UPDATE {table} SET owner_user_id = ? WHERE owner_user_id IS NULL OR owner_user_id = ''",
                     (self.default_owner_user_id,),
                 )
+
+    def migrate_scenario_type(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
+        if "scenario_type" not in columns:
+            connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
+            connection.execute("UPDATE parties SET scenario_type = 'training' WHERE worldpack_id = 'awareness'")
 
     def seed_model_profiles(self) -> None:
         self.prune_unused_live_model_profiles()
@@ -619,6 +627,10 @@ class PartyStore:
 
     def create_party(self, request: PartyCreate, owner_user_id: str | None = None) -> PartySummary:
         pack = self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
+        scenario_types = pack.manifest.get("scenario_types") if isinstance(pack.manifest, dict) else None
+        supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
+        if isinstance(supported, list) and supported and request.scenario_type not in supported:
+            raise ValueError(f"worldpack {pack.id} does not support scenario type {request.scenario_type}")
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
@@ -631,15 +643,16 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO parties(
-                    id, owner_user_id, title, worldpack_id, player_character_id, model_profile_id,
+                    id, owner_user_id, title, scenario_type, worldpack_id, player_character_id, model_profile_id,
                     state_campaign_id, status, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
                     owner_user_id,
                     request.title,
+                    request.scenario_type,
                     request.worldpack_id,
                     request.player_character_id,
                     request.model_profile_id,
@@ -728,6 +741,7 @@ class PartyStore:
             id=row["id"],
             owner_user_id=row["owner_user_id"],
             title=row["title"],
+            scenario_type=row["scenario_type"],
             worldpack_id=row["worldpack_id"],
             player_character_id=row["player_character_id"],
             model_profile_id=row["model_profile_id"],

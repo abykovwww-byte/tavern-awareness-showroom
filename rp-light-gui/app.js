@@ -91,6 +91,7 @@ const els = {
   worldInstruction: document.querySelector("#worldInstruction"),
   worldPreviewLlmButton: document.querySelector("#worldPreviewLlmButton"),
   checkForm: document.querySelector("#checkForm"),
+  checkPanel: document.querySelector("#checkPanel"),
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
@@ -118,11 +119,18 @@ const checkLabels = {
 };
 
 const metaHints = {
+  "Сценарий": "Режим исполнения Gateway, выбранный при создании партии.",
   "Мир": "Worldpack или prompt-мир, из которого взят стартовый state.",
   "Персонаж": "Активный игроковый персонаж этой партии.",
   "Модель": "NVIDIA model profile, выбранный для нарратива, проверок и world edits.",
   "ID партии": "Стабильный party_id; он связывает историю, state и выбранные профили.",
   "State": "campaign_id изолированного состояния партии.",
+};
+
+const scenarioTypeLabels = {
+  rp: "RP · D20",
+  novel: "Роман",
+  training: "Обучение",
 };
 
 const CHAT_VISIBLE_TURNS = 4;
@@ -165,6 +173,7 @@ function bindEvents() {
   els.changePartyModelButton.addEventListener("click", changePartyModel);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
+    syncAutoPartyTitle();
     renderWorldPreview();
     syncReadyCharacterDescription();
   });
@@ -184,6 +193,14 @@ function bindEvents() {
   });
   document.querySelectorAll("input[name='worldSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
   document.querySelectorAll("input[name='characterSource']").forEach((input) => input.addEventListener("change", renderCreationModes));
+  document.querySelectorAll("input[name='scenarioType']").forEach((input) =>
+    input.addEventListener("change", () => {
+      renderWorldOptions();
+      syncAutoPartyTitle();
+      syncReadyCharacterDescription();
+      renderWorldPreview();
+    }),
+  );
 }
 
 function openInspector() {
@@ -467,9 +484,10 @@ function renderPartyList() {
     .map((party) => {
       const active = appState.activeParty?.id === party.id ? " active" : "";
       const world = party.worldpack?.title || party.worldpack_id;
+      const scenario = scenarioTypeLabels[party.scenario_type] || party.scenario_type;
       return `<button class="party-card${active}" data-party-id="${escapeHtml(party.id)}" title="Открыть партию ${escapeHtml(party.title)}">
         <strong>${escapeHtml(party.title)}</strong>
-        <span>${escapeHtml(world)}</span>
+        <span>${escapeHtml(world)} · ${escapeHtml(scenario)}</span>
       </button>`;
     })
     .join("");
@@ -488,12 +506,16 @@ function renderMeta() {
   const party = appState.activeParty;
   els.deletePartyButton.disabled = !party;
   els.changePartyModelButton.disabled = !party;
+  if (els.checkPanel) {
+    els.checkPanel.classList.toggle("hidden", !party || party.scenario_type !== "rp");
+  }
   renderPartyModelSelect();
   if (!party) {
     els.partyMeta.innerHTML = `<dt title="Статус выбранной партии">Статус</dt><dd>партия не выбрана</dd>`;
     return;
   }
   const rows = [
+    ["Сценарий", scenarioTypeLabels[party.scenario_type] || party.scenario_type],
     ["Мир", party.worldpack?.title || party.worldpack_id],
     ["Персонаж", party.player_character?.name || party.player_character_id],
     ["Модель", party.model_profile?.model || party.model_profile_id],
@@ -1022,20 +1044,49 @@ function closePartyDialog() {
 }
 
 function renderDialogOptions() {
-  els.worldSelect.innerHTML = appState.worldpacks
-    .map((pack) => `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)} · ${escapeHtml(pack.status)}</option>`)
-    .join("");
+  document.querySelectorAll("input[name='scenarioType']").forEach((input) => {
+    input.checked = false;
+  });
+  renderWorldOptions();
   els.modelSelect.innerHTML = appState.modelProfiles
     .map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.title)}</option>`)
     .join("");
   const pack = selectedWorldpack();
   els.partyTitleInput.value = pack ? `${pack.title}: партия` : "Новая партия";
+  els.partyTitleInput.dataset.autoValue = els.partyTitleInput.value;
   els.worldPromptTitleInput.value = "";
   els.worldPromptInput.value = "";
   els.characterNameInput.value = "Игрок";
   els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
   renderWorldPreview();
   renderModelPreview();
+}
+
+function renderWorldOptions() {
+  const scenarioType = selectedRadioValue("scenarioType");
+  const previous = els.worldSelect.value;
+  const available = appState.worldpacks.filter((pack) => worldSupportsScenario(pack, scenarioType));
+  els.worldSelect.innerHTML = available
+    .map((pack) => `<option value="${escapeHtml(pack.id)}">${escapeHtml(pack.title)} · ${escapeHtml(pack.status)}</option>`)
+    .join("");
+  if (available.some((pack) => pack.id === previous)) {
+    els.worldSelect.value = previous;
+  }
+}
+
+function worldSupportsScenario(pack, scenarioType) {
+  if (!scenarioType) return true;
+  const supported = pack?.manifest?.scenario_types?.supported;
+  return !Array.isArray(supported) || !supported.length || supported.includes(scenarioType);
+}
+
+function syncAutoPartyTitle() {
+  const previousAuto = els.partyTitleInput.dataset.autoValue || "";
+  if (els.partyTitleInput.value && els.partyTitleInput.value !== previousAuto) return;
+  const pack = selectedWorldpack();
+  const nextAuto = pack ? `${pack.title}: партия` : "Новая партия";
+  els.partyTitleInput.value = nextAuto;
+  els.partyTitleInput.dataset.autoValue = nextAuto;
 }
 
 function renderCreationModes() {
@@ -1107,10 +1158,12 @@ function syncReadyCharacterDescription() {
 async function createParty(event) {
   event.preventDefault();
   const modelProfileId = els.modelSelect.value;
+  const scenarioType = selectedRadioValue("scenarioType");
   const characterPrompt = selectedRadioValue("characterSource") === "prompt";
   try {
     setBusy(true, "Создаю партию и стартового персонажа...");
     if (!modelProfileId) throw new Error("Нет доступной модели для партии.");
+    if (!scenarioType) throw new Error("Выбери тип сценария.");
     const worldpack = await resolveWorldpack();
     const concept = characterPrompt
       ? els.characterDescriptionInput.value.trim()
@@ -1127,6 +1180,7 @@ async function createParty(event) {
     const character = await apiPost("/api/player-characters", draft.draft);
     const party = await apiPost("/api/parties", {
       title: els.partyTitleInput.value.trim(),
+      scenario_type: scenarioType,
       worldpack_id: worldpack.id,
       player_character_id: character.player_character.id,
       model_profile_id: modelProfileId,

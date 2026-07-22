@@ -31,6 +31,9 @@ class Settings:
     app_host: str = os.getenv("APP_HOST", "0.0.0.0")
     app_port: int = env_int("APP_PORT", 8088)
     campaign_id: str = os.getenv("CAMPAIGN_ID", "default")
+    scenario_type: str = os.getenv("SCENARIO_TYPE", "rp")
+    world_system_prompt: str = ""
+    world_authors_note: str = ""
     database_url: str = os.getenv("DATABASE_URL", "sqlite:////data/rp_gateway.db")
     world_state_path: str = os.getenv("WORLD_STATE_PATH", "/state/current.json")
     party_state_root: str = os.getenv("PARTY_STATE_ROOT", "/state/parties")

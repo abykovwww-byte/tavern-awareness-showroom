@@ -114,13 +114,25 @@ LAN browser
 The central binding is explicit and server-owned:
 
 ```text
-Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
+Party = ScenarioType + WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
 ```
 
 The browser stores only the selected `party_id` preference. Each game, check,
 state, history and GM request goes through `/api/parties/{party_id}/...`.
 Gateway resolves that party to the selected world pack, player character,
 model profile and `StateStore(state_campaign_id)`.
+
+`ScenarioType` is chosen explicitly when the party is created. It controls
+Gateway execution independently from world content:
+
+- `rp`: intent parsing, D20 resolution, modifiers, checks, and fixed outcomes;
+- `novel`: collaborative prose without rolls, skills, difficulty, or check records;
+- `training`: deterministic authored turns, strict templates, validators, and scoring state.
+
+Worldpack `gm_system` and `authors_note` files are loaded into the party prompt
+as supplements. They cannot weaken the selected scenario contract. A manifest
+may declare `scenario_types.supported` and `scenario_types.recommended`; the UI
+still requires a manual scenario selection and never switches it implicitly.
 
 SillyTavern remains available on port `8000` as a legacy/debug client.
 

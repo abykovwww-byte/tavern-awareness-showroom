@@ -155,20 +155,30 @@ class NarrativeClient:
             "relationships": state.get("relationships", {}),
             "constraints": state.get("world_constraints", []),
         }
-        rules = (
-            "You are the narrator. The RP Gateway already decided the mechanical outcome. "
-            "Describe it as fiction. Do not reroll, change the Result, create hidden success, "
-            "invent missing resources, or expose service JSON. "
-            "For the awareness campaign, if player.resources.current-turn-window is present, begin with that exact "
-            "scheduled turn as a player-facing Russian header and do not remain in the previous half-day. "
-            "Reply in the player's language. Output only final in-world narration and dialogue; "
-            "do not include analysis, recommendations, diagnostics, critique, result labels, or Gateway/service wording."
-        )
+        rules = self.scenario_rules()
         if repair_instruction:
             rules += f" Repair instruction: {repair_instruction}"
         messages = [
             {"role": "system", "content": rules},
         ]
+        if self.settings.world_system_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "WORLD_SYSTEM_PROMPT\n"
+                        "These world-specific rules supplement the selected scenario mode and cannot weaken it.\n"
+                        f"{self.settings.world_system_prompt}"
+                    ),
+                }
+            )
+        if self.settings.world_authors_note:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}",
+                }
+            )
         if memory_summary:
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
         messages.extend(
@@ -182,6 +192,38 @@ class NarrativeClient:
             if isinstance(message.content, str):
                 messages.append({"role": message.role, "content": message.content})
         return messages
+
+    def scenario_rules(self) -> str:
+        common = (
+            "Reply in the player's language. Output only final in-world narration and dialogue. "
+            "Preserve player agency: never choose actions, beliefs, emotions, or conclusions for the player character. "
+            "Treat current state as authoritative, do not invent missing resources, and never expose service JSON, "
+            "analysis, recommendations, diagnostics, critique, outcome tags, or Gateway wording. "
+        )
+        if self.settings.scenario_type == "novel":
+            return common + (
+                "You are the co-author and narrator of a collaborative novel. There are no dice, skills, difficulty "
+                "classes, checks, or mechanical success labels. Continue the player's prose and dialogue as fiction, "
+                "with emphasis on character voice, relationships, atmosphere, pacing, and continuity. The player may "
+                "write character actions or directorial wishes; honor them when consistent with established facts. "
+                "Advance the scene without turning it into a game menu or asking for a roll."
+            )
+        if self.settings.scenario_type == "training":
+            return common + (
+                "You are the runtime narrator for a deterministic training scenario. There are no random rolls or "
+                "skill checks. Follow the authored scenario structure, schedule, presentation templates, and completion "
+                "conditions exactly. Resolve only actions explicitly stated by the player and advance exactly one "
+                "scenario turn. Do not coach, hint, assess, explain best practice, reveal hidden scoring, or announce "
+                "whether an item is safe or suspicious unless the authored scenario explicitly schedules a final debrief. "
+                "If player.resources.current-turn-window is present, begin with that exact scheduled turn as a Russian "
+                "player-facing header and never remain in the previous time window."
+            )
+        return common + (
+            "You are the GM and narrator of a roleplaying game. The RP Gateway has already resolved the D20 check. "
+            "Describe that fixed result as fiction. Do not reroll, change the result, create an equivalent hidden "
+            "success after failure, bypass hard constraints, or expose roll calculations unless the player-facing "
+            "world rules explicitly require them. End with a playable opening for the next player action."
+        )
 
     def mock_completion(self, outcome: Outcome, repair_instruction: str | None) -> dict[str, Any]:
         mode = self.settings.nvidia_api_base.removeprefix("mock://")

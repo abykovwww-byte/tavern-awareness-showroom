@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RP Light GUI</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260722-scenario-types" />
   </head>
   <body>
     <section class="login-screen hidden" id="loginScreen">
@@ -227,7 +227,7 @@
           <div id="proposalList" class="proposal-list"></div>
         </section>
 
-        <section class="summary-panel">
+        <section class="summary-panel" id="checkPanel">
           <div class="section-label">Проверка</div>
           <p class="panel-hint">Быстрый /check: gateway решает исход, а модель только описывает его как сцену.</p>
           <form id="checkForm" class="check-form">
@@ -330,6 +330,15 @@
           <div class="wide" id="modelPreview"></div>
 
           <fieldset class="choice-block wide">
+            <legend>Тип сценария</legend>
+            <div class="segmented scenario-type-segmented">
+              <label title="Ролевая игра с D20, навыками, сложностью и механическими исходами"><input type="radio" name="scenarioType" value="rp" required /> RP · D20</label>
+              <label title="Совместное повествование без бросков, навыков и механических проверок"><input type="radio" name="scenarioType" value="novel" required /> Роман</label>
+              <label title="Детерминированный учебный сценарий со строгой последовательностью и валидацией"><input type="radio" name="scenarioType" value="training" required /> Обучение</label>
+            </div>
+          </fieldset>
+
+          <fieldset class="choice-block wide">
             <legend>Мир</legend>
             <div class="segmented">
               <label><input type="radio" name="worldSource" value="ready" checked /> Готовый worldpack</label>
@@ -387,6 +396,6 @@
 
     <div id="operationStatus" class="operation-status hidden" role="status" aria-live="polite"></div>
     <div id="toast" class="toast"></div>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=20260722-scenario-types"></script>
   </body>
 </html>

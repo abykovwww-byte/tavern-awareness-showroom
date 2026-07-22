@@ -14,7 +14,42 @@ from app.models.schemas import Intent, Outcome, PatchOperation, StatePatch
 TARGETED_CHECKS = {"persuasion", "intimidation", "deception", "trust", "conflict"}
 SOCIAL_CHECKS = {"persuasion", "intimidation", "deception", "trust"}
 DOUBLE_EXTENSION_RE = re.compile(r"\b[\w.-]+\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\.exe\b", re.IGNORECASE)
-DANGEROUS_FILE_ACTION_MARKERS = ("откры", "запуск", "запуст", "скач", "open", "run", "download")
+DANGEROUS_FILE_ACTION_RE = re.compile(
+    r"\b(?:открываю|открываем|скачиваю|скачиваем|запускаю|запускаем|open|run|download)\b",
+    re.IGNORECASE,
+)
+SOC_REPORT_RE = re.compile(
+    r"\b(?:сообщаю|пишу|отправляю|пересылаю|направляю|report|forward)\b.{0,160}"
+    r"\b(?:soc|soc@|диб|специалист(?:у|а)?\s+(?:д?иб|информационной\s+безопасности))\b",
+    re.IGNORECASE | re.DOTALL,
+)
+FORWARD_TO_OTHERS_RE = re.compile(
+    r"\b(?:пересылаю|отправляю|скидываю|forward)\b.{0,180}"
+    r"\b(?:коллег|общ(?:ий|ему|ий\s+чат)|групп|личн(?:ый|ому)\s+чат|друг|знаком)\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+SUSPICIOUS_CONTENT_RE = re.compile(
+    r"(?:подозр|неизвестн|странн|вложени|полученн\w*\s+письм|двойн\w*\s+расширени|\.exe\b)",
+    re.IGNORECASE,
+)
+CREDENTIAL_ACTION_RE = re.compile(
+    r"\b(?:сообщаю|передаю|отправляю|скидываю|ввожу|называю|диктую|send|enter|share)\b.{0,140}"
+    r"\b(?:парол|проверочн\w*\s+код|одноразов\w*\s+код|уч[её]тн\w*\s+(?:запис|данн)|логин|mfa|otp|token|токен)\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+EXTERNAL_LOGIN_RE = re.compile(
+    r"\b(?:перехожу|открываю|захожу|go|open)\b.{0,120}\b(?:ссыл|сайт|страниц)\w*.{0,180}"
+    r"\b(?:ввожу|авториз|вхожу|логин|уч[её]тн)\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+CONFIDENTIAL_DISCLOSURE_RE = re.compile(
+    r"\b(?:сообщаю|рассказываю|передаю|отправляю|описываю|раскрываю|send|share)\b.{0,180}"
+    r"\b(?:структур\w*\s+компан|внутренн\w*\s+(?:систем|сет|процедур)|администратор|схем\w*\s+сет|"
+    r"(?:данн|спис|контакт)\w*\s+клиент|клиент\w*\s+(?:данн|спис|контакт)|"
+    r"конфиденциальн\w*\s+(?:информац|данн))\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+REPORT_DETAIL_RE = re.compile(r"\b(?:отправител|адрес|домен|врем|тем|вложени|ссылк|канал)\w*", re.IGNORECASE)
 AWARENESS_TURN_WINDOWS = {
     1: "ход 1, понедельник, 10:00-14:00",
     2: "ход 2, понедельник, 15:00-18:00",
@@ -78,7 +113,12 @@ class RuleEngine:
         request_id: str,
         roll: int | None = None,
         campaign_id: str | None = None,
+        scenario_type: str = "rp",
     ) -> tuple[Outcome, StatePatch]:
+        if scenario_type == "novel":
+            return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
+        if scenario_type == "training":
+            return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
         if intent.action_type in TARGETED_CHECKS and not intent.target:
             intent.ambiguities.append(f"{intent.action_type} has no target; outcome is constrained.")
         check_id = self.check_id(intent, request_id)
@@ -112,6 +152,97 @@ class RuleEngine:
         )
         patch = self.patch_for_outcome(state, intent, outcome, relationship_key, relationship, campaign_id)
         return outcome, patch
+
+    def resolve_nonmechanical(
+        self,
+        state: dict[str, Any],
+        intent: Intent,
+        request_id: str,
+        campaign_id: str | None,
+        scenario_type: str,
+    ) -> tuple[Outcome, StatePatch]:
+        check_id = self.check_id(intent, request_id)
+        training = scenario_type == "training"
+        result = "deterministic_resolution" if training else "narrative_continuation"
+        if training:
+            consequences = [
+                "Apply only actions explicitly chosen by the player.",
+                "Advance the authored training scenario exactly one turn.",
+                "Do not add hints, assessment, or remediation unless the scenario schedules them now.",
+            ]
+            authoritative = (
+                "<AUTHORITATIVE_OUTCOME>\n"
+                "Mode: deterministic training\n"
+                "No die was rolled and no skill check exists. Resolve only the player's explicit actions, "
+                "apply their observable consequences, and advance exactly one authored scenario turn.\n"
+                "</AUTHORITATIVE_OUTCOME>"
+            )
+        else:
+            consequences = [
+                "Continue the shared fiction from the player's contribution.",
+                "Prioritize character, relationship, pacing, and scene continuity over game mechanics.",
+                "Leave consequential choices and the player character's inner decisions to the player.",
+            ]
+            authoritative = (
+                "<AUTHORITATIVE_OUTCOME>\n"
+                "Mode: collaborative novel\n"
+                "No die was rolled and no skill check exists. Continue the fiction coherently without inventing "
+                "a mechanical success or failure.\n"
+                "</AUTHORITATIVE_OUTCOME>"
+            )
+        outcome = Outcome(
+            check_id=check_id,
+            action_type=intent.action_type,
+            actor=intent.actor,
+            target=intent.target,
+            result=result,
+            roll=0,
+            difficulty=0,
+            modifiers={},
+            final_score=0,
+            blocked_reasons=[],
+            consequences=consequences,
+            forbidden_reinterpretations=[
+                "Do not present a roll, difficulty, modifier, check result, or game-system label.",
+                "Do not expose the authoritative outcome block.",
+            ],
+            authoritative_block=authoritative,
+        )
+        return outcome, self.patch_for_nonmechanical(state, intent, outcome, campaign_id, scenario_type)
+
+    def patch_for_nonmechanical(
+        self,
+        state: dict[str, Any],
+        intent: Intent,
+        outcome: Outcome,
+        campaign_id: str | None,
+        scenario_type: str,
+    ) -> StatePatch:
+        turn = int(state.get("meta", {}).get("turn", 0)) + 1
+        participants = [intent.actor] + ([intent.target] if intent.target else [])
+        operations: list[PatchOperation] = [
+            PatchOperation(
+                op="add",
+                path="/timeline/-",
+                value={
+                    "turn": turn,
+                    "event": f"{scenario_type} turn {turn} accepted from explicit player input.",
+                    "confirmed": True,
+                    "participants": participants,
+                },
+                reason=f"Records the authoritative {scenario_type} turn boundary.",
+                turn=turn,
+            )
+        ]
+        if scenario_type == "training":
+            operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
+            operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
+        return StatePatch(
+            turn=turn,
+            check_id=outcome.check_id,
+            source=f"{scenario_type}-gateway",
+            patch=operations,
+        )
 
     def check_id(self, intent: Intent, request_id: str) -> str:
         raw = f"{request_id}:{intent.action_type}:{intent.actor}:{intent.target}:{intent.desired_outcome}"
@@ -337,11 +468,43 @@ class RuleEngine:
         if not is_awareness_campaign(state, campaign_id):
             return []
         text = intent.desired_outcome
-        if not (DOUBLE_EXTENSION_RE.search(text) and self.has_dangerous_file_action(text)):
-            return []
+        deltas: dict[str, int] = {}
+
+        def add(resource_id: str, delta: int) -> None:
+            deltas[resource_id] = deltas.get(resource_id, 0) + delta
+
+        if DOUBLE_EXTENSION_RE.search(text) and self.explicit_action(DANGEROUS_FILE_ACTION_RE, text):
+            add("suspicious-artifacts-opened", 1)
+            add("unsafe-actions", 1)
+            add("awareness-score", -3)
+        if self.explicit_action(SOC_REPORT_RE, text):
+            add("safe-escalations", 1)
+            add("awareness-score", 2)
+            if len(REPORT_DETAIL_RE.findall(text)) >= 2:
+                add("reporting-quality", 1)
+                add("awareness-score", 1)
+        if self.explicit_action(FORWARD_TO_OTHERS_RE, text) and SUSPICIOUS_CONTENT_RE.search(text):
+            add("unnecessary-forwarding", 1)
+            add("unsafe-actions", 1)
+            add("awareness-score", -2)
+        if self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text):
+            add("credential-exposure", 1)
+            add("unsafe-actions", 1)
+            add("awareness-score", -5)
+        if self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text):
+            add("confidential-disclosures", 1)
+            add("unsafe-actions", 1)
+            add("awareness-score", -3)
+
         return [
-            self.resource_delta_operation(state, "suspicious-artifacts-opened", 1, "Player opened or ran a double-extension attachment.", turn),
-            self.resource_delta_operation(state, "unsafe-actions", 1, "Player performed an unsafe action with a suspicious attachment.", turn),
+            self.resource_delta_operation(
+                state,
+                resource_id,
+                delta,
+                f"Deterministic Awareness scoring delta for explicit player action: {delta:+d}.",
+                turn,
+            )
+            for resource_id, delta in deltas.items()
         ]
 
     def awareness_turn_operations(
@@ -406,6 +569,9 @@ class RuleEngine:
             return 2, -1
         return 0, 0
 
-    def has_dangerous_file_action(self, text: str) -> bool:
-        lowered = text.casefold()
-        return any(marker in lowered for marker in DANGEROUS_FILE_ACTION_MARKERS)
+    def explicit_action(self, pattern: re.Pattern[str], text: str) -> bool:
+        for match in pattern.finditer(text):
+            prefix = text[max(0, match.start() - 16) : match.start()].casefold()
+            if not re.search(r"(?:\bне|\bне буду|\bотказываюсь|\bdo not|\bdon't|\brefuse to)\s*$", prefix):
+                return True
+        return False

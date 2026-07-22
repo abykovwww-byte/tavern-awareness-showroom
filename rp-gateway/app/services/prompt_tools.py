@@ -63,6 +63,7 @@ class PromptInspector:
             "prompt-preview",
             roll=10,
             campaign_id=self.settings.campaign_id,
+            scenario_type=self.settings.scenario_type,
         )
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
@@ -97,6 +98,7 @@ class PromptInspector:
             str(latest_turn.get("request_id") or "prompt-preview"),
             roll=10,
             campaign_id=self.settings.campaign_id,
+            scenario_type=self.settings.scenario_type,
         )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
         memory_summary = self.store.latest_memory_summary()
@@ -183,6 +185,10 @@ class PromptInspector:
     def system_block_label(self, content: str, index: int) -> tuple[str, str]:
         if content.startswith("LONG_TERM_PARTY_MEMORY"):
             return "long_term_memory", "LONG_TERM_PARTY_MEMORY"
+        if content.startswith("WORLD_SYSTEM_PROMPT"):
+            return "world_system_prompt", "World system prompt"
+        if content.startswith("WORLD_AUTHORS_NOTE"):
+            return "world_authors_note", "World author's note"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:

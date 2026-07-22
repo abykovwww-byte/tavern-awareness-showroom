@@ -89,17 +89,20 @@ class Adjudicator:
             if not authorization and not self.settings.nvidia_api_key:
                 raise PermissionError("NVIDIA API key is required in Authorization header or NVIDIA_API_KEY env")
 
-            state = awareness_state_after_auto_start(
-                self.store.get_state(),
-                self.settings.campaign_id,
-                self.has_auto_start_history(),
-            )
+            state = self.store.get_state()
+            if self.settings.scenario_type == "training":
+                state = awareness_state_after_auto_start(
+                    state,
+                    self.settings.campaign_id,
+                    self.has_auto_start_history(),
+                )
             intent = self.intent_parser.parse(latest)
             outcome, patch = self.rule_engine.resolve(
                 state,
                 intent,
                 request_id,
                 campaign_id=self.settings.campaign_id,
+                scenario_type=self.settings.scenario_type,
             )
             narrative_state = self.preview_applied_state(patch)
 
@@ -132,6 +135,7 @@ class Adjudicator:
                     narrative_state,
                     campaign_id=self.settings.campaign_id,
                     latest_user_message=latest,
+                    scenario_type=self.settings.scenario_type,
                 )
                 if not validation.valid and self.settings.max_repair_attempts > 0:
                     repaired = True
@@ -152,6 +156,7 @@ class Adjudicator:
                         narrative_state,
                         campaign_id=self.settings.campaign_id,
                         latest_user_message=latest,
+                        scenario_type=self.settings.scenario_type,
                     )
                 if not validation.valid:
                     self.store.audit(
@@ -161,7 +166,13 @@ class Adjudicator:
                     )
                     if not allow_gateway_fallback:
                         raise RuntimeError("LLM response failed narrative validation")
-                    text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
+                    text = safe_fallback(
+                        outcome,
+                        narrative_state,
+                        latest,
+                        self.settings.campaign_id,
+                        self.settings.scenario_type,
+                    )
                     raw = with_text(raw, text)
             except PermissionError:
                 raise
@@ -175,14 +186,14 @@ class Adjudicator:
                 if not allow_gateway_fallback:
                     raise RuntimeError(f"Narrative provider HTTP {status}") from exc
                 provider_fallback_reason = f"http_{status}"
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
                 if not allow_gateway_fallback:
                     raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
                 if not allow_gateway_fallback:
@@ -193,7 +204,7 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
                     request_id,
                 )
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id)
+                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -203,7 +214,8 @@ class Adjudicator:
             version = int(updated_state.get("meta", {}).get("state_version", 0))
             turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version, prompt_messages)
             self.store.complete_turn_request(idempotency_key, response)
-            self.store.record_check(turn_id, outcome)
+            if self.settings.scenario_type == "rp":
+                self.store.record_check(turn_id, outcome)
             self.store.audit(
                 "turn_complete",
                 {
@@ -219,6 +231,7 @@ class Adjudicator:
                         updated_state,
                         campaign_id=self.settings.campaign_id,
                         latest_user_message=latest,
+                        scenario_type=self.settings.scenario_type,
                     ).valid,
                     "repair": repaired,
                     "provider_fallback_reason": provider_fallback_reason,

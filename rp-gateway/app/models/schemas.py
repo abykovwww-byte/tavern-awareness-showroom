@@ -27,7 +27,11 @@ OutcomeLabel = Literal[
     "partial_success",
     "success",
     "critical_success",
+    "narrative_continuation",
+    "deterministic_resolution",
 ]
+
+ScenarioType = Literal["rp", "novel", "training"]
 
 
 class ChatMessage(BaseModel):
@@ -183,6 +187,7 @@ class ModelProfileSummary(BaseModel):
 
 class PartyCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
+    scenario_type: ScenarioType
     worldpack_id: str
     player_character_id: str
     model_profile_id: str
@@ -233,6 +238,7 @@ class PartySummary(BaseModel):
     id: str
     owner_user_id: str | None = None
     title: str
+    scenario_type: ScenarioType
     worldpack_id: str
     player_character_id: str
     model_profile_id: str

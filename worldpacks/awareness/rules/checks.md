@@ -1,59 +1,31 @@
-# Checks: Awareness
+# Resolution Rules: Awareness
 
-Use gateway checks when the result is uncertain, socially pressured, resisted by an NPC, changes canonical state, or affects the final assessment.
+Awareness is authored for the `training` scenario type. It has no D20 rolls, skill values, difficulty classes, random success, or `/check` commands. The Gateway evaluates only the actions explicitly stated by the player and advances exactly one scheduled half-day after each response.
 
-## Suggested Check Types
-
-- `information`: разобрать факты сообщения, письма или рабочей ситуации без оценки от нарратора; сверить доступные данные с памятью персонажа и стандартами компании.
-- `feasibility`: выбрать безопасный способ выполнить рабочую задачу без открытия файла, без стороннего входа и без раскрытия лишней информации.
-- `persuasion`: убедить коллегу, руководителя, HR или менеджера принять процессный путь вместо быстрого обхода.
-- `trust`: проверить личность отправителя через независимый рабочий канал или получить честный контекст от настоящего NPC.
-- `conflict`: выдержать давление срочности, авторитета, личной обиды или дедлайна.
-- `resource`: потратить время полудня на проверку, фиксацию фактов, рабочую коммуникацию или официальное сообщение.
-- `deception`: использовать только для безопасного снижения раскрытия, например не показывать внешнему собеседнику лишнюю реакцию; не применять для незаконного обмана.
-- `intimidation`: только профессиональное давление в рамках политики, например остановить небезопасную просьбу ссылкой на процесс.
-
-## Example Chat Commands
-
-```text
-/check information target=structured-email skill=2 difficulty=10 goal="разобрать поля письма и выбрать действие без открытия вложения"
-/check trust target=petrova skill=1 difficulty=10 goal="сверить просьбу с Анной через независимый рабочий канал"
-/check persuasion target=karelin skill=2 difficulty=11 goal="убедить коллегу не пересылать файл в общий чат"
-/check conflict target=deadline-pressure skill=2 difficulty=12 goal="сохранить рабочий процесс под давлением дедлайна"
-/check feasibility target=official-workflow skill=2 difficulty=10 goal="найти безопасный путь выполнения задачи без сторонней формы"
-/check information target=personal-message skill=1 difficulty=12 goal="разобрать личное сообщение без открытия приложенного файла"
-```
-
-## Difficulty Guide
-
-- 8: обычная проверка рабочего канала при низком давлении.
-- 10: запрос с одним конфликтом между привычной работой и аккуратностью.
-- 12: правдоподобная атака с доверием к отправителю или рабочей срочностью.
-- 14: сильное давление руководителя, близкого человека или просьба с потенциально большим ущербом.
-- 16: комбинированная атака последних ходов с личным доверием, рабочей срочностью и запросом секретов.
-
-## Scoring Guidance
+## Deterministic Scoring
 
 Positive state updates:
 
-- `safe-escalations` +1 за корректное сообщение по стандарту компании.
-- `reporting-quality` +1 за ясное описание фактов: отправитель, канал, время, тема, вложения, ссылки, текст просьбы, без лишнего распространения.
-- `awareness-score` +1..+3 за безопасное действие, особенно если было давление.
+- `safe-escalations` +1 for a correct report through the company process.
+- `reporting-quality` +1 for a factual report containing sender, channel, time, subject, attachment or link, and request details without unnecessary redistribution.
+- `awareness-score` +1..+3 for a safe response under realistic pressure.
 
 Negative state updates:
 
-- `unsafe-actions` +1 за небезопасный выбор.
-- `unnecessary-forwarding` +1 за пересылку подозрительного контента коллегам или в личный канал.
-- `suspicious-artifacts-opened` +1 за открытие, скачивание или запуск подозрительного файла.
-- `credential-exposure` +1 за раскрытие пароля, кода, учетной записи, токена или MFA.
-- `confidential-disclosures` +1 за раскрытие структуры компании, систем, клиентов, администраторов или внутренних процедур.
-- `awareness-score` -2..-5 за опасные действия; сильнее всего штрафовать учетные данные и подозрительные файлы.
+- `unsafe-actions` +1 for an unsafe choice.
+- `unnecessary-forwarding` +1 for forwarding suspicious content to colleagues, personal contacts, or group chats.
+- `suspicious-artifacts-opened` +1 for opening, downloading, or running a suspicious file.
+- `credential-exposure` +1 for disclosing a password, verification code, account, token, or MFA value.
+- `confidential-disclosures` +1 for revealing company structure, systems, clients, administrators, or internal procedures.
+- `awareness-score` -2..-5 for unsafe actions, with the largest penalty for credential disclosure and suspicious attachments.
 
 ## Hard Outcome Rules
 
-- Если игрок сообщил пароль, код или учетку, проверка не может превратить это в безопасный успех.
-- Если игрок открыл подозрительный файл, это считается ошибкой даже при последующей корректной реакции.
-- Открытие вредоносного вложения не дает мгновенной видимой реакции для игрока; последствия скрытны и фиксируются в state.
-- Если игрок отправил подозрительный файл в общий чат, ущерб распространения должен быть отражен в state.
-- Если игрок отказался от опасного действия и сообщил по стандарту компании, это успех даже если сообщение потом окажется обычной ошибкой.
-- Если игрок раскрывает только безопасную обобщенную информацию и указывает официальный канал, это не считается конфиденциальным раскрытием.
+- An explicitly disclosed password, code, or account is unsafe; no random result may reinterpret it as safe.
+- Opening a suspicious file is an error even if the player reacts correctly afterward.
+- Opening a malicious attachment produces no immediate visible reaction; the hidden consequence is recorded only in state.
+- Forwarding suspicious content to a shared or personal chat records the additional distribution risk.
+- Refusing an unsafe action and reporting through the company process is safe even if the message later proves benign.
+- Sharing only safe, generalized information and pointing to an official channel is not a confidential disclosure.
+- Do not reveal scoring, rule names, attack labels, or the correctness of a choice during turns 1-9.
+- Turn 10 is the only place for the final assessment, evidence-based score, mistakes, strengths, and recommendations.

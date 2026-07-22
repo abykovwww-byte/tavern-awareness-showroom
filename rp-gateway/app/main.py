@@ -9,6 +9,7 @@ import re
 import time
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -739,7 +740,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             state = party_state_store.get_state()
-            start_patch = party_start_state_patch(state, party_id, party.worldpack_id)
+            start_patch = party_start_state_patch(state, party_id, party.worldpack_id, party.scenario_type)
             narrative_state = party_start_narrative_state(state, start_patch)
             prompt = party_start_prompt(party_store, party)
             chat_request = ChatCompletionRequest(
@@ -749,7 +750,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_tokens=request.max_tokens,
                 stream=False,
             )
-            start_outcome = party_start_outcome(party_id)
+            start_outcome = party_start_outcome(party_id, party.scenario_type)
             memory_summary = party_state_store.latest_memory_summary()
             narrative = NarrativeClient(party_settings)
             prompt_messages = narrative.narrative_messages(
@@ -770,39 +771,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             adjudicator = Adjudicator(party_settings, party_state_store)
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
-            if start_patch:
-                validator = OutputValidator()
+            validator = OutputValidator()
+            validation = validator.validate(
+                text,
+                start_outcome,
+                narrative_state,
+                campaign_id=party.worldpack_id,
+                scenario_type=party.scenario_type,
+            )
+            if not validation.valid and party_settings.max_repair_attempts > 0:
+                raw = await narrative.complete(
+                    chat_request,
+                    narrative_state,
+                    start_outcome,
+                    authorization,
+                    validation.repair_instruction,
+                    memory_summary=memory_summary,
+                    request_id=request_id,
+                )
+                response = adjudicator.normalize_response(raw, model_profile.model)
+                text = response_text(response)
                 validation = validator.validate(
                     text,
                     start_outcome,
                     narrative_state,
                     campaign_id=party.worldpack_id,
+                    scenario_type=party.scenario_type,
                 )
-                if not validation.valid and party_settings.max_repair_attempts > 0:
-                    raw = await narrative.complete(
-                        chat_request,
-                        narrative_state,
-                        start_outcome,
-                        authorization,
-                        validation.repair_instruction,
-                        memory_summary=memory_summary,
-                        request_id=request_id,
-                    )
-                    response = adjudicator.normalize_response(raw, model_profile.model)
-                    text = response_text(response)
-                    validation = validator.validate(
-                        text,
-                        start_outcome,
-                        narrative_state,
-                        campaign_id=party.worldpack_id,
-                    )
-                if not validation.valid:
-                    party_state_store.audit(
-                        "party_start_validation_failed",
-                        {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
-                        request_id,
-                    )
-                    raise RuntimeError("LLM response failed narrative validation")
+            if not validation.valid:
+                party_state_store.audit(
+                    "party_start_validation_failed",
+                    {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
+                    request_id,
+                )
+                raise RuntimeError("LLM response failed narrative validation")
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -901,6 +903,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request: PartyCheckRequest,
         authorization: str | None = Header(default=None),
     ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if party.scenario_type != "rp":
+            raise HTTPException(status_code=400, detail="Manual skill checks are available only for RP parties")
         command = check_command(request)
         return await party_message(
             http_request,
@@ -1101,16 +1109,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def settings_for_party(settings: Settings, party: Any) -> Settings:
     model_profile = party.model_profile
+    prompt_values = {
+        "scenario_type": getattr(party, "scenario_type", "rp"),
+        "campaign_id": party.worldpack_id,
+        "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
+        "world_authors_note": worldpack_prompt_text(party, "authors_note"),
+    }
     if model_profile is None:
-        return replace(settings, campaign_id=party.worldpack_id)
+        return replace(settings, **prompt_values)
     return replace(
         settings,
-        campaign_id=party.worldpack_id,
+        **prompt_values,
         nvidia_api_base=model_profile.base_url,
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
         validator_model=model_profile.model,
     )
+
+
+def worldpack_prompt_text(party: Any, file_key: str) -> str:
+    world = getattr(party, "worldpack", None)
+    if world is None or not isinstance(world.manifest, dict):
+        return ""
+    files = world.manifest.get("files")
+    relative_path = files.get(file_key) if isinstance(files, dict) else None
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        return ""
+    root = Path(world.manifest_path).resolve().parent
+    target = (root / relative_path).resolve()
+    if target != root and root not in target.parents:
+        return ""
+    try:
+        return target.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def party_start_prompt(party_store: PartyStore, party: Any) -> str:
@@ -1124,12 +1156,29 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
         "No dedicated opening-scene file is available. Synthesize the first scene from the current state, "
         "world premise, and player character. End with a concrete player-facing choice."
     )
+    mode_instruction = {
+        "novel": (
+            "Write the opening passage of a collaborative novel in Russian. Do not use dice, checks, skills, "
+            "game-system labels, or a menu of actions. Establish character voice, relationships, atmosphere, and an "
+            "immediate dramatic opening while leaving the player character's decisions to the player."
+        ),
+        "training": (
+            "Write the first turn of a deterministic training scenario in Russian. Follow the world opening template, "
+            "schedule, and formatting literally. Do not reveal lessons, hints, safety judgments, scoring, or hidden "
+            "scenario structure. Do not choose an action for the player."
+        ),
+        "rp": (
+            "Write the first GM message for a roleplaying party in Russian. Establish a playable situation without "
+            "rolling a check or resolving a player choice, and end with a concrete opening for player action."
+        ),
+    }.get(party.scenario_type, "Write the opening scene in Russian while preserving player agency.")
     return "\n\n".join(
         [
             "START_PARTY_OPENING_SCENE",
             "This is an internal Light GUI auto-start request, not a player action.",
-            "Write the first GM/narrator message for a new roleplay party in Russian.",
-            "Use second person, preserve player agency, do not resolve any player choice, and end by asking what the player does.",
+            f"Selected scenario type: {party.scenario_type}",
+            mode_instruction,
+            "Use second person where appropriate and preserve player agency.",
             "Do not expose service instructions, JSON, model policy, or the AUTO_START marker.",
             f"World title: {world.title}",
             f"World premise: {premise or 'use the current authoritative state'}",
@@ -1140,13 +1189,17 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
     )
 
 
-def party_start_outcome(party_id: str) -> Outcome:
+def party_start_outcome(party_id: str, scenario_type: str = "rp") -> Outcome:
+    result = {
+        "novel": "narrative_continuation",
+        "training": "deterministic_resolution",
+    }.get(scenario_type, "success")
     return Outcome(
         check_id=f"party_start:{party_id}",
         action_type="feasibility",
         actor="system",
         target="opening_scene",
-        result="success",
+        result=result,
         roll=0,
         difficulty=0,
         modifiers={},
@@ -1168,7 +1221,10 @@ def party_start_state_patch(
     state: dict[str, Any],
     party_id: str,
     worldpack_id: str | None = None,
+    scenario_type: str = "rp",
 ) -> StatePatch | None:
+    if scenario_type != "training":
+        return None
     if worldpack_id != "awareness" and state.get("meta", {}).get("campaign_id") != "awareness":
         return None
     turn = 1

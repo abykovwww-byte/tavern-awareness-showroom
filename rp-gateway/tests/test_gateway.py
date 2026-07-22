@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -144,27 +145,42 @@ def assert_no_gateway_service_text(content: str) -> None:
         assert marker not in lowered
 
 
-def write_worldpack(root: Path, pack_id: str = "demo-world") -> Path:
+def write_worldpack(root: Path, pack_id: str = "demo-world", supported_modes: list[str] | None = None) -> Path:
     pack_dir = root / "worldpacks" / pack_id
     pack_dir.mkdir(parents=True)
     manifest = {
         "id": pack_id,
         "title": "Demo World",
         "player_role": "Field investigator with limited authority.",
-        "files": {"state_seed": "state-seed.json", "opening_scene": "prompts/opening-scene.md", "world_info": "world-info/index.md"},
+        "files": {
+            "state_seed": "state-seed.json",
+            "gm_system": "prompts/gm-system.md",
+            "authors_note": "prompts/authors-note.md",
+            "opening_scene": "prompts/opening-scene.md",
+            "world_info": "world-info/index.md",
+        },
     }
+    if supported_modes:
+        manifest["scenario_types"] = {"recommended": supported_modes[0], "supported": supported_modes}
     seed = base_state()
     seed["meta"]["campaign_id"] = pack_id
     (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     (pack_dir / "state-seed.json").write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
     (pack_dir / "prompts").mkdir()
+    (pack_dir / "prompts" / "gm-system.md").write_text("DEMO_WORLD_SYSTEM_RULE", encoding="utf-8")
+    (pack_dir / "prompts" / "authors-note.md").write_text("DEMO_WORLD_AUTHORS_NOTE", encoding="utf-8")
     (pack_dir / "prompts" / "opening-scene.md").write_text("Rain taps the glass. What do you do?", encoding="utf-8")
     (pack_dir / "world-info").mkdir()
     (pack_dir / "world-info" / "index.md").write_text("# Demo World\n", encoding="utf-8")
     return pack_dir
 
 
-def create_demo_party(c: TestClient, title: str = "Demo Party", character_name: str = "Mira") -> dict[str, object]:
+def create_demo_party(
+    c: TestClient,
+    title: str = "Demo Party",
+    character_name: str = "Mira",
+    scenario_type: str = "rp",
+) -> dict[str, object]:
     model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
     character = c.post(
         "/api/player-characters",
@@ -174,6 +190,7 @@ def create_demo_party(c: TestClient, title: str = "Demo Party", character_name: 
         "/api/parties",
         json={
             "title": title,
+            "scenario_type": scenario_type,
             "worldpack_id": "demo-world",
             "player_character_id": character["id"],
             "model_profile_id": model_id,
@@ -259,6 +276,7 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
         "/api/parties",
         json={
             "title": "Mira at the Gate",
+            "scenario_type": "rp",
             "worldpack_id": "demo-world",
             "player_character_id": character.json()["player_character"]["id"],
             "model_profile_id": models[0]["id"],
@@ -282,6 +300,122 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
 
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
+
+
+def test_party_requires_manual_scenario_type_and_rejects_unsupported_mode(tmp_path: Path):
+    write_worldpack(tmp_path, supported_modes=["novel"])
+    c = client(tmp_path)
+    model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    character = c.post(
+        "/api/player-characters",
+        json={"worldpack_id": "demo-world", "name": "Mira", "description": "Writer", "profile": {}},
+    ).json()["player_character"]
+    base_payload = {
+        "title": "Manual mode",
+        "worldpack_id": "demo-world",
+        "player_character_id": character["id"],
+        "model_profile_id": model_id,
+    }
+
+    assert c.post("/api/parties", json=base_payload).status_code == 422
+    assert c.post("/api/parties", json={**base_payload, "scenario_type": "rp"}).status_code == 400
+    created = c.post("/api/parties", json={**base_payload, "scenario_type": "novel"})
+    assert created.status_code == 200
+    assert created.json()["party"]["scenario_type"] == "novel"
+
+
+def test_existing_parties_migrate_to_compatible_scenario_types(tmp_path: Path):
+    database = tmp_path / "rp_gateway.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE parties (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                worldpack_id TEXT NOT NULL,
+                player_character_id TEXT NOT NULL,
+                model_profile_id TEXT NOT NULL,
+                state_campaign_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO parties VALUES(
+                'old-awareness', 'Old Awareness', 'awareness', 'pc-a', 'model-a',
+                'state-a', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            );
+            INSERT INTO parties VALUES(
+                'old-rp', 'Old RP', 'demo-world', 'pc-b', 'model-b',
+                'state-b', 'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'
+            );
+            """
+        )
+
+    client(tmp_path)
+    with sqlite3.connect(database) as connection:
+        migrated = dict(connection.execute("SELECT id, scenario_type FROM parties").fetchall())
+
+    assert migrated == {"old-awareness": "training", "old-rp": "rp"}
+
+
+def test_novel_party_has_no_checks_and_loads_world_prompts(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Shared Novel", scenario_type="novel")
+
+    check = c.post(
+        f"/api/parties/{party['id']}/checks",
+        json={"check_type": "persuasion", "goal": "convince", "difficulty": 10},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert check.status_code == 400
+
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Я задерживаюсь у двери и отвечаю ей тихо."},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert turn.status_code == 200
+    state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    assert state["timeline"][-1]["event"].startswith("novel turn")
+
+    preview = c.post(f"/api/parties/{party['id']}/prompt/preview", json={"content": "Продолжить сцену"})
+    assert preview.status_code == 200
+    payload = preview.json()["preview"]
+    assert payload["outcome"]["result"] == "narrative_continuation"
+    assert payload["outcome"]["roll"] == 0
+    block_ids = {block["id"] for block in payload["blocks"]}
+    assert {"world_system_prompt", "world_authors_note"}.issubset(block_ids)
+
+
+def test_scenario_system_prompts_have_distinct_contracts():
+    rp_rules = NarrativeClient(Settings(scenario_type="rp")).scenario_rules()
+    novel_rules = NarrativeClient(Settings(scenario_type="novel")).scenario_rules()
+    training_rules = NarrativeClient(Settings(scenario_type="training")).scenario_rules()
+
+    assert "D20" in rp_rules
+    assert "collaborative novel" in novel_rules
+    assert "There are no dice" in novel_rules
+    assert "deterministic training" in training_rules
+    assert "Do not coach, hint, assess" in training_rules
+
+
+def test_training_party_is_deterministic_and_disables_manual_checks(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Training", scenario_type="training")
+
+    check = c.post(
+        f"/api/parties/{party['id']}/checks",
+        json={"check_type": "information", "goal": "inspect", "difficulty": 10},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert check.status_code == 400
+    preview = c.post(f"/api/parties/{party['id']}/prompt/preview", json={"content": "Проверяю факты"})
+    assert preview.status_code == 200
+    outcome = preview.json()["preview"]["outcome"]
+    assert outcome["result"] == "deterministic_resolution"
+    assert outcome["roll"] == 0
 
 
 def test_auth_required_and_parties_are_user_scoped(tmp_path: Path):
@@ -512,6 +646,7 @@ def test_party_model_can_be_changed(tmp_path: Path):
         "/api/parties",
         json={
             "title": "Model Switch",
+            "scenario_type": "rp",
             "worldpack_id": "demo-world",
             "player_character_id": character["id"],
             "model_profile_id": models[0]["id"],
@@ -539,6 +674,7 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
         "/api/parties",
         json={
             "title": "Context Estimate",
+            "scenario_type": "rp",
             "worldpack_id": "demo-world",
             "player_character_id": character["id"],
             "model_profile_id": models[0]["id"],
@@ -998,6 +1134,7 @@ def test_prompt_world_party_and_delete(tmp_path: Path):
         "/api/parties",
         json={
             "title": "Стеклянный дождь",
+            "scenario_type": "rp",
             "worldpack_id": pack["id"],
             "player_character_id": character["id"],
             "model_profile_id": model_id,
@@ -1035,6 +1172,7 @@ def test_party_world_proposals_are_isolated(tmp_path: Path):
             "/api/parties",
             json={
                 "title": f"Party {name}",
+                "scenario_type": "rp",
                 "worldpack_id": "demo-world",
                 "player_character_id": character["id"],
                 "model_profile_id": model_id,
@@ -1143,7 +1281,7 @@ def test_awareness_attachment_fallback_is_stealthy():
         authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
     )
 
-    text = safe_fallback(outcome, state, "Открываю WorkSchedule_Update.xlsx.exe")
+    text = safe_fallback(outcome, state, "Открываю WorkSchedule_Update.xlsx.exe", scenario_type="training")
 
     assert "Твой ход" not in text
     assert "ценой" not in text.lower()
@@ -1164,11 +1302,81 @@ def test_awareness_double_extension_action_updates_score_counters():
         methods=["free_text"],
     )
 
-    _, patch = RuleEngine().resolve(state, intent, "awareness-file", roll=10)
+    outcome, patch = RuleEngine().resolve(state, intent, "awareness-file", campaign_id="awareness", scenario_type="training")
     values = {operation.path: operation.value for operation in patch.patch}
 
     assert values["/player/resources/suspicious-artifacts-opened"] == 1
     assert values["/player/resources/unsafe-actions"] == 1
+    assert outcome.result == "deterministic_resolution"
+    assert outcome.roll == 0
+
+
+def test_awareness_training_scores_reports_and_credential_exposure_deterministically():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["player"]["resources"].update(  # type: ignore[index]
+        {
+            "awareness-score": 0,
+            "safe-escalations": 0,
+            "reporting-quality": 0,
+            "credential-exposure": 0,
+            "unsafe-actions": 0,
+        }
+    )
+    report = Intent(
+        desired_outcome="Сообщаю в SOC: отправитель, время, тема и вложение указаны в описании.",
+        methods=["free_text"],
+    )
+    _, report_patch = RuleEngine().resolve(
+        state,
+        report,
+        "awareness-report",
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    report_values = {operation.path: operation.value for operation in report_patch.patch}
+    assert report_values["/player/resources/safe-escalations"] == 1
+    assert report_values["/player/resources/reporting-quality"] == 1
+    assert report_values["/player/resources/awareness-score"] == 3
+
+    exposure = Intent(
+        desired_outcome="Перехожу по внешней ссылке и ввожу логин, пароль и проверочный код.",
+        methods=["free_text"],
+    )
+    _, exposure_patch = RuleEngine().resolve(
+        state,
+        exposure,
+        "awareness-exposure",
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    exposure_values = {operation.path: operation.value for operation in exposure_patch.patch}
+    assert exposure_values["/player/resources/credential-exposure"] == 1
+    assert exposure_values["/player/resources/unsafe-actions"] == 1
+    assert exposure_values["/player/resources/awareness-score"] == -5
+
+
+def test_awareness_training_does_not_score_negated_dangerous_actions():
+    state = base_state()
+    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
+    state["player"]["resources"]["suspicious-artifacts-opened"] = 0  # type: ignore[index]
+    state["player"]["resources"]["credential-exposure"] = 0  # type: ignore[index]
+    intent = Intent(
+        desired_outcome="Не открываю Report.xlsx.exe и не сообщаю пароль.",
+        methods=["free_text"],
+    )
+
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "awareness-negated",
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    paths = {operation.path for operation in patch.patch}
+
+    assert "/player/resources/suspicious-artifacts-opened" not in paths
+    assert "/player/resources/credential-exposure" not in paths
 
 
 def test_awareness_turn_progression_updates_current_window():
@@ -1183,7 +1391,7 @@ def test_awareness_turn_progression_updates_current_window():
         methods=["free_text"],
     )
 
-    _, patch = RuleEngine().resolve(state, intent, "awareness-next", roll=10)
+    _, patch = RuleEngine().resolve(state, intent, "awareness-next", campaign_id="awareness", scenario_type="training")
     values = {operation.path: operation.value for operation in patch.patch}
 
     assert patch.turn == 2
@@ -1192,11 +1400,17 @@ def test_awareness_turn_progression_updates_current_window():
 
 
 def test_party_settings_keep_worldpack_id_for_awareness_rules():
-    party = SimpleNamespace(worldpack_id="awareness", state_campaign_id="party_123", model_profile=None)
+    party = SimpleNamespace(
+        worldpack_id="awareness",
+        state_campaign_id="party_123",
+        scenario_type="training",
+        model_profile=None,
+    )
 
     configured = settings_for_party(Settings(campaign_id="default"), party)
 
     assert configured.campaign_id == "awareness"
+    assert configured.scenario_type == "training"
 
 
 def test_awareness_party_state_id_still_enables_turn_progression():
@@ -1207,7 +1421,13 @@ def test_awareness_party_state_id_still_enables_turn_progression():
     state["player"]["resources"]["turns-remaining"] = 9  # type: ignore[index]
     intent = Intent(action_type="feasibility", desired_outcome="Завершаю первую половину дня", methods=["free_text"])
 
-    _, patch = RuleEngine().resolve(state, intent, "awareness-party-next", roll=10, campaign_id="awareness")
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "awareness-party-next",
+        campaign_id="awareness",
+        scenario_type="training",
+    )
     values = {operation.path: operation.value for operation in patch.patch}
 
     assert patch.turn == 2
@@ -1231,7 +1451,7 @@ def test_awareness_party_start_narrative_state_sets_opening_window_without_mutat
     state = base_state()
     state["meta"]["campaign_id"] = "party_awareness_new"  # type: ignore[index]
 
-    patch = party_start_state_patch(state, "party-awareness", "awareness")
+    patch = party_start_state_patch(state, "party-awareness", "awareness", "training")
     narrative_state = party_start_narrative_state(state, patch)
 
     assert patch is not None
@@ -1263,12 +1483,12 @@ def test_awareness_validator_rejects_summarized_opening_and_accepts_structured_f
         "Ход 1. Понедельник, 10:00-14:00.\n\n"
         "Во входящих два письма от коллег, а в рабочем мессенджере Максим просит статус до обеда."
     )
-    validation = OutputValidator().validate(summarized, outcome, state)
+    validation = OutputValidator().validate(summarized, outcome, state, scenario_type="training")
 
     assert not validation.valid
     assert any("summarized" in violation or "opening" in violation for violation in validation.violations)
     fallback = awareness_opening_fallback(state)
-    assert OutputValidator().validate(fallback, outcome, state).valid
+    assert OutputValidator().validate(fallback, outcome, state, scenario_type="training").valid
     assert fallback.count("ПИСЬМО") >= 2
     assert "СООБЩЕНИЕ" in fallback
 
@@ -1309,6 +1529,7 @@ def test_awareness_validator_rejects_facilitator_blocks_backend_and_repeated_tur
         state,
         campaign_id="awareness",
         latest_user_message="Отправляю письмо на проверку",
+        scenario_type="training",
     )
 
     assert not validation.valid
