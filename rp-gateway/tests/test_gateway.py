@@ -699,6 +699,22 @@ def test_party_character_manual_edit_can_apply_immediately(tmp_path: Path):
     assert by_id["gate-clerk"]["current_goal"] == "verify travel papers"
 
 
+def test_new_npc_without_location_does_not_inherit_player_location(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Character Unknown Location")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/characters/edit",
+        json={"target": "npc", "name": "Stable Boy", "confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert by_id["stable-boy"]["location"] == "unknown"
+
+
 def test_party_character_llm_generate_applies_immediately(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
@@ -723,6 +739,23 @@ def test_party_character_llm_generate_applies_immediately(tmp_path: Path):
     assert by_id["трактирщик"]["location"] == "таверна"
     assert by_id["трактирщик"]["current_goal"]
     assert c.get(f"/api/parties/{party['id']}/world/proposals").json()["proposals"] == []
+
+
+def test_party_character_llm_generate_without_location_uses_unknown(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Character LLM Unknown Location")
+
+    response = c.post(
+        f"/api/parties/{party['id']}/characters/generate",
+        json={"target": "npc", "name": "Трактирщик"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 200, response.text
+    sheets = c.get(f"/api/parties/{party['id']}/characters").json()["characters"]
+    by_id = {character["id"]: character for character in sheets["characters"]}
+    assert by_id["трактирщик"]["location"] == "unknown"
 
 
 def test_party_character_llm_generate_provider_http_error_does_not_apply(tmp_path: Path):
@@ -1392,6 +1425,19 @@ def test_party_start_provider_http_error_returns_502(tmp_path: Path):
 
     assert response.status_code == 502
     assert response.json()["detail"] == "Narrative provider HTTP 503"
+
+
+def test_default_nvidia_attempt_order_keeps_user_models():
+    from app.core.config import Settings
+    from app.services.narrative import NarrativeClient
+
+    settings = Settings(nvidia_api_base="mock://success")
+    assert NarrativeClient(settings).model_attempts(settings.narrative_model) == [
+        "z-ai/glm-5.2",
+        "deepseek-ai/deepseek-v4-pro",
+        "deepseek-ai/deepseek-v4-flash",
+        "qwen/qwen3.5-397b-a17b",
+    ]
 
 
 def test_disabled_primary_model_uses_fallback(tmp_path: Path):

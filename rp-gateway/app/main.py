@@ -1462,7 +1462,7 @@ def coerce_generated_character_edit(
         normalized["character_id"] = None
     elif not normalized.get("character_id") and normalized.get("name"):
         normalized["character_id"] = stable_character_id(str(normalized["name"]))
-    if not normalized.get("location"):
+    if not normalized.get("location") and source.target == "player":
         normalized["location"] = normalize_optional_string(state.get("player", {}).get("location"))
     return PartyCharacterStateEditRequest.model_validate(normalized)
 
@@ -1482,12 +1482,13 @@ def mock_generated_character_edit(
     if mode == "rate-limit":
         raise RuntimeError("NVIDIA API returned 429 rate limit")
     name = source.name or source.character_id or ("Игрок" if source.target == "player" else "NPC")
+    default_location = "unknown" if source.target == "npc" else state.get("player", {}).get("location") or "unknown"
     generated = {
         "target": source.target,
         "character_id": source.character_id or (stable_character_id(name) if source.target == "npc" else None),
         "name": name,
         "status": source.status or ("active" if source.target == "player" else "alive"),
-        "location": source.location or state.get("player", {}).get("location") or "unknown",
+        "location": source.location or default_location,
         "current_goal": source.current_goal or f"держать свою роль в сцене как {name}",
         "attitude_to_player": source.attitude_to_player or ("самоконтроль" if source.target == "player" else "нейтральное любопытство"),
         "loyalty": source.loyalty or "локальная рутина",
@@ -1574,7 +1575,7 @@ def character_state_patch(state: dict[str, Any], request: PartyCharacterStateEdi
                     value={
                         "name": request.name or character_id,
                         "status": request.status or "alive",
-                        "location": request.location or state.get("player", {}).get("location", "unknown"),
+                        "location": request.location or "unknown",
                         "attitude_to_player": request.attitude_to_player or "",
                         "trust": request.trust if request.trust is not None else 0,
                         "fear": request.fear if request.fear is not None else 0,

@@ -41,18 +41,14 @@ class Settings:
     nvidia_model_catalog_live: bool = env_bool("NVIDIA_MODEL_CATALOG_LIVE", True)
     nvidia_model_catalog_url: str = os.getenv("NVIDIA_MODEL_CATALOG_URL", "https://build.nvidia.com/models?q=llm")
     nvidia_model_catalog_ttl_seconds: int = env_int("NVIDIA_MODEL_CATALOG_TTL_SECONDS", 86400)
-    narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
-    intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
-    validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "mistralai/mistral-small-4-119b-2603"))
+    narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
+    intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
+    validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
     nvidia_fallback_models: tuple[str, ...] = env_list(
         "NVIDIA_FALLBACK_MODELS",
-        "openai/gpt-oss-20b",
+        "deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash,qwen/qwen3.5-397b-a17b",
     )
-    nvidia_disabled_models: tuple[str, ...] = env_list(
-        "NVIDIA_DISABLED_MODELS",
-        "z-ai/glm-5.2,qwen/qwen3.5-397b-a17b,deepseek-ai/deepseek-v4-pro,"
-        "deepseek-ai/deepseek-v4-flash,mistralai/ministral-14b-instruct-2512,meta/llama-3.3-70b-instruct",
-    )
+    nvidia_disabled_models: tuple[str, ...] = env_list("NVIDIA_DISABLED_MODELS", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_prompts: bool = env_bool("LOG_PROMPTS", False)
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)

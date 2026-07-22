@@ -728,7 +728,7 @@ function fillCharacterEditorFromSelection() {
   els.characterEditId.value = isNew ? "" : selected?.id || "";
   els.characterEditName.value = selected?.name || "";
   els.characterEditStatus.value = selected?.status || (isNew ? "alive" : "");
-  els.characterEditLocation.value = selected?.location || appState.partyState?.player?.location || "";
+  els.characterEditLocation.value = isNew ? "" : selected?.location || "";
   els.characterEditGoal.value = selected?.current_goal || selected?.description || "";
   els.characterEditAttitude.value = selected?.attitude_to_player || "";
   els.characterEditLoyalty.value = selected?.loyalty || "";
