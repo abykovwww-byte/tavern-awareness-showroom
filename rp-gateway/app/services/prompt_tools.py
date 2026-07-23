@@ -11,7 +11,7 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage
 from app.services.context_budget import split_turns_by_token_budget
 from app.services.context_estimator import estimate_tokens
 from app.services.intent_parser import IntentParser
-from app.services.narrative import NarrativeClient
+from app.services.narrative import NarrativeClient, archived_memory_retrieval_block
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 
@@ -68,7 +68,7 @@ class PromptInspector:
         )
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
-        memory_summary = self.store.latest_memory_summary()
+        memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             candidate_state,
@@ -102,7 +102,7 @@ class PromptInspector:
             scenario_type=self.settings.scenario_type,
         )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
-        memory_summary = self.store.latest_memory_summary()
+        memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             state,
@@ -140,7 +140,7 @@ class PromptInspector:
     def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
         if before_turn_id is None:
-            memory = self.store.latest_memory_summary()
+            memory = self.store.latest_memory_coverage()
             covered_through = int(memory["to_turn_id"]) if memory else 0
             turns = self.store.turns_for_memory(after_turn_id=covered_through)
         else:
@@ -152,6 +152,15 @@ class PromptInspector:
         for turn in turns:
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
+        if before_turn_id is None and self.settings.party_memory_retrieval_enabled:
+            retrieved = self.store.search_archived_turns(
+                latest,
+                through_turn_id=covered_through,
+                limit=self.settings.party_memory_retrieval_limit,
+            )
+            retrieval_block = archived_memory_retrieval_block(retrieved, self.settings.party_memory_retrieval_max_chars)
+            if retrieval_block:
+                messages.append(ChatMessage(role="system", content=retrieval_block))
         messages.append(ChatMessage(role="user", content=latest))
         return ChatCompletionRequest(model=self.settings.narrative_model, messages=messages, stream=False)
 

@@ -672,6 +672,12 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
         "PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS",
         "PARTY_CONTEXT_MIN_HISTORY_TOKENS",
         "MEMORY_SUMMARY_BATCH_TOKENS",
+        "PARTY_MEMORY_CHAPTER_MAX_TOKENS",
+        "PARTY_MEMORY_CHAPTER_MAX_CHARS",
+        "PARTY_MEMORY_PROMPT_MAX_CHARS",
+        "PARTY_MEMORY_RETRIEVAL_ENABLED",
+        "PARTY_MEMORY_RETRIEVAL_LIMIT",
+        "PARTY_MEMORY_RETRIEVAL_MAX_CHARS",
         "JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS",
         "JOURNAL_MAX_BATCH_TURNS",
         "POST_TURN_HELPERS_INLINE",
@@ -684,12 +690,15 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
     assert settings.effective_party_history_token_budget == 81_920
     assert settings.memory_summary_batch_tokens == 10_000
     assert settings.memory_llm_provider == "local"
-    assert settings.party_memory_max_tokens == 8_000
+    assert settings.party_memory_chapter_max_tokens == 6_000
+    assert settings.party_memory_chapter_max_chars == 24_000
+    assert settings.party_memory_prompt_max_chars == 60_000
+    assert settings.party_memory_retrieval_enabled is True
     assert settings.journal_auto_min_unsummarized_turns == 24
     assert settings.journal_max_batch_turns == 48
 
 
-def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path: Path):
+def test_context_overflow_is_omitted_until_episodic_chapter_catches_up(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
         tmp_path,
@@ -723,9 +732,9 @@ def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path
     assert plan is not None
     assert [turn["id"] for turn in plan.turns] == [1]
 
-    # A durable cumulative summary replaces its covered raw turns even if a
-    # later model profile has a larger context window.
-    store.record_memory_summary(
+    # A durable chapter replaces its covered raw turn even if a later model
+    # profile has a larger context window.
+    store.record_memory_chapter(
         from_turn_id=1,
         to_turn_id=1,
         state_version=1,
@@ -748,10 +757,24 @@ def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path
     assert recent_player in covered_prompt_text
 
     rebuilt_plan, rebuilt_reason = MemorySummarizer(c.app.state.settings, store).build_plan(force=True)
-    assert rebuilt_reason == "rebuild_existing_memory"
+    assert rebuilt_reason == "ready"
     assert rebuilt_plan is not None
     assert rebuilt_plan.previous_memory is None
-    assert [turn["id"] for turn in rebuilt_plan.turns] == [1]
+    assert [turn["id"] for turn in rebuilt_plan.turns] == [2]
+
+
+def test_episodic_chapters_are_immutable_and_archive_retrieval_stays_out_of_raw_tail(tmp_path: Path):
+    store = StateStore(str(tmp_path / "chapters.db"), "chapter-test", str(tmp_path / "state.json"))
+    store.record_turn("chapter-1", "chapter-1", "Мира нашла серебряный ключ", "Ключ отдан Мире", {}, 1)
+    store.record_turn("chapter-2", "chapter-2", "Мира вошла в обсерваторию", "В обсерватории холодно", {}, 2)
+    store.record_turn("chapter-3", "chapter-3", "Игрок ждёт у ворот", "Ворота закрыты", {}, 3)
+    first = store.record_memory_chapter(1, 1, 1, "Глава: Мира и серебряный ключ", [], [], [], [], [], "mock")
+    second = store.record_memory_chapter(2, 2, 2, "Глава: обсерватория", [], [], [], [], [], "mock")
+
+    assert [chapter["id"] for chapter in store.memory_for_prompt(100_000)] == [first["id"], second["id"]]
+    assert store.latest_memory_coverage()["to_turn_id"] == 2
+    retrieved = store.search_archived_turns("Где Мира и ключ", through_turn_id=2)
+    assert [turn["id"] for turn in retrieved] == [1, 2]
 
 
 def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

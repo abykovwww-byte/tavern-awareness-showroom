@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -16,6 +17,17 @@ from app.models.schemas import StatePatch
 
 def now_ts() -> int:
     return int(time.time())
+
+
+def archive_search_terms(query: str) -> list[str]:
+    """Small local lexical retriever; no player history leaves SQLite for embeddings."""
+    stop_words = {
+        "это", "как", "что", "где", "когда", "теперь", "потом", "тогда", "очень", "снова",
+        "было", "быть", "меня", "тебя", "него", "него", "себя", "этого", "этой", "который",
+        "with", "this", "that", "from", "have", "what", "where", "then", "they", "them",
+    }
+    terms = re.findall(r"[a-zа-яё0-9]{3,}", query.lower())
+    return list(dict.fromkeys(term for term in terms if term not in stop_words))[:12]
 
 
 class StateStore:
@@ -140,6 +152,25 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_summaries_campaign_to
                     ON memory_summaries(campaign_id, to_turn_id DESC);
+                CREATE TABLE IF NOT EXISTS memory_chapters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    from_turn_id INTEGER NOT NULL,
+                    to_turn_id INTEGER NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    summary_text TEXT NOT NULL,
+                    key_facts_json TEXT NOT NULL,
+                    open_threads_json TEXT NOT NULL,
+                    relationship_changes_json TEXT NOT NULL,
+                    player_promises_json TEXT NOT NULL,
+                    npc_obligations_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
+                    UNIQUE(campaign_id, from_turn_id, to_turn_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_chapters_campaign_to
+                    ON memory_chapters(campaign_id, to_turn_id DESC);
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -312,6 +343,31 @@ class StateStore:
             rows = connection.execute(query, tuple(params)).fetchall()
         return [dict(row) for row in rows]
 
+    def search_archived_turns(self, query: str, through_turn_id: int, limit: int = 3) -> list[dict[str, Any]]:
+        """Retrieve only already-compressed turns; the raw tail remains sequential in the prompt."""
+        terms = archive_search_terms(query)
+        if not terms or through_turn_id <= 0 or limit <= 0:
+            return []
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, player_message, narrative_response, state_version
+                FROM turns
+                WHERE campaign_id = ? AND id <= ?
+                ORDER BY id DESC
+                """,
+                (self.campaign_id, through_turn_id),
+            ).fetchall()
+        ranked: list[tuple[int, dict[str, Any]]] = []
+        for row in rows:
+            item = dict(row)
+            text = f"{item['player_message']}\n{item['narrative_response']}".lower()
+            score = sum(text.count(term) for term in terms)
+            if score:
+                ranked.append((score, item))
+        ranked.sort(key=lambda pair: (pair[0], pair[1]["id"]), reverse=True)
+        return [item for _, item in ranked[:limit]]
+
     def latest_memory_summary(self) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
@@ -339,6 +395,58 @@ class StateStore:
                 (self.campaign_id, limit),
             ).fetchall()
         return [self.memory_summary_from_row(row) for row in rows]
+
+    def memory_chapters(self, limit: int = 10_000) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM memory_chapters
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id ASC, id ASC
+                LIMIT ?
+                """,
+                (self.campaign_id, limit),
+            ).fetchall()
+        return [self.memory_summary_from_row(row) | {"memory_type": "chapter"} for row in rows]
+
+    def latest_memory_coverage(self) -> dict[str, Any] | None:
+        legacy = self.latest_memory_summary()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM memory_chapters
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, id DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        chapter = self.memory_summary_from_row(row) | {"memory_type": "chapter"} if row else None
+        if chapter and (not legacy or int(chapter["to_turn_id"]) >= int(legacy["to_turn_id"])):
+            return chapter
+        return legacy
+
+    def memory_for_prompt(self, max_chars: int) -> list[dict[str, Any]]:
+        """Return the newest detailed chapters that fit, retaining legacy memory during migration."""
+        legacy = self.latest_memory_summary()
+        entries: list[dict[str, Any]] = []
+        if legacy:
+            entries.append(legacy | {"memory_type": "legacy_cumulative"})
+        entries.extend(self.memory_chapters())
+        kept: list[dict[str, Any]] = []
+        used = 0
+        for entry in reversed(entries):
+            serialized_size = len(json.dumps(entry, ensure_ascii=False))
+            if kept and used + serialized_size > max_chars:
+                continue
+            if not kept and serialized_size > max_chars:
+                entry = dict(entry)
+                entry["summary_text"] = entry["summary_text"][: max(max_chars - 2000, 0)]
+                serialized_size = len(json.dumps(entry, ensure_ascii=False))
+            kept.append(entry)
+            used += serialized_size
+        return list(reversed(kept))
 
     def record_memory_summary(
         self,
@@ -385,12 +493,55 @@ class StateStore:
             ).fetchone()
         return self.memory_summary_from_row(row)
 
+    def record_memory_chapter(
+        self,
+        from_turn_id: int,
+        to_turn_id: int,
+        state_version: int,
+        summary_text: str,
+        key_facts: list[Any],
+        open_threads: list[Any],
+        relationship_changes: list[Any],
+        player_promises: list[Any],
+        npc_obligations: list[Any],
+        model: str,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_chapters(
+                    campaign_id, from_turn_id, to_turn_id, state_version,
+                    summary_text, key_facts_json, open_threads_json,
+                    relationship_changes_json, player_promises_json,
+                    npc_obligations_json, created_at, model
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id, from_turn_id, to_turn_id, state_version, summary_text,
+                    json.dumps(key_facts, ensure_ascii=False), json.dumps(open_threads, ensure_ascii=False),
+                    json.dumps(relationship_changes, ensure_ascii=False), json.dumps(player_promises, ensure_ascii=False),
+                    json.dumps(npc_obligations, ensure_ascii=False), now_ts(), model,
+                ),
+            )
+            row = connection.execute("SELECT * FROM memory_chapters WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self.memory_summary_from_row(row) | {"memory_type": "chapter"}
+
     def delete_latest_memory_summary(self) -> dict[str, Any] | None:
         latest = self.latest_memory_summary()
         if latest is None:
             return None
         with self.connect() as connection:
             connection.execute("DELETE FROM memory_summaries WHERE id = ?", (latest["id"],))
+        return latest
+
+    def delete_latest_memory_coverage(self) -> dict[str, Any] | None:
+        latest = self.latest_memory_coverage()
+        if latest is None:
+            return None
+        table = "memory_chapters" if latest.get("memory_type") == "chapter" else "memory_summaries"
+        with self.connect() as connection:
+            connection.execute(f"DELETE FROM {table} WHERE id = ?", (latest["id"],))
         return latest
 
     def memory_summary_from_row(self, row: sqlite3.Row) -> dict[str, Any]:

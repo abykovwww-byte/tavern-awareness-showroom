@@ -55,7 +55,7 @@ from app.services.context_budget import estimate_tokens, model_context_limit_tok
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text
+from app.services.narrative import ProviderRateLimitError, NarrativeClient, archived_memory_retrieval_block, response_text
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
@@ -468,10 +468,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         summarizer = MemorySummarizer(party_settings, party_state_store)
+        chapters = party_state_store.memory_chapters(limit=limit)
+        legacy_summaries = party_state_store.memory_summaries(limit=limit)
         return {
             "party_id": party_id,
-            "memory": party_state_store.latest_memory_summary(),
-            "summaries": party_state_store.memory_summaries(limit=limit),
+            "memory": party_state_store.latest_memory_coverage(),
+            "summaries": chapters or legacy_summaries,
+            "legacy_summaries": legacy_summaries,
+            "chapters": chapters,
             "stats": summarizer.stats(),
         }
 
@@ -510,12 +514,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        deleted = party_state_store.delete_latest_memory_summary()
+        deleted = party_state_store.delete_latest_memory_coverage()
         return {
             "party_id": party_id,
             "deleted": deleted is not None,
             "deleted_memory": deleted,
-            "memory": party_state_store.latest_memory_summary(),
+            "memory": party_state_store.latest_memory_coverage(),
             "stats": MemorySummarizer(party_settings, party_state_store).stats(),
         }
 
@@ -765,7 +769,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 stream=False,
             )
             start_outcome = party_start_outcome(party_id, party.scenario_type)
-            memory_summary = party_state_store.latest_memory_summary()
+            memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             narrative = NarrativeClient(party_settings)
             prompt_messages = narrative.narrative_messages(
                 chat_request,
@@ -1333,7 +1337,7 @@ def party_chat_request(
     request: PartyMessageRequest,
     settings: Settings,
 ) -> ChatCompletionRequest:
-    memory = store.latest_memory_summary()
+    memory = store.latest_memory_coverage()
     covered_through = int(memory["to_turn_id"]) if memory else 0
     turns = store.turns_for_memory(after_turn_id=covered_through)
     current_message_tokens = estimate_tokens(request.content)
@@ -1343,6 +1347,15 @@ def party_chat_request(
     for turn in raw_turns:
         messages.append(ChatMessage(role="user", content=turn["player_message"]))
         messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
+    if settings.party_memory_retrieval_enabled:
+        retrieved = store.search_archived_turns(
+            request.content,
+            through_turn_id=covered_through,
+            limit=settings.party_memory_retrieval_limit,
+        )
+        retrieval_block = archived_memory_retrieval_block(retrieved, settings.party_memory_retrieval_max_chars)
+        if retrieval_block:
+            messages.append(ChatMessage(role="system", content=retrieval_block))
     messages.append(ChatMessage(role="user", content=request.content))
     return ChatCompletionRequest(
         model=model,

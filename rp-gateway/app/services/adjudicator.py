@@ -108,7 +108,7 @@ class Adjudicator:
             provider_fallback_reason: str | None = None
             prompt_messages: list[dict[str, str]] | None = None
             try:
-                memory_summary = self.store.latest_memory_summary()
+                memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
                 prompt_messages = self.narrative.narrative_messages(
                     request,
                     narrative_state,

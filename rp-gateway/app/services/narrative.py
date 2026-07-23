@@ -69,7 +69,7 @@ class NarrativeClient:
         outcome: Outcome,
         inbound_authorization: str | None,
         repair_instruction: str | None = None,
-        memory_summary: dict[str, Any] | None = None,
+        memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(self.settings, inbound_authorization)
@@ -202,7 +202,7 @@ class NarrativeClient:
         state: dict[str, Any],
         outcome: Outcome,
         repair_instruction: str | None,
-        memory_summary: dict[str, Any] | None = None,
+        memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
     ) -> list[dict[str, str]]:
         relevant_characters = retrieve_relevant_characters(
             state,
@@ -432,23 +432,54 @@ def with_text(response: dict[str, Any], text: str) -> dict[str, Any]:
     return updated
 
 
-def long_term_memory_block(memory_summary: dict[str, Any]) -> str:
-    payload = {
-        "covered_turns": [memory_summary.get("from_turn_id"), memory_summary.get("to_turn_id")],
-        "state_version_at_summary": memory_summary.get("state_version"),
-        "summary": memory_summary.get("summary_text", ""),
-        "confirmed_facts": memory_summary.get("key_facts", []),
-        "unresolved_threads": memory_summary.get("open_threads", []),
-        "relationship_changes": memory_summary.get("relationship_changes", []),
-        "player_promises": memory_summary.get("player_promises", []),
-        "npc_obligations": memory_summary.get("npc_obligations", []),
-    }
+def long_term_memory_block(memory_summary: dict[str, Any] | list[dict[str, Any]]) -> str:
+    entries = memory_summary if isinstance(memory_summary, list) else [memory_summary]
+    payload = [
+        {
+            "memory_type": entry.get("memory_type", "legacy_cumulative"),
+            "covered_turns": [entry.get("from_turn_id"), entry.get("to_turn_id")],
+            "state_version_at_summary": entry.get("state_version"),
+            "summary": entry.get("summary_text", ""),
+            "confirmed_facts": entry.get("key_facts", []),
+            "unresolved_threads": entry.get("open_threads", []),
+            "relationship_changes": entry.get("relationship_changes", []),
+            "player_promises": entry.get("player_promises", []),
+            "npc_obligations": entry.get("npc_obligations", []),
+        }
+        for entry in entries
+    ]
     return (
         "LONG_TERM_PARTY_MEMORY\n"
-        "This is a detailed, chronologically compressed transcript of earlier scenes, not the state summary. "
-        "Use its actions, dialogue, discoveries, tone, and unresolved leads for continuity. Current authoritative state "
+        "These are immutable, chronological episode chapters from earlier scenes, not a state summary. "
+        "Use their actions, dialogue, discoveries, tone, and unresolved leads for continuity. Current authoritative state "
         "and AUTHORITATIVE_OUTCOME override it. Do not promote unresolved or player-claimed events into facts.\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def archived_memory_retrieval_block(turns: list[dict[str, Any]], max_chars: int) -> str | None:
+    if not turns or max_chars <= 0:
+        return None
+    excerpts: list[dict[str, Any]] = []
+    used = 0
+    for turn in turns:
+        excerpt = {
+            "turn_id": turn["id"],
+            "player_message": str(turn["player_message"])[:1400],
+            "narrative_response": str(turn["narrative_response"])[:1800],
+        }
+        encoded = json.dumps(excerpt, ensure_ascii=False)
+        if excerpts and used + len(encoded) > max_chars:
+            continue
+        excerpts.append(excerpt)
+        used += len(encoded)
+    if not excerpts:
+        return None
+    return (
+        "RETRIEVED_ARCHIVE_SCENES\n"
+        "These are query-relevant excerpts from older archived turns. They are secondary continuity aids, not authority: "
+        "current canonical state and AUTHORITATIVE_OUTCOME override them. Do not infer facts absent from the excerpts.\n"
+        f"{json.dumps(excerpts, ensure_ascii=False, indent=2)}"
     )
 
 

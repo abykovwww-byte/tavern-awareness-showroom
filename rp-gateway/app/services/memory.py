@@ -37,7 +37,7 @@ class SummaryPlan:
 
 
 class MemorySummarizer:
-    """Creates cumulative memory once raw history exceeds its token budget."""
+    """Creates immutable episodic chapters once the raw history exceeds its budget."""
 
     def __init__(
         self,
@@ -51,7 +51,7 @@ class MemorySummarizer:
 
     def stats(self) -> dict[str, Any]:
         turns = self.store.turns_for_memory()
-        latest = self.store.latest_memory_summary()
+        latest = self.store.latest_memory_coverage()
         latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
         raw_source_turns = [turn for turn in turns if int(turn["id"]) > latest_to_turn_id]
         old_turns, raw_turns = split_turns_by_token_budget(raw_source_turns, self.history_token_budget)
@@ -66,8 +66,10 @@ class MemorySummarizer:
             "eligible_old_turns": len(old_turns),
             "unsummarized_old_turns": len(unsummarized),
             "unsummarized_old_tokens": turns_token_count(unsummarized),
-            "latest_summary_id": latest["id"] if latest else None,
+            "latest_memory_id": latest["id"] if latest else None,
+            "latest_memory_type": latest.get("memory_type", "legacy_cumulative") if latest else None,
             "latest_to_turn_id": latest_to_turn_id or None,
+            "chapter_count": len(self.store.memory_chapters()),
             "auto_summary_pending": bool(unsummarized),
         }
 
@@ -84,12 +86,12 @@ class MemorySummarizer:
             return {
                 "generated": False,
                 "reason": reason,
-                "memory": self.store.latest_memory_summary(),
+                "memory": self.store.latest_memory_coverage(),
                 "stats": self.stats(),
             }
         try:
             summary = await self.generate(plan, authorization)
-            memory = self.store.record_memory_summary(
+            memory = self.store.record_memory_chapter(
                 from_turn_id=plan.from_turn_id,
                 to_turn_id=plan.to_turn_id,
                 state_version=plan.state_version,
@@ -102,9 +104,9 @@ class MemorySummarizer:
                 model=summary.get("model") or plan.model,
             )
             self.store.audit(
-                "memory_summary_generated",
+                "memory_chapter_generated",
                 {
-                    "summary_id": memory["id"],
+                    "chapter_id": memory["id"],
                     "from_turn_id": plan.from_turn_id,
                     "to_turn_id": plan.to_turn_id,
                     "state_version": plan.state_version,
@@ -129,7 +131,7 @@ class MemorySummarizer:
                 return {
                     "generated": False,
                     "reason": "summary_failed",
-                    "memory": self.store.latest_memory_summary(),
+                    "memory": self.store.latest_memory_coverage(),
                     "stats": self.stats(),
                     "error": type(exc).__name__,
                 }
@@ -143,38 +145,26 @@ class MemorySummarizer:
         history_token_budget: int | None = None,
     ) -> tuple[SummaryPlan | None, str]:
         turns = self.store.turns_for_memory()
-        latest = self.store.latest_memory_summary()
-        if force and latest:
-            covered_turns = self.store.turns_for_memory(to_turn_id=int(latest["to_turn_id"]))
-            if covered_turns:
-                return (
-                    SummaryPlan(
-                        previous_memory=None,
-                        turns=covered_turns,
-                        from_turn_id=int(covered_turns[0]["id"]),
-                        to_turn_id=int(covered_turns[-1]["id"]),
-                        state_version=self.store.current_version() or 1,
-                        model=self.memory_service_settings().narrative_model,
-                        stats=self.stats(),
-                    ),
-                    "rebuild_existing_memory",
-                )
+        latest = self.store.latest_memory_coverage()
         budget = max(history_token_budget if history_token_budget is not None else self.history_token_budget, 0)
         old_turns, _ = split_turns_by_token_budget(turns, budget)
-        if not old_turns:
+        if force:
+            latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
+            unsummarized = [turn for turn in turns if int(turn["id"]) > latest_to_turn_id]
+        elif not old_turns:
             return None, "within_context_budget"
-
-        latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
-        unsummarized = [turn for turn in old_turns if int(turn["id"]) > latest_to_turn_id]
+        else:
+            latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
+            unsummarized = [turn for turn in old_turns if int(turn["id"]) > latest_to_turn_id]
         if not unsummarized:
-            return None, "up_to_date"
+            return None, "no_new_turns_for_chapter" if force else "up_to_date"
         batch = oldest_turns_within_token_budget(unsummarized, self.summary_batch_token_budget)
-        from_turn_id = int(latest["from_turn_id"]) if latest else int(batch[0]["id"])
+        from_turn_id = int(batch[0]["id"])
         to_turn_id = int(batch[-1]["id"])
         stats = self.stats()
         return (
             SummaryPlan(
-                previous_memory=latest,
+                previous_memory=None,
                 turns=batch,
                 from_turn_id=from_turn_id,
                 to_turn_id=to_turn_id,
@@ -229,9 +219,8 @@ class MemorySummarizer:
 
     def summary_payload(self, plan: SummaryPlan) -> dict[str, Any]:
         context = {
-            "previous_memory": self.prompt_memory(plan.previous_memory),
             "current_state_summary": self.state_summary(self.store.get_state()),
-            "new_turns": self.compact_turns(plan.turns),
+            "episode_turns": self.compact_turns(plan.turns),
             "requested_coverage": {
                 "from_turn_id": plan.from_turn_id,
                 "to_turn_id": plan.to_turn_id,
@@ -242,13 +231,13 @@ class MemorySummarizer:
             "model": plan.model,
             "stream": False,
             "temperature": 0.2,
-            "max_tokens": self.settings.party_memory_max_tokens,
+            "max_tokens": self.settings.party_memory_chapter_max_tokens,
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You maintain an episodic compressed transcript for a roleplaying party. Return strict JSON only. "
-                        "Use only supplied previous memory, current authoritative state, and turn history. "
+                        "You write one immutable episodic chapter for a roleplaying party. Return strict JSON only. "
+                        "Use only supplied current authoritative state and the supplied turn history. "
                         "Do not turn attempts, player claims, failed checks, or unresolved possibilities into confirmed facts. "
                         "summary_text is a detailed chronological history, not a state summary: preserve scene order, "
                         "player actions, meaningful NPC dialogue/reactions, discoveries, locations, possessions, tone, "
@@ -260,7 +249,7 @@ class MemorySummarizer:
                 {
                     "role": "user",
                     "content": (
-                        "Create updated cumulative episodic history with keys: summary_text, key_facts, open_threads, "
+                        "Create one detailed chronological episode chapter with keys: summary_text, key_facts, open_threads, "
                         "relationship_changes, player_promises, npc_obligations.\n\n"
                         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
                     ),
@@ -308,7 +297,7 @@ class MemorySummarizer:
             data = {"summary_text": content}
         summary_text = str(data.get("summary_text") or data.get("summary") or content).strip()
         return {
-            "summary_text": clip(summary_text, self.settings.party_memory_max_chars),
+            "summary_text": clip(summary_text, self.settings.party_memory_chapter_max_chars),
             "key_facts": as_list(data.get("key_facts")),
             "open_threads": as_list(data.get("open_threads")),
             "relationship_changes": as_list(data.get("relationship_changes")),
@@ -317,7 +306,6 @@ class MemorySummarizer:
         }
 
     def mock_summary(self, plan: SummaryPlan) -> dict[str, Any]:
-        previous = self.prompt_memory(plan.previous_memory)
         new_lines = [
             (
                 f"Turn {turn['id']}: player message={clip(turn['player_message'], 180)}; "
@@ -325,27 +313,23 @@ class MemorySummarizer:
             )
             for turn in plan.turns
         ]
-        summary_parts = []
-        if previous:
-            summary_parts.append(str(previous.get("summary_text") or ""))
-        summary_parts.append(
+        summary_parts = [
             f"Confirmed conversation memory for turns {plan.turns[0]['id']}-{plan.turns[-1]['id']}:\n"
             + "\n".join(new_lines)
-        )
+        ]
         return {
             "summary_text": clip("\n\n".join(part for part in summary_parts if part), 6000),
-            "key_facts": previous_list(previous, "key_facts")
-            + [
+            "key_facts": [
                 {
                     "turn_id": turn["id"],
                     "fact": f"Turn {turn['id']} is recorded in gateway history; player message: {clip(turn['player_message'], 160)}",
                 }
                 for turn in plan.turns
             ],
-            "open_threads": previous_list(previous, "open_threads"),
-            "relationship_changes": previous_list(previous, "relationship_changes"),
-            "player_promises": previous_list(previous, "player_promises"),
-            "npc_obligations": previous_list(previous, "npc_obligations"),
+            "open_threads": [],
+            "relationship_changes": [],
+            "player_promises": [],
+            "npc_obligations": [],
             "model": plan.model,
         }
 
