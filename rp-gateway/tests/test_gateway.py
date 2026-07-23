@@ -682,7 +682,9 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
     assert settings.party_context_max_tokens == 131_072
     assert settings.effective_party_context_limit_tokens == 131_072
     assert settings.effective_party_history_token_budget == 81_920
-    assert settings.memory_summary_batch_tokens == 65_536
+    assert settings.memory_summary_batch_tokens == 10_000
+    assert settings.memory_llm_provider == "local"
+    assert settings.party_memory_max_tokens == 8_000
     assert settings.journal_auto_min_unsummarized_turns == 24
     assert settings.journal_max_batch_turns == 48
 
@@ -744,6 +746,12 @@ def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path
     covered_prompt_text = "\n".join(str(message.content) for message in covered_request.messages)
     assert old_player not in covered_prompt_text
     assert recent_player in covered_prompt_text
+
+    rebuilt_plan, rebuilt_reason = MemorySummarizer(c.app.state.settings, store).build_plan(force=True)
+    assert rebuilt_reason == "rebuild_existing_memory"
+    assert rebuilt_plan is not None
+    assert rebuilt_plan.previous_memory is None
+    assert [turn["id"] for turn in rebuilt_plan.turns] == [1]
 
 
 def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

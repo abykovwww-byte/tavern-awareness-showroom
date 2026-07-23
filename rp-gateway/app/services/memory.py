@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -18,6 +18,7 @@ from app.services.context_budget import (
     turns_token_count,
 )
 from app.services.narrative import response_text
+from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.state_store import StateStore
 
 
@@ -143,6 +144,21 @@ class MemorySummarizer:
     ) -> tuple[SummaryPlan | None, str]:
         turns = self.store.turns_for_memory()
         latest = self.store.latest_memory_summary()
+        if force and latest:
+            covered_turns = self.store.turns_for_memory(to_turn_id=int(latest["to_turn_id"]))
+            if covered_turns:
+                return (
+                    SummaryPlan(
+                        previous_memory=None,
+                        turns=covered_turns,
+                        from_turn_id=int(covered_turns[0]["id"]),
+                        to_turn_id=int(covered_turns[-1]["id"]),
+                        state_version=self.store.current_version() or 1,
+                        model=self.memory_service_settings().narrative_model,
+                        stats=self.stats(),
+                    ),
+                    "rebuild_existing_memory",
+                )
         budget = max(history_token_budget if history_token_budget is not None else self.history_token_budget, 0)
         old_turns, _ = split_turns_by_token_budget(turns, budget)
         if not old_turns:
@@ -163,7 +179,7 @@ class MemorySummarizer:
                 from_turn_id=from_turn_id,
                 to_turn_id=to_turn_id,
                 state_version=self.store.current_version() or 1,
-                model=self.settings.narrative_model,
+                model=self.memory_service_settings().narrative_model,
                 stats=stats,
             ),
             "ready",
@@ -173,23 +189,24 @@ class MemorySummarizer:
         if self.settings.nvidia_api_base.startswith("mock://"):
             return self.mock_summary(plan)
 
-        headers = outbound_headers(self.settings, authorization)
+        service_settings = self.memory_service_settings()
+        headers = outbound_headers(service_settings, authorization)
 
         payload = self.summary_payload(plan)
-        timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
-        attempts = self.model_attempts(plan.model)
+        timeout = httpx.Timeout(service_settings.model_attempt_timeout_seconds, connect=15.0)
+        attempts = self.model_attempts(plan.model, service_settings)
         async with httpx.AsyncClient(timeout=timeout) as client:
             for index, model in enumerate(attempts):
                 payload["model"] = model
                 started = time.perf_counter()
                 try:
                     response = await client.post(
-                        f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                        f"{service_settings.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
                         headers=headers,
                     )
                     if response.status_code == 429:
-                        raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
+                        raise RuntimeError(f"{service_settings.llm_provider} API returned 429 rate limit")
                     response.raise_for_status()
                     data = response.json()
                     parsed = self.parse_summary(response_text(data))
@@ -225,14 +242,17 @@ class MemorySummarizer:
             "model": plan.model,
             "stream": False,
             "temperature": 0.2,
-            "max_tokens": 1200,
+            "max_tokens": self.settings.party_memory_max_tokens,
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You maintain long-term memory for a roleplaying party. Return strict JSON only. "
+                        "You maintain an episodic compressed transcript for a roleplaying party. Return strict JSON only. "
                         "Use only supplied previous memory, current authoritative state, and turn history. "
                         "Do not turn attempts, player claims, failed checks, or unresolved possibilities into confirmed facts. "
+                        "summary_text is a detailed chronological history, not a state summary: preserve scene order, "
+                        "player actions, meaningful NPC dialogue/reactions, discoveries, locations, possessions, tone, "
+                        "and unresolved leads. Compress prose, but do not replace the history with only facts or a checklist. "
                         "Keep confirmed facts, unresolved threads, relationship changes, player promises, and NPC obligations distinct. "
                         "Do not mutate state or contradict AUTHORITATIVE world state."
                     ),
@@ -240,7 +260,7 @@ class MemorySummarizer:
                 {
                     "role": "user",
                     "content": (
-                        "Create updated cumulative memory with keys: summary_text, key_facts, open_threads, "
+                        "Create updated cumulative episodic history with keys: summary_text, key_facts, open_threads, "
                         "relationship_changes, player_promises, npc_obligations.\n\n"
                         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
                     ),
@@ -248,9 +268,29 @@ class MemorySummarizer:
             ],
         }
 
-    def model_attempts(self, primary_model: str) -> list[str]:
-        disabled = set(self.settings.nvidia_disabled_models)
-        candidates = [primary_model, *self.settings.nvidia_fallback_models]
+    def memory_service_settings(self) -> Settings:
+        provider = normalize_provider(self.settings.memory_llm_provider or self.settings.llm_provider)
+        if provider == "local" and not self.settings.local_llm_enabled:
+            provider = normalize_provider(self.settings.llm_provider)
+        model = self.settings.memory_llm_model.strip()
+        if not model:
+            model = self.settings.local_llm_model_alias if provider == "local" else self.settings.narrative_model
+        return replace(
+            self.settings,
+            llm_provider=provider,
+            nvidia_api_base=provider_base_url(self.settings, provider),
+            nvidia_api_key=provider_api_key(self.settings, provider),
+            narrative_model=model,
+            nvidia_fallback_models=self.settings.nvidia_fallback_models if provider == "nvidia" else (),
+            nvidia_disabled_models=self.settings.nvidia_disabled_models if provider == "nvidia" else (),
+            model_attempt_timeout_seconds=(
+                self.settings.local_llm_timeout_seconds if provider == "local" else self.settings.model_attempt_timeout_seconds
+            ),
+        )
+
+    def model_attempts(self, primary_model: str, service_settings: Settings) -> list[str]:
+        disabled = set(service_settings.nvidia_disabled_models)
+        candidates = [primary_model, *service_settings.nvidia_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if not model or model in disabled or model in attempts:
@@ -268,7 +308,7 @@ class MemorySummarizer:
             data = {"summary_text": content}
         summary_text = str(data.get("summary_text") or data.get("summary") or content).strip()
         return {
-            "summary_text": clip(summary_text, 6000),
+            "summary_text": clip(summary_text, self.settings.party_memory_max_chars),
             "key_facts": as_list(data.get("key_facts")),
             "open_threads": as_list(data.get("open_threads")),
             "relationship_changes": as_list(data.get("relationship_changes")),

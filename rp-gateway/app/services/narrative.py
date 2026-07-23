@@ -445,8 +445,9 @@ def long_term_memory_block(memory_summary: dict[str, Any]) -> str:
     }
     return (
         "LONG_TERM_PARTY_MEMORY\n"
-        "Use this as campaign context only. Current authoritative state and AUTHORITATIVE_OUTCOME override it. "
-        "Do not promote unresolved or player-claimed events into facts.\n"
+        "This is a detailed, chronologically compressed transcript of earlier scenes, not the state summary. "
+        "Use its actions, dialogue, discoveries, tone, and unresolved leads for continuity. Current authoritative state "
+        "and AUTHORITATIVE_OUTCOME override it. Do not promote unresolved or player-claimed events into facts.\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
 
