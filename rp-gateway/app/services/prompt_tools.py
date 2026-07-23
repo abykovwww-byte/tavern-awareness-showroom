@@ -140,7 +140,9 @@ class PromptInspector:
     def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
         if before_turn_id is None:
-            turns = self.store.turns_for_memory()
+            memory = self.store.latest_memory_summary()
+            covered_through = int(memory["to_turn_id"]) if memory else 0
+            turns = self.store.turns_for_memory(after_turn_id=covered_through)
         else:
             turns = self.store.turns_before(before_turn_id, limit=10_000)
         _, turns = split_turns_by_token_budget(

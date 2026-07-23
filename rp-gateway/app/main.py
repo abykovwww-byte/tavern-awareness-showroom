@@ -877,7 +877,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
-            await summarize_party_overflow(party_settings, party_state_store, authorization, x_request_id)
+            await summarize_party_overflow(
+                party_settings,
+                party_state_store,
+                authorization,
+                x_request_id,
+                current_message_tokens=estimate_tokens(request.content),
+            )
             chat_request = party_chat_request(
                 party_state_store,
                 model_profile.model,
@@ -1135,6 +1141,7 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
         "campaign_id": party.worldpack_id,
         "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
         "world_authors_note": worldpack_prompt_text(party, "authors_note"),
+        "prompt_cache_session_id": f"rp-party:{party.id}",
     }
     if model_profile is None:
         return replace(settings, **prompt_values)
@@ -1326,7 +1333,9 @@ def party_chat_request(
     request: PartyMessageRequest,
     settings: Settings,
 ) -> ChatCompletionRequest:
-    turns = store.turns_for_memory()
+    memory = store.latest_memory_summary()
+    covered_through = int(memory["to_turn_id"]) if memory else 0
+    turns = store.turns_for_memory(after_turn_id=covered_through)
     current_message_tokens = estimate_tokens(request.content)
     history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
     _, raw_turns = split_turns_by_token_budget(turns, history_budget)
@@ -1349,14 +1358,21 @@ async def summarize_party_overflow(
     store: StateStore,
     authorization: str | None,
     request_id: str | None,
+    current_message_tokens: int = 0,
 ) -> None:
     """Ensure every omitted turn is covered by durable cumulative memory before narration."""
     summarizer = MemorySummarizer(settings, store)
     for _ in range(64):
-        plan, reason = summarizer.build_plan()
+        history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
+        plan, reason = summarizer.build_plan(history_token_budget=history_budget)
         if plan is None:
             return
-        result = await summarizer.summarize(authorization, fail_open=False, request_id=request_id)
+        result = await summarizer.summarize(
+            authorization,
+            fail_open=False,
+            request_id=request_id,
+            history_token_budget=history_budget,
+        )
         if not result.get("generated"):
             raise RuntimeError(f"party memory consolidation did not advance: {reason}")
     raise RuntimeError("party memory consolidation exceeded 64 summary batches")

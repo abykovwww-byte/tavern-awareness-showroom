@@ -721,6 +721,30 @@ def test_context_overflow_is_omitted_until_cumulative_memory_catches_up(tmp_path
     assert plan is not None
     assert [turn["id"] for turn in plan.turns] == [1]
 
+    # A durable cumulative summary replaces its covered raw turns even if a
+    # later model profile has a larger context window.
+    store.record_memory_summary(
+        from_turn_id=1,
+        to_turn_id=1,
+        state_version=1,
+        summary_text="old event retained in memory",
+        key_facts=["old event"],
+        open_threads=[],
+        relationship_changes=[],
+        player_promises=[],
+        npc_obligations=[],
+        model="mock",
+    )
+    covered_request = party_chat_request(
+        store,
+        "z-ai/glm-5.2",
+        PartyMessageRequest(content="next action"),
+        c.app.state.settings,
+    )
+    covered_prompt_text = "\n".join(str(message.content) for message in covered_request.messages)
+    assert old_player not in covered_prompt_text
+    assert recent_player in covered_prompt_text
+
 
 def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def fail_summary(*_args, **_kwargs):

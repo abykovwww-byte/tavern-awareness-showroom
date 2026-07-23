@@ -51,8 +51,9 @@ class MemorySummarizer:
     def stats(self) -> dict[str, Any]:
         turns = self.store.turns_for_memory()
         latest = self.store.latest_memory_summary()
-        old_turns, raw_turns = split_turns_by_token_budget(turns, self.history_token_budget)
         latest_to_turn_id = int(latest["to_turn_id"]) if latest else 0
+        raw_source_turns = [turn for turn in turns if int(turn["id"]) > latest_to_turn_id]
+        old_turns, raw_turns = split_turns_by_token_budget(raw_source_turns, self.history_token_budget)
         unsummarized = [turn for turn in old_turns if int(turn["id"]) > latest_to_turn_id]
         return {
             "total_turns": len(turns),
@@ -75,8 +76,9 @@ class MemorySummarizer:
         force: bool = False,
         fail_open: bool = True,
         request_id: str | None = None,
+        history_token_budget: int | None = None,
     ) -> dict[str, Any]:
-        plan, reason = self.build_plan(force=force)
+        plan, reason = self.build_plan(force=force, history_token_budget=history_token_budget)
         if plan is None:
             return {
                 "generated": False,
@@ -134,10 +136,15 @@ class MemorySummarizer:
                 raise
             raise RuntimeError("Memory summary provider failed") from exc
 
-    def build_plan(self, force: bool = False) -> tuple[SummaryPlan | None, str]:
+    def build_plan(
+        self,
+        force: bool = False,
+        history_token_budget: int | None = None,
+    ) -> tuple[SummaryPlan | None, str]:
         turns = self.store.turns_for_memory()
         latest = self.store.latest_memory_summary()
-        old_turns, _ = split_turns_by_token_budget(turns, self.history_token_budget)
+        budget = max(history_token_budget if history_token_budget is not None else self.history_token_budget, 0)
+        old_turns, _ = split_turns_by_token_budget(turns, budget)
         if not old_turns:
             return None, "within_context_budget"
 

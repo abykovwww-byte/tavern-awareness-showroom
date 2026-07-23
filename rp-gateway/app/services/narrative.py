@@ -18,6 +18,7 @@ from app.services.character_retrieval import (
     selected_character_relationships,
 )
 from app.services.context_budget import estimate_tokens
+from app.services.nvidia_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
 
 
@@ -77,6 +78,7 @@ class NarrativeClient:
 
         payload = request.model_dump(exclude_none=True)
         payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)
+        self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
 
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
@@ -241,6 +243,12 @@ class NarrativeClient:
             )
         if memory_summary:
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
+        # Keep the immutable rules/world prefix followed by the growing transcript.
+        # Providers with implicit prompt caches can then reuse both across turns.
+        request_messages = [message for message in request.messages if isinstance(message.content, str)]
+        for message in request_messages[:-1]:
+            if isinstance(message.content, str):
+                messages.append({"role": message.role, "content": message.content})
         if relevant_characters:
             messages.append(
                 {
@@ -254,10 +262,20 @@ class NarrativeClient:
                 {"role": "system", "content": outcome.authoritative_block},
             ]
         )
-        for message in request.messages:
-            if isinstance(message.content, str):
-                messages.append({"role": message.role, "content": message.content})
+        # The current player action must remain the final message after dynamic runtime context.
+        if request_messages:
+            current_action = request_messages[-1]
+            messages.append({"role": current_action.role, "content": current_action.content})
         return fit_messages_to_context(messages, self.input_token_budget(request))
+
+    def apply_prompt_cache_policy(self, payload: dict[str, Any]) -> None:
+        """Add only provider-documented cache controls; other providers use the stable prefix implicitly."""
+        if normalize_provider(self.settings.llm_provider) != "openrouter":
+            return
+        if self.settings.prompt_cache_session_id:
+            payload["session_id"] = self.settings.prompt_cache_session_id
+        if self.settings.openrouter_prompt_cache_enabled and str(payload.get("model") or "").startswith("anthropic/"):
+            payload["cache_control"] = {"type": "ephemeral", "ttl": self.settings.openrouter_prompt_cache_ttl}
 
     def input_token_budget(self, request: ChatCompletionRequest) -> int:
         reserve = max(

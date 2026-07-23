@@ -259,12 +259,13 @@ class StateStore:
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
-    def latest_turn(self, include_prompt: bool = False) -> dict[str, Any] | None:
+    def latest_turn(self, include_prompt: bool = False, include_response: bool = False) -> dict[str, Any] | None:
         prompt_column = ", prompt_json" if include_prompt else ""
+        response_column = ", response_json" if include_response else ""
         with self.connect() as connection:
             row = connection.execute(
                 f"""
-                SELECT id, request_id, player_message, narrative_response, state_version, created_at{prompt_column}
+                SELECT id, request_id, player_message, narrative_response, state_version, created_at{prompt_column}{response_column}
                 FROM turns
                 WHERE campaign_id = ?
                 ORDER BY id DESC

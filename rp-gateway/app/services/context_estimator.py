@@ -21,7 +21,7 @@ def estimate_party_context(
     model_profile: ModelProfileSummary | None,
 ) -> dict[str, Any]:
     all_turns = store.turn_history(limit=10000)
-    latest_turn = store.latest_turn(include_prompt=True)
+    latest_turn = store.latest_turn(include_prompt=True, include_response=True)
     if latest_turn and latest_turn.get("prompt_json"):
         prompt_messages = load_prompt_messages(latest_turn["prompt_json"])
         if prompt_messages is None:
@@ -43,6 +43,8 @@ def estimate_party_context(
     memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
     relevant_characters_text = first_system_content(prompt_messages, "RELEVANT_CHARACTERS")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
+    memory_summary = store.latest_memory_summary()
+    cache_usage = cache_usage_from_response(latest_turn.get("response_json"))
     context_limit_tokens = settings.effective_party_context_limit_tokens
     prompt_tokens = estimate_tokens(prompt_text)
     completion_reserved_tokens = int((model_profile.params if model_profile else {}).get("max_tokens") or 0)
@@ -63,7 +65,8 @@ def estimate_party_context(
         "state_summary_tokens": estimate_tokens(state_summary_text),
         "relevant_characters_tokens": estimate_tokens(relevant_characters_text) if relevant_characters_text else 0,
         "memory_summary_tokens": estimate_tokens(memory_text) if memory_text else 0,
-        "memory_covered_turns": None,
+        "memory_covered_turns": [memory_summary.get("from_turn_id"), memory_summary.get("to_turn_id")] if memory_summary else None,
+        "prompt_cache": cache_usage,
         "direct_history_tokens": estimate_tokens(history_text) if history_text else 0,
         "history_turns_total": len(all_turns),
         "history_source_turn_limit": source_turn_limit,
@@ -112,6 +115,7 @@ def empty_recorded_context(
         "relevant_characters_tokens": 0,
         "memory_summary_tokens": 0,
         "memory_covered_turns": None,
+        "prompt_cache": {"available": False, "cached_tokens": 0, "cache_write_tokens": 0},
         "direct_history_tokens": 0,
         "history_turns_total": history_turns_total,
         "history_source_turn_limit": None,
@@ -150,6 +154,22 @@ def load_prompt_messages(value: Any) -> list[dict[str, Any]] | None:
             return None
         normalized.append(message)
     return normalized
+
+
+def cache_usage_from_response(value: Any) -> dict[str, Any]:
+    """Normalize cache fields returned by OpenRouter/OpenAI and Gemini-compatible APIs."""
+    try:
+        response = json.loads(str(value)) if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        response = None
+    if not isinstance(response, dict):
+        return {"available": False, "cached_tokens": 0, "cache_write_tokens": 0}
+    usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+    details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    gemini = response.get("usage_metadata") if isinstance(response.get("usage_metadata"), dict) else {}
+    cached_tokens = int(details.get("cached_tokens") or gemini.get("cached_content_token_count") or gemini.get("total_cached_tokens") or 0)
+    cache_write_tokens = int(details.get("cache_write_tokens") or 0)
+    return {"available": bool(details or gemini), "cached_tokens": cached_tokens, "cache_write_tokens": cache_write_tokens}
 
 
 def estimate_tokens(text: str) -> int:
