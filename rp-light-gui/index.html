@@ -160,9 +160,9 @@
         <section class="summary-panel">
           <div class="panel-head">
             <div class="section-label">Prompt inspector</div>
-            <button class="text-button" id="promptPreviewButton" type="button" title="Показать полный prompt предыдущего запроса">Показать prompt</button>
+            <button class="text-button" id="promptPreviewButton" type="button" title="Без текста откроет предыдущий prompt; с текстом в поле хода покажет dry-run и объяснит память">Показать prompt</button>
           </div>
-          <p class="panel-hint">Показывает полный prompt последнего запроса: system rules, long-term memory, state summary, AUTHORITATIVE_OUTCOME и raw turns.</p>
+          <p class="panel-hint">Без текста открывает фактический предыдущий prompt. Если в поле хода есть текст — собирает безопасный dry-run и показывает, почему вошли главы, raw-история и retrieval.</p>
           <div id="promptPreview" class="prompt-preview"></div>
         </section>
 

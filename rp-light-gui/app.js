@@ -859,8 +859,49 @@ function renderPromptPreview() {
   const source = promptSourceLabel(preview.source);
   els.promptPreview.innerHTML = [
     stateItem("Prompt", `~${escapeHtml(total)} токенов · ${escapeHtml(source)}`, "Полный prompt предыдущего запроса, если Gateway уже записал prompt_json."),
+    promptInspectionHtml(preview.inspection),
     ...blocks.map((block, index) => promptBlock(block, index)),
   ].join("");
+}
+
+function promptInspectionHtml(inspection) {
+  if (!inspection || typeof inspection !== "object") return "";
+  const chapters = inspection.chapters || {};
+  const included = Array.isArray(chapters.included) ? chapters.included : [];
+  const excluded = Array.isArray(chapters.excluded) ? chapters.excluded : [];
+  const raw = inspection.raw || {};
+  const retrieval = Array.isArray(inspection.retrieval) ? inspection.retrieval : [];
+  const chapterText = included.length
+    ? included.map(memoryInspectionEntry).join("<br>")
+    : "нет глав, вошедших в этот dry-run";
+  const excludedText = excluded.length
+    ? excluded.map(memoryInspectionEntry).join("<br>")
+    : "нет";
+  const rawIncluded = turnRangeLabel(raw.included_turn_ids);
+  const rawExcluded = turnRangeLabel(raw.excluded_turn_ids);
+  const retrievalText = retrieval.length
+    ? retrieval.map((item) => `ход ${item.turn_id} · score ${item.score} · ${escapeHtml((item.matched_terms || []).join(", "))}`).join("<br>")
+    : "нет совпадений в архиве";
+  return `<div class="state-item prompt-inspection">
+    <strong>Почему это в prompt</strong>
+    <div><span class="muted-label">Главы:</span><br>${chapterText}</div>
+    <div><span class="muted-label">Raw:</span> ${escapeHtml(rawIncluded)}${rawExcluded ? `<br><span class="warning-text">вне raw-бюджета: ${escapeHtml(rawExcluded)}</span>` : ""}</div>
+    <div><span class="muted-label">Archive retrieval:</span><br>${retrievalText}</div>
+    ${excluded.length ? `<details class="prompt-inspection-excluded"><summary>Не вошедшие главы (${excluded.length})</summary>${excludedText}</details>` : ""}
+  </div>`;
+}
+
+function memoryInspectionEntry(entry) {
+  const kind = entry.memory_type === "chapter" ? "глава" : "legacy memory";
+  const range = `${entry.from_turn_id ?? "-"}–${entry.to_turn_id ?? "-"}`;
+  return `${escapeHtml(kind)} ${escapeHtml(range)} · ~${escapeHtml(formatTokens(entry.estimated_tokens || 0))}`;
+}
+
+function turnRangeLabel(turnIds) {
+  if (!Array.isArray(turnIds) || !turnIds.length) return "нет";
+  const first = turnIds[0];
+  const last = turnIds[turnIds.length - 1];
+  return first === last ? `ход ${first}` : `ходы ${first}–${last} (${turnIds.length})`;
 }
 
 function promptSourceLabel(source) {
@@ -1662,12 +1703,13 @@ async function previewPrompt() {
   if (!appState.activeParty) return;
   const content = els.messageInput.value.trim();
   try {
-    setBusy(true, "Открываю prompt предыдущего запроса...");
-    const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content, source: "last" });
+    const source = content ? "current" : "last";
+    setBusy(true, source === "current" ? "Проверяю prompt следующего хода..." : "Открываю prompt предыдущего запроса...");
+    const result = await apiPost(`/api/parties/${appState.activeParty.id}/prompt/preview`, { content, source });
     appState.promptPreview = result.preview;
     renderPromptPreview();
     openPanelFor(els.promptPreview);
-    showToast("Prompt preview собран.");
+    showToast(source === "current" ? "Собран dry-run следующего хода." : "Prompt предыдущего хода открыт.");
   } catch (error) {
     showToast(error.message);
   } finally {

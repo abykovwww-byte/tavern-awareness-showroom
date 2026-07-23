@@ -707,6 +707,26 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.prompt-inspection {
+  display: grid;
+  gap: 7px;
+}
+
+.prompt-inspection .muted-label {
+  color: var(--dim);
+  font-weight: 760;
+}
+
+.prompt-inspection-excluded {
+  color: var(--muted);
+}
+
+.prompt-inspection-excluded summary {
+  cursor: pointer;
+  color: var(--green-strong);
+  font-weight: 740;
+}
+
 .memory-list ul {
   display: grid;
   gap: 5px;

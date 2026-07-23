@@ -77,7 +77,14 @@ class PromptInspector:
             memory_summary=memory_summary,
         )
         blocks = self.blocks(messages)
-        payload = self.payload(latest, messages, blocks, source="current_dry_run", dry_run=True)
+        payload = self.payload(
+            latest,
+            messages,
+            blocks,
+            source="current_dry_run",
+            dry_run=True,
+            inspection=self.memory_inspection(latest),
+        )
         payload.update(
             {
                 "mutation": "none",
@@ -123,6 +130,7 @@ class PromptInspector:
         source: str,
         dry_run: bool,
         turn: dict[str, Any] | None = None,
+        inspection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "input": latest,
@@ -135,6 +143,7 @@ class PromptInspector:
             "blocks": blocks,
             "estimated_prompt_tokens": sum(block["estimated_tokens"] for block in blocks),
             "estimated_prompt_chars": sum(len(block["content"]) for block in blocks),
+            "inspection": inspection,
         }
 
     def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
@@ -207,6 +216,8 @@ class PromptInspector:
             return "world_authors_note", "World author's note"
         if content.startswith("RELEVANT_CHARACTERS"):
             return "relevant_characters", "Relevant characters"
+        if content.startswith("RETRIEVED_ARCHIVE_SCENES"):
+            return "retrieved_archive_scenes", "Retrieved archive scenes"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:
@@ -224,3 +235,61 @@ class PromptInspector:
             "estimated_tokens": estimate_tokens(content),
             "estimated_chars": len(content),
         }
+
+    def memory_inspection(self, latest: str) -> dict[str, Any]:
+        coverage = self.store.latest_memory_coverage()
+        covered_through = int(coverage["to_turn_id"]) if coverage else 0
+        selected = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
+        selected_keys = {(item.get("memory_type"), item.get("id")) for item in selected}
+        all_memory: list[dict[str, Any]] = []
+        legacy = self.store.latest_memory_summary()
+        if legacy:
+            all_memory.append(legacy | {"memory_type": "legacy_cumulative"})
+        all_memory.extend(self.store.memory_chapters())
+        included = [self.memory_entry_view(item, "included") for item in all_memory if (item.get("memory_type"), item.get("id")) in selected_keys]
+        excluded = [
+            self.memory_entry_view(item, "excluded_prompt_budget")
+            for item in all_memory
+            if (item.get("memory_type"), item.get("id")) not in selected_keys
+        ]
+        raw_source = self.store.turns_for_memory(after_turn_id=covered_through)
+        omitted_raw, included_raw = split_turns_by_token_budget(
+            raw_source,
+            max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
+        )
+        retrieval = self.store.explain_archived_retrieval(
+            latest,
+            through_turn_id=covered_through,
+            limit=self.settings.party_memory_retrieval_limit,
+        )
+        return {
+            "memory_coverage_through_turn_id": covered_through or None,
+            "chapters": {"included": included, "excluded": excluded},
+            "raw": {
+                "included_turn_ids": turn_ids(included_raw),
+                "excluded_turn_ids": turn_ids(omitted_raw),
+                "excluded_reason": "raw_history_budget" if omitted_raw else None,
+            },
+            "retrieval": [
+                {
+                    "turn_id": item["id"],
+                    "score": item["retrieval_score"],
+                    "matched_terms": item["matched_terms"],
+                }
+                for item in retrieval
+            ],
+        }
+
+    def memory_entry_view(self, item: dict[str, Any], status: str) -> dict[str, Any]:
+        return {
+            "id": item.get("id"),
+            "memory_type": item.get("memory_type", "legacy_cumulative"),
+            "from_turn_id": item.get("from_turn_id"),
+            "to_turn_id": item.get("to_turn_id"),
+            "estimated_tokens": estimate_tokens(str(item.get("summary_text") or "")),
+            "status": status,
+        }
+
+
+def turn_ids(turns: list[dict[str, Any]]) -> list[int]:
+    return [int(turn["id"]) for turn in turns]

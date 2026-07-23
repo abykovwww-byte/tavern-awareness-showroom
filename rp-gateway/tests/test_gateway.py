@@ -968,6 +968,39 @@ def test_party_prompt_preview_defaults_to_last_recorded_prompt(tmp_path: Path):
     assert body["estimated_prompt_tokens"] > 0
 
 
+def test_party_prompt_preview_explains_chapter_and_archive_retrieval(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Inspectable Memory")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    store.record_turn("memory-inspector-1", "memory-inspector-1", "Мира нашла астролябию", "Астролябия осталась у Миры", {}, 1)
+    store.record_memory_chapter(
+        from_turn_id=1,
+        to_turn_id=1,
+        state_version=1,
+        summary_text="Мира нашла астролябию.",
+        key_facts=[],
+        open_threads=[],
+        relationship_changes=[],
+        player_promises=[],
+        npc_obligations=[],
+        model="mock",
+    )
+
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "Где астролябия?", "source": "current"},
+    )
+
+    assert preview.status_code == 200
+    body = preview.json()["preview"]
+    inspection = body["inspection"]
+    assert inspection["chapters"]["included"][0]["from_turn_id"] == 1
+    assert inspection["raw"]["included_turn_ids"] == []
+    assert inspection["retrieval"] == [{"turn_id": 1, "score": 2, "matched_terms": ["астролябия"]}]
+    assert "retrieved_archive_scenes" in {block["id"] for block in body["blocks"]}
+
+
 def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)

@@ -345,6 +345,17 @@ class StateStore:
 
     def search_archived_turns(self, query: str, through_turn_id: int, limit: int = 3) -> list[dict[str, Any]]:
         """Retrieve only already-compressed turns; the raw tail remains sequential in the prompt."""
+        return [
+            {
+                key: value
+                for key, value in match.items()
+                if key not in {"retrieval_score", "matched_terms"}
+            }
+            for match in self.explain_archived_retrieval(query, through_turn_id, limit)
+        ]
+
+    def explain_archived_retrieval(self, query: str, through_turn_id: int, limit: int = 3) -> list[dict[str, Any]]:
+        """Return local lexical retrieval evidence for the prompt inspector without changing prompt authority."""
         terms = archive_search_terms(query)
         if not terms or through_turn_id <= 0 or limit <= 0:
             return []
@@ -362,8 +373,11 @@ class StateStore:
         for row in rows:
             item = dict(row)
             text = f"{item['player_message']}\n{item['narrative_response']}".lower()
-            score = sum(text.count(term) for term in terms)
+            matched_terms = [term for term in terms if term in text]
+            score = sum(text.count(term) for term in matched_terms)
             if score:
+                item["retrieval_score"] = score
+                item["matched_terms"] = matched_terms
                 ranked.append((score, item))
         ranked.sort(key=lambda pair: (pair[0], pair[1]["id"]), reverse=True)
         return [item for _, item in ranked[:limit]]
