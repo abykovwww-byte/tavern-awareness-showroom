@@ -236,6 +236,11 @@ class PartyCheckpointCreate(BaseModel):
     label: str = Field(min_length=1, max_length=160)
 
 
+class PartyBranchCreate(BaseModel):
+    checkpoint_id: int = Field(ge=1)
+    label: str = Field(min_length=1, max_length=160)
+
+
 class PartyCharacterStateEditRequest(BaseModel):
     target: Literal["npc", "player"] = "npc"
     character_id: str | None = Field(default=None, max_length=120)

@@ -29,6 +29,7 @@ from app.models.schemas import (
     PatchEnvelope,
     PatchOperation,
     PartyCharacterStateEditRequest,
+    PartyBranchCreate,
     PartyCheckRequest,
     PartyCreate,
     PartyJournalSummarizeRequest,
@@ -121,6 +122,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runtime_settings_for_profile(profile: Any, cache_session_id: str) -> Settings:
         return settings_with_provider_key(settings_for_model_profile(settings, profile, cache_session_id))
 
+    def runtime_settings_for_branch(party: Any, branch_id: str) -> Settings:
+        return replace(
+            runtime_settings_for_party(party),
+            prompt_cache_session_id=f"rp-party:{party.id}:branch:{branch_id}",
+        )
+
     async def run_autotest(run_id: str) -> None:
         try:
             while True:
@@ -136,8 +143,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_store.update_autotest_run(run_id, status="completed", current_phase="done")
                     return
 
-                party = party_store.get_party(run["test_party_id"], owner_user_id=run["owner_user_id"])
-                party_state_store = party_store.store_for_party(party.id, owner_user_id=run["owner_user_id"])
+                if run.get("branch_id"):
+                    party = party_store.get_party(run["source_party_id"], owner_user_id=run["owner_user_id"])
+                    party_state_store = party_store.store_for_branch(
+                        party.id,
+                        run["branch_id"],
+                        owner_user_id=run["owner_user_id"],
+                    )
+                    party_settings = runtime_settings_for_branch(party, run["branch_id"])
+                else:
+                    # Backward compatibility for runs created before checkpoint branches existed.
+                    party = party_store.get_party(run["test_party_id"], owner_user_id=run["owner_user_id"])
+                    party_state_store = party_store.store_for_party(party.id, owner_user_id=run["owner_user_id"])
+                    party_settings = runtime_settings_for_party(party)
                 player_profile = party_store.get_model_profile(run["player_model_profile_id"])
                 player_settings = runtime_settings_for_profile(player_profile, f"rp-autotest-player:{run_id}")
                 turn_number = completed_turns + 1
@@ -166,7 +184,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     current_phase="narrator",
                     last_player_action=action,
                 )
-                party_settings = runtime_settings_for_party(party)
                 narrator_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
                 chat_request = party_chat_request(
                     party_state_store,
@@ -223,6 +240,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.warning("recovered_interrupted_work party_id=%s %s", party.id, recovered)
             if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
                 Adjudicator(runtime_settings_for_party(party), party_state_store).schedule_service_jobs()
+        for branch in party_store.list_all_party_branches():
+            branch_store = party_store.store_for_branch(branch["party_id"], branch["id"])
+            recovered = branch_store.recover_interrupted_work()
+            if any(recovered.values()):
+                logger.warning("recovered_interrupted_branch_work branch_id=%s %s", branch["id"], recovered)
         for run in party_store.resumable_autotest_runs():
             schedule_autotest(run["id"])
 
@@ -674,6 +696,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return {"party_id": party_id, "checkpoint": created}
 
+    @app.get("/api/parties/{party_id}/branches")
+    def get_party_branches(request: Request, party_id: str, limit: int = 100) -> dict[str, Any]:
+        try:
+            branches = party_store.list_party_branches(
+                party_id,
+                owner_user_id=owner_user_id(request),
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "branches": branches}
+
+    @app.post("/api/parties/{party_id}/branches")
+    def create_party_branch(request: Request, party_id: str, payload: PartyBranchCreate) -> dict[str, Any]:
+        try:
+            branch = party_store.create_party_branch(
+                party_id=party_id,
+                checkpoint_id=payload.checkpoint_id,
+                label=payload.label,
+                owner_user_id=owner_user_id(request),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, "branch": branch}
+
+    @app.get("/api/parties/{party_id}/branches/{branch_id}")
+    def get_party_branch(request: Request, party_id: str, branch_id: str, limit: int = 200) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_id)
+            branch = party_store.get_party_branch(party_id, branch_id, owner_user_id=owner_id)
+            branch_store = party_store.store_for_branch(party_id, branch_id, owner_user_id=owner_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        branch_state = branch_store.get_state()
+        return {
+            "party": party.model_dump(mode="json"),
+            "branch": branch,
+            "state": branch_state,
+            "turns": branch_store.turn_history(limit=min(max(limit, 1), 500)),
+            "state_versions": branch_store.history(limit=min(max(limit, 1), 500)),
+            "characters": party_character_sheets(branch_state),
+        }
+
     @app.post("/api/parties/{party_id}/memory/summarize")
     async def summarize_party_memory(
         http_request: Request,
@@ -1071,9 +1137,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> dict[str, Any]:
-        active_autotest = party_store.active_autotest_for_party(party_id)
-        if active_autotest and not str(request.idempotency_key or "").startswith("autotest:"):
-            raise HTTPException(status_code=409, detail="auto-test party is read-only while its run is active")
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
@@ -1143,31 +1206,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             player_profile = supported_profiles.get(payload.player_model_profile_id)
             if player_profile is None:
                 raise ValueError("auto-player model must be an available OpenRouter or Local Gemma profile")
-            test_party = party_store.create_party(
-                PartyCreate(
-                    title=f"[Автотест] {source_party.title}"[:160],
-                    scenario_type=source_party.scenario_type,
-                    worldpack_id=source_party.worldpack_id,
-                    player_character_id=source_party.player_character_id,
-                    model_profile_id=source_party.model_profile_id,
-                ),
+            source_store = party_store.store_for_party(source_party.id, owner_user_id=owner_id)
+            if source_store.has_running_turn_request():
+                raise ValueError("wait for the current party turn to finish before creating an auto-test branch")
+            label = f"Автотест · {time.strftime('%Y-%m-%d %H:%M:%S')} · {payload.turn_count} ходов"
+            checkpoint = source_store.create_memory_checkpoint(label)
+            branch = party_store.create_party_branch(
+                party_id=source_party.id,
+                checkpoint_id=int(checkpoint["id"]),
+                label=label,
+                branch_type="autotest",
                 owner_user_id=owner_id,
             )
-            try:
-                await start_party(
-                    http_request,
-                    test_party.id,
-                    PartyStartRequest(idempotency_key=f"autotest-start:{test_party.id}"),
-                    authorization=None,
-                    x_request_id=f"autotest_start_{test_party.id}",
-                )
-            except Exception:
-                party_store.delete_party(test_party.id, owner_user_id=owner_id)
-                raise
+            source_store.audit(
+                "autotest_branch_created",
+                {"branch_id": branch["id"], "checkpoint_id": checkpoint["id"], "requested_turns": payload.turn_count},
+            )
             run = party_store.create_autotest_run(
                 owner_user_id=owner_id,
                 source_party_id=source_party.id,
-                test_party_id=test_party.id,
+                branch_id=branch["id"],
+                checkpoint_id=int(checkpoint["id"]),
                 player_model_profile_id=player_profile.id,
                 player_prompt=payload.player_prompt,
                 requested_turns=payload.turn_count,
@@ -1177,7 +1236,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         schedule_autotest(run["id"])
-        return {"run": run, "test_party": test_party.model_dump(mode="json")}
+        checkpoint_summary = {key: value for key, value in checkpoint.items() if key != "state"}
+        return {"run": run, "branch": branch, "checkpoint": checkpoint_summary}
 
     @app.post("/api/admin/autotests/{run_id}/stop")
     def admin_stop_autotest(request: Request, run_id: str) -> dict[str, Any]:

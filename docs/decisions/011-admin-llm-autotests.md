@@ -13,9 +13,13 @@ and is intentionally limited to OpenRouter or the private Local Gemma profile.
 
 ## Isolation and authority
 
-- A run creates a new party from the selected party's world, character,
-  scenario type, and narrator model. It starts from the world pack state seed;
-  the source party is never mutated.
+- A run creates a state checkpoint at the selected party's current head and
+  forks an internal party branch from that checkpoint. It does not create a
+  second Party and does not return to the world pack state seed.
+- The branch has its own Gateway campaign/state identity. The checkpoint state,
+  visible turn prefix, checks, memory chapters, journal entries, and active lore
+  cards are copied with branch-local turn identifiers. Subsequent branch writes
+  cannot mutate the main party line.
 - Every generated player action enters the normal party message path. Gateway
   remains authoritative for scenario rules, checks, state, memory, validation,
   and narrator model routing.
@@ -36,9 +40,9 @@ Stop requests are cooperative: the current provider request is allowed to
 finish so the Gateway does not leave a half-written turn request. The run stops
 before the next player/narrator boundary.
 
-While a run is active, its test party is readable in Light GUI but rejects
-manual player messages. This prevents a human turn from racing the background
-LLM-player against the same canonical state.
+The source party remains writable while an auto-test runs because the worker
+writes only to the branch. Branch views in Light GUI are read-only and appear
+inside the source party's checkpoint/branch tools instead of the party list.
 
 ## API
 
@@ -49,6 +53,9 @@ GET  /api/admin/autotests/models
 GET  /api/admin/autotests
 POST /api/admin/autotests
 POST /api/admin/autotests/{run_id}/stop
+GET  /api/parties/{party_id}/branches
+POST /api/parties/{party_id}/branches
+GET  /api/parties/{party_id}/branches/{branch_id}
 ```
 
 `POST /api/admin/autotests` accepts a source party, player behavior prompt,

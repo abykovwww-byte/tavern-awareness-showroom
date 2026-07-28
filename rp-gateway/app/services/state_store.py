@@ -596,6 +596,16 @@ class StateStore:
             ).fetchall()
         return [self.memory_checkpoint_from_row(row, include_state=include_state) for row in rows]
 
+    def get_memory_checkpoint(self, checkpoint_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM memory_checkpoints WHERE id = ? AND campaign_id = ?",
+                (int(checkpoint_id), self.campaign_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"checkpoint not found: {checkpoint_id}")
+        return self.memory_checkpoint_from_row(row)
+
     def memory_checkpoint_from_row(self, row: sqlite3.Row, include_state: bool = True) -> dict[str, Any]:
         checkpoint = {
             "id": row["id"],
@@ -610,6 +620,250 @@ class StateStore:
         if include_state:
             checkpoint["state"] = json.loads(row["state_json"])
         return checkpoint
+
+    def fork_from_checkpoint(
+        self,
+        *,
+        checkpoint_id: int,
+        target_campaign_id: str,
+        target_state_path: str,
+    ) -> dict[str, Any]:
+        """Create an isolated campaign branch from a party checkpoint."""
+        checkpoint = self.get_memory_checkpoint(checkpoint_id)
+        state = json.loads(json.dumps(checkpoint["state"], ensure_ascii=False))
+        state.setdefault("meta", {})["campaign_id"] = target_campaign_id
+        state["meta"]["branch_parent_campaign_id"] = self.campaign_id
+        state["meta"]["branch_checkpoint_id"] = int(checkpoint_id)
+        through_turn_id = checkpoint.get("through_turn_id")
+        target_path = Path(target_state_path)
+        turn_map: dict[int, int] = {}
+        copied_turns = 0
+
+        try:
+            with self.connect() as connection:
+                exists = connection.execute("SELECT 1 FROM campaigns WHERE id = ?", (target_campaign_id,)).fetchone()
+                if exists:
+                    raise ValueError(f"branch campaign already exists: {target_campaign_id}")
+                connection.execute("INSERT INTO campaigns(id, created_at) VALUES(?, ?)", (target_campaign_id, now_ts()))
+                connection.execute(
+                    """
+                    INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_campaign_id,
+                        int(checkpoint["state_version"]),
+                        json.dumps(state, ensure_ascii=False),
+                        now_ts(),
+                        f"branch_from:{self.campaign_id}:checkpoint:{checkpoint_id}",
+                    ),
+                )
+
+                if through_turn_id is not None:
+                    source_turns = connection.execute(
+                        """
+                        SELECT * FROM turns
+                        WHERE campaign_id = ? AND id <= ?
+                        ORDER BY id ASC
+                        """,
+                        (self.campaign_id, int(through_turn_id)),
+                    ).fetchall()
+                    for row in source_turns:
+                        cursor = connection.execute(
+                            """
+                            INSERT INTO turns(
+                                campaign_id, idempotency_key, request_id, player_message,
+                                narrative_response, response_json, prompt_json, state_version, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                target_campaign_id,
+                                row["idempotency_key"],
+                                row["request_id"],
+                                row["player_message"],
+                                row["narrative_response"],
+                                row["response_json"],
+                                row["prompt_json"],
+                                row["state_version"],
+                                row["created_at"],
+                            ),
+                        )
+                        turn_map[int(row["id"])] = int(cursor.lastrowid)
+                    copied_turns = len(source_turns)
+
+                    checks = connection.execute(
+                        """
+                        SELECT * FROM checks
+                        WHERE campaign_id = ? AND (turn_id IS NULL OR turn_id <= ?)
+                        ORDER BY id ASC
+                        """,
+                        (self.campaign_id, int(through_turn_id)),
+                    ).fetchall()
+                    for row in checks:
+                        mapped_turn_id = turn_map.get(int(row["turn_id"])) if row["turn_id"] is not None else None
+                        connection.execute(
+                            """
+                            INSERT INTO checks(
+                                campaign_id, turn_id, check_id, action_type, result, roll,
+                                difficulty, final_score, modifiers_json, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                target_campaign_id,
+                                mapped_turn_id,
+                                row["check_id"],
+                                row["action_type"],
+                                row["result"],
+                                row["roll"],
+                                row["difficulty"],
+                                row["final_score"],
+                                row["modifiers_json"],
+                                row["created_at"],
+                            ),
+                        )
+
+                    for table in ("memory_summaries", "memory_chapters"):
+                        rows = connection.execute(
+                            f"SELECT * FROM {table} WHERE campaign_id = ? AND to_turn_id <= ? ORDER BY id ASC",
+                            (self.campaign_id, int(through_turn_id)),
+                        ).fetchall()
+                        for row in rows:
+                            mapped_from = turn_map.get(int(row["from_turn_id"]))
+                            mapped_to = turn_map.get(int(row["to_turn_id"]))
+                            if mapped_from is None or mapped_to is None:
+                                continue
+                            connection.execute(
+                                f"""
+                                INSERT INTO {table}(
+                                    campaign_id, from_turn_id, to_turn_id, state_version,
+                                    summary_text, key_facts_json, open_threads_json,
+                                    relationship_changes_json, player_promises_json,
+                                    npc_obligations_json, created_at, model
+                                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    target_campaign_id,
+                                    mapped_from,
+                                    mapped_to,
+                                    row["state_version"],
+                                    row["summary_text"],
+                                    row["key_facts_json"],
+                                    row["open_threads_json"],
+                                    row["relationship_changes_json"],
+                                    row["player_promises_json"],
+                                    row["npc_obligations_json"],
+                                    row["created_at"],
+                                    row["model"],
+                                ),
+                            )
+
+                    journals = connection.execute(
+                        """
+                        SELECT * FROM journal_entries
+                        WHERE campaign_id = ? AND to_turn_id <= ? ORDER BY id ASC
+                        """,
+                        (self.campaign_id, int(through_turn_id)),
+                    ).fetchall()
+                    for row in journals:
+                        mapped_from = turn_map.get(int(row["from_turn_id"]))
+                        mapped_to = turn_map.get(int(row["to_turn_id"]))
+                        if mapped_from is None or mapped_to is None:
+                            continue
+                        connection.execute(
+                            """
+                            INSERT INTO journal_entries(
+                                campaign_id, from_turn_id, to_turn_id, state_version, title,
+                                recap_text, important_changes_json, created_at, model
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                target_campaign_id,
+                                mapped_from,
+                                mapped_to,
+                                row["state_version"],
+                                row["title"],
+                                row["recap_text"],
+                                row["important_changes_json"],
+                                row["created_at"],
+                                row["model"],
+                            ),
+                        )
+
+                lore_card_ids = [int(value) for value in checkpoint.get("lore_card_ids", [])]
+                for lore_card_id in lore_card_ids:
+                    row = connection.execute(
+                        "SELECT * FROM lore_cards WHERE id = ? AND campaign_id = ?",
+                        (lore_card_id, self.campaign_id),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    source_turn_ids = [turn_map.get(int(value)) for value in self.json_list(row["source_turn_ids_json"])]
+                    source_turn_ids = [value for value in source_turn_ids if value is not None]
+                    connection.execute(
+                        """
+                        INSERT INTO lore_cards(
+                            campaign_id, title, content, keywords_json, always_on, enabled,
+                            archived, source_turn_ids_json, created_at, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            target_campaign_id,
+                            row["title"],
+                            row["content"],
+                            row["keywords_json"],
+                            row["always_on"],
+                            row["enabled"],
+                            row["archived"],
+                            json.dumps(source_turn_ids),
+                            row["created_at"],
+                            row["updated_at"],
+                        ),
+                    )
+
+                branch_through_turn_id = turn_map.get(int(through_turn_id)) if through_turn_id is not None else None
+                memory_coverage = checkpoint.get("memory_coverage_turn_id")
+                branch_memory_coverage = turn_map.get(int(memory_coverage)) if memory_coverage is not None else None
+                connection.execute(
+                    """
+                    INSERT INTO memory_checkpoints(
+                        campaign_id, label, through_turn_id, state_version, memory_coverage_turn_id,
+                        state_json, lore_card_ids_json, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_campaign_id,
+                        f"Branch base: {checkpoint['label']}",
+                        branch_through_turn_id,
+                        int(checkpoint["state_version"]),
+                        branch_memory_coverage,
+                        json.dumps(state, ensure_ascii=False),
+                        "[]",
+                        now_ts(),
+                    ),
+                )
+
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target_path.with_suffix(target_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, target_path)
+        except Exception:
+            with self.connect() as connection:
+                for table in (
+                    "turns", "turn_requests", "checks", "state_patches", "state_versions",
+                    "audit_events", "memory_summaries", "memory_chapters", "journal_entries",
+                    "lore_cards", "memory_checkpoints", "service_jobs",
+                ):
+                    connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (target_campaign_id,))
+                connection.execute("DELETE FROM campaigns WHERE id = ?", (target_campaign_id,))
+            raise
+
+        return {
+            "source_campaign_id": self.campaign_id,
+            "target_campaign_id": target_campaign_id,
+            "checkpoint_id": int(checkpoint_id),
+            "copied_turns": copied_turns,
+            "state_version": int(checkpoint["state_version"]),
+        }
 
     def bootstrap_state(self) -> None:
         if self.current_version() is not None:
@@ -701,6 +955,14 @@ class StateStore:
                 (self.campaign_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    def has_running_turn_request(self) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM turn_requests WHERE campaign_id = ? AND status = 'running' LIMIT 1",
+                (self.campaign_id,),
+            ).fetchone()
+        return row is not None
 
     def latest_turn(self, include_prompt: bool = False, include_response: bool = False) -> dict[str, Any] | None:
         prompt_column = ", prompt_json" if include_prompt else ""

@@ -5,11 +5,13 @@ const appState = {
   modelProfiles: [],
   parties: [],
   activeParty: null,
+  activeBranch: null,
   partyState: null,
   contextEstimate: null,
   memory: null,
   loreCards: [],
   checkpoints: [],
+  branches: [],
   serviceJobs: [],
   characters: null,
   journal: null,
@@ -202,6 +204,7 @@ function bindEvents() {
   els.loreCardForm.addEventListener("submit", createLoreCard);
   els.loreCardList.addEventListener("click", handleLoreCardAction);
   els.checkpointForm.addEventListener("submit", createCheckpoint);
+  els.checkpointList.addEventListener("click", handleBranchAction);
   els.characterEditTarget.addEventListener("change", fillCharacterEditorFromSelection);
   els.characterManualDraftButton.addEventListener("click", previewCharacterManualDraft);
   els.characterLlmDraftButton.addEventListener("click", previewCharacterLlmDraft);
@@ -424,11 +427,13 @@ function clearWorkspaceState() {
   appState.modelProfiles = [];
   appState.parties = [];
   appState.activeParty = null;
+  appState.activeBranch = null;
   appState.partyState = null;
   appState.contextEstimate = null;
   appState.memory = null;
   appState.loreCards = [];
   appState.checkpoints = [];
+  appState.branches = [];
   appState.serviceJobs = [];
   appState.characters = null;
   appState.journal = null;
@@ -474,9 +479,11 @@ async function selectParty(partyId) {
   if (appState.activeParty?.id !== party.id) {
     appState.loreCards = [];
     appState.checkpoints = [];
+    appState.branches = [];
     appState.serviceJobs = [];
   }
   appState.activeParty = party;
+  appState.activeBranch = null;
   localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
 }
@@ -518,17 +525,50 @@ async function reloadActiveParty() {
   void optionalPartyData;
 }
 
+async function openPartyBranch(partyId, branchId) {
+  if (appState.activeParty?.id !== partyId) {
+    await selectParty(partyId);
+  }
+  const payload = await apiGet(`/api/parties/${partyId}/branches/${branchId}`);
+  if (appState.activeParty?.id !== partyId) return;
+  appState.activeBranch = payload.branch;
+  appState.partyState = payload.state;
+  appState.history = {
+    party_id: partyId,
+    branch_id: branchId,
+    turns: payload.turns || [],
+    state_versions: payload.state_versions || [],
+  };
+  appState.characters = { characters: payload.characters || {} };
+  appState.contextEstimate = null;
+  appState.memory = null;
+  appState.journal = null;
+  appState.proposals = [];
+  appState.chatArchiveExpanded = false;
+  renderAll();
+}
+
+async function reloadActiveBranch() {
+  const branch = appState.activeBranch;
+  const party = appState.activeParty;
+  if (!party || !branch) return;
+  await openPartyBranch(party.id, branch.id);
+}
+
 async function loadOptionalPartyData(partyId, reloadGeneration) {
-  const [loreCards, checkpoints, serviceJobs] = await Promise.allSettled([
+  const [loreCards, checkpoints, branches, serviceJobs] = await Promise.allSettled([
     apiGet(`/api/parties/${partyId}/lore-cards`),
     apiGet(`/api/parties/${partyId}/checkpoints`),
+    apiGet(`/api/parties/${partyId}/branches`),
     apiGet(`/api/parties/${partyId}/service-jobs`),
   ]);
   if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
   if (loreCards.status === "fulfilled") appState.loreCards = loreCards.value.cards || [];
   if (checkpoints.status === "fulfilled") appState.checkpoints = checkpoints.value.checkpoints || [];
+  if (branches.status === "fulfilled") appState.branches = branches.value.branches || [];
   if (serviceJobs.status === "fulfilled") appState.serviceJobs = serviceJobs.value.jobs || [];
   renderMemoryTools();
+  renderBranchReadOnlyControls();
 }
 
 function renderAll() {
@@ -546,6 +586,39 @@ function renderAll() {
   renderProposals();
   renderMessageControls();
   renderAdminPanel();
+  renderBranchReadOnlyControls();
+}
+
+function renderBranchReadOnlyControls() {
+  if (!appState.activeBranch) return;
+  const containers = [els.loreCardForm, els.checkpointForm, els.checkForm];
+  containers.forEach((container) => {
+    container?.querySelectorAll("input, textarea, select, button").forEach((node) => { node.disabled = true; });
+  });
+  [
+    els.memorySummarizeButton,
+    els.memoryClearButton,
+    els.journalSummarizeButton,
+    els.journalClearButton,
+    els.characterEditTarget,
+    els.characterEditId,
+    els.characterEditName,
+    els.characterEditStatus,
+    els.characterEditLocation,
+    els.characterEditGoal,
+    els.characterEditAttitude,
+    els.characterEditLoyalty,
+    els.characterEditTrust,
+    els.characterEditFear,
+    els.characterEditKnowledge,
+    els.characterEditObligations,
+    els.characterEditHardConstraints,
+    els.characterEditSecrets,
+    els.characterManualDraftButton,
+    els.characterLlmDraftButton,
+  ].forEach((node) => { if (node) node.disabled = true; });
+  els.loreCardList?.querySelectorAll("[data-lore-action]").forEach((node) => { node.disabled = true; });
+  els.proposalList?.querySelectorAll("button").forEach((node) => { node.disabled = true; });
 }
 
 function renderPartyList() {
@@ -571,16 +644,22 @@ function renderPartyList() {
 
 function renderHeader() {
   const party = appState.activeParty;
-  els.activePartyTitle.textContent = party ? party.title : "Нет активной партии";
-  els.activeWorld.textContent = party?.worldpack?.title || "Мир не выбран";
+  const branch = appState.activeBranch;
+  els.activePartyTitle.textContent = party
+    ? branch ? `${party.title} · ветка «${branch.label}»` : party.title
+    : "Нет активной партии";
+  els.activeWorld.textContent = branch
+    ? `${party?.worldpack?.title || party?.worldpack_id || "Мир"} · checkpoint #${branch.source_checkpoint_id}`
+    : party?.worldpack?.title || "Мир не выбран";
 }
 
 function renderMeta() {
   const party = appState.activeParty;
-  els.deletePartyButton.disabled = !party;
-  els.changePartyModelButton.disabled = !party;
+  const branch = appState.activeBranch;
+  els.deletePartyButton.disabled = !party || Boolean(branch);
+  els.changePartyModelButton.disabled = !party || Boolean(branch);
   if (els.checkPanel) {
-    els.checkPanel.classList.toggle("hidden", !party || party.scenario_type !== "rp");
+    els.checkPanel.classList.toggle("hidden", !party || Boolean(branch) || party.scenario_type !== "rp");
   }
   renderPartyModelSelect();
   if (!party) {
@@ -594,8 +673,9 @@ function renderMeta() {
     ["Провайдер", providerLabel(party.model_profile?.provider)],
     ["Модель", party.model_profile?.model || party.model_profile_id],
     ["ID партии", party.id],
-    ["State", party.state_campaign_id],
+    ["State", branch?.state_campaign_id || party.state_campaign_id],
   ];
+  if (branch) rows.push(["Ветка", branch.label], ["Checkpoint", `#${branch.source_checkpoint_id}`]);
   els.partyMeta.innerHTML = rows
     .map(([key, value]) => `<dt title="${escapeHtml(metaHints[key] || "")}">${escapeHtml(key)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>`)
     .join("");
@@ -605,7 +685,7 @@ function renderPartyModelSelect() {
   if (!els.partyModelSelect || !els.partyModelProviderSelect) return;
   const currentProvider = normalizeProvider(appState.activeParty?.model_profile?.provider);
   renderProviderOptions(els.partyModelProviderSelect, currentProvider);
-  els.partyModelProviderSelect.disabled = !appState.activeParty || !availableProviders().length;
+  els.partyModelProviderSelect.disabled = !appState.activeParty || Boolean(appState.activeBranch) || !availableProviders().length;
   renderPartyModelOptions();
 }
 
@@ -613,7 +693,7 @@ function renderPartyModelOptions() {
   const provider = normalizeProvider(els.partyModelProviderSelect?.value);
   const profiles = profilesForProvider(provider);
   els.partyModelSelect.innerHTML = modelOptionsHtml(profiles, provider);
-  els.partyModelSelect.disabled = !appState.activeParty || !profiles.length;
+  els.partyModelSelect.disabled = !appState.activeParty || Boolean(appState.activeBranch) || !profiles.length;
   const current = appState.activeParty?.model_profile_id;
   if (profiles.some((profile) => profile.id === current)) {
     els.partyModelSelect.value = current;
@@ -775,12 +855,21 @@ function renderMemoryTools() {
       </div>`).join("")
     : `<div class="state-item">Lore Cards пока нет.</div>`);
   const checkpoints = appState.checkpoints || [];
-  els.checkpointList.innerHTML = checkpoints.length
+  const checkpointHtml = checkpoints.length
     ? checkpoints.map((checkpoint) => `<div class="state-item">
         <strong>${escapeHtml(checkpoint.label)}</strong>
         <div class="mini-metrics"><span>ход ${escapeHtml(checkpoint.through_turn_id ?? "-")}</span><span>state v${escapeHtml(checkpoint.state_version)}</span><span>memory до ${escapeHtml(checkpoint.memory_coverage_turn_id ?? "-")}</span></div>
       </div>`).join("")
     : `<div class="state-item">Checkpoints пока нет.</div>`;
+  const branches = appState.branches || [];
+  const branchHtml = branches.length
+    ? branches.map((branch) => `<div class="state-item">
+        <strong>Ветка · ${escapeHtml(branch.label)}</strong>
+        <div class="mini-metrics"><span>checkpoint #${escapeHtml(branch.source_checkpoint_id)}</span><span>${escapeHtml(branch.branch_type)}</span><span>${escapeHtml(branch.status)}</span></div>
+        <div class="inline-actions"><button class="text-button" type="button" data-branch-id="${escapeHtml(branch.id)}">Открыть ветку</button></div>
+      </div>`).join("")
+    : `<div class="state-item">Веток пока нет.</div>`;
+  els.checkpointList.innerHTML = `${checkpointHtml}${branchHtml}`;
 }
 
 function renderCharacters() {
@@ -1192,11 +1281,13 @@ function renderAdminAutotestOptions() {
     .join("");
   if (providers.includes(previousProvider)) els.adminAutotestProviderSelect.value = previousProvider;
   renderAdminAutotestModelOptions();
-  const ready = Boolean(appState.activeParty && providers.length && els.adminAutotestModelSelect.value);
+  const ready = Boolean(appState.activeParty && !appState.activeBranch && providers.length && els.adminAutotestModelSelect.value);
   els.adminAutotestStartButton.disabled = !ready;
   els.adminAutotestStartButton.title = appState.activeParty
-    ? "Создать изолированную тестовую партию и запустить LLM-игрока"
-    : "Сначала выберите партию-шаблон";
+    ? appState.activeBranch
+      ? "Вернитесь в основную линию партии перед запуском"
+      : "Создать checkpoint и отдельную ветку текущей партии"
+    : "Сначала выберите партию";
 }
 
 function renderAdminAutotestModelOptions() {
@@ -1206,7 +1297,7 @@ function renderAdminAutotestModelOptions() {
   els.adminAutotestModelSelect.innerHTML = modelOptionsHtml(profiles, provider);
   if (profiles.some((profile) => profile.id === previous)) els.adminAutotestModelSelect.value = previous;
   els.adminAutotestModelSelect.disabled = !profiles.length;
-  els.adminAutotestStartButton.disabled = !appState.activeParty || !profiles.length;
+  els.adminAutotestStartButton.disabled = !appState.activeParty || Boolean(appState.activeBranch) || !profiles.length;
 }
 
 function renderAdminAutotestRuns() {
@@ -1790,7 +1881,11 @@ async function createAdminAutotest(event) {
   event.preventDefault();
   if (!isAdmin()) return;
   if (!appState.activeParty) {
-    showToast("Сначала выберите партию-шаблон.");
+    showToast("Сначала выберите партию.");
+    return;
+  }
+  if (appState.activeBranch) {
+    showToast("Сначала вернитесь в основную линию партии.");
     return;
   }
   const turnCount = Number(els.adminAutotestTurnsInput.value);
@@ -1799,7 +1894,7 @@ async function createAdminAutotest(event) {
     return;
   }
   try {
-    setBusy(true, "Создаю тестовую партию и стартовую сцену...");
+    setBusy(true, "Сохраняю checkpoint и создаю ветку автотеста...");
     const result = await apiPost("/api/admin/autotests", {
       source_party_id: appState.activeParty.id,
       player_prompt: els.adminAutotestPromptInput.value.trim(),
@@ -1810,13 +1905,13 @@ async function createAdminAutotest(event) {
       result.run,
       ...appState.adminAutotestRuns.filter((run) => run.id !== result.run.id),
     ];
-    if (result.test_party && !appState.parties.some((party) => party.id === result.test_party.id)) {
-      appState.parties.unshift(result.test_party);
-      renderPartyList();
+    if (result.branch && !appState.branches.some((branch) => branch.id === result.branch.id)) {
+      appState.branches.unshift(result.branch);
+      renderMemoryTools();
     }
     renderAdminAutotestRuns();
     pollAdminAutotest(result.run.id);
-    showToast("Автотест запущен в отдельной партии.");
+    showToast("Автотест запущен в отдельной ветке от checkpoint. Основная линия не изменяется.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1839,13 +1934,18 @@ async function handleAdminAutotestAction(event) {
       return;
     }
     if (button.dataset.autotestAction === "open") {
+      if (run.branch_id) {
+        await openPartyBranch(run.source_party_id, run.branch_id);
+        showToast("Открыта ветка автотеста внутри исходной партии.");
+        return;
+      }
       if (!appState.parties.some((party) => party.id === run.test_party_id)) {
         const response = await apiGet(`/api/parties/${run.test_party_id}`);
         appState.parties.unshift(response.party);
         renderPartyList();
       }
       await selectParty(run.test_party_id);
-      showToast("Открыта тестовая партия с полным диалогом LLM против LLM.");
+      showToast("Открыт legacy-прогон, созданный до поддержки веток.");
     }
   } catch (error) {
     showToast(error.message);
@@ -1870,7 +1970,18 @@ function pollAdminAutotest(runId) {
         renderAdminAutotestRuns();
         renderMessageControls();
         const run = appState.adminAutotestRuns.find((item) => item.id === runId);
-        if (!run || !["running", "stopping"].includes(run.status)) return;
+        if (run?.branch_id && appState.activeBranch?.id === run.branch_id) {
+          await reloadActiveBranch();
+        }
+        if (!run || !["running", "stopping"].includes(run.status)) {
+          if (run && appState.activeParty?.id === run.source_party_id) {
+            const branches = await apiGet(`/api/parties/${run.source_party_id}/branches`);
+            appState.branches = branches.branches || [];
+            renderMemoryTools();
+            renderBranchReadOnlyControls();
+          }
+          return;
+        }
       }
     } catch (error) {
       showToast(`Статус автотеста не обновлён: ${error.message}`);
@@ -1986,6 +2097,17 @@ async function createCheckpoint(event) {
     showToast(error.message);
   } finally {
     setBusy(false);
+  }
+}
+
+async function handleBranchAction(event) {
+  const button = event.target.closest("[data-branch-id]");
+  if (!button || !appState.activeParty) return;
+  try {
+    await openPartyBranch(appState.activeParty.id, button.dataset.branchId);
+    showToast("Открыта ветка партии. Основная линия не изменяется.");
+  } catch (error) {
+    showToast(error.message);
   }
 }
 
@@ -2349,7 +2471,8 @@ function renderMessageControls() {
   const activeAutotest = appState.adminAutotestRuns.find(
     (run) => run.test_party_id === appState.activeParty?.id && ["running", "stopping"].includes(run.status),
   );
-  const locked = Boolean(pendingMessage || activeAutotest);
+  const branchReadOnly = Boolean(appState.activeBranch);
+  const locked = Boolean(pendingMessage || activeAutotest || branchReadOnly);
   const hasParty = Boolean(appState.activeParty);
   if (els.messageInput) {
     els.messageInput.disabled = locked || !hasParty;
@@ -2363,8 +2486,11 @@ function renderMessageControls() {
   if (!els.messageStatus) return;
   if (locked) {
     els.messageStatus.classList.remove("hidden");
-    const status = pendingMessage?.status || "Автотест управляет этой партией; ручной ввод временно отключён.";
-    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(status)}</span>`;
+    const status = pendingMessage?.status
+      || (branchReadOnly
+        ? "Открыта изолированная ветка. Вернитесь в основную линию, выбрав партию слева."
+        : "Автотест управляет этой партией; ручной ввод временно отключён.");
+    els.messageStatus.innerHTML = `${pendingMessage ? `<span class="spinner" aria-hidden="true"></span>` : ""}<span>${escapeHtml(status)}</span>`;
   } else {
     els.messageStatus.classList.add("hidden");
     els.messageStatus.innerHTML = "";

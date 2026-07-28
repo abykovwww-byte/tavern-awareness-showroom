@@ -495,7 +495,7 @@ def test_admin_user_lifecycle_and_data_delete(tmp_path: Path):
     assert admin.app.state.party_store.list_parties(owner_user_id=user["id"]) == []
 
 
-def test_admin_autotest_runs_isolated_llm_player_with_separate_local_model(tmp_path: Path):
+def test_admin_autotest_forks_checkpoint_branch_with_separate_local_player_model(tmp_path: Path):
     write_worldpack(tmp_path)
     admin = client(
         tmp_path,
@@ -510,6 +510,15 @@ def test_admin_autotest_runs_isolated_llm_player_with_separate_local_model(tmp_p
     assert admin.get("/api/admin/autotests").status_code == 401
     login(admin)
     source_party = create_demo_party(admin, title="Autotest source")
+    source_turn = admin.post(
+        f"/api/parties/{source_party['id']}/messages",
+        json={"content": "I inspect the room before the branch."},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert source_turn.status_code == 200, source_turn.text
+    source_history_before = admin.get(f"/api/parties/{source_party['id']}/history").json()["turns"]
+    source_state_before = admin.get(f"/api/parties/{source_party['id']}/state").json()["state"]
+    party_ids_before = {party["id"] for party in admin.get("/api/parties").json()["parties"]}
 
     profiles_response = admin.get("/api/admin/autotests/models")
     assert profiles_response.status_code == 200
@@ -539,10 +548,15 @@ def test_admin_autotest_runs_isolated_llm_player_with_separate_local_model(tmp_p
     )
     assert started.status_code == 200, started.text
     run = started.json()["run"]
-    test_party = started.json()["test_party"]
-    assert test_party["id"] != source_party["id"]
-    assert test_party["model_profile_id"] == source_party["model_profile_id"]
+    branch = started.json()["branch"]
+    checkpoint = started.json()["checkpoint"]
+    assert run["source_party_id"] == source_party["id"]
+    assert run["branch_id"] == branch["id"]
+    assert run["checkpoint_id"] == checkpoint["id"]
+    assert branch["party_id"] == source_party["id"]
+    assert branch["source_checkpoint_id"] == checkpoint["id"]
     assert run["player_model_profile_id"] == local_profile["id"]
+    assert {party["id"] for party in admin.get("/api/parties").json()["parties"]} == party_ids_before
 
     deadline = time.time() + 3
     while time.time() < deadline:
@@ -553,10 +567,19 @@ def test_admin_autotest_runs_isolated_llm_player_with_separate_local_model(tmp_p
         time.sleep(0.02)
     assert run["status"] == "completed", run
     assert run["completed_turns"] == 1
-    assert admin.get(f"/api/parties/{source_party['id']}/history").json()["turns"] == []
-    test_history = admin.get(f"/api/parties/{test_party['id']}/history").json()["turns"]
-    assert len(test_history) == 2
-    assert test_history[-1]["player_message"].startswith("I examine the situation")
+    assert admin.get(f"/api/parties/{source_party['id']}/history").json()["turns"] == source_history_before
+    assert admin.get(f"/api/parties/{source_party['id']}/state").json()["state"] == source_state_before
+    branch_response = admin.get(f"/api/parties/{source_party['id']}/branches/{branch['id']}")
+    assert branch_response.status_code == 200, branch_response.text
+    branch_payload = branch_response.json()
+    assert branch_payload["state"]["meta"]["campaign_id"] == branch["state_campaign_id"]
+    assert branch_payload["state"]["meta"]["branch_parent_campaign_id"] == source_party["id"]
+    assert len(branch_payload["turns"]) == len(source_history_before) + 1
+    assert branch_payload["turns"][0]["player_message"] == source_history_before[0]["player_message"]
+    assert branch_payload["turns"][-1]["player_message"].startswith("I examine the situation")
+    listed_branches = admin.get(f"/api/parties/{source_party['id']}/branches").json()["branches"]
+    assert [item["id"] for item in listed_branches] == [branch["id"]]
+    assert listed_branches[0]["status"] == "completed"
 
 
 def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Path):
@@ -1197,6 +1220,26 @@ def test_memory_checkpoint_is_a_non_destructive_party_snapshot(tmp_path: Path):
     assert checkpoint["state_version"] >= 1
     assert checkpoint["state"]["meta"]["campaign_id"] == party["id"]
     assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 1
+
+    forked = c.post(
+        f"/api/parties/{party['id']}/branches",
+        json={"checkpoint_id": checkpoint["id"], "label": "Альтернативный поиск"},
+    )
+    assert forked.status_code == 200, forked.text
+    branch = forked.json()["branch"]
+    branch_payload = c.get(f"/api/parties/{party['id']}/branches/{branch['id']}").json()
+    assert branch_payload["branch"]["party_id"] == party["id"]
+    assert branch_payload["state"]["meta"]["branch_checkpoint_id"] == checkpoint["id"]
+    assert len(branch_payload["turns"]) == 1
+
+    next_turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Продолжаю только основную линию."},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert next_turn.status_code == 200
+    assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 2
+    assert len(c.get(f"/api/parties/{party['id']}/branches/{branch['id']}").json()["turns"]) == 1
 
 
 def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):

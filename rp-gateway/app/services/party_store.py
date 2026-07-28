@@ -124,6 +124,20 @@ class PartyStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS party_branches (
+                    id TEXT PRIMARY KEY,
+                    party_id TEXT NOT NULL REFERENCES parties(id) ON DELETE CASCADE,
+                    owner_user_id TEXT,
+                    label TEXT NOT NULL,
+                    branch_type TEXT NOT NULL DEFAULT 'manual',
+                    source_checkpoint_id INTEGER NOT NULL,
+                    state_campaign_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_party_branches_party_created
+                    ON party_branches(party_id, created_at DESC);
                 CREATE TABLE IF NOT EXISTS autotest_runs (
                     id TEXT PRIMARY KEY,
                     owner_user_id TEXT,
@@ -152,6 +166,7 @@ class PartyStore:
             )
             self.migrate_owner_columns(connection)
             self.migrate_scenario_type(connection)
+            self.migrate_autotest_branches(connection)
 
     def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
         worldpack_columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
@@ -172,6 +187,16 @@ class PartyStore:
         if "scenario_type" not in columns:
             connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
             connection.execute("UPDATE parties SET scenario_type = 'training' WHERE worldpack_id = 'awareness'")
+
+    def migrate_autotest_branches(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(autotest_runs)").fetchall()}
+        if "branch_id" not in columns:
+            connection.execute("ALTER TABLE autotest_runs ADD COLUMN branch_id TEXT")
+        if "checkpoint_id" not in columns:
+            connection.execute("ALTER TABLE autotest_runs ADD COLUMN checkpoint_id INTEGER")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_autotest_runs_branch ON autotest_runs(branch_id, updated_at)"
+        )
 
     def seed_model_profiles(self) -> None:
         for profile in static_model_profiles(self.settings):
@@ -716,10 +741,10 @@ class PartyStore:
 
     def list_parties(self, owner_user_id: str | None = None) -> list[PartySummary]:
         self.scan_worldpacks()
-        sql = "SELECT * FROM parties"
+        sql = "SELECT * FROM parties WHERE id NOT IN (SELECT test_party_id FROM autotest_runs WHERE branch_id IS NULL)"
         params: tuple[Any, ...] = ()
         if owner_user_id:
-            sql += " WHERE owner_user_id = ?"
+            sql += " AND owner_user_id = ?"
             params = (owner_user_id,)
         sql += " ORDER BY updated_at DESC"
         with self.connect() as connection:
@@ -806,24 +831,28 @@ class PartyStore:
 
     def delete_party(self, party_id: str, owner_user_id: str | None = None) -> None:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
+        branches = self.list_party_branches(party_id, owner_user_id=owner_user_id, limit=200)
         with self.connect() as connection:
-            for table in (
-                "turns",
-                "turn_requests",
-                "checks",
-                "state_patches",
-                "state_versions",
-                "audit_events",
-                "memory_summaries",
-                "memory_chapters",
-                "journal_entries",
-                "lore_cards",
-                "memory_checkpoints",
-                "service_jobs",
-            ):
-                connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (party.state_campaign_id,))
+            campaign_ids = [party.state_campaign_id, *[branch["state_campaign_id"] for branch in branches]]
+            for campaign_id in campaign_ids:
+                for table in (
+                    "turns",
+                    "turn_requests",
+                    "checks",
+                    "state_patches",
+                    "state_versions",
+                    "audit_events",
+                    "memory_summaries",
+                    "memory_chapters",
+                    "journal_entries",
+                    "lore_cards",
+                    "memory_checkpoints",
+                    "service_jobs",
+                ):
+                    connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (campaign_id,))
+                connection.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))
+            connection.execute("DELETE FROM party_branches WHERE party_id = ?", (party_id,))
             connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))
-            connection.execute("DELETE FROM campaigns WHERE id = ?", (party.state_campaign_id,))
         self.delete_party_state_dir(party.state_campaign_id)
 
     def delete_party_state_dir(self, state_campaign_id: str) -> None:
@@ -835,19 +864,130 @@ class PartyStore:
             shutil.rmtree(target)
 
     def delete_user_data(self, owner_user_id: str) -> None:
-        parties = self.list_parties(owner_user_id=owner_user_id)
-        for party in parties:
-            self.delete_party(party.id, owner_user_id=owner_user_id)
+        with self.connect() as connection:
+            party_ids = [
+                row["id"]
+                for row in connection.execute(
+                    "SELECT id FROM parties WHERE owner_user_id = ? ORDER BY created_at ASC",
+                    (owner_user_id,),
+                ).fetchall()
+            ]
+        for party_id in party_ids:
+            self.delete_party(party_id, owner_user_id=owner_user_id)
         with self.connect() as connection:
             connection.execute("DELETE FROM autotest_runs WHERE owner_user_id = ?", (owner_user_id,))
             connection.execute("DELETE FROM player_characters WHERE owner_user_id = ?", (owner_user_id,))
+
+    def create_party_branch(
+        self,
+        *,
+        party_id: str,
+        checkpoint_id: int,
+        label: str,
+        branch_type: str = "manual",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
+        source_store = self.store_for_party(party.id, owner_user_id=owner_user_id)
+        checkpoint = source_store.get_memory_checkpoint(checkpoint_id)
+        branch_id = f"branch_{uuid.uuid4().hex[:12]}"
+        state_campaign_id = f"{party.id}--{branch_id}"
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO party_branches(
+                    id, party_id, owner_user_id, label, branch_type,
+                    source_checkpoint_id, state_campaign_id, status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (
+                    branch_id,
+                    party.id,
+                    owner_user_id,
+                    label.strip(),
+                    branch_type,
+                    int(checkpoint["id"]),
+                    state_campaign_id,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        try:
+            source_store.fork_from_checkpoint(
+                checkpoint_id=int(checkpoint["id"]),
+                target_campaign_id=state_campaign_id,
+                target_state_path=str(self.state_path_for_branch(party.id, branch_id)),
+            )
+        except Exception:
+            with self.connect() as connection:
+                connection.execute("DELETE FROM party_branches WHERE id = ?", (branch_id,))
+            raise
+        return self.get_party_branch(party.id, branch_id, owner_user_id=owner_user_id)
+
+    def get_party_branch(
+        self,
+        party_id: str,
+        branch_id: str,
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        sql = "SELECT * FROM party_branches WHERE id = ? AND party_id = ?"
+        params: list[Any] = [branch_id, party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        with self.connect() as connection:
+            row = connection.execute(sql, tuple(params)).fetchone()
+        if row is None:
+            raise ValueError(f"party branch not found: {branch_id}")
+        return dict(row)
+
+    def list_party_branches(
+        self,
+        party_id: str,
+        owner_user_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        self.get_party(party_id, owner_user_id=owner_user_id)
+        sql = "SELECT * FROM party_branches WHERE party_id = ?"
+        params: list[Any] = [party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(min(max(limit, 1), 200))
+        with self.connect() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_all_party_branches(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM party_branches ORDER BY created_at ASC").fetchall()
+        return [dict(row) for row in rows]
+
+    def store_for_branch(
+        self,
+        party_id: str,
+        branch_id: str,
+        owner_user_id: str | None = None,
+    ) -> StateStore:
+        branch = self.get_party_branch(party_id, branch_id, owner_user_id=owner_user_id)
+        return StateStore(
+            self.settings.sqlite_path,
+            branch["state_campaign_id"],
+            str(self.state_path_for_branch(party_id, branch_id)),
+        )
+
+    def state_path_for_branch(self, party_id: str, branch_id: str) -> Path:
+        return Path(self.settings.party_state_root) / party_id / "branches" / branch_id / "current.json"
 
     def create_autotest_run(
         self,
         *,
         owner_user_id: str | None,
         source_party_id: str,
-        test_party_id: str,
+        branch_id: str,
+        checkpoint_id: int,
         player_model_profile_id: str,
         player_prompt: str,
         requested_turns: int,
@@ -860,23 +1000,29 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO autotest_runs(
-                    id, owner_user_id, source_party_id, test_party_id,
+                    id, owner_user_id, source_party_id, test_party_id, branch_id, checkpoint_id,
                     player_model_profile_id, player_prompt, requested_turns,
                     completed_turns, status, current_phase, stop_requested,
                     last_player_action, error, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 'running', 'player', 0, NULL, NULL, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'running', 'player', 0, NULL, NULL, ?, ?)
                 """,
                 (
                     run_id,
                     owner_user_id,
                     source_party_id,
-                    test_party_id,
+                    f"branch:{branch_id}",
+                    branch_id,
+                    checkpoint_id,
                     player_model_profile_id,
                     player_prompt.strip(),
                     requested_turns,
                     timestamp,
                     timestamp,
                 ),
+            )
+            connection.execute(
+                "UPDATE party_branches SET status = 'running', updated_at = ? WHERE id = ?",
+                (timestamp, branch_id),
             )
         return self.get_autotest_run(run_id)
 
@@ -940,6 +1086,13 @@ class PartyStore:
                 f"UPDATE autotest_runs SET {', '.join(assignments)} WHERE id = ?",
                 tuple(values),
             ).rowcount
+            if "status" in updates:
+                row = connection.execute("SELECT branch_id FROM autotest_runs WHERE id = ?", (run_id,)).fetchone()
+                if row and row["branch_id"]:
+                    connection.execute(
+                        "UPDATE party_branches SET status = ?, updated_at = ? WHERE id = ?",
+                        (updates["status"], now_iso(), row["branch_id"]),
+                    )
         if updated == 0:
             raise ValueError(f"autotest run not found: {run_id}")
         return self.get_autotest_run(run_id)
@@ -957,6 +1110,8 @@ class PartyStore:
             "owner_user_id": row["owner_user_id"],
             "source_party_id": row["source_party_id"],
             "test_party_id": row["test_party_id"],
+            "branch_id": row["branch_id"],
+            "checkpoint_id": row["checkpoint_id"],
             "player_model_profile_id": row["player_model_profile_id"],
             "player_prompt": row["player_prompt"],
             "requested_turns": row["requested_turns"],
