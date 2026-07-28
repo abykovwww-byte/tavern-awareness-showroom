@@ -180,6 +180,23 @@
               Очистить
             </button>
           </div>
+          <div class="section-label subsection-label">Lore Cards</div>
+          <p class="panel-hint">Только ваши подтвержденные заметки. Карточка помогает retrieval, но не становится canonical state.</p>
+          <form id="loreCardForm" class="stack-form">
+            <input id="loreCardTitle" maxlength="160" placeholder="Название карточки" required>
+            <textarea id="loreCardContent" rows="3" maxlength="12000" placeholder="Факт, деталь мира или нить сюжета" required></textarea>
+            <input id="loreCardKeywords" maxlength="500" placeholder="Триггеры через запятую">
+            <label class="check-row"><input id="loreCardAlwaysOn" type="checkbox"> Всегда добавлять в prompt</label>
+            <button class="tool-button" type="submit">Добавить Lore Card</button>
+          </form>
+          <div id="loreCardList" class="state-summary"></div>
+          <div class="section-label subsection-label">Checkpoints</div>
+          <p class="panel-hint">Безопасный снимок state, покрытия памяти и активных карточек. Ничего не откатывает и не удаляет.</p>
+          <form id="checkpointForm" class="inline-form">
+            <input id="checkpointLabel" maxlength="160" placeholder="Например: перед входом в башню" required>
+            <button class="tool-button" type="submit">Создать checkpoint</button>
+          </form>
+          <div id="checkpointList" class="state-summary"></div>
         </section>
 
         <section class="summary-panel">

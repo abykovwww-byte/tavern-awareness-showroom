@@ -446,6 +446,37 @@ h3 {
   flex: 0 0 auto;
 }
 
+.subsection-label {
+  margin-top: 18px;
+}
+
+.stack-form,
+.inline-form {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.inline-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.check-row,
+.inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.check-row input {
+  width: auto;
+}
+
+.lore-card {
+  display: grid;
+  gap: 7px;
+}
+
 .empty-chat {
   max-width: 560px;
   margin: auto;

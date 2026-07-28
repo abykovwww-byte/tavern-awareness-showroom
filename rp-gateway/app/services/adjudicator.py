@@ -34,6 +34,7 @@ class RequestAlreadyRunning(RuntimeError):
 
 class Adjudicator:
     _post_turn_helper_campaigns: set[str] = set()
+    _service_tasks: dict[str, asyncio.Task[None]] = {}
 
     def __init__(self, settings: Settings, store: StateStore):
         self.settings = settings
@@ -295,31 +296,80 @@ class Adjudicator:
         }
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
-        if self.settings.post_turn_helpers_inline:
-            await self.run_post_turn_helpers(authorization, request_id)
+        for job_type in ("memory", "journal"):
+            self.store.enqueue_service_job(job_type, request_id, self.settings.service_job_max_attempts)
+        if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
+            await self.drain_service_jobs(authorization, wait_for_retries=False)
             return
+        self.schedule_service_jobs(authorization)
+
+    def schedule_service_jobs(self, authorization: str | None = None) -> None:
         campaign_id = self.store.campaign_id
         if campaign_id in self._post_turn_helper_campaigns:
-            self.store.audit("post_turn_helpers_skipped", {"reason": "already_running"}, request_id)
             return
         self._post_turn_helper_campaigns.add(campaign_id)
-        task = asyncio.create_task(self.run_post_turn_helpers(authorization, request_id))
+        task = asyncio.create_task(self.drain_service_jobs(authorization, wait_for_retries=True))
+        self._service_tasks[campaign_id] = task
         task.add_done_callback(lambda completed: self.post_turn_helpers_done(campaign_id, completed))
 
-    async def run_post_turn_helpers(self, authorization: str | None, request_id: str) -> None:
-        try:
-            await self.memory.summarize(authorization, fail_open=True, request_id=request_id)
-            await self.journal.summarize(authorization, fail_open=True, request_id=request_id)
-        except Exception as exc:  # noqa: BLE001 - background helpers must never affect gameplay
-            logger.warning(
-                "post_turn_helpers_failed campaign_id=%s request_id=%s error=%s",
-                self.store.campaign_id,
-                request_id,
-                exc,
-            )
+    async def drain_service_jobs(self, authorization: str | None, wait_for_retries: bool) -> None:
+        while True:
+            job = self.store.due_service_job()
+            if job is None:
+                delay = self.store.next_service_job_delay()
+                if not wait_for_retries or delay is None:
+                    return
+                await asyncio.sleep(max(min(delay, self.settings.service_job_retry_max_seconds), 1))
+                continue
+            running = self.store.mark_service_job_running(int(job["id"]))
+            try:
+                await self.run_service_job(running, authorization)
+                self.store.complete_service_job(int(running["id"]))
+            except Exception as exc:  # noqa: BLE001 - service work must never affect gameplay
+                attempts = max(int(running["attempts"]), 1)
+                delay = min(
+                    self.settings.service_job_retry_base_seconds * (3 ** (attempts - 1)),
+                    self.settings.service_job_retry_max_seconds,
+                )
+                self.store.retry_service_job(int(running["id"]), f"{type(exc).__name__}: {exc}", delay)
+                self.store.audit(
+                    "service_job_retry",
+                    {
+                        "job_id": running["id"],
+                        "job_type": running["job_type"],
+                        "attempt": attempts,
+                        "retry_delay_seconds": delay,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    running.get("request_id"),
+                )
+
+    async def run_service_job(self, job: dict[str, Any], authorization: str | None) -> None:
+        for _ in range(64):
+            if job["job_type"] == "memory":
+                result = await self.memory.summarize(
+                    authorization,
+                    fail_open=True,
+                    request_id=job.get("request_id"),
+                )
+            elif job["job_type"] == "journal":
+                result = await self.journal.summarize(
+                    authorization,
+                    fail_open=True,
+                    request_id=job.get("request_id"),
+                )
+            else:
+                raise ValueError(f"unsupported service job type: {job['job_type']}")
+            if result.get("generated"):
+                continue
+            if result.get("reason") in {"summary_failed", "journal_failed"} or result.get("error"):
+                raise RuntimeError(str(result.get("reason") or result.get("error") or "service job failed"))
+            return
+        raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")
 
     def post_turn_helpers_done(self, campaign_id: str, completed: asyncio.Task[None]) -> None:
         self._post_turn_helper_campaigns.discard(campaign_id)
+        self._service_tasks.pop(campaign_id, None)
         if completed.cancelled():
             logger.warning("post_turn_helpers_cancelled campaign_id=%s", campaign_id)
             return

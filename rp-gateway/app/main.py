@@ -30,11 +30,14 @@ from app.models.schemas import (
     PartyCheckRequest,
     PartyCreate,
     PartyJournalSummarizeRequest,
+    PartyLoreCardCreate,
+    PartyLoreCardUpdate,
     PartyMemorySummarizeRequest,
     PartyMessageRequest,
     PartyModelUpdate,
     PartyPromptPreviewRequest,
     PartyStartRequest,
+    PartyCheckpointCreate,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
     ProviderApiKeyCreate,
@@ -55,7 +58,14 @@ from app.services.context_budget import estimate_tokens, model_context_limit_tok
 from app.services.context_estimator import estimate_party_context
 from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
-from app.services.narrative import ProviderRateLimitError, NarrativeClient, archived_memory_retrieval_block, response_text
+from app.services.narrative import (
+    ProviderRateLimitError,
+    NarrativeClient,
+    archived_memory_retrieval_block,
+    party_lore_cards_block,
+    response_text,
+    uncompacted_archive_fallback_block,
+)
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
@@ -103,6 +113,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party))
+
+    @app.on_event("startup")
+    async def resume_service_jobs() -> None:
+        for party in party_store.list_parties():
+            party_state_store = party_store.store_for_party(party.id)
+            if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
+                Adjudicator(runtime_settings_for_party(party), party_state_store).schedule_service_jobs()
 
     def current_user(request: Request) -> AuthUser | None:
         if not settings.auth_enabled:
@@ -478,6 +495,79 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "chapters": chapters,
             "stats": summarizer.stats(),
         }
+
+    @app.get("/api/parties/{party_id}/service-jobs")
+    def get_party_service_jobs(request: Request, party_id: str, limit: int = 20) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "jobs": party_state_store.service_jobs(limit=min(max(limit, 1), 100))}
+
+    @app.get("/api/parties/{party_id}/lore-cards")
+    def get_party_lore_cards(request: Request, party_id: str, include_archived: bool = False) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "cards": party_state_store.lore_cards(include_archived=include_archived)}
+
+    @app.post("/api/parties/{party_id}/lore-cards")
+    def create_party_lore_card(request: Request, party_id: str, card: PartyLoreCardCreate) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            created = party_state_store.create_lore_card(**card.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        party_state_store.audit("lore_card_created", {"card_id": created["id"], "title": created["title"]})
+        return {"party_id": party_id, "card": created}
+
+    @app.patch("/api/parties/{party_id}/lore-cards/{card_id}")
+    def update_party_lore_card(
+        request: Request,
+        party_id: str,
+        card_id: int,
+        card: PartyLoreCardUpdate,
+    ) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            updated = party_state_store.update_lore_card(card_id, card.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        party_state_store.audit("lore_card_updated", {"card_id": updated["id"], "archived": updated["archived"]})
+        return {"party_id": party_id, "card": updated}
+
+    @app.get("/api/parties/{party_id}/checkpoints")
+    def get_party_checkpoints(
+        request: Request,
+        party_id: str,
+        limit: int = 50,
+        include_state: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "checkpoints": party_state_store.memory_checkpoints(
+                limit=min(max(limit, 1), 100),
+                include_state=include_state,
+            ),
+        }
+
+    @app.post("/api/parties/{party_id}/checkpoints")
+    def create_party_checkpoint(request: Request, party_id: str, checkpoint: PartyCheckpointCreate) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            created = party_state_store.create_memory_checkpoint(checkpoint.label)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        party_state_store.audit(
+            "memory_checkpoint_created",
+            {"checkpoint_id": created["id"], "through_turn_id": created["through_turn_id"]},
+        )
+        return {"party_id": party_id, "checkpoint": created}
 
     @app.post("/api/parties/{party_id}/memory/summarize")
     async def summarize_party_memory(
@@ -881,13 +971,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
-            await summarize_party_overflow(
-                party_settings,
-                party_state_store,
-                authorization,
-                x_request_id,
-                current_message_tokens=estimate_tokens(request.content),
-            )
             chat_request = party_chat_request(
                 party_state_store,
                 model_profile.model,
@@ -1347,8 +1430,23 @@ def party_chat_request(
     turns = store.turns_for_memory(after_turn_id=covered_through)
     current_message_tokens = estimate_tokens(request.content)
     history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
-    _, raw_turns = split_turns_by_token_budget(turns, history_budget)
+    overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
     messages: list[ChatMessage] = []
+    lore_block = party_lore_cards_block(
+        store.lore_cards_for_prompt(
+            request.content,
+            limit=settings.party_lore_card_prompt_limit,
+            max_chars=settings.party_lore_card_prompt_max_chars,
+        )
+    )
+    if lore_block:
+        messages.append(ChatMessage(role="system", content=lore_block))
+    fallback_block = uncompacted_archive_fallback_block(
+        overflow_turns,
+        settings.party_memory_fallback_max_chars,
+    )
+    if fallback_block:
+        messages.append(ChatMessage(role="system", content=fallback_block))
     for turn in raw_turns:
         messages.append(ChatMessage(role="user", content=turn["player_message"]))
         messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
@@ -1369,31 +1467,6 @@ def party_chat_request(
         max_tokens=request.max_tokens,
         stream=False,
     )
-
-
-async def summarize_party_overflow(
-    settings: Settings,
-    store: StateStore,
-    authorization: str | None,
-    request_id: str | None,
-    current_message_tokens: int = 0,
-) -> None:
-    """Ensure every omitted turn is covered by durable cumulative memory before narration."""
-    summarizer = MemorySummarizer(settings, store)
-    for _ in range(64):
-        history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
-        plan, reason = summarizer.build_plan(history_token_budget=history_budget)
-        if plan is None:
-            return
-        result = await summarizer.summarize(
-            authorization,
-            fail_open=False,
-            request_id=request_id,
-            history_token_budget=history_budget,
-        )
-        if not result.get("generated"):
-            raise RuntimeError(f"party memory consolidation did not advance: {reason}")
-    raise RuntimeError("party memory consolidation exceeded 64 summary batches")
 
 
 async def generate_character_edit(

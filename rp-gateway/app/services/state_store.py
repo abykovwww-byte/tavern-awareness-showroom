@@ -30,6 +30,27 @@ def archive_search_terms(query: str) -> list[str]:
     return list(dict.fromkeys(term for term in terms if term not in stop_words))[:12]
 
 
+def archive_word_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-zа-яё0-9]{3,}", text.lower())
+
+
+def archive_stem(term: str) -> str:
+    """Conservative local stem for inflection-aware retrieval without external services."""
+    if len(term) <= 5:
+        return term
+    return term[: max(len(term) - 2, 4)]
+
+
+def archive_ngrams(terms: list[str], size: int = 3) -> set[str]:
+    grams: set[str] = set()
+    for term in terms:
+        if len(term) < size:
+            grams.add(term)
+            continue
+        grams.update(term[index : index + size] for index in range(len(term) - size + 1))
+    return grams
+
+
 class StateStore:
     def __init__(self, sqlite_path: str, campaign_id: str, state_path: str):
         self.sqlite_path = sqlite_path
@@ -186,9 +207,64 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_journal_entries_campaign_to
                     ON journal_entries(campaign_id, to_turn_id DESC);
+                CREATE TABLE IF NOT EXISTS lore_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    keywords_json TEXT NOT NULL,
+                    always_on INTEGER NOT NULL DEFAULT 0,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    archived INTEGER NOT NULL DEFAULT 0,
+                    source_turn_ids_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lore_cards_campaign_active
+                    ON lore_cards(campaign_id, archived, enabled, updated_at DESC);
+                CREATE TABLE IF NOT EXISTS memory_checkpoints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    through_turn_id INTEGER,
+                    state_version INTEGER NOT NULL,
+                    memory_coverage_turn_id INTEGER,
+                    state_json TEXT NOT NULL,
+                    lore_card_ids_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_campaign_created
+                    ON memory_checkpoints(campaign_id, created_at DESC, id DESC);
+                CREATE TABLE IF NOT EXISTS service_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL,
+                    next_attempt_at INTEGER NOT NULL,
+                    request_id TEXT,
+                    last_error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_service_jobs_campaign_status
+                    ON service_jobs(campaign_id, status, next_attempt_at, id);
                 """
             )
             self.migrate_turn_columns(connection)
+            timestamp = now_ts()
+            connection.execute(
+                """
+                UPDATE service_jobs
+                SET status = 'pending', next_attempt_at = ?, updated_at = ?
+                WHERE campaign_id = ? AND status = 'running'
+                """,
+                (timestamp, timestamp, self.campaign_id),
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
@@ -198,6 +274,302 @@ class StateStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)").fetchall()}
         if "prompt_json" not in columns:
             connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
+
+    def enqueue_service_job(self, job_type: str, request_id: str | None, max_attempts: int = 5) -> dict[str, Any]:
+        if job_type not in {"memory", "journal"}:
+            raise ValueError(f"unsupported service job type: {job_type}")
+        timestamp = now_ts()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM service_jobs
+                WHERE campaign_id = ? AND job_type = ? AND status IN ('pending', 'running')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (self.campaign_id, job_type),
+            ).fetchone()
+            if row is None:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO service_jobs(
+                        campaign_id, job_type, status, attempts, max_attempts,
+                        next_attempt_at, request_id, last_error, created_at, updated_at
+                    ) VALUES(?, ?, 'pending', 0, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (self.campaign_id, job_type, max(max_attempts, 1), timestamp, request_id, timestamp, timestamp),
+                )
+                row = connection.execute("SELECT * FROM service_jobs WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self.service_job_from_row(row)
+
+    def due_service_job(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM service_jobs
+                WHERE campaign_id = ? AND status = 'pending' AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, id ASC LIMIT 1
+                """,
+                (self.campaign_id, now_ts()),
+            ).fetchone()
+        return self.service_job_from_row(row) if row else None
+
+    def next_service_job_delay(self) -> int | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT MIN(next_attempt_at) AS next_attempt_at FROM service_jobs
+                WHERE campaign_id = ? AND status = 'pending'
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        if not row or row["next_attempt_at"] is None:
+            return None
+        return max(int(row["next_attempt_at"]) - now_ts(), 0)
+
+    def mark_service_job_running(self, job_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE service_jobs SET status = 'running', attempts = attempts + 1, updated_at = ?
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (now_ts(), job_id, self.campaign_id),
+            )
+            row = connection.execute("SELECT * FROM service_jobs WHERE id = ?", (job_id,)).fetchone()
+        return self.service_job_from_row(row)
+
+    def complete_service_job(self, job_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE service_jobs SET status = 'succeeded', last_error = NULL, updated_at = ?
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (now_ts(), job_id, self.campaign_id),
+            )
+
+    def retry_service_job(self, job_id: int, error: str, retry_delay: int) -> None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT attempts, max_attempts FROM service_jobs WHERE id = ? AND campaign_id = ?",
+                (job_id, self.campaign_id),
+            ).fetchone()
+            if row is None:
+                return
+            terminal = int(row["attempts"]) >= int(row["max_attempts"])
+            timestamp = now_ts()
+            connection.execute(
+                """
+                UPDATE service_jobs
+                SET status = ?, next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (
+                    "failed" if terminal else "pending",
+                    timestamp if terminal else timestamp + max(retry_delay, 1),
+                    error[:500],
+                    timestamp,
+                    job_id,
+                    self.campaign_id,
+                ),
+            )
+
+    def service_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM service_jobs WHERE campaign_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (self.campaign_id, max(limit, 1)),
+            ).fetchall()
+        return [self.service_job_from_row(row) for row in rows]
+
+    def service_job_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "job_type": row["job_type"],
+            "status": row["status"],
+            "attempts": row["attempts"],
+            "max_attempts": row["max_attempts"],
+            "next_attempt_at": row["next_attempt_at"],
+            "request_id": row["request_id"],
+            "last_error": row["last_error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_lore_card(
+        self,
+        title: str,
+        content: str,
+        keywords: list[str],
+        always_on: bool,
+        enabled: bool,
+        source_turn_ids: list[int],
+    ) -> dict[str, Any]:
+        timestamp = now_ts()
+        clean_keywords = list(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))[:40]
+        clean_turn_ids = list(dict.fromkeys(int(turn_id) for turn_id in source_turn_ids if int(turn_id) > 0))[:100]
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO lore_cards(
+                    campaign_id, title, content, keywords_json, always_on, enabled,
+                    archived, source_turn_ids_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    title.strip(),
+                    content.strip(),
+                    json.dumps(clean_keywords, ensure_ascii=False),
+                    int(always_on),
+                    int(enabled),
+                    json.dumps(clean_turn_ids),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute("SELECT * FROM lore_cards WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self.lore_card_from_row(row)
+
+    def lore_cards(self, include_archived: bool = False, limit: int = 200) -> list[dict[str, Any]]:
+        query = "SELECT * FROM lore_cards WHERE campaign_id = ?"
+        params: list[Any] = [self.campaign_id]
+        if not include_archived:
+            query += " AND archived = 0"
+        query += " ORDER BY updated_at DESC, id DESC LIMIT ?"
+        params.append(max(limit, 1))
+        with self.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self.lore_card_from_row(row) for row in rows]
+
+    def update_lore_card(self, card_id: int, updates: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"title", "content", "always_on", "enabled", "archived"}
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            if key not in allowed or value is None:
+                continue
+            assignments.append(f"{key} = ?")
+            values.append(int(value) if key in {"always_on", "enabled", "archived"} else str(value).strip())
+        if updates.get("keywords") is not None:
+            keywords = list(dict.fromkeys(str(item).strip() for item in updates["keywords"] if str(item).strip()))[:40]
+            assignments.append("keywords_json = ?")
+            values.append(json.dumps(keywords, ensure_ascii=False))
+        if not assignments:
+            raise ValueError("no lore card fields to update")
+        assignments.append("updated_at = ?")
+        values.append(now_ts())
+        values.extend([card_id, self.campaign_id])
+        with self.connect() as connection:
+            updated = connection.execute(
+                f"UPDATE lore_cards SET {', '.join(assignments)} WHERE id = ? AND campaign_id = ?",
+                tuple(values),
+            ).rowcount
+            row = connection.execute(
+                "SELECT * FROM lore_cards WHERE id = ? AND campaign_id = ?",
+                (card_id, self.campaign_id),
+            ).fetchone()
+        if updated == 0 or row is None:
+            raise ValueError(f"lore card not found: {card_id}")
+        return self.lore_card_from_row(row)
+
+    def lore_cards_for_prompt(self, query: str, limit: int = 8, max_chars: int = 12_000) -> list[dict[str, Any]]:
+        query_terms = archive_search_terms(query)
+        query_stems = {archive_stem(term) for term in query_terms}
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for card in self.lore_cards(limit=500):
+            if not card["enabled"] or card["archived"]:
+                continue
+            text = " ".join([card["title"], card["content"], *card["keywords"]]).lower()
+            lexical = sum(text.count(term) for term in query_terms)
+            card_stems = {archive_stem(token) for token in archive_word_tokens(text)}
+            stem_hits = len(query_stems & card_stems)
+            if not card["always_on"] and not lexical and not stem_hits:
+                continue
+            score = 1_000.0 if card["always_on"] else float((lexical * 4) + (stem_hits * 2))
+            ranked.append((score, card | {"retrieval_score": score}))
+        ranked.sort(key=lambda pair: (pair[0], pair[1]["updated_at"], pair[1]["id"]), reverse=True)
+        selected: list[dict[str, Any]] = []
+        used = 0
+        for _, card in ranked[: max(limit, 1)]:
+            size = len(card["title"]) + len(card["content"]) + sum(len(keyword) for keyword in card["keywords"])
+            if selected and used + size > max_chars:
+                continue
+            selected.append(card)
+            used += size
+        return selected
+
+    def lore_card_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "title": row["title"],
+            "content": row["content"],
+            "keywords": self.json_list(row["keywords_json"]),
+            "always_on": bool(row["always_on"]),
+            "enabled": bool(row["enabled"]),
+            "archived": bool(row["archived"]),
+            "source_turn_ids": self.json_list(row["source_turn_ids_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def create_memory_checkpoint(self, label: str) -> dict[str, Any]:
+        latest_turn = self.latest_turn()
+        coverage = self.latest_memory_coverage()
+        state = self.get_state()
+        lore_card_ids = [card["id"] for card in self.lore_cards() if card["enabled"]]
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO memory_checkpoints(
+                    campaign_id, label, through_turn_id, state_version, memory_coverage_turn_id,
+                    state_json, lore_card_ids_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    label.strip(),
+                    int(latest_turn["id"]) if latest_turn else None,
+                    int(state.get("meta", {}).get("state_version", 1)),
+                    int(coverage["to_turn_id"]) if coverage else None,
+                    json.dumps(state, ensure_ascii=False),
+                    json.dumps(lore_card_ids),
+                    now_ts(),
+                ),
+            )
+            row = connection.execute("SELECT * FROM memory_checkpoints WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+        return self.memory_checkpoint_from_row(row)
+
+    def memory_checkpoints(self, limit: int = 50, include_state: bool = False) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM memory_checkpoints WHERE campaign_id = ?
+                ORDER BY created_at DESC, id DESC LIMIT ?
+                """,
+                (self.campaign_id, max(limit, 1)),
+            ).fetchall()
+        return [self.memory_checkpoint_from_row(row, include_state=include_state) for row in rows]
+
+    def memory_checkpoint_from_row(self, row: sqlite3.Row, include_state: bool = True) -> dict[str, Any]:
+        checkpoint = {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "label": row["label"],
+            "through_turn_id": row["through_turn_id"],
+            "state_version": row["state_version"],
+            "memory_coverage_turn_id": row["memory_coverage_turn_id"],
+            "lore_card_ids": self.json_list(row["lore_card_ids_json"]),
+            "created_at": row["created_at"],
+        }
+        if include_state:
+            checkpoint["state"] = json.loads(row["state_json"])
+        return checkpoint
 
     def bootstrap_state(self) -> None:
         if self.current_version() is not None:
@@ -349,7 +721,14 @@ class StateStore:
             {
                 key: value
                 for key, value in match.items()
-                if key not in {"retrieval_score", "matched_terms"}
+                if key not in {
+                    "retrieval_score",
+                    "lexical_score",
+                    "stem_hits",
+                    "fuzzy_score",
+                    "matched_terms",
+                    "match_mode",
+                }
             }
             for match in self.explain_archived_retrieval(query, through_turn_id, limit)
         ]
@@ -369,15 +748,31 @@ class StateStore:
                 """,
                 (self.campaign_id, through_turn_id),
             ).fetchall()
-        ranked: list[tuple[int, dict[str, Any]]] = []
+        query_stems = {archive_stem(term) for term in terms}
+        query_ngrams = archive_ngrams(terms)
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        newest_turn_id = int(rows[0]["id"]) if rows else through_turn_id
         for row in rows:
             item = dict(row)
             text = f"{item['player_message']}\n{item['narrative_response']}".lower()
+            text_tokens = archive_word_tokens(text)
+            text_stems = {archive_stem(token) for token in text_tokens}
             matched_terms = [term for term in terms if term in text]
-            score = sum(text.count(term) for term in matched_terms)
+            lexical_score = sum(text.count(term) for term in matched_terms)
+            stem_hits = len(query_stems & text_stems)
+            text_ngrams = archive_ngrams(text_tokens)
+            fuzzy_score = len(query_ngrams & text_ngrams) / max(len(query_ngrams), 1)
+            if not lexical_score and not stem_hits and fuzzy_score < 0.45:
+                continue
+            recency_bonus = 0.25 / (1 + max(newest_turn_id - int(item["id"]), 0))
+            score = round((lexical_score * 4) + (stem_hits * 2) + (fuzzy_score * 3) + recency_bonus, 3)
             if score:
                 item["retrieval_score"] = score
+                item["lexical_score"] = lexical_score
+                item["stem_hits"] = stem_hits
+                item["fuzzy_score"] = round(fuzzy_score, 3)
                 item["matched_terms"] = matched_terms
+                item["match_mode"] = "exact+fuzzy" if lexical_score else "fuzzy"
                 ranked.append((score, item))
         ranked.sort(key=lambda pair: (pair[0], pair[1]["id"]), reverse=True)
         return [item for _, item in ranked[:limit]]

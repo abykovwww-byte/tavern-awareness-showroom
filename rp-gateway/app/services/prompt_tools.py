@@ -11,7 +11,12 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage
 from app.services.context_budget import split_turns_by_token_budget
 from app.services.context_estimator import estimate_tokens
 from app.services.intent_parser import IntentParser
-from app.services.narrative import NarrativeClient, archived_memory_retrieval_block
+from app.services.narrative import (
+    NarrativeClient,
+    archived_memory_retrieval_block,
+    party_lore_cards_block,
+    uncompacted_archive_fallback_block,
+)
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 
@@ -154,10 +159,26 @@ class PromptInspector:
             turns = self.store.turns_for_memory(after_turn_id=covered_through)
         else:
             turns = self.store.turns_before(before_turn_id, limit=10_000)
-        _, turns = split_turns_by_token_budget(
+        overflow_turns, turns = split_turns_by_token_budget(
             turns,
             max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
         )
+        if before_turn_id is None:
+            lore_block = party_lore_cards_block(
+                self.store.lore_cards_for_prompt(
+                    latest,
+                    limit=self.settings.party_lore_card_prompt_limit,
+                    max_chars=self.settings.party_lore_card_prompt_max_chars,
+                )
+            )
+            if lore_block:
+                messages.append(ChatMessage(role="system", content=lore_block))
+            fallback_block = uncompacted_archive_fallback_block(
+                overflow_turns,
+                self.settings.party_memory_fallback_max_chars,
+            )
+            if fallback_block:
+                messages.append(ChatMessage(role="system", content=fallback_block))
         for turn in turns:
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
@@ -218,6 +239,10 @@ class PromptInspector:
             return "relevant_characters", "Relevant characters"
         if content.startswith("RETRIEVED_ARCHIVE_SCENES"):
             return "retrieved_archive_scenes", "Retrieved archive scenes"
+        if content.startswith("UNCOMPACTED_ARCHIVE_FALLBACK"):
+            return "uncompacted_archive_fallback", "Uncompacted archive fallback"
+        if content.startswith("PARTY_LORE_CARDS"):
+            return "party_lore_cards", "Party lore cards"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:
@@ -268,12 +293,32 @@ class PromptInspector:
             "raw": {
                 "included_turn_ids": turn_ids(included_raw),
                 "excluded_turn_ids": turn_ids(omitted_raw),
-                "excluded_reason": "raw_history_budget" if omitted_raw else None,
+                "excluded_reason": "uncompacted_archive_fallback" if omitted_raw else None,
+            },
+            "fallback": {
+                "active": bool(omitted_raw),
+                "turn_ids": turn_ids(omitted_raw),
+                "max_chars": self.settings.party_memory_fallback_max_chars,
+                "service_jobs": [
+                    {
+                        "job_type": job["job_type"],
+                        "status": job["status"],
+                        "attempts": job["attempts"],
+                        "max_attempts": job["max_attempts"],
+                        "last_error": job["last_error"],
+                    }
+                    for job in self.store.service_jobs(limit=4)
+                    if job["job_type"] in {"memory", "journal"}
+                ],
             },
             "retrieval": [
                 {
                     "turn_id": item["id"],
                     "score": item["retrieval_score"],
+                    "lexical_score": item["lexical_score"],
+                    "stem_hits": item["stem_hits"],
+                    "fuzzy_score": item["fuzzy_score"],
+                    "match_mode": item["match_mode"],
                     "matched_terms": item["matched_terms"],
                 }
                 for item in retrieval

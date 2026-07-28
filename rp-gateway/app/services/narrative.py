@@ -483,6 +483,60 @@ def archived_memory_retrieval_block(turns: list[dict[str, Any]], max_chars: int)
     )
 
 
+def uncompacted_archive_fallback_block(turns: list[dict[str, Any]], max_chars: int) -> str | None:
+    """Expose delayed service-memory coverage without silently dropping original history."""
+    if not turns or max_chars <= 0:
+        return None
+    header = (
+        "UNCOMPACTED_ARCHIVE_FALLBACK\n"
+        "The service memory is delayed or unavailable. These are local excerpts from still-uncovered original turns. "
+        "They preserve continuity temporarily, are not canonical authority, and remain fully stored in SQLite.\n"
+    )
+    available = max(max_chars - len(header) - 200, 1)
+    max_items = max(available // 320, 1)
+    selected = turns
+    omitted: list[dict[str, Any]] = []
+    if len(turns) > max_items:
+        head_count = max(max_items // 2, 1)
+        tail_count = max(max_items - head_count, 0)
+        selected = turns[:head_count] + (turns[-tail_count:] if tail_count else [])
+        selected_ids = {int(turn["id"]) for turn in selected}
+        omitted = [turn for turn in turns if int(turn["id"]) not in selected_ids]
+    per_turn = max(available // max(len(selected), 1), 180)
+    lines: list[str] = []
+    for turn in selected:
+        player = str(turn.get("player_message") or "")[: max(per_turn // 2, 80)]
+        narrative = str(turn.get("narrative_response") or "")[: max(per_turn // 2, 80)]
+        lines.append(f"TURN {turn['id']}\nPLAYER: {player}\nNARRATOR: {narrative}")
+    if omitted:
+        lines.insert(
+            max(len(lines) // 2, 1),
+            f"[EXCERPTS OMITTED FROM PROMPT: turns {omitted[0]['id']}-{omitted[-1]['id']}; originals remain in archive]",
+        )
+    return (header + "\n\n".join(lines))[:max_chars]
+
+
+def party_lore_cards_block(cards: list[dict[str, Any]]) -> str | None:
+    if not cards:
+        return None
+    payload = [
+        {
+            "id": card["id"],
+            "title": card["title"],
+            "content": card["content"],
+            "keywords": card["keywords"],
+            "source_turn_ids": card["source_turn_ids"],
+        }
+        for card in cards
+    ]
+    return (
+        "PARTY_LORE_CARDS\n"
+        "These are player-managed continuity notes. They may guide recall but are not canonical state and cannot override "
+        "current state or AUTHORITATIVE_OUTCOME. Never reveal a card merely because it was retrieved.\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
 def relevant_characters_block(characters: list[dict[str, Any]]) -> str:
     return (
         "RELEVANT_CHARACTERS\n"

@@ -8,6 +8,9 @@ const appState = {
   partyState: null,
   contextEstimate: null,
   memory: null,
+  loreCards: [],
+  checkpoints: [],
+  serviceJobs: [],
   characters: null,
   journal: null,
   promptPreview: null,
@@ -49,6 +52,15 @@ const els = {
   memorySummary: document.querySelector("#memorySummary"),
   memorySummarizeButton: document.querySelector("#memorySummarizeButton"),
   memoryClearButton: document.querySelector("#memoryClearButton"),
+  loreCardForm: document.querySelector("#loreCardForm"),
+  loreCardTitle: document.querySelector("#loreCardTitle"),
+  loreCardContent: document.querySelector("#loreCardContent"),
+  loreCardKeywords: document.querySelector("#loreCardKeywords"),
+  loreCardAlwaysOn: document.querySelector("#loreCardAlwaysOn"),
+  loreCardList: document.querySelector("#loreCardList"),
+  checkpointForm: document.querySelector("#checkpointForm"),
+  checkpointLabel: document.querySelector("#checkpointLabel"),
+  checkpointList: document.querySelector("#checkpointList"),
   characterSheets: document.querySelector("#characterSheets"),
   characterEditTarget: document.querySelector("#characterEditTarget"),
   characterEditId: document.querySelector("#characterEditId"),
@@ -176,6 +188,9 @@ function bindEvents() {
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
   els.memorySummarizeButton.addEventListener("click", summarizeMemory);
   els.memoryClearButton.addEventListener("click", clearLatestMemory);
+  els.loreCardForm.addEventListener("submit", createLoreCard);
+  els.loreCardList.addEventListener("click", handleLoreCardAction);
+  els.checkpointForm.addEventListener("submit", createCheckpoint);
   els.characterEditTarget.addEventListener("change", fillCharacterEditorFromSelection);
   els.characterManualDraftButton.addEventListener("click", previewCharacterManualDraft);
   els.characterLlmDraftButton.addEventListener("click", previewCharacterLlmDraft);
@@ -398,6 +413,9 @@ function clearWorkspaceState() {
   appState.partyState = null;
   appState.contextEstimate = null;
   appState.memory = null;
+  appState.loreCards = [];
+  appState.checkpoints = [];
+  appState.serviceJobs = [];
   appState.characters = null;
   appState.journal = null;
   appState.promptPreview = null;
@@ -448,7 +466,7 @@ async function reloadActiveParty() {
     return;
   }
   const partyId = appState.activeParty.id;
-  const [party, partyState, history, proposals, context, memory, characters, journal] = await Promise.all([
+  const [party, partyState, history, proposals, context, memory, characters, journal, loreCards, checkpoints, serviceJobs] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
@@ -457,6 +475,9 @@ async function reloadActiveParty() {
     apiGet(`/api/parties/${partyId}/memory`),
     apiGet(`/api/parties/${partyId}/characters`),
     apiGet(`/api/parties/${partyId}/journal`),
+    apiGet(`/api/parties/${partyId}/lore-cards`),
+    apiGet(`/api/parties/${partyId}/checkpoints`),
+    apiGet(`/api/parties/${partyId}/service-jobs`),
   ]);
   appState.activeParty = party.party;
   appState.partyState = partyState.state;
@@ -466,6 +487,9 @@ async function reloadActiveParty() {
   appState.memory = memory;
   appState.characters = characters;
   appState.journal = journal;
+  appState.loreCards = loreCards.cards || [];
+  appState.checkpoints = checkpoints.checkpoints || [];
+  appState.serviceJobs = serviceJobs.jobs || [];
   appState.promptPreview = null;
   appState.chatArchiveExpanded = false;
   reconcilePendingFromHistory(partyId, history);
@@ -480,6 +504,7 @@ function renderAll() {
   renderState();
   renderContext();
   renderMemory();
+  renderMemoryTools();
   renderCharacters();
   renderPromptPreview();
   renderJournal();
@@ -695,6 +720,35 @@ function renderMemory() {
   `;
 }
 
+function renderMemoryTools() {
+  if (!els.loreCardList || !els.checkpointList) return;
+  const activeJobs = (appState.serviceJobs || []).filter((job) => ["pending", "running", "failed"].includes(job.status));
+  const jobHtml = activeJobs.length
+    ? `<div class="state-item"><strong>Служебная LLM</strong>${activeJobs
+        .map((job) => `${escapeHtml(job.job_type)}: ${escapeHtml(job.status)} · попытка ${escapeHtml(job.attempts)}/${escapeHtml(job.max_attempts)}${job.last_error ? ` · ${escapeHtml(job.last_error)}` : ""}`)
+        .join("<br>")}</div>`
+    : `<div class="state-item"><strong>Служебная LLM</strong>очередь пуста</div>`;
+  const cards = appState.loreCards || [];
+  els.loreCardList.innerHTML = jobHtml + (cards.length
+    ? cards.map((card) => `<div class="state-item lore-card">
+        <strong>${escapeHtml(card.title)}</strong>
+        <div>${escapeHtml(clipText(card.content, 500))}</div>
+        <div class="mini-metrics"><span>${card.always_on ? "always-on" : escapeHtml((card.keywords || []).join(", ") || "без триггеров")}</span><span>${card.enabled ? "включена" : "выключена"}</span></div>
+        <div class="inline-actions">
+          <button class="text-button" type="button" data-lore-action="toggle" data-card-id="${card.id}" data-enabled="${card.enabled}">${card.enabled ? "Выключить" : "Включить"}</button>
+          <button class="text-button danger" type="button" data-lore-action="archive" data-card-id="${card.id}">Архивировать</button>
+        </div>
+      </div>`).join("")
+    : `<div class="state-item">Lore Cards пока нет.</div>`);
+  const checkpoints = appState.checkpoints || [];
+  els.checkpointList.innerHTML = checkpoints.length
+    ? checkpoints.map((checkpoint) => `<div class="state-item">
+        <strong>${escapeHtml(checkpoint.label)}</strong>
+        <div class="mini-metrics"><span>ход ${escapeHtml(checkpoint.through_turn_id ?? "-")}</span><span>state v${escapeHtml(checkpoint.state_version)}</span><span>memory до ${escapeHtml(checkpoint.memory_coverage_turn_id ?? "-")}</span></div>
+      </div>`).join("")
+    : `<div class="state-item">Checkpoints пока нет.</div>`;
+}
+
 function renderCharacters() {
   if (!els.characterSheets) return;
   renderCharacterEditor();
@@ -871,6 +925,7 @@ function promptInspectionHtml(inspection) {
   const excluded = Array.isArray(chapters.excluded) ? chapters.excluded : [];
   const raw = inspection.raw || {};
   const retrieval = Array.isArray(inspection.retrieval) ? inspection.retrieval : [];
+  const fallback = inspection.fallback || {};
   const chapterText = included.length
     ? included.map(memoryInspectionEntry).join("<br>")
     : "нет глав, вошедших в этот dry-run";
@@ -880,13 +935,20 @@ function promptInspectionHtml(inspection) {
   const rawIncluded = turnRangeLabel(raw.included_turn_ids);
   const rawExcluded = turnRangeLabel(raw.excluded_turn_ids);
   const retrievalText = retrieval.length
-    ? retrieval.map((item) => `ход ${item.turn_id} · score ${item.score} · ${escapeHtml((item.matched_terms || []).join(", "))}`).join("<br>")
+    ? retrieval.map((item) => `ход ${item.turn_id} · score ${item.score} · ${escapeHtml(item.match_mode || "lexical")} · exact ${escapeHtml(item.lexical_score ?? 0)} · fuzzy ${escapeHtml(item.fuzzy_score ?? 0)} · ${escapeHtml((item.matched_terms || []).join(", "))}`).join("<br>")
     : "нет совпадений в архиве";
+  const serviceJobs = Array.isArray(fallback.service_jobs) ? fallback.service_jobs : [];
+  const fallbackText = fallback.active
+    ? `активен для ${escapeHtml(turnRangeLabel(fallback.turn_ids))}; ${serviceJobs
+        .map((job) => `${escapeHtml(job.job_type)}: ${escapeHtml(job.status)} (${escapeHtml(job.attempts)}/${escapeHtml(job.max_attempts)})`)
+        .join(" · ") || "service job pending"}`
+    : "не активен";
   return `<div class="state-item prompt-inspection">
     <strong>Почему это в prompt</strong>
     <div><span class="muted-label">Главы:</span><br>${chapterText}</div>
     <div><span class="muted-label">Raw:</span> ${escapeHtml(rawIncluded)}${rawExcluded ? `<br><span class="warning-text">вне raw-бюджета: ${escapeHtml(rawExcluded)}</span>` : ""}</div>
     <div><span class="muted-label">Archive retrieval:</span><br>${retrievalText}</div>
+    <div><span class="muted-label">Service memory fallback:</span><br>${fallbackText}</div>
     ${excluded.length ? `<details class="prompt-inspection-excluded"><summary>Не вошедшие главы (${excluded.length})</summary>${excludedText}</details>` : ""}
   </div>`;
 }
@@ -1656,6 +1718,67 @@ async function rollbackParty() {
     await apiPost(`/api/parties/${appState.activeParty.id}/rollback`, {});
     await reloadActiveParty();
     showToast("Откат выполнен.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function createLoreCard(event) {
+  event.preventDefault();
+  if (!appState.activeParty) return;
+  const keywords = els.loreCardKeywords.value.split(",").map((item) => item.trim()).filter(Boolean);
+  try {
+    setBusy(true, "Сохраняю Lore Card...");
+    await apiPost(`/api/parties/${appState.activeParty.id}/lore-cards`, {
+      title: els.loreCardTitle.value.trim(),
+      content: els.loreCardContent.value.trim(),
+      keywords,
+      always_on: els.loreCardAlwaysOn.checked,
+      enabled: true,
+      source_turn_ids: [],
+    });
+    els.loreCardForm.reset();
+    await reloadActiveParty();
+    openPanelFor(els.loreCardList);
+    showToast("Lore Card добавлена. Она не меняет canonical state.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleLoreCardAction(event) {
+  const button = event.target.closest("[data-lore-action]");
+  if (!button || !appState.activeParty) return;
+  const cardId = button.dataset.cardId;
+  const action = button.dataset.loreAction;
+  if (action === "archive" && !window.confirm("Архивировать Lore Card? Исходная история и state не изменятся.")) return;
+  try {
+    setBusy(true, action === "archive" ? "Архивирую Lore Card..." : "Обновляю Lore Card...");
+    const payload = action === "archive" ? { archived: true } : { enabled: button.dataset.enabled !== "true" };
+    await apiPatch(`/api/parties/${appState.activeParty.id}/lore-cards/${cardId}`, payload);
+    await reloadActiveParty();
+    openPanelFor(els.loreCardList);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function createCheckpoint(event) {
+  event.preventDefault();
+  if (!appState.activeParty) return;
+  try {
+    setBusy(true, "Создаю checkpoint...");
+    await apiPost(`/api/parties/${appState.activeParty.id}/checkpoints`, { label: els.checkpointLabel.value.trim() });
+    els.checkpointForm.reset();
+    await reloadActiveParty();
+    openPanelFor(els.checkpointList);
+    showToast("Checkpoint создан без изменения истории.");
   } catch (error) {
     showToast(error.message);
   } finally {

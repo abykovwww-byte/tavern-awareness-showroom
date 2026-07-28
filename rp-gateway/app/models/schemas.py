@@ -214,6 +214,28 @@ class PartyPromptPreviewRequest(BaseModel):
     source: Literal["current", "last"] = "last"
 
 
+class PartyLoreCardCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=12000)
+    keywords: list[str] = Field(default_factory=list, max_length=40)
+    always_on: bool = False
+    enabled: bool = True
+    source_turn_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+class PartyLoreCardUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    content: str | None = Field(default=None, min_length=1, max_length=12000)
+    keywords: list[str] | None = Field(default=None, max_length=40)
+    always_on: bool | None = None
+    enabled: bool | None = None
+    archived: bool | None = None
+
+
+class PartyCheckpointCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=160)
+
+
 class PartyCharacterStateEditRequest(BaseModel):
     target: Literal["npc", "player"] = "npc"
     character_id: str | None = Field(default=None, max_length=120)

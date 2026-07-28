@@ -774,7 +774,11 @@ class PartyStore:
                 "state_versions",
                 "audit_events",
                 "memory_summaries",
+                "memory_chapters",
                 "journal_entries",
+                "lore_cards",
+                "memory_checkpoints",
+                "service_jobs",
             ):
                 connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (party.state_campaign_id,))
             connection.execute("DELETE FROM parties WHERE id = ?", (party_id,))

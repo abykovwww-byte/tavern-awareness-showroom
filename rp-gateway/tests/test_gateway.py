@@ -724,7 +724,8 @@ def test_context_overflow_is_omitted_until_episodic_chapter_catches_up(tmp_path:
         c.app.state.settings,
     )
     prompt_text = "\n".join(str(message.content) for message in request.messages)
-    assert old_player not in prompt_text
+    assert "UNCOMPACTED_ARCHIVE_FALLBACK" in prompt_text
+    assert old_player in prompt_text
     assert recent_player in prompt_text
 
     plan, reason = MemorySummarizer(c.app.state.settings, store).build_plan()
@@ -777,7 +778,20 @@ def test_episodic_chapters_are_immutable_and_archive_retrieval_stays_out_of_raw_
     assert [turn["id"] for turn in retrieved] == [1, 2]
 
 
-def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_hybrid_archive_retrieval_eval_set(tmp_path: Path):
+    fixture_path = Path(__file__).parent / "fixtures" / "memory_retrieval_eval.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    store = StateStore(str(tmp_path / "retrieval-eval.db"), "retrieval-eval", str(tmp_path / "state.json"))
+    for index, turn in enumerate(fixture["turns"], start=1):
+        store.record_turn(f"eval-{index}", f"eval-{index}", turn["player"], turn["narrative"], {}, index)
+
+    for case in fixture["cases"]:
+        matches = store.explain_archived_retrieval(case["query"], through_turn_id=len(fixture["turns"]), limit=3)
+        first_turn = matches[0]["id"] if matches else None
+        assert first_turn == case["expected_first_turn"], case["query"]
+
+
+def test_party_uses_visible_raw_fallback_when_service_memory_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async def fail_summary(*_args, **_kwargs):
         raise RuntimeError("summary unavailable")
 
@@ -802,9 +816,13 @@ def test_party_refuses_to_drop_unsummarized_overflow_when_memory_fails(tmp_path:
         headers={"Authorization": "Bearer test", "X-Request-ID": "req_memory_failure"},
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "Memory summary provider failed"
-    assert [turn["id"] for turn in store.turn_history(limit=10)] == [1, 2]
+    assert response.status_code == 200
+    assert [turn["id"] for turn in store.turn_history(limit=10)] == [1, 2, 3]
+    recorded = store.latest_turn(include_prompt=True)
+    assert "UNCOMPACTED_ARCHIVE_FALLBACK" in str(recorded["prompt_json"])
+    memory_job = next(job for job in store.service_jobs() if job["job_type"] == "memory")
+    assert memory_job["status"] == "pending"
+    assert memory_job["attempts"] == 1
 
 
 def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -822,13 +840,13 @@ def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, mon
         started = asyncio.Event()
         finished = asyncio.Event()
 
-        async def slow_helpers(authorization: str | None, request_id: str) -> None:
-            _ = authorization, request_id
+        async def slow_helpers(authorization: str | None, wait_for_retries: bool) -> None:
+            _ = authorization, wait_for_retries
             started.set()
             await asyncio.sleep(0.1)
             finished.set()
 
-        monkeypatch.setattr(adjudicator, "run_post_turn_helpers", slow_helpers)
+        monkeypatch.setattr(adjudicator, "drain_service_jobs", slow_helpers)
         before = time.perf_counter()
         await adjudicator.after_turn_recorded("Bearer test", "background-helper")
         elapsed = time.perf_counter() - before
@@ -841,6 +859,22 @@ def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, mon
         assert store.campaign_id not in Adjudicator._post_turn_helper_campaigns
 
     asyncio.run(scenario())
+
+
+def test_service_jobs_are_durable_and_running_jobs_resume_after_restart(tmp_path: Path):
+    sqlite_path = str(tmp_path / "durable-jobs.db")
+    state_path = str(tmp_path / "state.json")
+    store = StateStore(sqlite_path, "durable-jobs", state_path)
+    queued = store.enqueue_service_job("memory", "request-1", max_attempts=3)
+    running = store.mark_service_job_running(queued["id"])
+    assert running["status"] == "running"
+    assert running["attempts"] == 1
+
+    restarted = StateStore(sqlite_path, "durable-jobs", state_path)
+    resumed = restarted.due_service_job()
+    assert resumed is not None
+    assert resumed["id"] == queued["id"]
+    assert resumed["status"] == "pending"
 
 
 def test_party_model_can_be_changed(tmp_path: Path):
@@ -997,8 +1031,78 @@ def test_party_prompt_preview_explains_chapter_and_archive_retrieval(tmp_path: P
     inspection = body["inspection"]
     assert inspection["chapters"]["included"][0]["from_turn_id"] == 1
     assert inspection["raw"]["included_turn_ids"] == []
-    assert inspection["retrieval"] == [{"turn_id": 1, "score": 1, "matched_terms": ["астролябия"]}]
+    assert inspection["retrieval"][0]["turn_id"] == 1
+    assert inspection["retrieval"][0]["lexical_score"] == 1
+    assert inspection["retrieval"][0]["stem_hits"] >= 1
+    assert inspection["retrieval"][0]["match_mode"] == "exact+fuzzy"
+    assert inspection["retrieval"][0]["matched_terms"] == ["астролябия"]
     assert "retrieved_archive_scenes" in {block["id"] for block in body["blocks"]}
+
+
+def test_party_lore_cards_are_manual_retrievable_and_party_isolated(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    first = create_demo_party(c, title="Lore A", character_name="A")
+    second = create_demo_party(c, title="Lore B", character_name="B")
+
+    created = c.post(
+        f"/api/parties/{first['id']}/lore-cards",
+        json={
+            "title": "Астролябия Миры",
+            "content": "Мира хранит найденную астролябию в синем футляре.",
+            "keywords": ["астролябия", "Мира"],
+            "always_on": False,
+            "enabled": True,
+            "source_turn_ids": [1],
+        },
+    )
+    assert created.status_code == 200
+    card = created.json()["card"]
+
+    preview = c.post(
+        f"/api/parties/{first['id']}/prompt/preview",
+        json={"content": "Где астролябия?", "source": "current"},
+    ).json()["preview"]
+    assert "party_lore_cards" in {block["id"] for block in preview["blocks"]}
+    assert "синем футляре" in "\n".join(message["content"] for message in preview["messages"])
+
+    isolated = c.post(
+        f"/api/parties/{second['id']}/prompt/preview",
+        json={"content": "Где астролябия?", "source": "current"},
+    ).json()["preview"]
+    assert "party_lore_cards" not in {block["id"] for block in isolated["blocks"]}
+
+    disabled = c.patch(
+        f"/api/parties/{first['id']}/lore-cards/{card['id']}",
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200
+    hidden = c.post(
+        f"/api/parties/{first['id']}/prompt/preview",
+        json={"content": "Где астролябия?", "source": "current"},
+    ).json()["preview"]
+    assert "party_lore_cards" not in {block["id"] for block in hidden["blocks"]}
+
+
+def test_memory_checkpoint_is_a_non_destructive_party_snapshot(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Checkpoint")
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": '/check information skill=1 difficulty=5 goal="checkpoint clue"'},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert turn.status_code == 200
+
+    created = c.post(f"/api/parties/{party['id']}/checkpoints", json={"label": "После первой улики"})
+    assert created.status_code == 200
+    checkpoint = created.json()["checkpoint"]
+    assert checkpoint["label"] == "После первой улики"
+    assert checkpoint["through_turn_id"] == 1
+    assert checkpoint["state_version"] >= 1
+    assert checkpoint["state"]["meta"]["campaign_id"] == party["id"]
+    assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 1
 
 
 def test_party_characters_endpoint_returns_npc_sheets(tmp_path: Path):
