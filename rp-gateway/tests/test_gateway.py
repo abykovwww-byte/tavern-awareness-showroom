@@ -582,7 +582,10 @@ def test_admin_autotest_forks_checkpoint_branch_with_separate_local_player_model
     assert listed_branches[0]["status"] == "completed"
 
 
-def test_admin_autotest_continues_with_audited_fallback_after_narrative_validation_failure(tmp_path: Path):
+def test_admin_autotest_continues_with_audited_fallback_after_narrative_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     write_worldpack(tmp_path)
     admin = client(
         tmp_path,
@@ -595,6 +598,11 @@ def test_admin_autotest_continues_with_audited_fallback_after_narrative_validati
         local_llm_model_alias="gemma-4-26b-a4b-it-rp-q4",
     )
     login(admin)
+
+    async def failing_check_action(*args: object, **kwargs: object) -> str:
+        return "/check stealth skill=1 difficulty=10"
+
+    monkeypatch.setattr("app.main.AutoPlayerClient.next_action", failing_check_action)
     source_party = create_demo_party(admin, title="Fallback autotest source")
     local_profile = next(
         profile
