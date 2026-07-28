@@ -8,9 +8,9 @@ Accepted.
 
 ## Context
 
-Long Light GUI sessions need tools that SillyTavern users normally assemble
+Long Light GUI sessions need tools that users otherwise assemble
 from extensions: prompt inspection, character cards, and session recaps.
-Light GUI has better source data than SillyTavern because the gateway already
+Light GUI has direct source data because the gateway already
 owns `Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory`.
 
 ## Decision
@@ -47,5 +47,5 @@ memory is concise narrator context, journal is readable session history.
 - All new helpers are isolated by party `state_campaign_id`.
 - Rollback does not delete turns, memory, or journal; entries remain tagged
   with the state version that existed when they were generated.
-- SillyTavern stays legacy/debug. Light GUI reads gateway memory/state/journal
-  directly instead of depending on SillyTavern extensions.
+- Light GUI reads gateway memory, state, and journal directly instead of
+  depending on browser extensions.

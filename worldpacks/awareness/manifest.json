@@ -7,7 +7,7 @@
   "status": "playable",
   "premise": "Одна рабочая неделя в PT Security. За 10 ходов игрок видит полудневные срезы рабочего дня: обычные задачи, встречи, письма, мессенджеры и личные контакты, среди которых скрыты попытки социальной инженерии. Цель - распознать атаки по содержанию ситуаций и принять безопасные решения без подсказок нарратора.",
   "player_role": "Сотрудник PT Security. Конкретная профессия, уровень доступа, отдел, стиль работы, корпоративный логин и личные обстоятельства задаются входным промптом при создании персонажа. Если логин не задан, используй обезличенный адрес employee@ptsecurity.com: рабочая почта, мессенджер, доступ к внутренним системам своего отдела и обязанность соблюдать стандарты компании.",
-  "created_for": "sillytavern-rp-gateway",
+  "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "training", "supported": ["training"]},
   "assumptions": [
     "Сценарий использует компанию PT Security и корпоративный домен ptsecurity.com по запросу пользователя; персонажи, проекты, письма, документы, телефонные номера и атаки учебные.",
@@ -24,11 +24,9 @@
     "authors_note": "prompts/authors-note.md",
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
-    "sillytavern_lorebook": "sillytavern/awareness.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",
     "quick_replies": "quick-replies/notes.md",
-    "setup_flow": "setup-flow.md",
-    "server_installer": "../../scripts/install-worldpack.py"
+    "setup_flow": "setup-flow.md"
   }
 }

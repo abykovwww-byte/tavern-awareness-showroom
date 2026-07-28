@@ -13,5 +13,4 @@ Recommended post-processing for strict APIs:
 Prompt Post-Processing: Semi-strict or Strict
 ```
 
-If SillyTavern status checks fail while direct chat works, enable the UI option to bypass API status checks.
-
+Provider status checks are informational; Gateway health and a direct model request are authoritative.

@@ -8,6 +8,5 @@
   "top_p": 0.9,
   "max_tokens": 1800,
   "stream": true,
-  "notes": "Reference values for manual SillyTavern setup. Do not store API keys here."
+  "notes": "Reference values for OpenAI-compatible provider setup. Do not store API keys here."
 }
-

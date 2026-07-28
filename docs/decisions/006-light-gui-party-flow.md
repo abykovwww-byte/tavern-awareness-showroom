@@ -9,13 +9,13 @@ party-scoped gateway API.
 
 ## Context
 
-SillyTavern is good enough as a backend-compatible RP surface, but its UI is
+The original backend-compatible client was sufficient as an RP surface, but its UI was
 too heavy for the intended play loop. The project needs a small LAN-only player
 GUI that treats Codex-generated world packs, player characters, model selection,
 chat, and GM controls as one coherent game session.
 
 The current `rp-gateway` does not know when the user switches worlds in
-SillyTavern. It starts with a single `CAMPAIGN_ID`, creates one `StateStore`,
+that client. It starts with a single `CAMPAIGN_ID`, creates one `StateStore`,
 and resolves all state requests against that fixed campaign. That is acceptable
 for a single campaign, but it cannot support multiple worlds, multiple parties,
 or switching between saved games.
@@ -27,7 +27,7 @@ Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
 ```
 
 The light GUI selects a party. The gateway resolves every game request through
-that party. SillyTavern global lorebook selection must not be the source of
+that party. Global client-side lorebook selection must not be the source of
 truth for this flow.
 
 ## Decision
@@ -46,7 +46,7 @@ The light GUI flow is:
 6. During play, use normal chat plus a compact GM mode for state changes,
    checks, rollback, and service commands.
 
-The gateway, not the browser and not SillyTavern, owns the active binding:
+The gateway, not the browser, owns the active binding:
 
 ```text
 browser route /parties/{party_id}
@@ -174,7 +174,7 @@ return both the assistant message and the state metadata needed by the GUI.
 }
 ```
 
-OpenAI-compatible `/v1/chat/completions` can remain for SillyTavern, but it is
+OpenAI-compatible `/v1/chat/completions` can remain for external integrations, but it is
 not the preferred API for the light GUI.
 
 ## Light GUI Screens
@@ -227,7 +227,7 @@ not the preferred API for the light GUI.
 - [x] Add party-scoped checks.
 - [x] Add party-scoped world instruction/apply/discard endpoints.
 - [x] Add party-scoped rollback.
-- [x] Keep current `/v1/chat/completions` working for SillyTavern during the
+- [x] Keep current `/v1/chat/completions` working as a compatibility endpoint during the
       transition.
 
 ### Phase 3: Character creation
@@ -254,12 +254,11 @@ not the preferred API for the light GUI.
 - [ ] API test full flow: create party, send message, state changes only for
       that party.
 - [ ] Browser test light GUI happy path.
-- [ ] Confirm SillyTavern compatibility still works or document it as legacy.
+- [x] Keep Light GUI as the supported browser client.
 
 ## Open Questions
 
-- Should `rp-light-gui` fully replace SillyTavern for play, or should
-  SillyTavern stay as a debug/legacy client only?
+- The supported browser path is now `rp-light-gui` only.
 - Should model profiles use only server `.env` keys, or also allow per-party
   user-entered keys stored outside Git?
 - Should Codex world creation automatically register the world pack in gateway

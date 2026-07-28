@@ -5,7 +5,7 @@
   "mode": "original campaign",
   "tone": ["dark fantasy", "frontier intrigue", "survival mystery"],
   "player_role": "Временный поверенный Пограничной Канцелярии с ограниченным правом расследования",
-  "created_for": "sillytavern-rp-gateway",
+  "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "rp", "supported": ["rp", "novel"]},
   "assumptions": [
     "Оригинальный мир без привязки к существующим франшизам.",
@@ -20,11 +20,9 @@
     "authors_note": "prompts/authors-note.md",
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
-    "sillytavern_lorebook": "sillytavern/Predel_Dymnyh_Vrat.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",
     "quick_replies": "quick-replies/notes.md",
-    "server_installer": "../../scripts/install-worldpack.py",
     "setup_flow": "setup-flow.md"
   }
 }

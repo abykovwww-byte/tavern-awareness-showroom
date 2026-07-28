@@ -4,213 +4,44 @@
 
 ```text
 /srv/apps/rp-stack
-/srv/app-data/rp-stack
+/srv/app-data/rp-stack/gateway
 /srv/backups/rp-stack
 ```
 
-## Commands
+## Health and logs
 
 ```bash
 cd /srv/apps/rp-stack
-docker compose up -d
 docker compose ps
-docker compose logs --tail=100 sillytavern
-docker compose logs --tail=100 rp-gateway
-docker compose logs --tail=100 rp-light-gui
-docker compose restart sillytavern
-docker compose down
+docker compose logs --tail=100 rp-gateway rp-light-gui
+docker inspect --format='{{.State.Health.Status}}' rp-stack-gateway
+docker inspect --format='{{.State.Health.Status}}' rp-stack-light-gui
+curl -fsS http://192.168.1.88:8010/health
+curl -fsS http://192.168.1.88:8010/api/worldpacks
 ```
 
-## Basic Auth Password
+## Tests
 
 ```bash
-sudo cat /etc/ansible/rp-stack-sillytavern-basic-auth-password
+cd /srv/apps/rp-stack
+docker compose run --rm rp-gateway pytest
 ```
 
-Do not paste this password into GitHub issues, commits, docs, or chat logs.
-
-## Backup
+## Backup and restore
 
 ```bash
 cd /srv/apps/rp-stack
 bash scripts/backup.sh
 ```
 
-## State Patch Workflow
+To restore, stop the stack, unpack a selected archive at `/`, and start Compose
+again. Always inspect the archive and target paths before restoring.
 
-Validate current state:
+## Apply changes
 
-```bash
-cd /srv/apps/rp-stack
-python3 scripts/validate-state.py
-```
-
-Validate a proposed patch:
+Use the pull-based service after the required commit is on GitHub:
 
 ```bash
-python3 scripts/validate-state.py --patch state/proposed/turn-001.json
-```
-
-Preview application:
-
-```bash
-python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json
-```
-
-Apply after review:
-
-```bash
-python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json --confirm
-```
-
-Render prompt block:
-
-```bash
-python3 scripts/render-state-block.py
-```
-
-## Check Workflow
-
-Run a bounded check:
-
-```bash
-python3 scripts/run-check.py --type persuasion --target advisor --skill 2 --difficulty 12
-```
-
-The command prints `<AUTHORITATIVE_OUTCOME>` and writes a proposed patch under
-`state/proposed/`.
-
-Useful check commands:
-
-```bash
-python3 scripts/run-check.py --type stealth --skill 2 --difficulty 14
-python3 scripts/run-check.py --type resource --resource coin --resource-amount 1 --difficulty 8
-python3 scripts/run-check.py --type feasibility --desired-outcome "cross locked gate" --difficulty 12
-```
-
-Preview and apply the generated patch:
-
-```bash
-python3 scripts/validate-state.py --patch state/proposed/check-<id>.json
-python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json
-python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json --confirm
-```
-
-Clear a generated check before narration:
-
-```bash
-python3 scripts/rollback-last-check.py
-python3 scripts/rollback-last-check.py --confirm
-```
-
-## Gateway
-
-Health:
-
-```bash
-cd /srv/apps/rp-stack
-docker compose exec rp-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/health').read().decode())"
-```
-
-Run gateway tests:
-
-```bash
-docker compose run --rm rp-gateway pytest
-```
-
-SillyTavern custom OpenAI-compatible settings:
-
-```text
-Base URL: http://rp-gateway:8088/v1
-Model: z-ai/glm-5.2
-API key: NVIDIA key
-```
-
-## Light GUI
-
-Open from the LAN:
-
-```text
-http://192.168.1.88:8010
-```
-
-The `rp-light-gui` service serves the static client and proxies `/api` to
-`rp-gateway`. The browser keeps only the active `party_id` preference; gateway
-owns the world, player character, model profile, state and turn history binding.
-
-Model selection:
-
-- `/api/model-profiles` returns the gateway model registry.
-- The registry is seeded with a static NVIDIA NIM fallback catalog with
-  RP-focused descriptions.
-- If `NVIDIA_MODEL_CATALOG_LIVE=true`, gateway tries to refresh from
-  `https://build.nvidia.com/models?q=llm`.
-- If `NVIDIA_API_KEY` is configured, gateway also tries
-  `NVIDIA_API_BASE/v1/models`.
-
-Party creation can use either an installed `worldpacks/*/manifest.json` world or
-a prompt-generated world. Prompt worlds are saved under `/state/parties` as
-generated worldpacks and then behave like normal party world references.
-
-Useful checks:
-
-```bash
-cd /srv/apps/rp-stack
-docker compose ps rp-light-gui
-docker compose exec rp-light-gui wget -qO- http://127.0.0.1/health
-```
-
-## World Button Workflow
-
-Use the `RP World` Quick Reply preset from:
-
-```text
-/srv/app-data/rp-stack/data/default-user/QuickReplies/RP World.json
-```
-
-The IaC role creates this preset only when it is missing, so user edits in the
-SillyTavern UI are not overwritten on later applies.
-
-Player-facing flow:
-
-```text
-Мир -> write a natural instruction -> gateway returns preview
-Применить мир -> applies latest pending proposal
-Отменить preview -> discards latest pending proposal
-Показать мир -> shows compact state status
-Откат мира -> rolls back one state version
-```
-
-Equivalent chat commands:
-
-```text
-/world Remember: guard Varn now suspects the player.
-/world apply latest
-/world discard latest
-/world show
-/world rollback
-```
-
-Inspect pending world proposals from inside the gateway container:
-
-```bash
-docker compose exec rp-gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8088/api/world/proposals').read().decode())"
-```
-
-Rollback:
-
-```bash
-python3 scripts/apply-state-patch.py --rollback latest
-python3 scripts/apply-state-patch.py --rollback latest --confirm
-```
-
-## Restore
-
-Stop the container, unpack the selected backup into `/srv/app-data/rp-stack`, then start the container again.
-
-```bash
-cd /srv/apps/rp-stack
-docker compose down
-sudo tar -xzf /srv/backups/rp-stack/<backup-file>.tar.gz -C /
-docker compose up -d
+sudo systemctl start ansible-local-apply.service
+sudo systemctl status ansible-local-apply.service --no-pager
 ```

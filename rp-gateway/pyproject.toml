@@ -1,7 +1,7 @@
 [project]
 name = "rp-gateway"
 version = "0.5.0"
-description = "FastAPI arbitration gateway for the SillyTavern RP stack"
+description = "FastAPI authority and model gateway for RP Stack"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi==0.115.6",

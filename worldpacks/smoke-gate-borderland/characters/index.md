@@ -1,6 +1,6 @@
 # Character Cards: Предел Дымных Врат
 
-These are SillyTavern-facing NPC cards/notes. Canonical status, resources and relationships live in `state-seed.json`.
+These are narrator-facing NPC cards and notes. Canonical status, resources and relationships live in `state-seed.json`.
 
 ## Mara Vey
 

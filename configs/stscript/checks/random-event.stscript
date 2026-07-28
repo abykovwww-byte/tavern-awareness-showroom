@@ -1,4 +1,0 @@
-/setvar key=rp_check_type random_event |
-/input Difficulty |
-/setvar key=rp_check_difficulty {{pipe}} |
-/echo Run on the server: python3 scripts/run-check.py --type random_event --difficulty {{getvar::rp_check_difficulty}}

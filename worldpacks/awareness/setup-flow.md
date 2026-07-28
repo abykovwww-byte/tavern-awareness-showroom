@@ -1,50 +1,11 @@
-# Setup Flow: Awareness
+# Setup Flow
 
-## Light GUI
+1. Deploy the committed world pack through the RP Stack IaC workflow.
+2. Open Light GUI at `http://192.168.1.88:8010`.
+3. Create a party with world `awareness` and scenario type `training`.
+4. Create or select a player character and model profile.
+5. Verify the first authored window, deterministic progression, and the final
+   debrief after the tenth player response.
 
-1. Выберите world pack `Awareness`.
-2. Создайте персонажа игрока из шаблона world pack.
-3. В описании персонажа задайте профессию, отдел, обычные задачи и уровень доступа. Например: разработчик backend, системный аналитик, project manager, DevOps/SRE, QA, support, HR, finance.
-4. Корпоративный логин игрока задается в стартовом промпте. Если логин не задан, используется обезличенный адрес `employee@ptsecurity.com`; для пользовательского логина используйте формат без точки до `@`, например `sidorov@ptsecurity.com`.
-5. Не выбирайте модель внутри world pack; используйте обычный профиль модели Light GUI.
-6. Запустите партию. Opening scene начнет ход 1: понедельник, 10:00-14:00.
-
-## Suggested Player Character Additions
-
-- Профессия и отдел.
-- Формат работы: офис, гибрид или удаленка.
-- Уровень доступа: обычный сотрудник, руководитель малой команды, технический специалист, менеджер проекта.
-- Рабочий стиль: быстрый исполнитель, осторожный аналитик, коммуникационный координатор, уставший многозадачник.
-- Личная связь для внерабочих эпизодов: партнер, родственник, старый знакомый.
-
-## 10-Turn Use
-
-- Ход 1: понедельник, 10:00-14:00.
-- Ход 2: понедельник, 15:00-18:00.
-- Ход 3: вторник, 10:00-14:00.
-- Ход 4: вторник, 15:00-18:00.
-- Ход 5: среда, 10:00-14:00.
-- Ход 6: среда, 15:00-18:00.
-- Ход 7: четверг, 10:00-14:00.
-- Ход 8: четверг, 15:00-18:00.
-- Ход 9: пятница, 10:00-14:00.
-- Ход 10: пятница, 15:00-18:00, последний полноценный игровой эпизод и выбор.
-- После ответа на ход 10: отдельный обязательный финальный разбор, саммари и оценка без нового выбора.
-
-## Email Rendering
-
-Письма должны выводиться структурированным блоком `ПИСЬМО`. Реальные письма должны иметь подпись с именем, должностью, отделом, телефоном и email. Не добавляйте в сцену явные подсказки о подозрительности письма. Если письмо есть в ходе, нужен полный блок, а не краткое описание.
-
-## Messenger Rendering
-
-Сообщения в рабочем и личном мессенджере должны выводиться структурированным блоком `СООБЩЕНИЕ`: канал, чат, от, кому, дата/время, вложения, ссылки, текст. Если сообщение есть в ходе, нужен полный блок, а не описание.
-
-## SillyTavern Lorebook
-
-The lorebook is generated as `sillytavern/awareness.json`. It is installed by IaC into:
-
-```text
-{{ rp_stack_data_dir }}/default-user/worlds/awareness.json
-```
-
-For normal Light GUI play, do not copy `state-seed.json` into live `state/current.json`. Light GUI creates isolated party state from this seed.
+Canonical party state is initialized from `state-seed.json`; world context is
+read from the files referenced by `manifest.json`.

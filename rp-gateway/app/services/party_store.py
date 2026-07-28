@@ -351,7 +351,7 @@ class PartyStore:
             pack_id = str(manifest.get("id") or pack_dir.name)
             files = manifest.get("files", {}) if isinstance(manifest.get("files"), dict) else {}
             state_seed = pack_dir / str(files.get("state_seed") or "state-seed.json")
-            lorebook = files.get("sillytavern_lorebook") or files.get("world_info")
+            lorebook = files.get("world_info")
             lorebook_path = str((pack_dir / str(lorebook)).resolve()) if lorebook else None
             title = str(manifest.get("title") or pack_id)
             premise = self.extract_premise(manifest)

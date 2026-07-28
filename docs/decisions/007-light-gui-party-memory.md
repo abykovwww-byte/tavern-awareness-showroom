@@ -73,7 +73,7 @@ state or deletes raw turns.
 
 - New parties do not see another party's memory because every query is filtered
   through `state_campaign_id`.
-- SillyTavern remains legacy/debug. Light GUI relies on gateway memory/state,
-  not the SillyTavern summarization extension.
+- Light GUI relies directly on gateway memory and canonical state; no browser
+  extension owns summarization.
 - Summary rows are durable context snapshots. Future work can add explicit
   regeneration of a full cumulative summary if needed.

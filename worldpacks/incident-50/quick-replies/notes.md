@@ -1,6 +1,6 @@
 # Quick Replies: Инцидент-50
 
-Suggested Light GUI / SillyTavern helper buttons for this world. Do not overwrite global presets while creating the source worldpack.
+Suggested Light GUI helper actions for this world. Do not overwrite user preferences while creating the source worldpack.
 
 ```text
 Показать state

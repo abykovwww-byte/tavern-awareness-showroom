@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the current state as a SillyTavern prompt block."""
+"""Render the current state as an authoritative prompt block."""
 
 from __future__ import annotations
 
@@ -22,4 +22,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

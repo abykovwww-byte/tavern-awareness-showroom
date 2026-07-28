@@ -7,7 +7,7 @@
   "status": "playable",
   "premise": "Россия, июль 2026 года. Вымышленная компания АО «Северная линия» переживает сложную кибератаку: сбои в логистике, возможная утечка данных, давление руководства и ровно 50 ходов, чтобы провести расследование, сдержать ущерб и вынести финальное решение.",
   "player_role": "Внутренний киберкриминалист и специалист по реагированию на инциденты в АО «Северная линия». Игрок выбирает имя персонажа. У персонажа есть доступ к SOC, SIEM/EDR, цепочке хранения доказательств и кризисному штабу, но нет права нарушать закон, атаковать внешние цели или единолично принимать бизнес-решения.",
-  "created_for": "sillytavern-rp-gateway",
+  "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "training", "supported": ["training", "rp"]},
   "assumptions": [
     "Название «Инцидент-50» выбрано Codex, потому что пользователь не задал отдельное название мира.",
@@ -23,11 +23,9 @@
     "authors_note": "prompts/authors-note.md",
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
-    "sillytavern_lorebook": "sillytavern/incident-50.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",
     "quick_replies": "quick-replies/notes.md",
-    "setup_flow": "setup-flow.md",
-    "server_installer": "../../scripts/install-worldpack.py"
+    "setup_flow": "setup-flow.md"
   }
 }

@@ -1,4 +1,0 @@
-/input rows=6 wide=on large=on okButton="Preview" Что изменить или запомнить в мире? |
-/setvar key=rp_world_instruction |
-/send /world {{getvar::rp_world_instruction}} |
-/trigger

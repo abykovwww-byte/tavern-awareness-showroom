@@ -1,6 +1,6 @@
 # World Info: Механист Нового Мира
 
-Use these as focused SillyTavern Lorebook entries. Keep canonical facts synchronized with rp-gateway state; do not let Lorebook override state.
+Use these as focused world-context entries. Keep canonical facts synchronized with rp-gateway state; context never overrides state.
 
 ## Entry: Campaign Premise
 

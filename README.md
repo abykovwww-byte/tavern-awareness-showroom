@@ -1,283 +1,51 @@
 # RP Stack
 
-Локальный RP-стек для длинных кампаний. Итерация 1 поднимает SillyTavern в Docker, хранит пользовательские данные вне контейнера и готовит ручное подключение NVIDIA API как OpenAI-compatible backend.
-
-## Архитектура текущей итерации
+RP Stack is the LAN-only roleplay and training application managed by this IaC
+repository.
 
 ```text
-Browser in LAN
-  -> http://192.168.1.88:8000
-  -> rp-stack-sillytavern container
-  -> SillyTavern Chat Completions / Custom OpenAI-compatible endpoint
-  -> https://integrate.api.nvidia.com/v1
+Browser
+  -> Light GUI on http://192.168.1.88:8010
+  -> party-scoped /api proxy
+  -> RP Gateway
+  -> provider APIs or the optional local model runner
 ```
 
-SillyTavern image: `ghcr.io/sillytavern/sillytavern:1.18.0`.
+Gateway owns authentication, world packs, player characters, model profiles,
+party state, history, memory chapters, journal entries, deterministic checks,
+and training progression. The browser stores only its active session and party
+preference.
 
-Iteration 2 adds a semi-automatic state workflow:
-
-```text
-SillyTavern scene
-  -> state-updater prompt produces proposed JSON patch
-  -> scripts/validate-state.py validates state and patch
-  -> scripts/apply-state-patch.py previews by default
-  -> scripts/apply-state-patch.py --confirm writes state/current.json
-  -> scripts/render-state-block.py renders AUTHORITATIVE_WORLD_STATE for prompt injection
-```
-
-Iteration 3 adds bounded check adjudication:
+## Runtime paths
 
 ```text
-Quick Reply / explicit command
-  -> scripts/run-check.py fixes the result
-  -> state/checks.log records roll and modifiers
-  -> state/proposed/check-<id>.json awaits review
-  -> STscript injects AUTHORITATIVE_OUTCOME
-  -> GLM narrates the fixed result
-```
-
-Iteration 4 adds the FastAPI gateway:
-
-```text
-SillyTavern
-  -> http://rp-gateway:8088/v1
-  -> rp-gateway rule engine, SQLite state, validator, repair
-  -> NVIDIA OpenAI-compatible Chat Completions
-```
-
-Iteration 5 adds a simpler world-management UX:
-
-```text
-SillyTavern Quick Reply button
-  -> /world natural-language instruction
-  -> rp-gateway drafts a pending JSON patch
-  -> player sees readable preview
-  -> /world apply latest confirms
-  -> SQLite state + state/current.json update transactionally
-```
-
-Iteration 6 adds a LAN-only Light GUI:
-
-```text
-Browser in LAN
-  -> http://192.168.1.88:8010
-  -> rp-light-gui static client
-  -> /api proxy to rp-gateway
-  -> explicit Party = WorldPack + PlayerCharacter + ModelProfile + State + TurnHistory
-```
-
-Persistent data on server:
-
-```text
-/srv/app-data/rp-stack/config
-/srv/app-data/rp-stack/data
-/srv/app-data/rp-stack/plugins
-/srv/app-data/rp-stack/extensions
-/srv/app-data/rp-stack/gateway
+/srv/apps/rp-stack
+/srv/apps/rp-stack/worldpacks
+/srv/apps/rp-stack/state
+/srv/app-data/rp-stack/gateway/rp_gateway.db
 /srv/backups/rp-stack
 ```
 
-Runtime state:
-
-```text
-/srv/apps/rp-stack/state/schema.json
-/srv/apps/rp-stack/state/current.json
-/srv/apps/rp-stack/state/history/
-/srv/apps/rp-stack/state/proposed/
-/srv/apps/rp-stack/state/audit.log
-/srv/apps/rp-stack/state/checks.log
-/srv/apps/rp-stack/state/last-check.json
-/srv/app-data/rp-stack/gateway/rp_gateway.db
-```
-
-## Запуск и остановка
+## Operations
 
 ```bash
 cd /srv/apps/rp-stack
-docker compose up -d
-docker compose down
-docker compose restart sillytavern
-```
-
-## Логи и healthcheck
-
-```bash
-cd /srv/apps/rp-stack
+docker compose up -d --build --remove-orphans
 docker compose ps
-docker compose logs --tail=100 sillytavern
-docker inspect --format='{{.State.Health.Status}}' rp-stack-sillytavern
-```
-
-## Доступ
-
-URL: `http://192.168.1.88:8000`
-
-Light GUI URL: `http://192.168.1.88:8010`
-
-Включены:
-
-- bind только на LAN IP сервера `192.168.1.88`;
-- SillyTavern whitelist для loopback и `192.168.0.0/16`;
-- HTTP Basic Auth выключен для удобства работы внутри доверенной LAN.
-
-Если Basic Auth снова включен через `rp_stack_sillytavern_basic_auth_enabled`,
-пароль не хранится в Git. На сервере его можно посмотреть так:
-
-```bash
-sudo cat /etc/ansible/rp-stack-sillytavern-basic-auth-password
-```
-
-## NVIDIA API
-
-В SillyTavern выбери:
-
-```text
-API type: Chat Completion
-Chat Completion Source: Custom (OpenAI-compatible)
-Base URL: http://rp-gateway:8088/v1
-Model: z-ai/glm-5.2
-```
-
-API key вводится вручную в UI SillyTavern. Не сохраняй его в Git, compose-файлах или документации.
-
-For `rp-light-gui`, do not enter provider keys in the browser. Set the gateway
-key on the server through `/etc/ansible/local-overrides.yml`:
-
-```yaml
-rp_stack_nvidia_api_key: "..."
-```
-
-The committed default stays empty, so no secret is stored in Git.
-
-## RP-профиль
-
-Шаблоны лежат в `configs/`:
-
-- `configs/prompts/base-gm-system.md`;
-- `configs/prompts/base-authors-note.md`;
-- `configs/world-info/world-template.md`;
-- `configs/characters/character-template.md`;
-- `configs/presets/openai-compatible-glm-5.2.json`.
-
-## State Workflow
-
-Generate a proposed patch with `configs/prompts/state-updater.md`, then save it under `state/proposed/`, for example:
-
-```bash
-cd /srv/apps/rp-stack
-python3 scripts/validate-state.py --patch state/proposed/turn-001.json
-python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json
-python3 scripts/apply-state-patch.py --patch state/proposed/turn-001.json --confirm
-python3 scripts/render-state-block.py
-```
-
-The first `apply-state-patch.py` command is a dry-run. Nothing is written until `--confirm` is present.
-
-Rollback:
-
-```bash
-cd /srv/apps/rp-stack
-python3 scripts/apply-state-patch.py --rollback latest
-python3 scripts/apply-state-patch.py --rollback latest --confirm
-```
-
-After applying or rolling back state, update the SillyTavern Chat Lorebook / World Info entry with the output of `render-state-block.py`.
-
-## Check Workflow
-
-Run a bounded check from `/srv/apps/rp-stack`:
-
-```bash
-python3 scripts/run-check.py --type persuasion --target advisor --skill 2 --difficulty 12
-```
-
-Supported check types:
-
-```text
-persuasion intimidation deception stealth information resource feasibility trust conflict random_event
-```
-
-Use the printed `<AUTHORITATIVE_OUTCOME>` with the Quick Reply snippets in
-`configs/stscript/checks/`, especially `inject-last-outcome.stscript`. GLM should
-then narrate with `configs/prompts/outcome-narration.md`.
-
-Review and apply the generated patch only after validation:
-
-```bash
-python3 scripts/validate-state.py --patch state/proposed/check-<id>.json
-python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json
-python3 scripts/apply-state-patch.py --patch state/proposed/check-<id>.json --confirm
-```
-
-Clear an un-narrated check:
-
-```bash
-python3 scripts/rollback-last-check.py --confirm
-```
-
-## Gateway Workflow
-
-The gateway understands explicit check commands in chat:
-
-```text
-/check persuasion target=advisor skill=2 difficulty=10 goal="secure a private meeting"
-/check resource resource=coin amount=1 difficulty=8 goal="bribe the guard"
-```
-
-World-management commands:
-
-```text
-/world Remember: guard Varn now suspects the player.
-/world apply latest
-/world discard latest
-/world rollback
-/world show
-```
-
-Quick Reply snippets live under `configs/stscript/world/` and
-`configs/stscript/quick-replies/rp-world.quick-replies.md`.
-
-Operational commands:
-
-```bash
-cd /srv/apps/rp-stack
-docker compose build rp-gateway
-docker compose build rp-light-gui
+docker compose logs --tail=100 rp-gateway rp-light-gui
 docker compose run --rm rp-gateway pytest
-docker compose up -d
+bash scripts/backup.sh
 ```
 
-## Обновление
+Provider keys are configured only in `/etc/ansible/local-overrides.yml` on the
+server. Never store them in Git or enter them in the browser.
 
-Изменения вносятся через GitHub IaC-репозиторий `ubuntu_ansible_palybooks`. На сервере применяется pull-based Ansible:
+## Deployment
+
+Commit and push IaC changes, then apply the server checkout through:
 
 ```bash
 sudo systemctl start ansible-local-apply.service
 ```
 
-## Backup
-
-```bash
-cd /srv/apps/rp-stack
-bash scripts/backup.sh
-```
-
-## Rollback
-
-1. Откатить commit в GitHub/IaC.
-2. Запустить `sudo systemctl start ansible-local-apply.service`.
-3. При необходимости восстановить архив из `/srv/backups/rp-stack`.
-
-## Ручные шаги
-
-- Найти NVIDIA API key.
-- Ввести key в UI SillyTavern.
-- Создать тестовый чат и провести минимум 10 ходов на русском.
-- Проверить, что чат и настройки сохраняются после `docker compose restart sillytavern`.
-
-## Известные ограничения
-
-- Iteration 2 uses manual confirmation and helper scripts; it is intentionally not fully automatic.
-- Iteration 3 uses a server helper for rule resolution and STscript for Quick Reply workflow and prompt injection.
-- NVIDIA key на этой итерации вводится вручную в UI.
-- FastAPI gateway появится только в итерации 4.
+Do not maintain long-lived manual edits under `/srv/apps/rp-stack`.
