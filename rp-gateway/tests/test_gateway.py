@@ -818,8 +818,12 @@ def test_party_uses_visible_raw_fallback_when_service_memory_fails(tmp_path: Pat
 
     assert response.status_code == 200
     assert [turn["id"] for turn in store.turn_history(limit=10)] == [1, 2, 3]
-    recorded = store.latest_turn(include_prompt=True)
-    assert "UNCOMPACTED_ARCHIVE_FALLBACK" in str(recorded["prompt_json"])
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "continue", "source": "current"},
+    ).json()["preview"]
+    assert preview["inspection"]["fallback"]["active"] is True
+    assert preview["inspection"]["fallback"]["turn_ids"]
     memory_job = next(job for job in store.service_jobs() if job["job_type"] == "memory")
     assert memory_job["status"] == "pending"
     assert memory_job["attempts"] == 1
