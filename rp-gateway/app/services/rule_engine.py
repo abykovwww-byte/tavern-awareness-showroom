@@ -62,6 +62,7 @@ AWARENESS_TURN_WINDOWS = {
     9: "ход 9, пятница, 10:00-14:00",
     10: "ход 10, пятница, 15:00-18:00",
 }
+AWARENESS_DEBRIEF_WINDOW = "итоговый разбор после хода 10"
 
 
 def clamp(value: int, low: int, high: int) -> int:
@@ -516,9 +517,11 @@ class RuleEngine:
         if not is_awareness_campaign(state, campaign_id):
             return []
         window = awareness_turn_window(turn)
+        if turn == 11:
+            window = AWARENESS_DEBRIEF_WINDOW
         if not window:
             return []
-        return [
+        operations = [
             self.resource_value_operation(
                 state,
                 "current-turn-window",
@@ -534,6 +537,17 @@ class RuleEngine:
                 turn,
             ),
         ]
+        if turn == 11:
+            operations.append(
+                self.resource_value_operation(
+                    state,
+                    "completion-status",
+                    "complete",
+                    "Marks Awareness gameplay complete while generating the separate debrief response.",
+                    turn,
+                )
+            )
+        return operations
 
     def resource_delta_operation(self, state: dict[str, Any], resource_id: str, delta: int, reason: str, turn: int) -> PatchOperation:
         resources = state.get("player", {}).get("resources", {})

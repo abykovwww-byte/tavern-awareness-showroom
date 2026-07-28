@@ -27,5 +27,5 @@ Negative state updates:
 - Forwarding suspicious content to a shared or personal chat records the additional distribution risk.
 - Refusing an unsafe action and reporting through the company process is safe even if the message later proves benign.
 - Sharing only safe, generalized information and pointing to an official channel is not a confidential disclosure.
-- Do not reveal scoring, rule names, attack labels, or the correctness of a choice during turns 1-9.
-- Turn 10 is the only place for the final assessment, evidence-based score, mistakes, strengths, and recommendations.
+- Do not reveal scoring, rule names, attack labels, or the correctness of a choice during turns 1-10.
+- After the player answers turn 10, a separate debrief response is the only place for the final assessment, evidence-based score, mistakes, strengths, and recommendations.

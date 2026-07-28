@@ -53,6 +53,12 @@ AWARENESS_HINT_RE = re.compile(
     r"по\s+правилам\s+PT\s+Security|не\s+наруша\w+\s+правил|цель\s*[-—–:]\s*запустить\s+вредоносн)",
     re.IGNORECASE,
 )
+AWARENESS_EARLY_DEBRIEF_RE = re.compile(
+    r"(?:финальн\w*|итогов\w*)\s+(?:саммари|разбор|оценк\w*)|"
+    r"итоговый\s+балл|что\s+было\s+правильно|что\s+можно\s+было\s+сделать\s+лучше",
+    re.IGNORECASE,
+)
+AWARENESS_SCORE_RE = re.compile(r"\b(?:100|[1-9]?\d)\s*(?:из|/)\s*100\b", re.IGNORECASE)
 AWARENESS_META_RE = re.compile(
     r"^\s*\*{0,2}(?:мессенджер|блок[-‑–— ]?сценарий|сценарный\s+блок|разбор\s+хода|итоги\s+хода)\*{0,2}\s*:|"
     r"\b(?:всё|все)\s+в\s+пределах\s+шаблона\b|\bдва\s+письма,?\s+одно\s+сообщение\b|"
@@ -125,6 +131,10 @@ class OutputValidator:
                 violations.append(f"Awareness narrative must start with the scheduled header: {expected_header}")
             if not final_summary and AWARENESS_HINT_RE.search(text):
                 violations.append("Awareness narrative exposed explicit security hints or player reasoning.")
+            if not final_summary and AWARENESS_EARLY_DEBRIEF_RE.search(text):
+                violations.append("Awareness debrief is allowed only after the player answers turn 10.")
+            if final_summary and not AWARENESS_SCORE_RE.search(text):
+                violations.append("Awareness final debrief must include a score out of 100.")
             if AWARENESS_META_RE.search(text):
                 violations.append("Awareness narrative exposed scenario-template or facilitator-only wording.")
             if AWARENESS_INTERNAL_PROCESS_RE.search(text):
@@ -194,20 +204,99 @@ def safe_fallback(
 
 
 def awareness_safe_fallback(state: dict[str, Any], latest_user_message: str) -> str:
+    if awareness_final_summary(state):
+        return awareness_debrief_fallback(state)
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
     header = awareness_header_from_window(window) if isinstance(window, str) else None
     prefix = f"{header}\n\n" if header else ""
-    if DOUBLE_EXTENSION_RE.search(latest_user_message) and has_dangerous_file_action(latest_user_message):
-        return (
-            f"{prefix}Рабочий блок продолжается без заметных окон, ошибок или немедленных внешних изменений. "
-            "Календарь и переписка остаются в обычном ритме: текущие задачи ждут решения, а коллеги рассчитывают на твой статус. "
-            "Что делаешь дальше?"
-        )
-    return (
-        f"{prefix}Рабочий блок продолжается в обычном ритме: сообщения, письма и календарь остаются перед тобой. "
-        "Что делаешь дальше?"
-    )
+    turn = int(state.get("meta", {}).get("turn", 0) or 0)
+    if turn == 7:
+        return f"""{prefix}Утро четверга начинается с текущих задач и двух новых обращений. До обеда нужно решить, как с ними поступить.
+
+ПИСЬМО
+Канал: корпоративная почта
+От: Служба доступа <access@ptsecurity-help.com>
+Кому: employee@ptsecurity.com
+Дата/время: четверг, 10:20
+Тема: Подтверждение входа в CRM
+Вложения: нет
+Ссылки: https://ptsecurity-help.com/confirm
+Тело:
+Для завершения синхронизации CRM ответьте на это письмо шестизначным кодом из приложения-аутентификатора. Запрос действует до 11:00.
+Подпись:
+Служба доступа
+Центр поддержки пользователей
+Тел.: +7 495 000-20-20
+Email: access@ptsecurity-help.com
+
+СООБЩЕНИЕ
+Канал: рабочий мессенджер
+Чат: личный чат
+От: Роман Иванов <ivanov@ptsecurity.com>
+Кому: employee@ptsecurity.com
+Дата/время: четверг, 10:35
+Вложения: нет
+Ссылки: нет
+Текст:
+Привет. К 12:00 пришли, пожалуйста, обычный статус по федеральному контракту: что подписано и что ещё ждём.
+
+Что делаешь с письмом и сообщением до обеда?"""
+    return f"""{prefix}Рабочий блок продолжается по расписанию. В почте и мессенджере появились два обращения, а текущие задачи всё ещё требуют внимания.
+
+ПИСЬМО
+Канал: корпоративная почта
+От: Елена Шевелёва <sheveleva@ptsecurity.com>
+Кому: employee@ptsecurity.com
+Дата/время: текущий рабочий блок
+Тема: Статус по материалам проекта
+Вложения: нет
+Ссылки: нет
+Тело:
+Привет. Пришли, пожалуйста, короткий статус по своему рабочему блоку и отметь, какие материалы уже готовы к согласованию.
+Подпись:
+Елена Шевелёва
+Пресс-секретарь, отдел PR и коммуникаций
+PT Security
+Тел.: +7 495 000-00-00, доб. 2210
+Email: sheveleva@ptsecurity.com
+
+СООБЩЕНИЕ
+Канал: личный мессенджер
+Чат: личный чат
+От: Кирилл Орлов <kirill_orlov_89>
+Кому: employee@ptsecurity.com
+Дата/время: текущий рабочий блок
+Вложения: нет
+Ссылки: https://cloud.example.org/upload
+Текст:
+Привет! Можешь скинуть мне внутреннюю презентацию по новой линейке? Для учебного проекта очень пригодится, загрузить можно по ссылке.
+
+Как отвечаешь на эти обращения и что ставишь первым в текущем рабочем блоке?"""
+
+
+def awareness_debrief_fallback(state: dict[str, Any]) -> str:
+    resources = state.get("player", {}).get("resources", {})
+    if not isinstance(resources, dict):
+        resources = {}
+    score = max(0, min(100, int(resources.get("awareness-score", 0) or 0)))
+    safe_escalations = int(resources.get("safe-escalations", 0) or 0)
+    unsafe_actions = int(resources.get("unsafe-actions", 0) or 0)
+    credential_exposure = int(resources.get("credential-exposure", 0) or 0)
+    confidential_disclosures = int(resources.get("confidential-disclosures", 0) or 0)
+    return f"""Итоговый разбор.
+
+Десятый игровой ход завершён, новых событий и решений сценарий больше не открывает.
+
+Итоговый балл: {score} из 100.
+
+Зафиксированные результаты:
+- корректных эскалаций: {safe_escalations};
+- небезопасных действий: {unsafe_actions};
+- случаев раскрытия учётных данных: {credential_exposure};
+- случаев раскрытия конфиденциальной информации: {confidential_disclosures}.
+
+Сильные стороны и ошибки следует разбирать только по явно заявленным действиям игрока. Для повторного прохождения создай новую партию или отдельную ветку."""
 
 
 def awareness_opening_fallback(state: dict[str, Any]) -> str:
@@ -271,6 +360,8 @@ def has_dangerous_file_action(text: str) -> bool:
 
 
 def awareness_expected_header(state: dict[str, Any]) -> str | None:
+    if awareness_final_summary(state):
+        return "Итоговый разбор."
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
     if not isinstance(window, str):

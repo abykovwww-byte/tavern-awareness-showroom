@@ -2056,6 +2056,34 @@ def test_awareness_existing_party_auto_start_is_migrated_before_player_turn():
     assert migrated["player"]["resources"]["turns-remaining"] == 9
 
 
+def test_awareness_turn_10_stays_playable_and_turn_11_opens_separate_debrief():
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_finish"  # type: ignore[index]
+    state["meta"]["turn"] = 10  # type: ignore[index]
+    state["player"]["resources"].update(  # type: ignore[index]
+        {
+            "current-turn-window": "ход 10, пятница, 15:00-18:00",
+            "turns-remaining": 0,
+            "awareness-score": 85,
+        }
+    )
+    intent = Intent(action_type="feasibility", desired_outcome="Завершаю десятый ход", methods=["free_text"])
+
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "awareness-party-debrief",
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    values = {operation.path: operation.value for operation in patch.patch}
+
+    assert patch.turn == 11
+    assert values["/player/resources/current-turn-window"] == "итоговый разбор после хода 10"
+    assert values["/player/resources/turns-remaining"] == 0
+    assert values["/player/resources/completion-status"] == "complete"
+
+
 def test_awareness_party_start_narrative_state_sets_opening_window_without_mutating_original():
     state = base_state()
     state["meta"]["campaign_id"] = "party_awareness_new"  # type: ignore[index]
@@ -2146,6 +2174,108 @@ def test_awareness_validator_rejects_facilitator_blocks_backend_and_repeated_tur
     assert any("facilitator-only" in violation for violation in validation.violations)
     assert any("backend" in violation for violation in validation.violations)
     assert any("thoughts" in violation for violation in validation.violations)
+
+
+def test_awareness_validator_rejects_early_debrief_and_accepts_it_after_turn_10():
+    outcome = Outcome(
+        check_id="awareness-debrief-gate",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: training debrief gate.",
+    )
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_gate"  # type: ignore[index]
+    state["meta"]["turn"] = 10  # type: ignore[index]
+    state["player"]["resources"].update(  # type: ignore[index]
+        {
+            "current-turn-window": "ход 10, пятница, 15:00-18:00",
+            "turns-remaining": 0,
+            "awareness-score": 85,
+        }
+    )
+    early = "Ход 10. Пятница, 15:00-18:00.\n\nФинальное саммари и оценка. Итоговый балл: 85 из 100."
+
+    early_validation = OutputValidator().validate(
+        early,
+        outcome,
+        state,
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+
+    assert not early_validation.valid
+    assert any("only after" in violation for violation in early_validation.violations)
+
+    state["meta"]["turn"] = 11  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "итоговый разбор после хода 10"  # type: ignore[index]
+    debrief = safe_fallback(
+        outcome,
+        state,
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    final_validation = OutputValidator().validate(
+        debrief,
+        outcome,
+        state,
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+
+    assert debrief.startswith("Итоговый разбор.")
+    assert "85 из 100" in debrief
+    assert final_validation.valid
+
+
+@pytest.mark.parametrize(
+    ("turn", "window"),
+    [
+        (2, "ход 2, понедельник, 15:00-18:00"),
+        (7, "ход 7, четверг, 10:00-14:00"),
+    ],
+)
+def test_awareness_scheduled_fallback_keeps_full_scene_template(turn: int, window: str):
+    state = base_state()
+    state["meta"]["campaign_id"] = "party_awareness_fallback"  # type: ignore[index]
+    state["meta"]["turn"] = turn  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = window  # type: ignore[index]
+    outcome = Outcome(
+        check_id=f"awareness-fallback-{turn}",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: fallback scene.",
+    )
+
+    fallback = safe_fallback(
+        outcome,
+        state,
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+    validation = OutputValidator().validate(
+        fallback,
+        outcome,
+        state,
+        campaign_id="awareness",
+        scenario_type="training",
+    )
+
+    assert fallback.startswith(f"Ход {turn}.")
+    assert "ПИСЬМО\n" in fallback
+    assert "СООБЩЕНИЕ\n" in fallback
+    assert validation.valid
 
 
 def test_validator_repairs_meta_output_labels(tmp_path: Path):
