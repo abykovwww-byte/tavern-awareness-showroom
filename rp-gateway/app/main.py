@@ -1140,12 +1140,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def settings_for_party(settings: Settings, party: Any) -> Settings:
     model_profile = party.model_profile
+    party_cache_id = (
+        getattr(party, "id", "")
+        or getattr(party, "state_campaign_id", "")
+        or party.worldpack_id
+    )
     prompt_values = {
         "scenario_type": getattr(party, "scenario_type", "rp"),
         "campaign_id": party.worldpack_id,
         "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
         "world_authors_note": worldpack_prompt_text(party, "authors_note"),
-        "prompt_cache_session_id": f"rp-party:{party.id}",
+        "prompt_cache_session_id": f"rp-party:{party_cache_id}",
     }
     if model_profile is None:
         return replace(settings, **prompt_values)

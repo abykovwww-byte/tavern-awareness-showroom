@@ -997,7 +997,7 @@ def test_party_prompt_preview_explains_chapter_and_archive_retrieval(tmp_path: P
     inspection = body["inspection"]
     assert inspection["chapters"]["included"][0]["from_turn_id"] == 1
     assert inspection["raw"]["included_turn_ids"] == []
-    assert inspection["retrieval"] == [{"turn_id": 1, "score": 2, "matched_terms": ["астролябия"]}]
+    assert inspection["retrieval"] == [{"turn_id": 1, "score": 1, "matched_terms": ["астролябия"]}]
     assert "retrieved_archive_scenes" in {block["id"] for block in body["blocks"]}
 
 
@@ -1184,9 +1184,13 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
 
     first_memory = c.get(f"/api/parties/{first['id']}/memory").json()
     assert first_memory["memory"] is not None
-    assert first_memory["memory"]["from_turn_id"] == 1
     assert first_memory["memory"]["to_turn_id"] < 18
-    assert "old clue 0" in first_memory["memory"]["summary_text"]
+    assert first_memory["chapters"][0]["from_turn_id"] == 1
+    assert "old clue 0" in first_memory["chapters"][0]["summary_text"]
+    assert all(
+        current["from_turn_id"] == previous["to_turn_id"] + 1
+        for previous, current in zip(first_memory["chapters"], first_memory["chapters"][1:])
+    )
 
     second_memory = c.get(f"/api/parties/{second['id']}/memory").json()
     assert second_memory["memory"] is None
@@ -1258,14 +1262,14 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
         headers={"Authorization": "Bearer test"},
     )
     assert generated.status_code == 200
-    assert generated.json()["generated"] is False
-    assert generated.json()["reason"] == "up_to_date"
+    assert generated.json()["generated"] is True
+    assert generated.json()["memory"]["from_turn_id"] == before["memory"]["to_turn_id"] + 1
 
     deleted = c.delete(f"/api/parties/{party['id']}/memory/latest")
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
     assert deleted.json()["memory"] is not None
-    assert deleted.json()["memory"]["to_turn_id"] < before["memory"]["to_turn_id"]
+    assert deleted.json()["memory"]["to_turn_id"] == before["memory"]["to_turn_id"]
 
 
 def test_party_journal_manual_summarize_and_clear_latest(tmp_path: Path):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -99,8 +99,10 @@ class Settings:
     openrouter_prompt_cache_enabled: bool = env_bool("OPENROUTER_PROMPT_CACHE_ENABLED", True)
     openrouter_prompt_cache_ttl: str = os.getenv("OPENROUTER_PROMPT_CACHE_TTL", "5m")
     prompt_cache_session_id: str = os.getenv("PROMPT_CACHE_SESSION_ID", "")
-    journal_auto_min_unsummarized_turns: int = env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
-    journal_max_batch_turns: int = env_int("JOURNAL_MAX_BATCH_TURNS", 48)
+    journal_auto_min_unsummarized_turns: int = field(
+        default_factory=lambda: env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
+    )
+    journal_max_batch_turns: int = field(default_factory=lambda: env_int("JOURNAL_MAX_BATCH_TURNS", 48))
     auth_enabled: bool = env_bool("GATEWAY_AUTH_ENABLED", True)
     auth_session_cookie_name: str = os.getenv("GATEWAY_SESSION_COOKIE_NAME", "rp_gateway_session")
     auth_session_ttl_seconds: int = env_int("GATEWAY_SESSION_TTL_SECONDS", 60 * 60 * 24 * 14)
