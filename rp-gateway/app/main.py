@@ -194,16 +194,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ),
                     party_settings,
                 )
-                await Adjudicator(party_settings, party_state_store).handle_chat(
+                narrator_response = await Adjudicator(party_settings, party_state_store).handle_chat(
                     chat_request,
                     authorization=None,
                     idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
                     request_id=f"{request_id}_narrator",
-                    allow_gateway_fallback=False,
+                    allow_gateway_fallback=True,
                 )
+                fallback_turns = int(run.get("fallback_turns") or 0)
+                choices = narrator_response.get("choices") or []
+                if choices and choices[0].get("finish_reason") == "provider_fallback":
+                    fallback_turns += 1
                 party_store.update_autotest_run(
                     run_id,
                     completed_turns=turn_number,
+                    fallback_turns=fallback_turns,
                     current_phase="player" if turn_number < requested_turns else "done",
                     status="running" if turn_number < requested_turns else "completed",
                     last_player_action=action,

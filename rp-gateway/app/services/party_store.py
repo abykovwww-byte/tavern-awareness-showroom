@@ -147,6 +147,7 @@ class PartyStore:
                     player_prompt TEXT NOT NULL,
                     requested_turns INTEGER NOT NULL,
                     completed_turns INTEGER NOT NULL DEFAULT 0,
+                    fallback_turns INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL,
                     current_phase TEXT NOT NULL DEFAULT 'queued',
                     stop_requested INTEGER NOT NULL DEFAULT 0,
@@ -194,6 +195,8 @@ class PartyStore:
             connection.execute("ALTER TABLE autotest_runs ADD COLUMN branch_id TEXT")
         if "checkpoint_id" not in columns:
             connection.execute("ALTER TABLE autotest_runs ADD COLUMN checkpoint_id INTEGER")
+        if "fallback_turns" not in columns:
+            connection.execute("ALTER TABLE autotest_runs ADD COLUMN fallback_turns INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_autotest_runs_branch ON autotest_runs(branch_id, updated_at)"
         )
@@ -1002,9 +1005,9 @@ class PartyStore:
                 INSERT INTO autotest_runs(
                     id, owner_user_id, source_party_id, test_party_id, branch_id, checkpoint_id,
                     player_model_profile_id, player_prompt, requested_turns,
-                    completed_turns, status, current_phase, stop_requested,
+                    completed_turns, fallback_turns, status, current_phase, stop_requested,
                     last_player_action, error, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'running', 'player', 0, NULL, NULL, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'running', 'player', 0, NULL, NULL, ?, ?)
                 """,
                 (
                     run_id,
@@ -1063,6 +1066,7 @@ class PartyStore:
     def update_autotest_run(self, run_id: str, **updates: Any) -> dict[str, Any]:
         allowed = {
             "completed_turns",
+            "fallback_turns",
             "status",
             "current_phase",
             "stop_requested",
@@ -1116,6 +1120,7 @@ class PartyStore:
             "player_prompt": row["player_prompt"],
             "requested_turns": row["requested_turns"],
             "completed_turns": row["completed_turns"],
+            "fallback_turns": row["fallback_turns"],
             "status": row["status"],
             "current_phase": row["current_phase"],
             "stop_requested": bool(row["stop_requested"]),

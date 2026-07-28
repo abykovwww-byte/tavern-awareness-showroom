@@ -31,10 +31,14 @@ and is intentionally limited to OpenRouter or the private Local Gemma profile.
 
 ## Durability
 
-Runs are stored in SQLite with requested/completed turn counts, status, phase,
-selected player profile, prompt, last action, and error. A deterministic
+Runs are stored in SQLite with requested/completed turn counts, safe-fallback
+turn count, status, phase, selected player profile, prompt, last action, and error. A deterministic
 idempotency key is used for each narrator turn. Running jobs resume after a
 Gateway restart without duplicating a recorded turn.
+
+If the narrator still fails validation after its repair attempt, the Gateway
+records the validator-safe fallback as that branch turn and increments the
+visible fallback counter instead of terminating the whole endurance run.
 
 Stop requests are cooperative: the current provider request is allowed to
 finish so the Gateway does not leave a half-written turn request. The run stops

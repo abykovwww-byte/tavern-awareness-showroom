@@ -1318,6 +1318,7 @@ function adminAutotestRow(run) {
   const active = ["running", "stopping"].includes(run.status);
   const details = [
     `${run.completed_turns}/${run.requested_turns} ходов`,
+    run.fallback_turns ? `safe fallback: ${run.fallback_turns}` : "",
     profile ? `${providerLabel(profile.provider)} · ${profile.title}` : run.player_model_profile_id,
     run.current_phase === "player" ? "ход игрока" : run.current_phase === "narrator" ? "ответ ведущего" : "",
     run.error || "",

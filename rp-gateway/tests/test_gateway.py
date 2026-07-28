@@ -582,6 +582,62 @@ def test_admin_autotest_forks_checkpoint_branch_with_separate_local_player_model
     assert listed_branches[0]["status"] == "completed"
 
 
+def test_admin_autotest_continues_with_audited_fallback_after_narrative_validation_failure(tmp_path: Path):
+    write_worldpack(tmp_path)
+    admin = client(
+        tmp_path,
+        mode="repair-fail",
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        local_llm_model_alias="gemma-4-26b-a4b-it-rp-q4",
+    )
+    login(admin)
+    source_party = create_demo_party(admin, title="Fallback autotest source")
+    local_profile = next(
+        profile
+        for profile in admin.get("/api/admin/autotests/models").json()["model_profiles"]
+        if profile["provider"] == "local"
+    )
+
+    started = admin.post(
+        "/api/admin/autotests",
+        json={
+            "source_party_id": source_party["id"],
+            "player_prompt": "Take the next in-world action only.",
+            "turn_count": 1,
+            "player_model_profile_id": local_profile["id"],
+        },
+    )
+    assert started.status_code == 200, started.text
+    run = started.json()["run"]
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        run = next(
+            item
+            for item in admin.get("/api/admin/autotests").json()["runs"]
+            if item["id"] == run["id"]
+        )
+        if run["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.02)
+
+    assert run["status"] == "completed", run
+    assert run["completed_turns"] == 1
+    assert run["fallback_turns"] == 1
+    branch_store = admin.app.state.party_store.store_for_branch(
+        source_party["id"],
+        run["branch_id"],
+        owner_user_id=run["owner_user_id"],
+    )
+    latest_turn = branch_store.latest_turn(include_response=True)
+    response = json.loads(latest_turn["response_json"])
+    assert response["choices"][0]["finish_reason"] == "provider_fallback"
+
+
 def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Path):
     c = client(
         tmp_path,
