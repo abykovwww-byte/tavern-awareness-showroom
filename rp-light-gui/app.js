@@ -165,6 +165,7 @@ const PENDING_MAX_AGE_MS = 60 * 60 * 1000;
 const PENDING_RECOVERY_ATTEMPTS = 180;
 const PENDING_RECOVERY_INTERVAL_MS = 5000;
 const pendingRecoveryTasks = {};
+let partyReloadGeneration = 0;
 
 bindEvents();
 setupCollapsiblePanels();
@@ -455,6 +456,11 @@ function isAdmin() {
 
 async function selectParty(partyId) {
   const party = appState.parties.find((item) => item.id === partyId) || (await apiGet(`/api/parties/${partyId}`)).party;
+  if (appState.activeParty?.id !== party.id) {
+    appState.loreCards = [];
+    appState.checkpoints = [];
+    appState.serviceJobs = [];
+  }
   appState.activeParty = party;
   localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
@@ -466,7 +472,11 @@ async function reloadActiveParty() {
     return;
   }
   const partyId = appState.activeParty.id;
-  const [party, partyState, history, proposals, context, memory, characters, journal, loreCards, checkpoints, serviceJobs] = await Promise.all([
+  const reloadGeneration = ++partyReloadGeneration;
+  const optionalPartyData = loadOptionalPartyData(partyId, reloadGeneration).catch((error) => {
+    console.warn("Optional party data was not refreshed", error);
+  });
+  const [party, partyState, history, proposals, context, memory, characters, journal] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
@@ -475,10 +485,8 @@ async function reloadActiveParty() {
     apiGet(`/api/parties/${partyId}/memory`),
     apiGet(`/api/parties/${partyId}/characters`),
     apiGet(`/api/parties/${partyId}/journal`),
-    apiGet(`/api/parties/${partyId}/lore-cards`),
-    apiGet(`/api/parties/${partyId}/checkpoints`),
-    apiGet(`/api/parties/${partyId}/service-jobs`),
   ]);
+  if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
   appState.activeParty = party.party;
   appState.partyState = partyState.state;
   appState.history = history;
@@ -487,14 +495,25 @@ async function reloadActiveParty() {
   appState.memory = memory;
   appState.characters = characters;
   appState.journal = journal;
-  appState.loreCards = loreCards.cards || [];
-  appState.checkpoints = checkpoints.checkpoints || [];
-  appState.serviceJobs = serviceJobs.jobs || [];
   appState.promptPreview = null;
   appState.chatArchiveExpanded = false;
   reconcilePendingFromHistory(partyId, history);
   ensurePendingRecovery(partyId);
   renderAll();
+  void optionalPartyData;
+}
+
+async function loadOptionalPartyData(partyId, reloadGeneration) {
+  const [loreCards, checkpoints, serviceJobs] = await Promise.allSettled([
+    apiGet(`/api/parties/${partyId}/lore-cards`),
+    apiGet(`/api/parties/${partyId}/checkpoints`),
+    apiGet(`/api/parties/${partyId}/service-jobs`),
+  ]);
+  if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
+  if (loreCards.status === "fulfilled") appState.loreCards = loreCards.value.cards || [];
+  if (checkpoints.status === "fulfilled") appState.checkpoints = checkpoints.value.checkpoints || [];
+  if (serviceJobs.status === "fulfilled") appState.serviceJobs = serviceJobs.value.jobs || [];
+  renderMemoryTools();
 }
 
 function renderAll() {
@@ -2021,6 +2040,8 @@ async function waitForRecoveredMessage(partyId, requestId) {
     const turn = await recoverTurn(partyId, requestId);
     if (turn?.narrative_response) {
       if (appState.activeParty?.id === partyId) {
+        replacePendingMessage(partyId, requestId, turn.narrative_response);
+        clearPendingMessage(partyId);
         await reloadActiveParty().catch(() => {});
       }
       return turn;

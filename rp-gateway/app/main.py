@@ -118,6 +118,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def resume_service_jobs() -> None:
         for party in party_store.list_parties():
             party_state_store = party_store.store_for_party(party.id)
+            recovered = party_state_store.recover_interrupted_work()
+            if any(recovered.values()):
+                logger.warning("recovered_interrupted_work party_id=%s %s", party.id, recovered)
             if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
                 Adjudicator(runtime_settings_for_party(party), party_state_store).schedule_service_jobs()
 

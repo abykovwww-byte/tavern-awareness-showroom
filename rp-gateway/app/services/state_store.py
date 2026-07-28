@@ -256,15 +256,6 @@ class StateStore:
                 """
             )
             self.migrate_turn_columns(connection)
-            timestamp = now_ts()
-            connection.execute(
-                """
-                UPDATE service_jobs
-                SET status = 'pending', next_attempt_at = ?, updated_at = ?
-                WHERE campaign_id = ? AND status = 'running'
-                """,
-                (timestamp, timestamp, self.campaign_id),
-            )
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
@@ -274,6 +265,55 @@ class StateStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)").fetchall()}
         if "prompt_json" not in columns:
             connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
+
+    def recover_interrupted_work(self) -> dict[str, int]:
+        """Reconcile work that could only remain running after a process restart."""
+        timestamp = now_ts()
+        with self.connect() as connection:
+            completed_requests = connection.execute(
+                """
+                UPDATE turn_requests
+                SET status = 'completed',
+                    response_json = (
+                        SELECT turns.response_json FROM turns
+                        WHERE turns.campaign_id = turn_requests.campaign_id
+                          AND turns.idempotency_key = turn_requests.idempotency_key
+                        ORDER BY turns.id DESC LIMIT 1
+                    ),
+                    error = NULL,
+                    updated_at = ?
+                WHERE campaign_id = ? AND status = 'running'
+                  AND EXISTS (
+                      SELECT 1 FROM turns
+                      WHERE turns.campaign_id = turn_requests.campaign_id
+                        AND turns.idempotency_key = turn_requests.idempotency_key
+                  )
+                """,
+                (timestamp, self.campaign_id),
+            ).rowcount
+            failed_requests = connection.execute(
+                """
+                UPDATE turn_requests
+                SET status = 'failed',
+                    error = 'Gateway restarted before the request completed. Check history before retrying.',
+                    updated_at = ?
+                WHERE campaign_id = ? AND status = 'running'
+                """,
+                (timestamp, self.campaign_id),
+            ).rowcount
+            resumed_jobs = connection.execute(
+                """
+                UPDATE service_jobs
+                SET status = 'pending', next_attempt_at = ?, updated_at = ?
+                WHERE campaign_id = ? AND status = 'running'
+                """,
+                (timestamp, timestamp, self.campaign_id),
+            ).rowcount
+        return {
+            "completed_requests": max(completed_requests, 0),
+            "failed_requests": max(failed_requests, 0),
+            "resumed_jobs": max(resumed_jobs, 0),
+        }
 
     def enqueue_service_job(self, job_type: str, request_id: str | None, max_attempts: int = 5) -> dict[str, Any]:
         if job_type not in {"memory", "journal"}:

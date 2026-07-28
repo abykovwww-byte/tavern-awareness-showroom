@@ -875,10 +875,36 @@ def test_service_jobs_are_durable_and_running_jobs_resume_after_restart(tmp_path
     assert running["attempts"] == 1
 
     restarted = StateStore(sqlite_path, "durable-jobs", state_path)
+    recovery = restarted.recover_interrupted_work()
     resumed = restarted.due_service_job()
     assert resumed is not None
     assert resumed["id"] == queued["id"]
     assert resumed["status"] == "pending"
+    assert recovery["resumed_jobs"] == 1
+
+
+def test_interrupted_turn_requests_are_reconciled_on_restart(tmp_path: Path):
+    sqlite_path = str(tmp_path / "interrupted-turns.db")
+    state_path = str(tmp_path / "state.json")
+    store = StateStore(sqlite_path, "interrupted-turns", state_path)
+    store.begin_turn_request("lost-request", "req-lost")
+    store.begin_turn_request("saved-request", "req-saved")
+    store.record_turn(
+        "saved-request",
+        "req-saved",
+        "player",
+        "saved response",
+        {"message": {"content": "saved response"}},
+        1,
+    )
+
+    recovery = store.recover_interrupted_work()
+
+    assert recovery == {"completed_requests": 1, "failed_requests": 1, "resumed_jobs": 0}
+    assert store.get_turn_request("req-saved")["status"] == "completed"
+    assert store.get_turn_request("req-saved")["response"]["message"]["content"] == "saved response"
+    assert store.get_turn_request("req-lost")["status"] == "failed"
+    assert "restarted" in store.get_turn_request("req-lost")["error"]
 
 
 def test_party_model_can_be_changed(tmp_path: Path):
