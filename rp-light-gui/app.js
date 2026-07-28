@@ -22,6 +22,8 @@ const appState = {
   pendingMessages: {},
   adminUsers: [],
   adminApiKeys: [],
+  adminAutotestProfiles: [],
+  adminAutotestRuns: [],
 };
 
 const els = {
@@ -121,6 +123,13 @@ const els = {
   adminApiKeyProviderSelect: document.querySelector("#adminApiKeyProviderSelect"),
   adminApiKeyLabelInput: document.querySelector("#adminApiKeyLabelInput"),
   adminApiKeyInput: document.querySelector("#adminApiKeyInput"),
+  adminAutotestForm: document.querySelector("#adminAutotestForm"),
+  adminAutotestPromptInput: document.querySelector("#adminAutotestPromptInput"),
+  adminAutotestProviderSelect: document.querySelector("#adminAutotestProviderSelect"),
+  adminAutotestModelSelect: document.querySelector("#adminAutotestModelSelect"),
+  adminAutotestTurnsInput: document.querySelector("#adminAutotestTurnsInput"),
+  adminAutotestStartButton: document.querySelector("#adminAutotestStartButton"),
+  adminAutotestRunsList: document.querySelector("#adminAutotestRunsList"),
 };
 
 const checkLabels = {
@@ -166,6 +175,7 @@ const PENDING_RECOVERY_ATTEMPTS = 180;
 const PENDING_RECOVERY_INTERVAL_MS = 5000;
 const pendingRecoveryTasks = {};
 let partyReloadGeneration = 0;
+const autotestPollingTasks = {};
 
 bindEvents();
 setupCollapsiblePanels();
@@ -217,6 +227,9 @@ function bindEvents() {
   els.adminApiKeyForm.addEventListener("submit", createAdminApiKey);
   els.adminUsersList.addEventListener("click", handleAdminUserAction);
   els.adminApiKeysList.addEventListener("click", handleAdminApiKeyAction);
+  els.adminAutotestForm.addEventListener("submit", createAdminAutotest);
+  els.adminAutotestProviderSelect.addEventListener("change", renderAdminAutotestModelOptions);
+  els.adminAutotestRunsList.addEventListener("click", handleAdminAutotestAction);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
@@ -426,6 +439,8 @@ function clearWorkspaceState() {
   appState.pendingMessages = {};
   appState.adminUsers = [];
   appState.adminApiKeys = [];
+  appState.adminAutotestProfiles = [];
+  appState.adminAutotestRuns = [];
 }
 
 function renderAuth() {
@@ -1133,10 +1148,19 @@ function renderProposals() {
 
 async function reloadAdminData() {
   if (!isAdmin()) return;
-  const [users, apiKeys] = await Promise.all([apiGet("/api/admin/users"), apiGet("/api/admin/api-keys")]);
+  const [users, apiKeys, autotestModels, autotests] = await Promise.all([
+    apiGet("/api/admin/users"),
+    apiGet("/api/admin/api-keys"),
+    apiGet("/api/admin/autotests/models"),
+    apiGet("/api/admin/autotests"),
+  ]);
   appState.adminUsers = users.users || [];
   appState.adminApiKeys = apiKeys.api_keys || [];
+  appState.adminAutotestProfiles = autotestModels.model_profiles || [];
+  appState.adminAutotestRuns = autotests.runs || [];
   renderAdminPanel();
+  renderMessageControls();
+  appState.adminAutotestRuns.filter((run) => ["running", "stopping"].includes(run.status)).forEach((run) => pollAdminAutotest(run.id));
 }
 
 function renderAdminPanel() {
@@ -1145,14 +1169,78 @@ function renderAdminPanel() {
   if (!isAdmin()) {
     els.adminUsersList.innerHTML = "";
     els.adminApiKeysList.innerHTML = "";
+    els.adminAutotestRunsList.innerHTML = "";
     return;
   }
+  renderAdminAutotestOptions();
+  renderAdminAutotestRuns();
   els.adminUsersList.innerHTML = appState.adminUsers.length
     ? appState.adminUsers.map((user) => adminUserRow(user)).join("")
     : `<div class="admin-empty">Пользователей нет.</div>`;
   els.adminApiKeysList.innerHTML = appState.adminApiKeys.length
     ? appState.adminApiKeys.map((key) => adminApiKeyRow(key)).join("")
     : `<div class="admin-empty">Ключей нет.</div>`;
+}
+
+function renderAdminAutotestOptions() {
+  const previousProvider = normalizeProvider(els.adminAutotestProviderSelect.value);
+  const providers = ["local", "openrouter"].filter((provider) =>
+    appState.adminAutotestProfiles.some((profile) => normalizeProvider(profile.provider) === provider),
+  );
+  els.adminAutotestProviderSelect.innerHTML = providers
+    .map((provider) => `<option value="${escapeHtml(provider)}">${escapeHtml(providerLabel(provider))}</option>`)
+    .join("");
+  if (providers.includes(previousProvider)) els.adminAutotestProviderSelect.value = previousProvider;
+  renderAdminAutotestModelOptions();
+  const ready = Boolean(appState.activeParty && providers.length && els.adminAutotestModelSelect.value);
+  els.adminAutotestStartButton.disabled = !ready;
+  els.adminAutotestStartButton.title = appState.activeParty
+    ? "Создать изолированную тестовую партию и запустить LLM-игрока"
+    : "Сначала выберите партию-шаблон";
+}
+
+function renderAdminAutotestModelOptions() {
+  const provider = normalizeProvider(els.adminAutotestProviderSelect.value);
+  const previous = els.adminAutotestModelSelect.value;
+  const profiles = appState.adminAutotestProfiles.filter((profile) => normalizeProvider(profile.provider) === provider);
+  els.adminAutotestModelSelect.innerHTML = modelOptionsHtml(profiles, provider);
+  if (profiles.some((profile) => profile.id === previous)) els.adminAutotestModelSelect.value = previous;
+  els.adminAutotestModelSelect.disabled = !profiles.length;
+  els.adminAutotestStartButton.disabled = !appState.activeParty || !profiles.length;
+}
+
+function renderAdminAutotestRuns() {
+  els.adminAutotestRunsList.innerHTML = appState.adminAutotestRuns.length
+    ? appState.adminAutotestRuns.map((run) => adminAutotestRow(run)).join("")
+    : `<div class="admin-empty">Автотестов пока нет.</div>`;
+}
+
+function adminAutotestRow(run) {
+  const profile = appState.adminAutotestProfiles.find((item) => item.id === run.player_model_profile_id);
+  const statusLabels = {
+    running: "выполняется",
+    stopping: "останавливается",
+    stopped: "остановлен",
+    completed: "завершён",
+    failed: "ошибка",
+  };
+  const active = ["running", "stopping"].includes(run.status);
+  const details = [
+    `${run.completed_turns}/${run.requested_turns} ходов`,
+    profile ? `${providerLabel(profile.provider)} · ${profile.title}` : run.player_model_profile_id,
+    run.current_phase === "player" ? "ход игрока" : run.current_phase === "narrator" ? "ответ ведущего" : "",
+    run.error || "",
+  ].filter(Boolean).join(" · ");
+  return `<div class="admin-row autotest-row">
+    <div>
+      <strong>${escapeHtml(statusLabels[run.status] || run.status)}</strong>
+      <span>${escapeHtml(details)}</span>
+    </div>
+    <div class="row-actions">
+      <button class="text-button" type="button" data-autotest-action="open" data-run-id="${escapeHtml(run.id)}">Открыть</button>
+      ${active ? `<button class="text-button danger-text" type="button" data-autotest-action="stop" data-run-id="${escapeHtml(run.id)}">Стоп</button>` : ""}
+    </div>
+  </div>`;
 }
 
 function adminUserRow(user) {
@@ -1698,6 +1786,102 @@ async function handleAdminApiKeyAction(event) {
   }
 }
 
+async function createAdminAutotest(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  if (!appState.activeParty) {
+    showToast("Сначала выберите партию-шаблон.");
+    return;
+  }
+  const turnCount = Number(els.adminAutotestTurnsInput.value);
+  if (!Number.isInteger(turnCount) || turnCount < 1 || turnCount > 30) {
+    showToast("Количество ходов должно быть от 1 до 30.");
+    return;
+  }
+  try {
+    setBusy(true, "Создаю тестовую партию и стартовую сцену...");
+    const result = await apiPost("/api/admin/autotests", {
+      source_party_id: appState.activeParty.id,
+      player_prompt: els.adminAutotestPromptInput.value.trim(),
+      turn_count: turnCount,
+      player_model_profile_id: els.adminAutotestModelSelect.value,
+    });
+    appState.adminAutotestRuns = [
+      result.run,
+      ...appState.adminAutotestRuns.filter((run) => run.id !== result.run.id),
+    ];
+    if (result.test_party && !appState.parties.some((party) => party.id === result.test_party.id)) {
+      appState.parties.unshift(result.test_party);
+      renderPartyList();
+    }
+    renderAdminAutotestRuns();
+    pollAdminAutotest(result.run.id);
+    showToast("Автотест запущен в отдельной партии.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function handleAdminAutotestAction(event) {
+  const button = event.target.closest("[data-autotest-action]");
+  if (!button || !isAdmin()) return;
+  const run = appState.adminAutotestRuns.find((item) => item.id === button.dataset.runId);
+  if (!run) return;
+  try {
+    if (button.dataset.autotestAction === "stop") {
+      const result = await apiPost(`/api/admin/autotests/${run.id}/stop`, {});
+      replaceAdminAutotestRun(result.run);
+      renderAdminAutotestRuns();
+      pollAdminAutotest(run.id);
+      showToast("Автотест остановится на безопасной границе текущего LLM-запроса.");
+      return;
+    }
+    if (button.dataset.autotestAction === "open") {
+      if (!appState.parties.some((party) => party.id === run.test_party_id)) {
+        const response = await apiGet(`/api/parties/${run.test_party_id}`);
+        appState.parties.unshift(response.party);
+        renderPartyList();
+      }
+      await selectParty(run.test_party_id);
+      showToast("Открыта тестовая партия с полным диалогом LLM против LLM.");
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function replaceAdminAutotestRun(run) {
+  appState.adminAutotestRuns = [
+    run,
+    ...appState.adminAutotestRuns.filter((item) => item.id !== run.id),
+  ].sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+}
+
+function pollAdminAutotest(runId) {
+  if (autotestPollingTasks[runId]) return autotestPollingTasks[runId];
+  const task = (async () => {
+    try {
+      for (let attempt = 0; attempt < 3600 && isAdmin(); attempt += 1) {
+        await delay(3000);
+        const response = await apiGet("/api/admin/autotests");
+        appState.adminAutotestRuns = response.runs || [];
+        renderAdminAutotestRuns();
+        renderMessageControls();
+        const run = appState.adminAutotestRuns.find((item) => item.id === runId);
+        if (!run || !["running", "stopping"].includes(run.status)) return;
+      }
+    } catch (error) {
+      showToast(`Статус автотеста не обновлён: ${error.message}`);
+    } finally {
+      delete autotestPollingTasks[runId];
+    }
+  })();
+  autotestPollingTasks[runId] = task;
+  return task;
+}
+
 async function applyWorldProposal() {
   if (!appState.activeParty) return;
   try {
@@ -2162,7 +2346,10 @@ async function recoverTurn(partyId, requestId) {
 
 function renderMessageControls() {
   const pendingMessage = activePendingMessage();
-  const locked = Boolean(pendingMessage);
+  const activeAutotest = appState.adminAutotestRuns.find(
+    (run) => run.test_party_id === appState.activeParty?.id && ["running", "stopping"].includes(run.status),
+  );
+  const locked = Boolean(pendingMessage || activeAutotest);
   const hasParty = Boolean(appState.activeParty);
   if (els.messageInput) {
     els.messageInput.disabled = locked || !hasParty;
@@ -2176,7 +2363,8 @@ function renderMessageControls() {
   if (!els.messageStatus) return;
   if (locked) {
     els.messageStatus.classList.remove("hidden");
-    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(pendingMessage.status)}</span>`;
+    const status = pendingMessage?.status || "Автотест управляет этой партией; ручной ввод временно отключён.";
+    els.messageStatus.innerHTML = `<span class="spinner" aria-hidden="true"></span><span>${escapeHtml(status)}</span>`;
   } else {
     els.messageStatus.classList.add("hidden");
     els.messageStatus.innerHTML = "";

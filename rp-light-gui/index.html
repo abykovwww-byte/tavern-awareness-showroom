@@ -294,6 +294,32 @@
         <section class="summary-panel admin-panel hidden" id="adminPanel">
           <div class="section-label">Админка</div>
           <div class="admin-block">
+            <h4>Автотест · LLM против LLM</h4>
+            <p class="panel-hint">Активная партия используется как шаблон. Gateway создаст отдельную тестовую партию с чистым state-seed: модель партии останется ведущим, а выбранная ниже модель будет играть вместо человека. Один ход расходует по одному ответу LLM-игрока и LLM-ведущего.</p>
+            <form id="adminAutotestForm" class="admin-form">
+              <textarea id="adminAutotestPromptInput" rows="5" maxlength="12000" placeholder="Опиши роль, характер, цели и стиль решений LLM-игрока" required></textarea>
+              <div class="split-row">
+                <label class="management-field">
+                  <span>Провайдер игрока</span>
+                  <select id="adminAutotestProviderSelect" required></select>
+                </label>
+                <label class="management-field">
+                  <span>Модель игрока</span>
+                  <select id="adminAutotestModelSelect" required></select>
+                </label>
+              </div>
+              <label class="management-field">
+                <span>Ходов LLM-игрока · максимум 30</span>
+                <input id="adminAutotestTurnsInput" type="number" min="1" max="30" value="5" required />
+              </label>
+              <button id="adminAutotestStartButton" class="tool-button wide-button" type="submit">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 14 9-14 9V3Z"/></svg>
+                Запустить из активной партии
+              </button>
+            </form>
+            <div id="adminAutotestRunsList" class="admin-list autotest-list"></div>
+          </div>
+          <div class="admin-block">
             <h4>Пользователи</h4>
             <div id="adminUsersList" class="admin-list"></div>
             <form id="adminUserForm" class="admin-form">
@@ -426,6 +452,6 @@
 
     <div id="operationStatus" class="operation-status hidden" role="status" aria-live="polite"></div>
     <div id="toast" class="toast"></div>
-    <script src="/app.js?v=20260728-pending-recovery"></script>
+    <script src="/app.js?v=20260728-admin-autotests-pending-recovery"></script>
   </body>
 </html>

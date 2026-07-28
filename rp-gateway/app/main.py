@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -19,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.core.config import Settings, get_settings
 from app.core.json_patch import PatchError
 from app.models.schemas import (
+    AutoTestCreate,
     ChatCompletionRequest,
     ChatMessage,
     HealthResponse,
@@ -53,6 +55,7 @@ from app.models.schemas import (
 )
 from app.services.adjudicator import Adjudicator, RequestAlreadyRunning
 from app.services.auth_store import AuthStore, AuthUser
+from app.services.autotest import AutoPlayerClient
 from app.services.character_view import party_character_sheets
 from app.services.context_budget import estimate_tokens, model_context_limit_tokens, split_turns_by_token_budget
 from app.services.context_estimator import estimate_party_context
@@ -93,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth_store = auth_store
     app.state.adjudicator = Adjudicator(settings, store)
     app.state.party_store = party_store
+    app.state.autotest_tasks = {}
 
     def settings_with_provider_key(base: Settings) -> Settings:
         updates: dict[str, Any] = {}
@@ -114,6 +118,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party))
 
+    def runtime_settings_for_profile(profile: Any, cache_session_id: str) -> Settings:
+        return settings_with_provider_key(settings_for_model_profile(settings, profile, cache_session_id))
+
+    async def run_autotest(run_id: str) -> None:
+        try:
+            while True:
+                run = party_store.get_autotest_run(run_id)
+                if run["status"] in {"completed", "failed", "stopped"}:
+                    return
+                if run["stop_requested"] or run["status"] == "stopping":
+                    party_store.update_autotest_run(run_id, status="stopped", current_phase="stopped")
+                    return
+                completed_turns = int(run["completed_turns"])
+                requested_turns = int(run["requested_turns"])
+                if completed_turns >= requested_turns:
+                    party_store.update_autotest_run(run_id, status="completed", current_phase="done")
+                    return
+
+                party = party_store.get_party(run["test_party_id"], owner_user_id=run["owner_user_id"])
+                party_state_store = party_store.store_for_party(party.id, owner_user_id=run["owner_user_id"])
+                player_profile = party_store.get_model_profile(run["player_model_profile_id"])
+                player_settings = runtime_settings_for_profile(player_profile, f"rp-autotest-player:{run_id}")
+                turn_number = completed_turns + 1
+                request_id = f"autotest_{run_id}_{turn_number}"
+
+                party_store.update_autotest_run(run_id, current_phase="player", error=None)
+                action = await AutoPlayerClient(player_settings, player_profile).next_action(
+                    player_prompt=run["player_prompt"],
+                    player_character=party.player_character,
+                    scenario_type=party.scenario_type,
+                    history=party_state_store.turn_history(limit=32),
+                    request_id=f"{request_id}_player",
+                )
+                run = party_store.get_autotest_run(run_id)
+                if run["stop_requested"]:
+                    party_store.update_autotest_run(
+                        run_id,
+                        status="stopped",
+                        current_phase="stopped",
+                        last_player_action=action,
+                    )
+                    return
+
+                party_store.update_autotest_run(
+                    run_id,
+                    current_phase="narrator",
+                    last_player_action=action,
+                )
+                party_settings = runtime_settings_for_party(party)
+                narrator_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
+                chat_request = party_chat_request(
+                    party_state_store,
+                    narrator_profile.model,
+                    PartyMessageRequest(
+                        content=action,
+                        idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
+                    ),
+                    party_settings,
+                )
+                await Adjudicator(party_settings, party_state_store).handle_chat(
+                    chat_request,
+                    authorization=None,
+                    idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
+                    request_id=f"{request_id}_narrator",
+                    allow_gateway_fallback=False,
+                )
+                party_store.update_autotest_run(
+                    run_id,
+                    completed_turns=turn_number,
+                    current_phase="player" if turn_number < requested_turns else "done",
+                    status="running" if turn_number < requested_turns else "completed",
+                    last_player_action=action,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("autotest_run_failed run_id=%s", run_id)
+            party_store.update_autotest_run(
+                run_id,
+                status="failed",
+                current_phase="failed",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+            )
+
+    def schedule_autotest(run_id: str) -> None:
+        existing = app.state.autotest_tasks.get(run_id)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(run_autotest(run_id))
+        app.state.autotest_tasks[run_id] = task
+
+        def forget_task(_task: asyncio.Task[Any]) -> None:
+            app.state.autotest_tasks.pop(run_id, None)
+
+        task.add_done_callback(forget_task)
+
     @app.on_event("startup")
     async def resume_service_jobs() -> None:
         for party in party_store.list_parties():
@@ -123,6 +223,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.warning("recovered_interrupted_work party_id=%s %s", party.id, recovered)
             if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
                 Adjudicator(runtime_settings_for_party(party), party_state_store).schedule_service_jobs()
+        for run in party_store.resumable_autotest_runs():
+            schedule_autotest(run["id"])
 
     def current_user(request: Request) -> AuthUser | None:
         if not settings.auth_enabled:
@@ -969,6 +1071,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
         x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
     ) -> dict[str, Any]:
+        active_autotest = party_store.active_autotest_for_party(party_id)
+        if active_autotest and not str(request.idempotency_key or "").startswith("autotest:"):
+            raise HTTPException(status_code=409, detail="auto-test party is read-only while its run is active")
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
@@ -1012,6 +1117,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "message": message,
             "raw": response,
         }
+
+    @app.get("/api/admin/autotests/models")
+    def admin_autotest_models(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        party_store.settings = settings_with_provider_key(settings)
+        profiles = party_store.list_autotest_model_profiles()
+        return {"model_profiles": [profile.model_dump(mode="json") for profile in profiles]}
+
+    @app.get("/api/admin/autotests")
+    def admin_list_autotests(request: Request, limit: int = 50) -> dict[str, Any]:
+        require_admin(request)
+        return {"runs": party_store.list_autotest_runs(limit=limit)}
+
+    @app.post("/api/admin/autotests")
+    async def admin_create_autotest(
+        http_request: Request,
+        payload: AutoTestCreate,
+    ) -> dict[str, Any]:
+        admin = require_admin(http_request)
+        owner_id = admin.id if admin else None
+        try:
+            source_party = party_store.get_party(payload.source_party_id, owner_user_id=owner_id)
+            supported_profiles = {profile.id: profile for profile in party_store.list_autotest_model_profiles()}
+            player_profile = supported_profiles.get(payload.player_model_profile_id)
+            if player_profile is None:
+                raise ValueError("auto-player model must be an available OpenRouter or Local Gemma profile")
+            test_party = party_store.create_party(
+                PartyCreate(
+                    title=f"[Автотест] {source_party.title}"[:160],
+                    scenario_type=source_party.scenario_type,
+                    worldpack_id=source_party.worldpack_id,
+                    player_character_id=source_party.player_character_id,
+                    model_profile_id=source_party.model_profile_id,
+                ),
+                owner_user_id=owner_id,
+            )
+            try:
+                await start_party(
+                    http_request,
+                    test_party.id,
+                    PartyStartRequest(idempotency_key=f"autotest-start:{test_party.id}"),
+                    authorization=None,
+                    x_request_id=f"autotest_start_{test_party.id}",
+                )
+            except Exception:
+                party_store.delete_party(test_party.id, owner_user_id=owner_id)
+                raise
+            run = party_store.create_autotest_run(
+                owner_user_id=owner_id,
+                source_party_id=source_party.id,
+                test_party_id=test_party.id,
+                player_model_profile_id=player_profile.id,
+                player_prompt=payload.player_prompt,
+                requested_turns=payload.turn_count,
+            )
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        schedule_autotest(run["id"])
+        return {"run": run, "test_party": test_party.model_dump(mode="json")}
+
+    @app.post("/api/admin/autotests/{run_id}/stop")
+    def admin_stop_autotest(request: Request, run_id: str) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            run = party_store.request_autotest_stop(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"run": run}
 
     @app.post("/api/parties/{party_id}/checks")
     async def party_check(
@@ -1240,10 +1415,14 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     }
     if model_profile is None:
         return replace(settings, **prompt_values)
+    configured = settings_for_model_profile(settings, model_profile, f"rp-party:{party_cache_id}")
+    return replace(configured, **prompt_values)
+
+
+def settings_for_model_profile(settings: Settings, model_profile: Any, cache_session_id: str) -> Settings:
     provider = normalize_provider(model_profile.provider)
     return replace(
         settings,
-        **prompt_values,
         llm_provider=provider,
         nvidia_api_base=model_profile.base_url,
         narrative_model=model_profile.model,
@@ -1254,6 +1433,7 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
         model_attempt_timeout_seconds=(
             settings.local_llm_timeout_seconds if provider == "local" else settings.model_attempt_timeout_seconds
         ),
+        prompt_cache_session_id=cache_session_id,
         party_context_limit_tokens=min(
             model_context_limit_tokens(model_profile) or settings.party_context_max_tokens,
             settings.party_context_max_tokens,

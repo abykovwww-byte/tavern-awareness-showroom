@@ -1122,6 +1122,25 @@ button:disabled {
   margin-top: 9px;
 }
 
+.admin-form textarea,
+.admin-form input,
+.admin-form select {
+  width: 100%;
+}
+
+.autotest-list {
+  margin-top: 12px;
+}
+
+.autotest-row {
+  align-items: start;
+}
+
+.autotest-row span {
+  white-space: normal;
+  line-height: 1.45;
+}
+
 .admin-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

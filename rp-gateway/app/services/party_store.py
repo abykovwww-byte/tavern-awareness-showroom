@@ -124,6 +124,25 @@ class PartyStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS autotest_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_user_id TEXT,
+                    source_party_id TEXT NOT NULL,
+                    test_party_id TEXT NOT NULL UNIQUE,
+                    player_model_profile_id TEXT NOT NULL,
+                    player_prompt TEXT NOT NULL,
+                    requested_turns INTEGER NOT NULL,
+                    completed_turns INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    current_phase TEXT NOT NULL DEFAULT 'queued',
+                    stop_requested INTEGER NOT NULL DEFAULT 0,
+                    last_player_action TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_autotest_runs_status
+                    ON autotest_runs(status, updated_at);
                 CREATE TABLE IF NOT EXISTS app_cache (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -619,6 +638,28 @@ class PartyStore:
         profiles = [profile for profile in profiles if self.model_profile_is_visible(profile)]
         return sorted(profiles, key=lambda profile: (int(profile.params.get("rank", 9999)), profile.title))
 
+    def list_autotest_model_profiles(self) -> list[ModelProfileSummary]:
+        """Return the explicitly supported LLM-player profiles.
+
+        Local Gemma is allowed here even when its 32k context is intentionally
+        hidden from the long-context narrator picker. The auto-player receives
+        only a bounded visible transcript, so that narrator restriction does
+        not apply.
+        """
+        self.seed_model_profiles()
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM model_profiles ORDER BY title").fetchall()
+        profiles = [self.model_profile_from_row(row) for row in rows]
+        selected: list[ModelProfileSummary] = []
+        for profile in profiles:
+            provider = normalize_provider(profile.provider)
+            if provider == "local":
+                if self.settings.local_llm_enabled and profile.model == self.settings.local_llm_model_alias:
+                    selected.append(profile)
+            elif provider == "openrouter" and self.model_profile_is_visible(profile):
+                selected.append(profile)
+        return sorted(selected, key=lambda profile: (int(profile.params.get("rank", 9999)), profile.title))
+
     def model_profile_is_visible(self, profile: ModelProfileSummary) -> bool:
         provider = normalize_provider(profile.provider)
         if (model_context_limit_tokens(profile) or 0) < MIN_RP_CONTEXT_TOKENS:
@@ -798,7 +839,136 @@ class PartyStore:
         for party in parties:
             self.delete_party(party.id, owner_user_id=owner_user_id)
         with self.connect() as connection:
+            connection.execute("DELETE FROM autotest_runs WHERE owner_user_id = ?", (owner_user_id,))
             connection.execute("DELETE FROM player_characters WHERE owner_user_id = ?", (owner_user_id,))
+
+    def create_autotest_run(
+        self,
+        *,
+        owner_user_id: str | None,
+        source_party_id: str,
+        test_party_id: str,
+        player_model_profile_id: str,
+        player_prompt: str,
+        requested_turns: int,
+    ) -> dict[str, Any]:
+        if not 1 <= requested_turns <= 30:
+            raise ValueError("autotest turn count must be between 1 and 30")
+        run_id = f"autotest_{uuid.uuid4().hex[:12]}"
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO autotest_runs(
+                    id, owner_user_id, source_party_id, test_party_id,
+                    player_model_profile_id, player_prompt, requested_turns,
+                    completed_turns, status, current_phase, stop_requested,
+                    last_player_action, error, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 'running', 'player', 0, NULL, NULL, ?, ?)
+                """,
+                (
+                    run_id,
+                    owner_user_id,
+                    source_party_id,
+                    test_party_id,
+                    player_model_profile_id,
+                    player_prompt.strip(),
+                    requested_turns,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        return self.get_autotest_run(run_id)
+
+    def get_autotest_run(self, run_id: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM autotest_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"autotest run not found: {run_id}")
+        return self.autotest_run_from_row(row)
+
+    def list_autotest_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM autotest_runs ORDER BY created_at DESC LIMIT ?",
+                (min(max(limit, 1), 200),),
+            ).fetchall()
+        return [self.autotest_run_from_row(row) for row in rows]
+
+    def resumable_autotest_runs(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM autotest_runs WHERE status IN ('running', 'stopping') ORDER BY created_at ASC"
+            ).fetchall()
+        return [self.autotest_run_from_row(row) for row in rows]
+
+    def active_autotest_for_party(self, party_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM autotest_runs
+                WHERE test_party_id = ? AND status IN ('running', 'stopping')
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (party_id,),
+            ).fetchone()
+        return self.autotest_run_from_row(row) if row else None
+
+    def update_autotest_run(self, run_id: str, **updates: Any) -> dict[str, Any]:
+        allowed = {
+            "completed_turns",
+            "status",
+            "current_phase",
+            "stop_requested",
+            "last_player_action",
+            "error",
+        }
+        assignments: list[str] = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            assignments.append(f"{key} = ?")
+            values.append(int(value) if key == "stop_requested" else value)
+        if not assignments:
+            return self.get_autotest_run(run_id)
+        assignments.append("updated_at = ?")
+        values.append(now_iso())
+        values.append(run_id)
+        with self.connect() as connection:
+            updated = connection.execute(
+                f"UPDATE autotest_runs SET {', '.join(assignments)} WHERE id = ?",
+                tuple(values),
+            ).rowcount
+        if updated == 0:
+            raise ValueError(f"autotest run not found: {run_id}")
+        return self.get_autotest_run(run_id)
+
+    def request_autotest_stop(self, run_id: str) -> dict[str, Any]:
+        run = self.get_autotest_run(run_id)
+        if run["status"] in {"completed", "failed", "stopped"}:
+            return run
+        return self.update_autotest_run(run_id, stop_requested=True, status="stopping")
+
+    @staticmethod
+    def autotest_run_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "owner_user_id": row["owner_user_id"],
+            "source_party_id": row["source_party_id"],
+            "test_party_id": row["test_party_id"],
+            "player_model_profile_id": row["player_model_profile_id"],
+            "player_prompt": row["player_prompt"],
+            "requested_turns": row["requested_turns"],
+            "completed_turns": row["completed_turns"],
+            "status": row["status"],
+            "current_phase": row["current_phase"],
+            "stop_requested": bool(row["stop_requested"]),
+            "last_player_action": row["last_player_action"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     def party_from_row(self, row: sqlite3.Row, include_related: bool = False) -> PartySummary:
         party = PartySummary(

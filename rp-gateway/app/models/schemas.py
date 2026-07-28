@@ -284,6 +284,13 @@ class PartyMessageRequest(BaseModel):
     max_tokens: int | None = None
 
 
+class AutoTestCreate(BaseModel):
+    source_party_id: str = Field(min_length=1, max_length=120)
+    player_prompt: str = Field(min_length=1, max_length=12000)
+    turn_count: int = Field(ge=1, le=30)
+    player_model_profile_id: str = Field(min_length=1, max_length=240)
+
+
 class PartyCheckRequest(BaseModel):
     check_type: CheckType = "feasibility"
     target: str | None = Field(default=None, max_length=120)

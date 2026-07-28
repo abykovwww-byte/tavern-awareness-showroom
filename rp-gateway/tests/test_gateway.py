@@ -495,6 +495,70 @@ def test_admin_user_lifecycle_and_data_delete(tmp_path: Path):
     assert admin.app.state.party_store.list_parties(owner_user_id=user["id"]) == []
 
 
+def test_admin_autotest_runs_isolated_llm_player_with_separate_local_model(tmp_path: Path):
+    write_worldpack(tmp_path)
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        local_llm_model_alias="gemma-4-26b-a4b-it-rp-q4",
+        local_llm_context_tokens=32_768,
+    )
+    assert admin.get("/api/admin/autotests").status_code == 401
+    login(admin)
+    source_party = create_demo_party(admin, title="Autotest source")
+
+    profiles_response = admin.get("/api/admin/autotests/models")
+    assert profiles_response.status_code == 200
+    profiles = profiles_response.json()["model_profiles"]
+    local_profile = next(profile for profile in profiles if profile["provider"] == "local")
+    assert {profile["provider"] for profile in profiles} <= {"local", "openrouter"}
+
+    rejected = admin.post(
+        "/api/admin/autotests",
+        json={
+            "source_party_id": source_party["id"],
+            "player_prompt": "Act as a cautious investigator.",
+            "turn_count": 31,
+            "player_model_profile_id": local_profile["id"],
+        },
+    )
+    assert rejected.status_code == 422
+
+    started = admin.post(
+        "/api/admin/autotests",
+        json={
+            "source_party_id": source_party["id"],
+            "player_prompt": "Act as a cautious investigator and respond only with the next action.",
+            "turn_count": 1,
+            "player_model_profile_id": local_profile["id"],
+        },
+    )
+    assert started.status_code == 200, started.text
+    run = started.json()["run"]
+    test_party = started.json()["test_party"]
+    assert test_party["id"] != source_party["id"]
+    assert test_party["model_profile_id"] == source_party["model_profile_id"]
+    assert run["player_model_profile_id"] == local_profile["id"]
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        runs = admin.get("/api/admin/autotests").json()["runs"]
+        run = next(item for item in runs if item["id"] == run["id"])
+        if run["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.02)
+    assert run["status"] == "completed", run
+    assert run["completed_turns"] == 1
+    assert admin.get(f"/api/parties/{source_party['id']}/history").json()["turns"] == []
+    test_history = admin.get(f"/api/parties/{test_party['id']}/history").json()["turns"]
+    assert len(test_history) == 2
+    assert test_history[-1]["player_message"].startswith("I examine the situation")
+
+
 def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Path):
     c = client(
         tmp_path,
