@@ -244,6 +244,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .message-gm { justify-self: start; background: var(--surface); }
 .message-player { justify-self: end; background: rgba(231,181,107,.11); border-color: rgba(231,181,107,.25); }
 .message-pending { opacity: .65; }
+.message-time { display: block; margin-top: 8px; color: var(--muted); font-size: .72rem; line-height: 1; text-align: right; }
 .message-rich { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
 .message-rich > strong { display: block; margin: 0 0 8px 4px; color: var(--muted); font-size: .78rem; }
 .message-rich .narrative-copy { width: fit-content; max-width: 82%; padding: 15px 18px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }

@@ -1173,17 +1173,17 @@ function renderChat({ scrollMode = "bottom" } = {}) {
   }
   for (const turn of visibleTurns) {
     if (isAutoStartTurn(turn)) {
-      messages.push(messageHtml("system", "Старт", "Партия началась автоматически."));
+      messages.push(messageHtml("system", "Старт", "Партия началась автоматически.", turn.created_at));
     } else {
-      messages.push(messageHtml("user", "Игрок", turn.player_message));
+      messages.push(messageHtml("user", "Игрок", turn.player_message, turn.created_at));
     }
-    messages.push(messageHtml("assistant", "GM", turn.narrative_response));
+    messages.push(messageHtml("assistant", "GM", turn.narrative_response, turn.created_at));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
     if (!pending.autoStart) {
-      messages.push(messageHtml("user", "Игрок", pending.text));
+      messages.push(messageHtml("user", "Игрок", pending.text, pending.createdAt));
     }
-    messages.push(pendingMessageHtml(pending.requestId, pending.status));
+    messages.push(pendingMessageHtml(pending.requestId, pending.status, pending.createdAt));
   }
   els.chatLog.innerHTML = messages.join("");
   els.chatLog.scrollTop = scrollMode === "top" ? 0 : els.chatLog.scrollHeight;
@@ -2333,14 +2333,16 @@ async function runCheck(event) {
 
 function appendPendingMessage(text, requestId) {
   if (!appState.history) appState.history = { turns: [] };
-  els.chatLog.insertAdjacentHTML("beforeend", messageHtml("user", "Игрок", text));
-  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, "GM формирует ответ..."));
+  const timestamp = pendingMessageForParty(appState.activeParty?.id)?.createdAt || Date.now();
+  els.chatLog.insertAdjacentHTML("beforeend", messageHtml("user", "Игрок", text, timestamp));
+  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, "GM формирует ответ...", timestamp));
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
 }
 
 function appendPendingStartMessage(requestId, status) {
   if (!appState.history) appState.history = { turns: [] };
-  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, status));
+  const timestamp = pendingMessageForParty(appState.activeParty?.id)?.createdAt || Date.now();
+  els.chatLog.insertAdjacentHTML("beforeend", pendingMessageHtml(requestId, status, timestamp));
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
 }
 
@@ -2570,10 +2572,11 @@ function renderMessageControls() {
   }
 }
 
-function pendingMessageHtml(requestId, status) {
+function pendingMessageHtml(requestId, status, timestamp = Date.now()) {
   return `<article class="message assistant pending" data-pending-id="${escapeHtml(requestId)}">
     <div class="role">GM</div>
     <div class="pending-line"><span class="spinner" aria-hidden="true"></span><span class="pending-text">${escapeHtml(status)}</span></div>
+    ${messageTimeHtml(timestamp)}
   </article>`;
 }
 
@@ -2906,13 +2909,20 @@ function narrativeContentHtml(content) {
   return { html, hasArtifacts: true };
 }
 
-function messageHtml(kind, role, content) {
+function messageTimeHtml(timestamp) {
+  const formatted = globalThis.MessageTime?.formatMessageTime(timestamp);
+  if (!formatted) return "";
+  return `<time class="message-time" datetime="${escapeHtml(formatted.iso)}" title="${escapeHtml(formatted.title)}">${escapeHtml(formatted.text)}</time>`;
+}
+
+function messageHtml(kind, role, content, timestamp = Date.now()) {
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
     : { html: escapeHtml(content || ""), hasArtifacts: false };
   return `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>
     <div class="message-content">${rendered.html}</div>
+    ${messageTimeHtml(timestamp)}
   </article>`;
 }
 
