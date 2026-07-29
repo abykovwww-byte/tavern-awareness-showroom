@@ -23,6 +23,24 @@
     return /^-{3,}$/.test(String(line || "").trim());
   }
 
+  function splitTrailingPlayerPrompt(marker, lines) {
+    if (marker !== "ПИСЬМО") return { blockLines: lines, prompt: "" };
+    const signatureIndex = lines.findIndex((line) => /^Подпись:\s*/.test(String(line)));
+    if (signatureIndex < 0) return { blockLines: lines, prompt: "" };
+    let blankIndex = -1;
+    for (let index = lines.length - 1; index > signatureIndex; index -= 1) {
+      if (!String(lines[index]).trim()) {
+        blankIndex = index;
+        break;
+      }
+    }
+    if (blankIndex < 0) return { blockLines: lines, prompt: "" };
+    const prompt = lines.slice(blankIndex + 1).join("\n").trim();
+    const playerPrompt = /^(?:что\s+(?:ты|вы|делаешь|делаете|будешь|будете|предпримешь|предпримете|ответишь|ответите)|как\s+(?:ты|вы|отвечаешь|отвечаете|ответишь|ответите|поступаешь|поступаете|поступишь|поступите|действуешь|действуете)|(?:твои|ваши)\s+действия)(?=\s|[,:;.!?？—-])[\s\S]*[?？]\s*$/iu;
+    if (!playerPrompt.test(prompt)) return { blockLines: lines, prompt: "" };
+    return { blockLines: lines.slice(0, blankIndex), prompt };
+  }
+
   function parseBlock(marker, lines) {
     const definition = BLOCKS[marker];
     const knownFields = new Set(definition.fields);
@@ -74,7 +92,14 @@
         blockLines.push(lines[index]);
         index += 1;
       }
-      segments.push(parseBlock(marker, blockLines));
+      const boundary = splitTrailingPlayerPrompt(marker, blockLines);
+      const parsed = parseBlock(marker, boundary.blockLines);
+      if (parsed.type === "text" && boundary.prompt) {
+        segments.push(parseBlock(marker, blockLines));
+      } else {
+        segments.push(parsed);
+        if (boundary.prompt) segments.push({ type: "text", text: boundary.prompt });
+      }
       if (index < lines.length && isSeparator(lines[index])) index += 1;
     }
 

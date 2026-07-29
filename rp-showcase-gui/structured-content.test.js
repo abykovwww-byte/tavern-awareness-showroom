@@ -49,4 +49,23 @@ assert.deepEqual(malformed, [{ type: "text", text: "ПИСЬМО\nнеструк
 const incomplete = parseStructuredNarrative("СООБЩЕНИЕ\nОт: Максим\nТекст: Привет");
 assert.deepEqual(incomplete, [{ type: "text", text: "СООБЩЕНИЕ\nОт: Максим\nТекст: Привет" }]);
 
+const emailWithoutSeparator = parseStructuredNarrative(`ПИСЬМО
+Канал: корпоративная почта
+От: Анна Петрова <petrova@ptsecurity.com>
+Кому: employee@ptsecurity.com
+Дата/время: текущий интервал
+Тема: План на сегодня
+Вложения: нет
+Ссылки: нет
+Тело:
+До 09:45 пришли короткий план по своим задачам.
+Подпись:
+Отправитель указан в поле «От»
+Email: petrova@ptsecurity.com
+
+Что ты делаешь и как отвечаешь в рамках своей должности?`);
+assert.deepEqual(emailWithoutSeparator.map((segment) => segment.type), ["email", "text"]);
+assert.equal(emailWithoutSeparator[0].fields["Подпись"], "Отправитель указан в поле «От»\nEmail: petrova@ptsecurity.com");
+assert.equal(emailWithoutSeparator[1].text, "Что ты делаешь и как отвечаешь в рамках своей должности?");
+
 console.log("structured content parser: ok");
