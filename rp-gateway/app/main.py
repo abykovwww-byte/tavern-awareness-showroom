@@ -1098,7 +1098,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
                     request_id,
                 )
-                if not getattr(http_request.state, "showroom_party_access", False):
+                allow_safe_fallback = getattr(http_request.state, "showroom_party_access", False) or (
+                    party.scenario_type == "training"
+                    and is_awareness_campaign(narrative_state, party.worldpack_id)
+                )
+                if not allow_safe_fallback:
                     raise RuntimeError("LLM response failed narrative validation")
                 text = safe_fallback(
                     start_outcome,
@@ -1182,7 +1186,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 authorization,
                 request.idempotency_key,
                 x_request_id,
-                allow_gateway_fallback=False,
+                allow_gateway_fallback=(
+                    party.scenario_type == "training"
+                    and is_awareness_campaign(party_state_store.get_state(), party.worldpack_id)
+                ),
             )
         except RequestAlreadyRunning as exc:
             raise HTTPException(

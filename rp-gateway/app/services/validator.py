@@ -186,7 +186,7 @@ def safe_fallback(
     scenario_type: str = "rp",
 ) -> str:
     if scenario_type == "training" and state and is_awareness_campaign(state, campaign_id):
-        return awareness_safe_fallback(state, latest_user_message)
+        return awareness_safe_fallback(state, latest_user_message, campaign_id)
     if scenario_type == "novel":
         return (
             "Сцена сохраняет набранный ритм: собеседник реагирует на сказанное, а напряжение между героями "
@@ -206,10 +206,14 @@ def safe_fallback(
     return f"{first} {second}"
 
 
-def awareness_safe_fallback(state: dict[str, Any], latest_user_message: str) -> str:
+def awareness_safe_fallback(
+    state: dict[str, Any],
+    latest_user_message: str,
+    campaign_id: str | None = None,
+) -> str:
     if awareness_final_summary(state):
         return awareness_debrief_fallback(state)
-    if is_awareness_one_day_campaign(state):
+    if is_awareness_one_day_campaign(state, campaign_id):
         return awareness_one_day_safe_fallback(state)
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None

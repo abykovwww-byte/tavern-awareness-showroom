@@ -189,18 +189,19 @@ def create_demo_party(
     title: str = "Demo Party",
     character_name: str = "Mira",
     scenario_type: str = "rp",
+    worldpack_id: str = "demo-world",
 ) -> dict[str, object]:
     model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
     character = c.post(
         "/api/player-characters",
-        json={"worldpack_id": "demo-world", "name": character_name, "description": "Investigator", "profile": {}},
+        json={"worldpack_id": worldpack_id, "name": character_name, "description": "Investigator", "profile": {}},
     ).json()["player_character"]
     return c.post(
         "/api/parties",
         json={
             "title": title,
             "scenario_type": scenario_type,
-            "worldpack_id": "demo-world",
+            "worldpack_id": worldpack_id,
             "player_character_id": character["id"],
             "model_profile_id": model_id,
         },
@@ -426,6 +427,44 @@ def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Pa
     assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
     history = public.get(f"/api/showroom/runs/{run['id']}/history").json()["turns"]
     assert len(history) == 1
+
+
+def test_awareness_one_day_showroom_start_uses_valid_safe_fallback(tmp_path: Path):
+    write_worldpack(tmp_path, pack_id="awareness-one-day", supported_modes=["training"])
+    admin = client(
+        tmp_path,
+        mode="repair-fail",
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    scenario = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "One-day awareness fallback",
+            "status": "published",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "awareness-one-day",
+        },
+    ).json()["scenario"]
+    public = TestClient(admin.app)
+    run = public.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={"character_name": "Hero", "character_prompt": "Employee"},
+    ).json()["run"]
+
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": f"showroom-start:{run['id']}"},
+    )
+
+    assert started.status_code == 200, started.text
+    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    assert len(public.get(f"/api/showroom/runs/{run['id']}/history").json()["turns"]) == 1
 
 
 def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_path: Path):
@@ -2657,6 +2696,34 @@ def test_party_message_validation_failure_fails_without_gateway_fallback(tmp_pat
     status = c.get(f"/api/parties/{party['id']}/requests/req_party_repair_fail").json()
     assert status["status"] == "failed"
     assert "LLM response failed narrative validation" in status["error"]
+
+
+def test_awareness_one_day_light_gui_start_and_message_use_valid_safe_fallback(tmp_path: Path):
+    write_worldpack(tmp_path, pack_id="awareness-one-day", supported_modes=["training"])
+    c = client(tmp_path, mode="repair-fail")
+    party = create_demo_party(
+        c,
+        title="One-day awareness fallback",
+        scenario_type="training",
+        worldpack_id="awareness-one-day",
+    )
+
+    started = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "awareness-one-day-start"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+
+    message = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Проверяю запрос по рабочему каналу.", "idempotency_key": "awareness-one-day-message"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert message.status_code == 200, message.text
+    assert message.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 2
 
 
 def test_party_start_provider_http_error_returns_502(tmp_path: Path):

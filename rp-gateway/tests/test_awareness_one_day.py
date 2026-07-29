@@ -7,7 +7,7 @@ from app.services.rule_engine import (
     awareness_turn_window,
     is_awareness_one_day_campaign,
 )
-from app.services.validator import OutputValidator, awareness_debrief_fallback, awareness_one_day_safe_fallback
+from app.services.validator import OutputValidator, awareness_debrief_fallback, awareness_one_day_safe_fallback, safe_fallback
 
 
 def state_for(turn: int) -> dict:
@@ -121,6 +121,35 @@ def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
             scenario_type="training",
         )
         assert result.valid, result.violations
+
+
+def test_public_fallback_uses_explicit_one_day_worldpack_for_party_scoped_state():
+    state = state_for(1)
+    state["meta"]["campaign_id"] = "party_test"
+
+    text = safe_fallback(
+        outcome(),
+        state,
+        latest_user_message="Отвечаю по рабочей задаче.",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+
+    surface_count = (
+        text.count("\nПИСЬМО\n")
+        + int(text.startswith("ПИСЬМО\n"))
+        + text.count("\nСООБЩЕНИЕ\n")
+    )
+    assert surface_count == 1
+    result = OutputValidator().validate(
+        text,
+        outcome(),
+        state,
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        latest_user_message="Отвечаю по рабочей задаче.",
+        scenario_type="training",
+    )
+    assert result.valid, result.violations
 
 
 def test_one_day_debrief_reports_60_30_10_components():
