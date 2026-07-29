@@ -208,10 +208,17 @@ class PartyStore:
 
     def prune_unused_live_model_profiles(self) -> None:
         with self.connect() as connection:
+            has_showroom = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'showroom_scenarios'"
+            ).fetchone()
+            showroom_reference = (
+                "AND id NOT IN (SELECT model_profile_id FROM showroom_scenarios)" if has_showroom else ""
+            )
             connection.execute(
-                """
+                f"""
                 DELETE FROM model_profiles
                 WHERE id NOT IN (SELECT model_profile_id FROM parties)
+                  {showroom_reference}
                   AND (
                     params_json LIKE '%"source": "nvidia_api_live"%'
                     OR params_json LIKE '%"source": "build_nvidia_live"%'
@@ -643,6 +650,17 @@ class PartyStore:
         if row is None:
             raise ValueError(f"player character not found: {character_id}")
         return self.character_from_row(row)
+
+    def delete_player_character(self, character_id: str, owner_user_id: str | None = None) -> None:
+        sql = "DELETE FROM player_characters WHERE id = ?"
+        params: list[Any] = [character_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        with self.connect() as connection:
+            deleted = connection.execute(sql, tuple(params)).rowcount
+        if deleted == 0:
+            raise ValueError(f"player character not found: {character_id}")
 
     def character_from_row(self, row: sqlite3.Row) -> PlayerCharacterSummary:
         return PlayerCharacterSummary(

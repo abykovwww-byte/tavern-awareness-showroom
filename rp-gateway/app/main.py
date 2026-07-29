@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.core.config import Settings, get_settings
 from app.core.json_patch import PatchError
@@ -45,6 +45,9 @@ from app.models.schemas import (
     PlayerCharacterDraftRequest,
     ProviderApiKeyCreate,
     ProviderApiKeyUpdate,
+    ShowroomRunCreate,
+    ShowroomScenarioCreate,
+    ShowroomScenarioUpdate,
     UserCreate,
     UserDeleteRequest,
     UserPasswordUpdate,
@@ -75,6 +78,7 @@ from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
+from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator
 from app.services.world_instructor import WorldInstructor
@@ -90,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
     auth_store = AuthStore(settings)
     party_store = PartyStore(settings, default_owner_user_id=auth_store.default_owner_user_id())
+    showroom_store = ShowroomStore(settings, party_store)
 
     app = FastAPI(title="RP Gateway", version="0.5.0")
     app.state.settings = settings
@@ -97,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth_store = auth_store
     app.state.adjudicator = Adjudicator(settings, store)
     app.state.party_store = party_store
+    app.state.showroom_store = showroom_store
     app.state.autotest_tasks = {}
 
     def settings_with_provider_key(base: Settings) -> Settings:
@@ -262,6 +268,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return user
 
     def owner_user_id(request: Request) -> str | None:
+        if getattr(request.state, "showroom_party_access", False):
+            return None
         user = current_user(request)
         return user.id if user else None
 
@@ -276,6 +284,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not settings.auth_enabled or not request.url.path.startswith("/api/"):
             return await call_next(request)
         if request.url.path.startswith("/api/auth/"):
+            return await call_next(request)
+        if request.url.path == "/api/showroom" or request.url.path.startswith("/api/showroom/"):
             return await call_next(request)
         token = request.cookies.get(settings.auth_session_cookie_name)
         user = auth_store.user_for_session(token)
@@ -1185,6 +1195,192 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "message": message,
             "raw": response,
         }
+
+    def require_showroom_visitor(request: Request) -> str:
+        visitor_id = showroom_store.visitor_id(request.cookies.get(settings.showroom_visitor_cookie_name))
+        if not visitor_id:
+            raise HTTPException(status_code=404, detail="anonymous showroom session not found")
+        return visitor_id
+
+    @app.get("/api/showroom/scenarios")
+    def public_showroom_scenarios() -> dict[str, Any]:
+        return {"scenarios": showroom_store.list_scenarios(public_only=True)}
+
+    @app.get("/api/showroom/scenarios/{scenario_id}/leaderboard")
+    def public_showroom_leaderboard(scenario_id: str, limit: int = 50) -> dict[str, Any]:
+        try:
+            return showroom_store.leaderboard(scenario_id, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/showroom/scenarios/{scenario_id}/cover")
+    def public_showroom_cover(scenario_id: str) -> FileResponse:
+        try:
+            path, mime_type = showroom_store.cover(scenario_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return FileResponse(path, media_type=mime_type, headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.post("/api/showroom/scenarios/{scenario_id}/runs")
+    def create_showroom_run(
+        http_request: Request,
+        response: Response,
+        scenario_id: str,
+        payload: ShowroomRunCreate,
+    ) -> dict[str, Any]:
+        visitor_id, new_token = showroom_store.ensure_visitor(
+            http_request.cookies.get(settings.showroom_visitor_cookie_name)
+        )
+        if new_token:
+            response.set_cookie(
+                settings.showroom_visitor_cookie_name,
+                new_token,
+                max_age=settings.showroom_visitor_ttl_seconds,
+                httponly=True,
+                secure=settings.auth_cookie_secure,
+                samesite="lax",
+                path="/",
+            )
+        try:
+            run = showroom_store.create_run(scenario_id, visitor_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"run": run}
+
+    @app.get("/api/showroom/runs")
+    def list_showroom_runs(request: Request) -> dict[str, Any]:
+        visitor_id = showroom_store.visitor_id(request.cookies.get(settings.showroom_visitor_cookie_name))
+        return {"runs": showroom_store.list_runs(visitor_id) if visitor_id else []}
+
+    @app.get("/api/showroom/runs/{run_id}")
+    def get_showroom_run(request: Request, run_id: str) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(request)
+        try:
+            return {"run": showroom_store.get_run(run_id, visitor_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/showroom/runs/{run_id}/history")
+    def get_showroom_run_history(request: Request, run_id: str, limit: int = 100) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            request.state.showroom_party_access = True
+            history = get_party_history(request, party_id, limit=max(1, min(limit, 500)))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"run_id": run_id, "turns": history["turns"]}
+
+    @app.post("/api/showroom/runs/{run_id}/start")
+    async def start_showroom_run(
+        http_request: Request,
+        run_id: str,
+        payload: PartyStartRequest = PartyStartRequest(),
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            result = await start_party(
+                http_request,
+                party_id,
+                payload,
+                authorization=None,
+                x_request_id=x_request_id,
+            )
+            showroom_store.touch_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result.pop("party_id", None)
+        return {"run_id": run_id, **result}
+
+    @app.post("/api/showroom/runs/{run_id}/messages")
+    async def showroom_run_message(
+        http_request: Request,
+        run_id: str,
+        payload: PartyMessageRequest,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            result = await party_message(
+                http_request,
+                party_id,
+                payload,
+                authorization=None,
+                x_request_id=x_request_id,
+            )
+            showroom_store.touch_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result.pop("party_id", None)
+        return {"run_id": run_id, **result}
+
+    @app.get("/api/admin/showroom/scenarios")
+    def admin_showroom_scenarios(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        return {"scenarios": showroom_store.list_scenarios(public_only=False)}
+
+    @app.post("/api/admin/showroom/scenarios")
+    def admin_create_showroom_scenario(
+        request: Request,
+        payload: ShowroomScenarioCreate,
+    ) -> dict[str, Any]:
+        admin = require_admin(request)
+        try:
+            scenario = showroom_store.create_scenario(payload, created_by=admin.id if admin else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"scenario": scenario}
+
+    @app.patch("/api/admin/showroom/scenarios/{scenario_id}")
+    def admin_update_showroom_scenario(
+        request: Request,
+        scenario_id: str,
+        payload: ShowroomScenarioUpdate,
+    ) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            scenario = showroom_store.update_scenario(
+                scenario_id,
+                payload.model_dump(exclude_unset=True),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"scenario": scenario}
+
+    @app.put("/api/admin/showroom/scenarios/{scenario_id}/cover")
+    async def admin_upload_showroom_cover(request: Request, scenario_id: str) -> dict[str, Any]:
+        require_admin(request)
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > settings.showroom_cover_max_bytes:
+                    raise HTTPException(status_code=413, detail="cover image is too large")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="invalid content length") from exc
+        data = await request.body()
+        try:
+            scenario = showroom_store.save_cover(
+                scenario_id,
+                request.headers.get("content-type", "application/octet-stream"),
+                data,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"scenario": scenario}
+
+    @app.delete("/api/admin/showroom/scenarios/{scenario_id}/cover")
+    def admin_delete_showroom_cover(request: Request, scenario_id: str) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            scenario = showroom_store.delete_cover(scenario_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"scenario": scenario}
 
     @app.get("/api/admin/autotests/models")
     def admin_autotest_models(request: Request) -> dict[str, Any]:

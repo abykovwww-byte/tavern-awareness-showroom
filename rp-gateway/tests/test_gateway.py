@@ -115,6 +115,7 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "database_url": f"sqlite:///{tmp_path / 'rp_gateway.db'}",
         "world_state_path": str(state_path),
         "party_state_root": str(tmp_path / "state" / "parties"),
+        "showroom_cover_dir": str(tmp_path / "showroom-covers"),
         "worldpacks_path": str(tmp_path / "worldpacks"),
         "nvidia_api_base": f"mock://{mode}",
         "nvidia_api_key": api_key,
@@ -246,6 +247,168 @@ def test_bootstrap_admin_is_added_when_configured_user_is_missing(tmp_path: Path
 
     assert {user.username for user in users} == {"admin", "rp"}
     assert login(second, "rp", "rp-secret")["role"] == "admin"
+
+
+def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path: Path):
+    write_worldpack(tmp_path, supported_modes=["rp", "novel"])
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+
+    first = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Night investigation",
+            "description": "Investigate one difficult night.",
+            "status": "published",
+            "scenario_type": "rp",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "demo-world",
+            "leaderboard_enabled": True,
+            "leaderboard_metric": "state_path",
+            "leaderboard_state_path": "meta.turn",
+            "leaderboard_label": "Turns",
+        },
+    )
+    assert first.status_code == 200, first.text
+    first_scenario = first.json()["scenario"]
+    second = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Quiet character drama",
+            "description": "A different scenario in the same world.",
+            "status": "published",
+            "scenario_type": "novel",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "demo-world",
+            "leaderboard_enabled": True,
+            "leaderboard_metric": "turn_count",
+            "leaderboard_state_path": "meta.turn",
+            "leaderboard_label": "Turns",
+        },
+    )
+    assert second.status_code == 200, second.text
+    second_scenario = second.json()["scenario"]
+    assert first_scenario["id"] != second_scenario["id"]
+    assert first_scenario["worldpack_id"] == second_scenario["worldpack_id"] == "demo-world"
+    assert first_scenario["title"] != first_scenario["world"]["title"]
+
+    public = TestClient(admin.app)
+    assert public.get("/api/admin/showroom/scenarios").status_code == 401
+    listed = public.get("/api/showroom/scenarios")
+    assert listed.status_code == 200
+    listed_scenarios = listed.json()["scenarios"]
+    assert {item["title"] for item in listed_scenarios} == {"Night investigation", "Quiet character drama"}
+    assert all("model_profile_id" not in item for item in listed_scenarios)
+    assert public.get("/api/parties").status_code == 401
+
+    run_response = public.post(
+        f"/api/showroom/scenarios/{first_scenario['id']}/runs",
+        json={
+            "character_name": "Anonymous Hero",
+            "character_prompt": "A careful investigator.",
+            "leaderboard_opt_in": True,
+            "client_request_id": "browser-request-1",
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run = run_response.json()["run"]
+    assert "party_id" not in run
+    assert admin.app.state.settings.showroom_visitor_cookie_name in public.cookies
+    assert public.get("/api/showroom/runs").json()["runs"][0]["id"] == run["id"]
+
+    repeated = public.post(
+        f"/api/showroom/scenarios/{first_scenario['id']}/runs",
+        json={
+            "character_name": "Anonymous Hero",
+            "character_prompt": "A careful investigator.",
+            "leaderboard_opt_in": True,
+            "client_request_id": "browser-request-1",
+        },
+    )
+    assert repeated.json()["run"]["id"] == run["id"]
+
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": f"showroom-start:{run['id']}"},
+    )
+    assert started.status_code == 200, started.text
+    assert "party_id" not in started.json()
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        technical_owner = connection.execute(
+            """
+            SELECT parties.owner_user_id
+            FROM showroom_runs JOIN parties ON parties.id = showroom_runs.party_id
+            WHERE showroom_runs.id = ?
+            """,
+            (run["id"],),
+        ).fetchone()[0]
+    assert technical_owner == "__showroom__"
+    history = public.get(f"/api/showroom/runs/{run['id']}/history")
+    assert history.status_code == 200
+    assert len(history.json()["turns"]) == 1
+
+    leaderboard = public.get(f"/api/showroom/scenarios/{first_scenario['id']}/leaderboard")
+    assert leaderboard.status_code == 200
+    assert leaderboard.json()["entries"][0]["display_name"] == "Anonymous Hero"
+    assert leaderboard.json()["entries"][0]["score"] == 1
+    other_board = public.get(f"/api/showroom/scenarios/{second_scenario['id']}/leaderboard")
+    assert other_board.json()["entries"] == []
+
+    intruder = TestClient(admin.app)
+    assert intruder.get(f"/api/showroom/runs/{run['id']}").status_code == 404
+
+
+def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_path: Path):
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    created = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Station at the edge",
+            "description": "A public card title independent of the generated world.",
+            "status": "published",
+            "scenario_type": "novel",
+            "model_profile_id": model_id,
+            "world_source": "prompt",
+            "world_prompt": "A remote scientific station loses contact during a polar night.",
+            "leaderboard_enabled": True,
+            "leaderboard_metric": "turn_count",
+            "leaderboard_state_path": "meta.turn",
+            "leaderboard_label": "Turns",
+        },
+    )
+    assert created.status_code == 200, created.text
+    scenario = created.json()["scenario"]
+    assert scenario["id"] != scenario["worldpack_id"]
+    assert scenario["title"] != scenario["world"]["title"]
+    assert scenario["world_source"] == "prompt"
+
+    png = b"\x89PNG\r\n\x1a\n" + (b"mock" * 10)
+    uploaded = admin.put(
+        f"/api/admin/showroom/scenarios/{scenario['id']}/cover",
+        content=png,
+        headers={"Content-Type": "image/png"},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    public = TestClient(admin.app)
+    cover = public.get(f"/api/showroom/scenarios/{scenario['id']}/cover")
+    assert cover.status_code == 200
+    assert cover.headers["content-type"].startswith("image/png")
+    assert cover.content == png
 
 
 def test_health_and_state(tmp_path: Path):

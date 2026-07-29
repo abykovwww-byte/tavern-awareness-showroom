@@ -32,6 +32,9 @@ OutcomeLabel = Literal[
 ]
 
 ScenarioType = Literal["rp", "novel", "training"]
+ShowroomScenarioStatus = Literal["draft", "published", "archived"]
+ShowroomWorldSource = Literal["preset", "prompt"]
+ShowroomLeaderboardMetric = Literal["state_path", "turn_count"]
 
 
 class ChatMessage(BaseModel):
@@ -287,6 +290,45 @@ class PartyMessageRequest(BaseModel):
     idempotency_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+
+
+class ShowroomScenarioCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=1200)
+    status: ShowroomScenarioStatus = "draft"
+    scenario_type: ScenarioType
+    model_profile_id: str = Field(min_length=1, max_length=240)
+    world_source: ShowroomWorldSource = "preset"
+    worldpack_id: str | None = Field(default=None, max_length=240)
+    world_prompt: str | None = Field(default=None, max_length=6000)
+    leaderboard_enabled: bool = True
+    leaderboard_metric: ShowroomLeaderboardMetric = "state_path"
+    leaderboard_state_path: str = Field(default="meta.turn", min_length=1, max_length=240)
+    leaderboard_label: str = Field(default="Очки", min_length=1, max_length=80)
+    sort_order: int = Field(default=100, ge=0, le=10000)
+
+
+class ShowroomScenarioUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1200)
+    status: ShowroomScenarioStatus | None = None
+    scenario_type: ScenarioType | None = None
+    model_profile_id: str | None = Field(default=None, min_length=1, max_length=240)
+    world_source: ShowroomWorldSource | None = None
+    worldpack_id: str | None = Field(default=None, max_length=240)
+    world_prompt: str | None = Field(default=None, max_length=6000)
+    leaderboard_enabled: bool | None = None
+    leaderboard_metric: ShowroomLeaderboardMetric | None = None
+    leaderboard_state_path: str | None = Field(default=None, min_length=1, max_length=240)
+    leaderboard_label: str | None = Field(default=None, min_length=1, max_length=80)
+    sort_order: int | None = Field(default=None, ge=0, le=10000)
+
+
+class ShowroomRunCreate(BaseModel):
+    character_name: str = Field(min_length=1, max_length=120)
+    character_prompt: str = Field(min_length=1, max_length=4000)
+    leaderboard_opt_in: bool = True
+    client_request_id: str | None = Field(default=None, max_length=160)
 
 
 class AutoTestCreate(BaseModel):

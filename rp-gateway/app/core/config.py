@@ -115,6 +115,10 @@ class Settings:
     auth_cookie_secure: bool = env_bool("GATEWAY_COOKIE_SECURE", False)
     bootstrap_admin_username: str = os.getenv("GATEWAY_BOOTSTRAP_ADMIN_USERNAME", "admin")
     bootstrap_admin_password: str = os.getenv("GATEWAY_BOOTSTRAP_ADMIN_PASSWORD", "")
+    showroom_visitor_cookie_name: str = os.getenv("SHOWROOM_VISITOR_COOKIE_NAME", "rp_showroom_visitor")
+    showroom_visitor_ttl_seconds: int = env_int("SHOWROOM_VISITOR_TTL_SECONDS", 60 * 60 * 24 * 30)
+    showroom_cover_dir: str = os.getenv("SHOWROOM_COVER_DIR", "/data/showroom-covers")
+    showroom_cover_max_bytes: int = env_int("SHOWROOM_COVER_MAX_BYTES", 5 * 1024 * 1024)
 
     @property
     def sqlite_path(self) -> str:

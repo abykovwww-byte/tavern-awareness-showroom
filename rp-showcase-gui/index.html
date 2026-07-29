@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>RP Showroom</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <header class="site-header">
+    <button class="brand-button" id="homeButton" type="button" aria-label="Открыть витрину">
+      <span class="brand-mark">RP</span>
+      <span>
+        <strong>Showroom</strong>
+        <small>интерактивные сценарии</small>
+      </span>
+    </button>
+    <div class="header-actions">
+      <span class="public-badge">Без регистрации</span>
+      <button class="button button-quiet" id="adminButton" type="button">Администратор</button>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="view active" id="storefrontView">
+      <div class="hero-block">
+        <p class="eyebrow">Открытый шоурум</p>
+        <h1>Выберите сценарий и придумайте героя</h1>
+        <p class="hero-copy">Никаких аккаунтов и настроек модели. Каждый сценарий уже связан автором с миром, режимом повествования и LLM.</p>
+      </div>
+
+      <section class="resume-section hidden" id="resumeSection">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Этот браузер</p>
+            <h2>Продолжить участие</h2>
+          </div>
+          <span class="muted">Анонимная сессия</span>
+        </div>
+        <div class="resume-list" id="resumeList"></div>
+      </section>
+
+      <section>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">На витрине</p>
+            <h2>Сценарии</h2>
+          </div>
+          <span class="muted" id="scenarioCount"></span>
+        </div>
+        <div class="scenario-grid" id="scenarioGrid"></div>
+        <div class="empty-state hidden" id="scenarioEmpty">
+          <h3>Витрина пока пуста</h3>
+          <p>Администратор ещё не опубликовал сценарии.</p>
+        </div>
+      </section>
+    </section>
+
+    <section class="view" id="startView">
+      <button class="back-button" type="button" data-open-view="storefront">← К витрине</button>
+      <div class="start-layout">
+        <article class="selected-scenario">
+          <div class="selected-cover" id="selectedCover"></div>
+          <p class="eyebrow" id="selectedMode"></p>
+          <h1 id="selectedTitle"></h1>
+          <p id="selectedDescription"></p>
+          <dl class="scenario-facts">
+            <div><dt>Мир</dt><dd id="selectedWorld"></dd></div>
+            <div><dt>Рейтинг</dt><dd><button class="text-button" id="selectedLeaderboardButton" type="button">Открыть таблицу</button></dd></div>
+          </dl>
+        </article>
+
+        <form class="surface form-stack" id="startForm">
+          <div>
+            <p class="eyebrow">Один шаг до старта</p>
+            <h2>Кто ваш герой?</h2>
+            <p class="muted">Эти данные станут стартовым профилем персонажа. Регистрация не требуется.</p>
+          </div>
+          <label>
+            <span>Имя персонажа</span>
+            <input id="characterNameInput" maxlength="120" required placeholder="Например, Анна Вяземская">
+          </label>
+          <label>
+            <span>Кто он и с чего начинает</span>
+            <textarea id="characterPromptInput" maxlength="4000" required rows="7" placeholder="Роль, характер, опыт, ограничения и исходное положение..."></textarea>
+          </label>
+          <label class="switch-row">
+            <input id="leaderboardOptInInput" type="checkbox" checked>
+            <span>Показывать имя персонажа в таблице лидеров этого сценария</span>
+          </label>
+          <p class="privacy-note">Результат связывается только с анонимной сессией этого браузера.</p>
+          <button class="button button-primary button-wide" type="submit">Создать героя и начать</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="view" id="leaderboardView">
+      <button class="back-button" type="button" data-open-view="storefront">← К витрине</button>
+      <div class="leaderboard-header">
+        <div>
+          <p class="eyebrow">Лидеры сценария</p>
+          <h1 id="leaderboardTitle"></h1>
+          <p class="muted">У каждого сценария отдельный рейтинг. Пользовательские аккаунты не используются.</p>
+        </div>
+        <button class="button button-primary" id="leaderboardStartButton" type="button">Участвовать</button>
+      </div>
+      <div class="table-wrap surface">
+        <table>
+          <thead>
+            <tr><th>Место</th><th>Персонаж</th><th class="number" id="leaderboardScoreLabel">Очки</th><th>Обновлено</th></tr>
+          </thead>
+          <tbody id="leaderboardBody"></tbody>
+        </table>
+        <div class="empty-state hidden" id="leaderboardEmpty">
+          <h3>Пока нет результатов</h3>
+          <p>Первое место свободно.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="view chat-view" id="chatView">
+      <header class="chat-header">
+        <div>
+          <p class="eyebrow" id="chatMode"></p>
+          <h1 id="chatTitle"></h1>
+          <p class="muted" id="chatCharacter"></p>
+        </div>
+        <div class="chat-header-actions">
+          <button class="button button-quiet" id="chatLeaderboardButton" type="button">Лидеры</button>
+          <button class="button button-quiet" type="button" data-open-view="storefront">Витрина</button>
+        </div>
+      </header>
+      <div class="chat-thread" id="chatThread" aria-live="polite"></div>
+      <form class="composer" id="messageForm">
+        <textarea id="messageInput" maxlength="12000" rows="3" required placeholder="Что вы делаете или говорите?"></textarea>
+        <button class="button button-primary" type="submit">Отправить</button>
+      </form>
+    </section>
+
+    <section class="view" id="adminLoginView">
+      <button class="back-button" type="button" data-open-view="storefront">← К публичной витрине</button>
+      <form class="surface admin-login" id="adminLoginForm">
+        <p class="eyebrow">Закрытая зона</p>
+        <h1>Вход администратора</h1>
+        <p class="muted">Участникам шоурума вход не нужен.</p>
+        <label><span>Логин</span><input id="adminUsernameInput" autocomplete="username" required></label>
+        <label><span>Пароль</span><input id="adminPasswordInput" type="password" autocomplete="current-password" required></label>
+        <button class="button button-primary button-wide" type="submit">Войти</button>
+      </form>
+    </section>
+
+    <section class="view" id="adminView">
+      <div class="admin-heading">
+        <div>
+          <p class="eyebrow">Управление шоурумом</p>
+          <h1>Сценарии витрины</h1>
+          <p class="muted">Сценарий — отдельная карточка. Несколько сценариев могут ссылаться на один WorldPack.</p>
+        </div>
+        <div class="header-actions">
+          <button class="button" id="newScenarioButton" type="button">Новый сценарий</button>
+          <button class="button button-quiet" id="adminLogoutButton" type="button">Выйти</button>
+        </div>
+      </div>
+
+      <div class="admin-layout">
+        <aside class="surface scenario-admin-list" id="adminScenarioList"></aside>
+        <form class="surface form-stack" id="scenarioForm">
+          <div class="form-heading">
+            <div>
+              <p class="eyebrow">Карточка витрины</p>
+              <h2 id="scenarioFormTitle">Новый сценарий</h2>
+            </div>
+            <span class="status-pill" id="scenarioStatusPill">Черновик</span>
+          </div>
+
+          <label><span>Название сценария на витрине</span><input id="scenarioTitleInput" maxlength="160" required></label>
+          <label><span>Описание карточки</span><textarea id="scenarioDescriptionInput" maxlength="1200" rows="4"></textarea></label>
+
+          <div class="form-grid">
+            <label><span>Тип сценария</span><select id="scenarioTypeSelect"><option value="rp">RP</option><option value="novel">Novel</option><option value="training">Training</option></select></label>
+            <label><span>Статус</span><select id="scenarioStatusSelect"><option value="draft">Черновик</option><option value="published">Опубликован</option><option value="archived">Архив</option></select></label>
+          </div>
+
+          <div class="form-grid">
+            <label><span>Провайдер</span><select id="providerSelect"></select></label>
+            <label><span>Модель</span><select id="modelSelect" required></select></label>
+          </div>
+
+          <fieldset>
+            <legend>Источник мира</legend>
+            <div class="radio-row">
+              <label><input type="radio" name="worldSource" value="preset" checked> Готовый WorldPack</label>
+              <label><input type="radio" name="worldSource" value="prompt"> Произвольный prompt</label>
+            </div>
+          </fieldset>
+
+          <label id="presetWorldField"><span>Мир — не название сценария</span><select id="worldpackSelect"></select><small>Один WorldPack можно выбрать в нескольких сценариях витрины.</small></label>
+          <label class="hidden" id="promptWorldField"><span>Стартовый prompt внутреннего мира</span><textarea id="worldPromptInput" maxlength="6000" rows="7"></textarea></label>
+
+          <div class="form-grid">
+            <label class="switch-row"><input id="leaderboardEnabledInput" type="checkbox" checked><span>Таблица лидеров этого сценария</span></label>
+            <label><span>Подпись результата</span><input id="leaderboardLabelInput" maxlength="80" value="Очки"></label>
+          </div>
+          <div class="form-grid">
+            <label><span>Источник результата</span><select id="leaderboardMetricSelect"><option value="state_path">Число из canonical state</option><option value="turn_count">Количество ходов</option></select></label>
+            <label><span>Путь в state</span><input id="leaderboardPathInput" maxlength="240" value="meta.turn"><small>Например: player.resources.awareness-score</small></label>
+          </div>
+
+          <label><span>Обложка — необязательно</span><input id="coverInput" type="file" accept="image/png,image/jpeg,image/webp"><small>PNG, JPEG или WebP, до 5 МБ.</small></label>
+          <div class="cover-preview" id="coverPreview">Обложка не выбрана</div>
+
+          <div class="form-actions">
+            <button class="button button-primary" type="submit">Сохранить</button>
+            <button class="button button-quiet hidden" id="deleteCoverButton" type="button">Удалить обложку</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast hidden" id="toast" role="status"></div>
+  <div class="busy hidden" id="busy"><span class="spinner"></span><span id="busyText">Загрузка...</span></div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
