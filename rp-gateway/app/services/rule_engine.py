@@ -19,7 +19,8 @@ DANGEROUS_FILE_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 SOC_REPORT_RE = re.compile(
-    r"\b(?:сообщаю|пишу|отправляю|пересылаю|направляю|report|forward)\b.{0,160}"
+    r"\b(?:сообщаю|пишу|отправляю|пересылаю|направляю|эскалирую|регистрирую|"
+    r"сообщение|направление|эскалация|регистрация|report|forward)\b.{0,200}"
     r"\b(?:soc|soc@|диб|специалист(?:у|а)?\s+(?:д?иб|информационной\s+безопасности))\b",
     re.IGNORECASE | re.DOTALL,
 )
@@ -51,27 +52,34 @@ CONFIDENTIAL_DISCLOSURE_RE = re.compile(
 )
 REPORT_DETAIL_RE = re.compile(r"\b(?:отправител|адрес|домен|врем|тем|вложени|ссылк|канал)\w*", re.IGNORECASE)
 INDEPENDENT_VERIFY_RE = re.compile(
-    r"\b(?:проверяю|уточняю|сверяю|перезваниваю|связываюсь|подтверждаю|verify|check|call back)\b.{0,180}"
+    r"\b(?:проверяю|проверка|уточняю|уточнение|сверяю|сверка|перезваниваю|связываюсь|"
+    r"свяжусь|подтверждаю|подтверждение|verify|check|call back)\b.{0,220}"
     r"\b(?:по\s+(?:корпоративн|официальн|известн)\w*\s+канал|в\s+каталог|у\s+(?:руководител|отправител|владельц)|"
     r"через\s+(?:портал|service desk|службу поддержки|менеджер))\w*",
     re.IGNORECASE | re.DOTALL,
 )
 EXPLICIT_REFUSAL_RE = re.compile(
-    r"\b(?:не\s+(?:открываю|скачиваю|перехожу|ввожу|сообщаю|передаю|отправляю|пересылаю)|"
-    r"отказываюсь|отклоняю|блокирую|не\s+буду|refuse|decline|do\s+not)\b",
+    r"\b(?:не\s+(?:открываю|открою|скачиваю|скачаю|запускаю|запущу|перехожу|перейду|"
+    r"ввожу|введу|сообщаю|сообщу|передаю|передам|отправляю|отправлю|пересылаю|перешлю|"
+    r"выдаю|выдам|использую|буду\s+использовать|выполняю|выполню)|"
+    r"отказываюсь|отказ\w*|отклоняю|блокирую|не\s+буду|refuse|decline|do\s+not)\b",
     re.IGNORECASE,
 )
 PROFESSIONAL_RESPONSE_RE = re.compile(
     r"\b(?:отвечаю|пишу|сообщаю|подтверждаю|уточняю|проверяю|сверяю|фиксирую|обновляю|"
     r"готовлю|направляю|передаю|назначаю|создаю|регистрирую|отклоняю|эскалирую|"
-    r"reply|respond|confirm|clarify|verify|update|assign|register|decline|escalate)\b",
+    r"отказываюсь|отказ\w*|соблюдаю|не\s+(?:открываю|запускаю|перехожу|ввожу|передаю|"
+    r"отправляю|пересылаю|выдаю|использую|выполняю)|reply|respond|confirm|clarify|verify|"
+    r"update|assign|register|decline|escalate)\b",
     re.IGNORECASE,
 )
 ROLE_ALIGNED_ACTION_RE = re.compile(
     r"\b(?:статус|задач|тикет|заявк|проект|код|ревью|документ|встреч|календар|дедлайн|"
     r"срок|блокер|результат|владелец|ответственн|руководител|менеджер|компетенц|"
     r"полномочи|зона\s+ответственности|служебн\w*\s+обязанност|рабоч\w*\s+канал|"
-    r"status|task|ticket|project|review|document|meeting|deadline|owner|manager|responsibilit)\w*",
+    r"согласован\w*|регламент\w*|доступ\w*|выдач\w*|оборудован\w*|ремонт\w*|service\s+desk|"
+    r"удал[её]нн\w*|накопител\w*|status|task|ticket|project|review|document|meeting|deadline|"
+    r"owner|manager|responsibilit)\w*",
     re.IGNORECASE,
 )
 AWARENESS_TURN_WINDOWS = {
@@ -113,6 +121,23 @@ def pointer_escape(value: str) -> str:
 
 def normalize_tokens(value: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", value.lower()) if len(token) >= 4}
+
+
+ROLE_STOP_WORDS = {
+    "котор",
+    "сотруд",
+    "специ",
+    "работ",
+    "рабочи",
+    "компан",
+    "ответ",
+    "действ",
+}
+
+
+def role_terms(value: str) -> set[str]:
+    tokens = re.findall(r"[^\W\d_]+", value.casefold(), flags=re.UNICODE)
+    return {token[:6] for token in tokens if len(token) >= 6 and token[:6] not in ROLE_STOP_WORDS}
 
 
 def awareness_campaign_id(state: dict[str, Any], campaign_id: str | None = None) -> str:
@@ -633,21 +658,34 @@ class RuleEngine:
         credential_exposure = self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text)
         confidential_disclosure = self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text)
         unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure
-        safe_security_action = (
-            self.explicit_action(SOC_REPORT_RE, text)
-            or self.explicit_action(INDEPENDENT_VERIFY_RE, text)
-            or bool(EXPLICIT_REFUSAL_RE.search(text))
-        )
+        reported = self.explicit_action(SOC_REPORT_RE, text)
+        independently_verified = self.explicit_action(INDEPENDENT_VERIFY_RE, text)
+        explicitly_refused = bool(EXPLICIT_REFUSAL_RE.search(text))
+        safe_security_action = reported or independently_verified or explicitly_refused
         professional_response = self.explicit_action(PROFESSIONAL_RESPONSE_RE, text)
+        player_description = str(state.get("player", {}).get("description") or "")
+        description_overlap = bool(role_terms(text) & role_terms(player_description))
         role_aligned = professional_response and (
             bool(ROLE_ALIGNED_ACTION_RE.search(text))
             or safe_security_action
+            or description_overlap
         )
+
+        evidence: dict[str, list[str]] = {}
+
+        def note(resource_id: str, label: str) -> None:
+            evidence.setdefault(resource_id, []).append(label)
 
         if event_turn in AWARENESS_ONE_DAY_SECURITY_TURNS:
             if safe_security_action and not unsafe:
                 add("security-score", 10)
                 add("safe-security-responses", 1)
+                if reported:
+                    note("security-score-evidence", "сообщение в SOC/ДИБ")
+                if independently_verified:
+                    note("security-score-evidence", "независимая проверка по официальному каналу")
+                if explicitly_refused:
+                    note("security-score-evidence", "явный отказ от небезопасного действия")
             if unsafe:
                 add("unsafe-actions", 1)
                 if dangerous_file:
@@ -661,9 +699,16 @@ class RuleEngine:
         if role_aligned:
             add("roleplay-score", 3)
             add("role-aligned-responses", 1)
+            if description_overlap:
+                note("roleplay-score-evidence", "действие связано с описанием должности")
+            elif safe_security_action:
+                note("roleplay-score-evidence", "соблюдены границы роли и безопасная маршрутизация")
+            else:
+                note("roleplay-score-evidence", "явное рабочее действие в рамках полномочий")
         if professional_response:
             add("communication-score", 1)
             add("professional-responses", 1)
+            note("communication-score-evidence", "сформулирован явный профессиональный ответ")
 
         resources = state.get("player", {}).get("resources", {})
         security_score = int(resources.get("security-score", 0) or 0) + deltas.get("security-score", 0)
@@ -675,7 +720,7 @@ class RuleEngine:
             + clamp(communication_score, 0, 10)
         ) - int(resources.get("total-score", 0) or 0)
 
-        return [
+        operations = [
             self.resource_delta_operation(
                 state,
                 resource_id,
@@ -686,6 +731,20 @@ class RuleEngine:
             for resource_id, delta in deltas.items()
             if delta
         ]
+        for resource_id, labels in evidence.items():
+            existing = str(resources.get(resource_id) or "").strip()
+            entry = f"ход {event_turn}: {', '.join(dict.fromkeys(labels))}"
+            value = f"{existing}; {entry}" if existing else entry
+            operations.append(
+                self.resource_value_operation(
+                    state,
+                    resource_id,
+                    value[-4000:],
+                    "Stores deterministic observable evidence for the final Awareness One Day debrief.",
+                    turn,
+                )
+            )
+        return operations
 
     def resource_delta_operation(self, state: dict[str, Any], resource_id: str, delta: int, reason: str, turn: int) -> PatchOperation:
         resources = state.get("player", {}).get("resources", {})

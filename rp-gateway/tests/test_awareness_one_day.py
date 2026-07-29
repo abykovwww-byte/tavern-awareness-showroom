@@ -1,5 +1,6 @@
 from app.models.schemas import Intent, Outcome
 from app.main import party_start_state_patch
+from app.services.intent_parser import IntentParser
 from app.services.rule_engine import (
     AWARENESS_ONE_DAY_ID,
     AWARENESS_ONE_DAY_TURN_WINDOWS,
@@ -25,6 +26,9 @@ def state_for(turn: int) -> dict:
                 "safe-security-responses": 0,
                 "role-aligned-responses": 0,
                 "professional-responses": 0,
+                "security-score-evidence": "",
+                "roleplay-score-evidence": "",
+                "communication-score-evidence": "",
                 "unsafe-actions": 0,
                 "credential-exposure": 0,
                 "suspicious-artifacts-opened": 0,
@@ -88,6 +92,70 @@ def test_one_day_safe_security_response_scores_all_three_components():
     assert values["/player/resources/roleplay-score"] == 3
     assert values["/player/resources/communication-score"] == 1
     assert values["/player/resources/total-score"] == 14
+    assert "SOC/ДИБ" in values["/player/resources/security-score-evidence"]
+
+
+def test_one_day_scores_noun_form_refusal_and_service_desk_role_boundary():
+    state = state_for(2)
+    state["player"]["description"] = "Специалист первой линии технической поддержки."
+    intent = Intent(
+        desired_outcome=(
+            "Фиксирую отказ в выдаче прав без согласованной заявки в Service Desk и направляю запрос "
+            "ответственному владельцу доступа."
+        )
+    )
+
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "noun-refusal",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+    values = values_for(patch)
+
+    assert values["/player/resources/security-score"] == 10
+    assert values["/player/resources/roleplay-score"] == 3
+    assert values["/player/resources/communication-score"] == 1
+    assert "явный отказ" in values["/player/resources/security-score-evidence"]
+
+
+def test_one_day_roleplay_uses_terms_from_stored_position_description():
+    state = state_for(3)
+    state["player"]["description"] = "Инженер по анализу вредоносного кода и подготовке сигнатур."
+    intent = Intent(desired_outcome="Готовлю сигнатуру для обнаруженного образца и вернусь с итогом к 11:00.")
+
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "role-description",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+    values = values_for(patch)
+
+    assert values["/player/resources/roleplay-score"] == 3
+    assert values["/player/resources/communication-score"] == 1
+    assert "описанием должности" in values["/player/resources/roleplay-score-evidence"]
+
+
+def test_one_day_scoring_reads_safe_action_after_first_500_characters():
+    state = state_for(4)
+    message = ("Контекст обращения без принятия решения. " * 20) + (
+        "По внешней ссылке не перехожу, учетные данные не ввожу и направляю письмо в ДИБ."
+    )
+    intent = IntentParser().parse(message)
+
+    assert len(intent.desired_outcome) > 500
+    _, patch = RuleEngine().resolve(
+        state,
+        intent,
+        "long-safe-action",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+    values = values_for(patch)
+    assert values["/player/resources/security-score"] == 10
 
 
 def test_one_day_credential_disclosure_is_recorded_without_security_points():
@@ -169,3 +237,34 @@ def test_one_day_debrief_reports_60_30_10_components():
     assert "50 из 60" in text
     assert "24 из 30" in text
     assert "8 из 10" in text
+
+
+def test_one_day_validator_rejects_debrief_scores_that_disagree_with_state():
+    state = state_for(11)
+    state["player"]["resources"].update(
+        {
+            "completion-status": "complete",
+            "security-score": 50,
+            "roleplay-score": 24,
+            "communication-score": 8,
+            "total-score": 82,
+        }
+    )
+    wrong = """Итоговый разбор.
+
+Итоговый результат: 8 из 100.
+Информационная безопасность: 0 из 60.
+Соблюдение роли и регламентов: 6 из 30.
+Деловая коммуникация: 2 из 10.
+"""
+
+    validation = OutputValidator().validate(
+        wrong,
+        outcome(),
+        state,
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+
+    assert not validation.valid
+    assert sum("canonical score" in violation for violation in validation.violations) == 4

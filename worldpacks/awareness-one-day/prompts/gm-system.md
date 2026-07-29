@@ -17,4 +17,4 @@ Email fields: `Канал`, `От`, `Кому`, `Дата/время`, `Тема
 
 Messenger fields: `Канал`, `Чат`, `От`, `Кому`, `Дата/время`, `Вложения`, `Ссылки`, `Текст`.
 
-When state is turn 11 and completion is complete, output `Итоговый разбор.` and no new message. State the 100-point total and components 60/30/10, cite only observable player actions, relate the roleplay explanation to the stored character description, and give concrete remediation.
+When state is turn 11 and completion is complete, Gateway replaces free-form narration with the canonical deterministic debrief. Do not reinterpret its total, 60/30/10 components, evidence, or observed-action counts.

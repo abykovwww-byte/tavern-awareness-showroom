@@ -18,7 +18,7 @@ from app.services.memory import MemorySummarizer
 from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
-from app.services.validator import OutputValidator, safe_fallback
+from app.services.validator import OutputValidator, awareness_final_summary, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
 
@@ -126,7 +126,19 @@ class Adjudicator:
                     request_id=request_id,
                 )
                 llm_calls += 1
-                text = response_text(raw)
+                if awareness_final_summary(narrative_state):
+                    # Scores and their evidence are canonical Gateway state.
+                    # Never let a free-form narrator reinterpret the debrief.
+                    text = safe_fallback(
+                        outcome,
+                        narrative_state,
+                        latest,
+                        self.settings.campaign_id,
+                        self.settings.scenario_type,
+                    )
+                    raw = with_text(raw, text)
+                else:
+                    text = response_text(raw)
                 validation = self.validator.validate(
                     text,
                     outcome,

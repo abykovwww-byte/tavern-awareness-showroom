@@ -135,6 +135,25 @@ class OutputValidator:
                 violations.append("Awareness debrief is allowed only after the player answers turn 10.")
             if final_summary and not AWARENESS_SCORE_RE.search(text):
                 violations.append("Awareness final debrief must include a score out of 100.")
+            if final_summary and is_awareness_one_day_campaign(state or {}, campaign_id):
+                resources = (state or {}).get("player", {}).get("resources", {})
+                if not isinstance(resources, dict):
+                    resources = {}
+                canonical_scores = {
+                    100: max(0, min(100, int(resources.get("total-score", 0) or 0))),
+                    60: max(0, min(60, int(resources.get("security-score", 0) or 0))),
+                    30: max(0, min(30, int(resources.get("roleplay-score", 0) or 0))),
+                    10: max(0, min(10, int(resources.get("communication-score", 0) or 0))),
+                }
+                for maximum, expected in canonical_scores.items():
+                    reported = {
+                        int(match)
+                        for match in re.findall(rf"\b(\d{{1,3}})\s*(?:из|/)\s*{maximum}\b", text, re.IGNORECASE)
+                    }
+                    if reported != {expected}:
+                        violations.append(
+                            f"Awareness One Day debrief must report canonical score {expected} out of {maximum}."
+                        )
             if AWARENESS_META_RE.search(text):
                 violations.append("Awareness narrative exposed scenario-template or facilitator-only wording.")
             if AWARENESS_INTERNAL_PROCESS_RE.search(text):
@@ -344,6 +363,11 @@ def awareness_debrief_fallback(state: dict[str, Any]) -> str:
         role_responses = int(resources.get("role-aligned-responses", 0) or 0)
         professional_responses = int(resources.get("professional-responses", 0) or 0)
         unsafe_actions = int(resources.get("unsafe-actions", 0) or 0)
+        security_evidence = str(resources.get("security-score-evidence") or "нет засчитанных безопасных реакций")
+        roleplay_evidence = str(resources.get("roleplay-score-evidence") or "нет засчитанных ролевых реакций")
+        communication_evidence = str(
+            resources.get("communication-score-evidence") or "нет засчитанных профессиональных ответов"
+        )
         return f"""Итоговый разбор.
 
 Десятый игровой ход завершён. Рабочий день окончен, новых писем и сообщений сценарий больше не открывает.
@@ -361,7 +385,17 @@ def awareness_debrief_fallback(state: dict[str, Any]) -> str:
 - явно сформулированных деловых ответов: {professional_responses};
 - небезопасных действий: {unsafe_actions}.
 
-Разбор сильных сторон и ошибок должен ссылаться только на явно заявленные действия игрока и описание его должности. Для повторного прохождения создай новую партию или отдельную ветку."""
+Основания начисления:
+- безопасность: {security_evidence};
+- соответствие должности: {roleplay_evidence};
+- коммуникация: {communication_evidence}.
+
+Рекомендации для повторного прохождения:
+- формулируй решение как явное действие: что именно не делаешь, как независимо проверяешь запрос и куда сообщаешь;
+- связывай рабочий ответ со своей должностью, границами полномочий, владельцем задачи и следующим шагом;
+- отвечай адресату в деловом формате, даже если основное решение состоит в отказе или эскалации.
+
+Для повторного прохождения создай новую партию или отдельную ветку."""
     score = max(0, min(100, int(resources.get("awareness-score", 0) or 0)))
     safe_escalations = int(resources.get("safe-escalations", 0) or 0)
     unsafe_actions = int(resources.get("unsafe-actions", 0) or 0)

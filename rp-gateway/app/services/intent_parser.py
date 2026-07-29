@@ -37,7 +37,10 @@ class IntentParser:
         if not match:
             return Intent(
                 action_type="feasibility",
-                desired_outcome=text[:500],
+                # Training scoring must see the complete explicit action. Party
+                # messages are already bounded by the API schema, so truncating
+                # here only creates silent false negatives.
+                desired_outcome=text,
                 methods=["free_text"],
                 facts_claimed_by_player=self.claimed_facts(text),
                 ambiguities=["No explicit /check command; using safe feasibility category."],
