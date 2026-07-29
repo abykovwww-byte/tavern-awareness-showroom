@@ -87,6 +87,8 @@ class ShowroomStore:
                     id TEXT PRIMARY KEY,
                     scenario_id TEXT NOT NULL REFERENCES showroom_scenarios(id),
                     scenario_revision INTEGER NOT NULL,
+                    scenario_title_snapshot TEXT NOT NULL,
+                    scenario_type_snapshot TEXT NOT NULL,
                     visitor_id TEXT NOT NULL REFERENCES showroom_visitors(id),
                     party_id TEXT NOT NULL UNIQUE REFERENCES parties(id),
                     player_character_id TEXT NOT NULL REFERENCES player_characters(id),
@@ -101,6 +103,39 @@ class ShowroomStore:
                     ON showroom_runs(visitor_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_showroom_runs_scenario_updated
                     ON showroom_runs(scenario_id, updated_at DESC);
+                """
+            )
+            run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(showroom_runs)")}
+            if "scenario_title_snapshot" not in run_columns:
+                connection.execute("ALTER TABLE showroom_runs ADD COLUMN scenario_title_snapshot TEXT")
+            if "scenario_type_snapshot" not in run_columns:
+                connection.execute("ALTER TABLE showroom_runs ADD COLUMN scenario_type_snapshot TEXT")
+            connection.execute(
+                """
+                UPDATE showroom_runs
+                SET scenario_title_snapshot = COALESCE(
+                        scenario_title_snapshot,
+                        (
+                            SELECT CASE
+                                WHEN parties.title LIKE '% — ' || showroom_runs.display_name
+                                THEN substr(
+                                    parties.title,
+                                    1,
+                                    length(parties.title) - length(showroom_runs.display_name) - 3
+                                )
+                                ELSE NULL
+                            END
+                            FROM parties
+                            WHERE parties.id = showroom_runs.party_id
+                        ),
+                        (SELECT title FROM showroom_scenarios WHERE id = showroom_runs.scenario_id)
+                    ),
+                    scenario_type_snapshot = COALESCE(
+                        scenario_type_snapshot,
+                        (SELECT scenario_type FROM parties WHERE id = showroom_runs.party_id),
+                        (SELECT scenario_type FROM showroom_scenarios WHERE id = showroom_runs.scenario_id)
+                    )
+                WHERE scenario_title_snapshot IS NULL OR scenario_type_snapshot IS NULL
                 """
             )
 
@@ -400,15 +435,18 @@ class ShowroomStore:
                 connection.execute(
                     """
                     INSERT INTO showroom_runs(
-                        id, scenario_id, scenario_revision, visitor_id, party_id,
+                        id, scenario_id, scenario_revision, scenario_title_snapshot, scenario_type_snapshot,
+                        visitor_id, party_id,
                         player_character_id, display_name, leaderboard_opt_in,
                         client_request_id, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
                         scenario_id,
                         scenario["revision"],
+                        scenario["title"],
+                        scenario["scenario_type"],
                         visitor_id,
                         party.id,
                         character.id,
@@ -456,8 +494,8 @@ class ShowroomStore:
             "party_status": party.status,
             "scenario": {
                 "id": scenario["id"],
-                "title": scenario["title"],
-                "scenario_type": scenario["scenario_type"],
+                "title": row["scenario_title_snapshot"] or scenario["title"],
+                "scenario_type": row["scenario_type_snapshot"] or scenario["scenario_type"],
                 "cover_url": scenario["cover_url"],
                 "leaderboard_enabled": scenario["leaderboard_enabled"],
             },

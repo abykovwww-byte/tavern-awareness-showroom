@@ -335,6 +335,14 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
     )
     assert repeated.json()["run"]["id"] == run["id"]
 
+    renamed = admin.patch(
+        f"/api/admin/showroom/scenarios/{first_scenario['id']}",
+        json={"title": "Renamed storefront card"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    historical_run = public.get(f"/api/showroom/runs/{run['id']}").json()["run"]
+    assert historical_run["scenario"]["title"] == "Night investigation"
+
     started = public.post(
         f"/api/showroom/runs/{run['id']}/start",
         json={"idempotency_key": f"showroom-start:{run['id']}"},
@@ -371,6 +379,53 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
 
     intruder = TestClient(admin.app)
     assert intruder.get(f"/api/showroom/runs/{run['id']}").status_code == 404
+
+
+def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    write_worldpack(tmp_path)
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    scenario = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Fallback showroom scenario",
+            "status": "published",
+            "scenario_type": "rp",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "demo-world",
+        },
+    ).json()["scenario"]
+    public = TestClient(admin.app)
+    run = public.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={"character_name": "Hero", "character_prompt": "Investigator"},
+    ).json()["run"]
+
+    monkeypatch.setattr(
+        OutputValidator,
+        "validate",
+        lambda *args, **kwargs: SimpleNamespace(
+            valid=False,
+            violations=["forced test violation"],
+            repair_instruction="repair",
+        ),
+    )
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": f"showroom-start:{run['id']}"},
+    )
+
+    assert started.status_code == 200, started.text
+    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    history = public.get(f"/api/showroom/runs/{run['id']}/history").json()["turns"]
+    assert len(history) == 1
 
 
 def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_path: Path):

@@ -80,7 +80,7 @@ from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
-from app.services.validator import OutputValidator
+from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
 
@@ -1098,7 +1098,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
                     request_id,
                 )
-                raise RuntimeError("LLM response failed narrative validation")
+                if not getattr(http_request.state, "showroom_party_access", False):
+                    raise RuntimeError("LLM response failed narrative validation")
+                text = safe_fallback(
+                    start_outcome,
+                    narrative_state,
+                    "",
+                    party.worldpack_id,
+                    party.scenario_type,
+                )
+                response = adjudicator.provider_fallback_response(
+                    start_outcome,
+                    text,
+                    "validation_failed",
+                    request_id,
+                )
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)

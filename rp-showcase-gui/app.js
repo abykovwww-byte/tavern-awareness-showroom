@@ -8,6 +8,7 @@ const appState = {
   worldpacks: [],
   modelProfiles: [],
   editingScenario: null,
+  scenarioEditorMode: "create",
   coverFile: null,
 };
 
@@ -57,6 +58,7 @@ const els = {
   newScenarioButton: document.querySelector("#newScenarioButton"),
   adminScenarioList: document.querySelector("#adminScenarioList"),
   scenarioForm: document.querySelector("#scenarioForm"),
+  scenarioSaveButton: document.querySelector("#scenarioSaveButton"),
   scenarioFormTitle: document.querySelector("#scenarioFormTitle"),
   scenarioStatusPill: document.querySelector("#scenarioStatusPill"),
   scenarioTitleInput: document.querySelector("#scenarioTitleInput"),
@@ -257,6 +259,7 @@ async function openLeaderboard(scenario) {
 async function createRun(event) {
   event.preventDefault();
   if (!appState.selectedScenario) return;
+  let pending = null;
   setBusy(true, "Создаю героя и стартовую сцену...");
   try {
     const created = await apiPost(`/api/showroom/scenarios/${encodeURIComponent(appState.selectedScenario.id)}/runs`, {
@@ -266,16 +269,28 @@ async function createRun(event) {
       client_request_id: makeRequestId("showroom-create"),
     });
     appState.currentRun = created.run;
+    await refreshRuns();
+    const run = appState.runs.find((item) => item.id === created.run.id) || created.run;
+    await openRun(run);
+    setBusy(false);
+    els.messageInput.disabled = true;
+    pending = appendMessage("gm", "Рассказчик", "Готовлю стартовую сцену...", true);
     const started = await apiPost(
       `/api/showroom/runs/${encodeURIComponent(created.run.id)}/start`,
       { idempotency_key: `showroom-start:${created.run.id}` },
       { "X-Request-ID": makeRequestId("showroom-start") },
     );
+    pending.remove();
+    await openRun(run, started.message?.content);
     await refreshRuns();
-    await openRun(appState.runs.find((run) => run.id === created.run.id) || created.run, started.message?.content);
   } catch (error) {
+    pending?.remove();
+    if (appState.currentRun && views.chat.classList.contains("active")) {
+      appendMessage("gm", "Система", `Не удалось подготовить стартовую сцену: ${error.message}`);
+    }
     showToast(error.message, true);
   } finally {
+    els.messageInput.disabled = false;
     setBusy(false);
   }
 }
@@ -574,11 +589,9 @@ async function loadAdminData() {
   renderProviderOptions();
   renderWorldpackOptions();
   renderAdminList();
-  if (appState.editingScenario) {
+  if (appState.scenarioEditorMode === "edit" && appState.editingScenario) {
     const fresh = appState.adminScenarios.find((item) => item.id === appState.editingScenario.id);
     fresh ? editScenario(fresh) : newScenario();
-  } else if (appState.adminScenarios.length) {
-    editScenario(appState.adminScenarios[0]);
   } else {
     newScenario();
   }
@@ -607,10 +620,12 @@ function renderAdminList() {
 }
 
 function newScenario() {
+  appState.scenarioEditorMode = "create";
   appState.editingScenario = null;
   appState.coverFile = null;
   els.scenarioForm.reset();
   els.scenarioFormTitle.textContent = "Новый сценарий";
+  els.scenarioSaveButton.textContent = "Создать сценарий";
   els.scenarioTitleInput.value = "";
   els.scenarioDescriptionInput.value = "";
   els.scenarioTypeSelect.value = "rp";
@@ -634,9 +649,11 @@ function newScenario() {
 }
 
 function editScenario(scenario) {
+  appState.scenarioEditorMode = "edit";
   appState.editingScenario = scenario;
   appState.coverFile = null;
   els.scenarioFormTitle.textContent = scenario.title;
+  els.scenarioSaveButton.textContent = "Сохранить изменения";
   els.scenarioTitleInput.value = scenario.title;
   els.scenarioDescriptionInput.value = scenario.description || "";
   els.scenarioTypeSelect.value = scenario.scenario_type;
@@ -725,6 +742,12 @@ function previewCover() {
 
 async function saveScenario(event) {
   event.preventDefault();
+  const editorMode = appState.scenarioEditorMode;
+  const editingScenarioId = editorMode === "edit" ? appState.editingScenario?.id : null;
+  if (editorMode === "edit" && !editingScenarioId) {
+    showToast("Не выбран сценарий для редактирования. Нажмите «Новый сценарий» для создания.", true);
+    return;
+  }
   const source = selectedWorldSource();
   const payload = {
     title: els.scenarioTitleInput.value.trim(),
@@ -739,12 +762,12 @@ async function saveScenario(event) {
     leaderboard_metric: els.leaderboardMetricSelect.value,
     leaderboard_state_path: els.leaderboardPathInput.value.trim() || "meta.turn",
     leaderboard_label: els.leaderboardLabelInput.value.trim() || "Очки",
-    sort_order: appState.editingScenario?.sort_order ?? 100,
+    sort_order: editorMode === "edit" ? appState.editingScenario?.sort_order ?? 100 : 100,
   };
   setBusy(true, "Сохраняю сценарий...");
   try {
-    const response = appState.editingScenario
-      ? await apiPatch(`/api/admin/showroom/scenarios/${encodeURIComponent(appState.editingScenario.id)}`, payload)
+    const response = editorMode === "edit"
+      ? await apiPatch(`/api/admin/showroom/scenarios/${encodeURIComponent(editingScenarioId)}`, payload)
       : await apiPost("/api/admin/showroom/scenarios", payload);
     if (appState.coverFile) {
       await apiRaw(
@@ -754,6 +777,7 @@ async function saveScenario(event) {
         { "Content-Type": appState.coverFile.type || "application/octet-stream" },
       );
     }
+    appState.scenarioEditorMode = "edit";
     appState.editingScenario = response.scenario;
     await loadAdminData();
     const publicData = await apiGet("/api/showroom/scenarios");
