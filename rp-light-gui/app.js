@@ -486,6 +486,7 @@ async function selectParty(partyId) {
   appState.activeBranch = null;
   localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
+  if (isAdmin()) await reloadAdminAutotestRuns(party.id);
 }
 
 async function reloadActiveParty() {
@@ -1237,19 +1238,36 @@ function renderProposals() {
 
 async function reloadAdminData() {
   if (!isAdmin()) return;
-  const [users, apiKeys, autotestModels, autotests] = await Promise.all([
+  const [users, apiKeys, autotestModels] = await Promise.all([
     apiGet("/api/admin/users"),
     apiGet("/api/admin/api-keys"),
     apiGet("/api/admin/autotests/models"),
-    apiGet("/api/admin/autotests"),
   ]);
   appState.adminUsers = users.users || [];
   appState.adminApiKeys = apiKeys.api_keys || [];
   appState.adminAutotestProfiles = autotestModels.model_profiles || [];
-  appState.adminAutotestRuns = autotests.runs || [];
+  await reloadAdminAutotestRuns(appState.activeParty?.id);
   renderAdminPanel();
   renderMessageControls();
-  appState.adminAutotestRuns.filter((run) => ["running", "stopping"].includes(run.status)).forEach((run) => pollAdminAutotest(run.id));
+}
+
+function adminAutotestsUrl(partyId) {
+  return `/api/admin/autotests?source_party_id=${encodeURIComponent(partyId)}`;
+}
+
+async function reloadAdminAutotestRuns(partyId) {
+  if (!isAdmin() || !partyId) {
+    appState.adminAutotestRuns = [];
+    renderAdminAutotestRuns();
+    return;
+  }
+  const response = await apiGet(adminAutotestsUrl(partyId));
+  if (appState.activeParty?.id !== partyId) return;
+  appState.adminAutotestRuns = (response.runs || []).filter((run) => run.source_party_id === partyId);
+  renderAdminAutotestRuns();
+  appState.adminAutotestRuns
+    .filter((run) => ["running", "stopping"].includes(run.status))
+    .forEach((run) => pollAdminAutotest(run.id));
 }
 
 function renderAdminPanel() {
@@ -1301,9 +1319,11 @@ function renderAdminAutotestModelOptions() {
 }
 
 function renderAdminAutotestRuns() {
-  els.adminAutotestRunsList.innerHTML = appState.adminAutotestRuns.length
-    ? appState.adminAutotestRuns.map((run) => adminAutotestRow(run)).join("")
-    : `<div class="admin-empty">Автотестов пока нет.</div>`;
+  const partyId = appState.activeParty?.id;
+  const visibleRuns = appState.adminAutotestRuns.filter((run) => run.source_party_id === partyId);
+  els.adminAutotestRunsList.innerHTML = visibleRuns.length
+    ? visibleRuns.map((run) => adminAutotestRow(run)).join("")
+    : `<div class="admin-empty">Для выбранной партии автотестов пока нет.</div>`;
 }
 
 function adminAutotestRow(run) {
@@ -1962,12 +1982,16 @@ function replaceAdminAutotestRun(run) {
 
 function pollAdminAutotest(runId) {
   if (autotestPollingTasks[runId]) return autotestPollingTasks[runId];
+  const sourcePartyId = appState.adminAutotestRuns.find((run) => run.id === runId)?.source_party_id;
+  if (!sourcePartyId) return null;
   const task = (async () => {
     try {
       for (let attempt = 0; attempt < 3600 && isAdmin(); attempt += 1) {
         await delay(3000);
-        const response = await apiGet("/api/admin/autotests");
-        appState.adminAutotestRuns = response.runs || [];
+        if (appState.activeParty?.id !== sourcePartyId) return;
+        const response = await apiGet(adminAutotestsUrl(sourcePartyId));
+        if (appState.activeParty?.id !== sourcePartyId) return;
+        appState.adminAutotestRuns = (response.runs || []).filter((run) => run.source_party_id === sourcePartyId);
         renderAdminAutotestRuns();
         renderMessageControls();
         const run = appState.adminAutotestRuns.find((item) => item.id === runId);

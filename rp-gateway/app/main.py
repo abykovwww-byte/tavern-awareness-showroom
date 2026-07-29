@@ -1390,9 +1390,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"model_profiles": [profile.model_dump(mode="json") for profile in profiles]}
 
     @app.get("/api/admin/autotests")
-    def admin_list_autotests(request: Request, limit: int = 50) -> dict[str, Any]:
-        require_admin(request)
-        return {"runs": party_store.list_autotest_runs(limit=limit)}
+    def admin_list_autotests(
+        request: Request,
+        source_party_id: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        admin = require_admin(request)
+        if source_party_id:
+            try:
+                party_store.get_party(source_party_id, owner_user_id=admin.id if admin else None)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"runs": party_store.list_autotest_runs(limit=limit, source_party_id=source_party_id)}
 
     @app.post("/api/admin/autotests")
     async def admin_create_autotest(

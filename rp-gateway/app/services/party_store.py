@@ -1054,11 +1054,19 @@ class PartyStore:
             raise ValueError(f"autotest run not found: {run_id}")
         return self.autotest_run_from_row(row)
 
-    def list_autotest_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_autotest_runs(
+        self,
+        limit: int = 50,
+        source_party_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = "WHERE source_party_id = ?" if source_party_id else ""
+        parameters: tuple[Any, ...] = (source_party_id, min(max(limit, 1), 200)) if source_party_id else (
+            min(max(limit, 1), 200),
+        )
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM autotest_runs ORDER BY created_at DESC LIMIT ?",
-                (min(max(limit, 1), 200),),
+                f"SELECT * FROM autotest_runs {where} ORDER BY created_at DESC LIMIT ?",
+                parameters,
             ).fetchall()
         return [self.autotest_run_from_row(row) for row in rows]
 

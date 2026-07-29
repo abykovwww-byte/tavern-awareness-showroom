@@ -727,6 +727,11 @@ def test_admin_autotest_forks_checkpoint_branch_with_separate_local_player_model
     assert branch["source_checkpoint_id"] == checkpoint["id"]
     assert run["player_model_profile_id"] == local_profile["id"]
     assert {party["id"] for party in admin.get("/api/parties").json()["parties"]} == party_ids_before
+    other_party = create_demo_party(admin, title="Other autotest party")
+    scoped_runs = admin.get(f"/api/admin/autotests?source_party_id={source_party['id']}").json()["runs"]
+    assert [item["id"] for item in scoped_runs] == [run["id"]]
+    assert admin.get(f"/api/admin/autotests?source_party_id={other_party['id']}").json()["runs"] == []
+    assert admin.get("/api/admin/autotests?source_party_id=missing-party").status_code == 404
 
     deadline = time.time() + 3
     while time.time() < deadline:

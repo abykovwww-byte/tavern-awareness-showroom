@@ -54,7 +54,7 @@ All endpoints require an admin role when Gateway authentication is enabled:
 
 ```text
 GET  /api/admin/autotests/models
-GET  /api/admin/autotests
+GET  /api/admin/autotests?source_party_id={active_party_id}
 POST /api/admin/autotests
 POST /api/admin/autotests/{run_id}/stop
 GET  /api/parties/{party_id}/branches
@@ -64,3 +64,7 @@ GET  /api/parties/{party_id}/branches/{branch_id}
 
 `POST /api/admin/autotests` accepts a source party, player behavior prompt,
 player model profile, and `turn_count` from 1 through 30.
+
+Light GUI lists runs only for the active source party. Switching parties clears
+the visible run list and reloads it with `source_party_id`; stale polling
+responses are discarded if the active party changed while the request ran.
