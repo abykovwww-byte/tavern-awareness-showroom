@@ -533,6 +533,15 @@ h3 {
   text-transform: uppercase;
 }
 
+.message-time {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  text-align: right;
+}
+
 .message-content {
   display: grid;
   gap: 14px;
@@ -685,6 +694,15 @@ input,
 select {
   height: 38px;
   padding: 0 10px;
+}
+
+select {
+  color-scheme: dark;
+}
+
+select option {
+  background: #15191b;
+  color: var(--text);
 }
 
 textarea:focus,

@@ -429,9 +429,9 @@ function renderHistory(turns, fallbackOpening = "") {
   els.chatThread.replaceChildren();
   for (const turn of turns) {
     if (turn.player_message && !String(turn.player_message).startsWith("[AUTO_START]")) {
-      appendMessage("player", appState.currentRun.display_name, turn.player_message);
+      appendMessage("player", appState.currentRun.display_name, turn.player_message, false, turn.created_at);
     }
-    if (turn.narrative_response) appendMessage("gm", "Рассказчик", turn.narrative_response);
+    if (turn.narrative_response) appendMessage("gm", "Рассказчик", turn.narrative_response, false, turn.created_at);
   }
   if (!turns.length && fallbackOpening) appendMessage("gm", "Рассказчик", fallbackOpening);
 }
@@ -585,7 +585,18 @@ function renderNarrativeContent(container, content) {
   return hasArtifacts;
 }
 
-function appendMessage(kind, author, content, pending = false) {
+function messageTimeElement(timestamp) {
+  const formatted = globalThis.MessageTime?.formatMessageTime(timestamp);
+  if (!formatted) return null;
+  const time = document.createElement("time");
+  time.className = "message-time";
+  time.dateTime = formatted.iso;
+  time.title = formatted.title;
+  time.textContent = formatted.text;
+  return time;
+}
+
+function appendMessage(kind, author, content, pending = false, timestamp = Date.now()) {
   const article = document.createElement("article");
   article.className = `message message-${kind}${pending ? " message-pending" : ""}`;
   const heading = document.createElement("strong");
@@ -602,7 +613,9 @@ function appendMessage(kind, author, content, pending = false) {
     body.append(text);
   }
   if (hasArtifacts) article.classList.add("message-rich");
+  const time = messageTimeElement(timestamp);
   article.append(heading, body);
+  if (time) article.append(time);
   els.chatThread.append(article);
   article.scrollIntoView({ behavior: "smooth", block: "end" });
   return article;

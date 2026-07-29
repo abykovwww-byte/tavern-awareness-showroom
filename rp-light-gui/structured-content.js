@@ -24,11 +24,14 @@
   }
 
   function splitTrailingPlayerPrompt(marker, lines) {
-    if (marker !== "ПИСЬМО") return { blockLines: lines, prompt: "" };
-    const signatureIndex = lines.findIndex((line) => /^Подпись:\s*/.test(String(line)));
-    if (signatureIndex < 0) return { blockLines: lines, prompt: "" };
+    const lastField = marker === "ПИСЬМО"
+      ? /^Подпись:\s*/
+      : marker === "СООБЩЕНИЕ" ? /^Текст:\s*/ : null;
+    if (!lastField) return { blockLines: lines, prompt: "" };
+    const lastFieldIndex = lines.findIndex((line) => lastField.test(String(line)));
+    if (lastFieldIndex < 0) return { blockLines: lines, prompt: "" };
     let blankIndex = -1;
-    for (let index = lines.length - 1; index > signatureIndex; index -= 1) {
+    for (let index = lines.length - 1; index > lastFieldIndex; index -= 1) {
       if (!String(lines[index]).trim()) {
         blankIndex = index;
         break;
@@ -36,7 +39,7 @@
     }
     if (blankIndex < 0) return { blockLines: lines, prompt: "" };
     const prompt = lines.slice(blankIndex + 1).join("\n").trim();
-    const playerPrompt = /^(?:что\s+(?:ты|вы|делаешь|делаете|будешь|будете|предпримешь|предпримете|ответишь|ответите)|как\s+(?:ты|вы|отвечаешь|отвечаете|ответишь|ответите|поступаешь|поступаете|поступишь|поступите|действуешь|действуете)|(?:твои|ваши)\s+действия)(?=\s|[,:;.!?？—-])[\s\S]*[?？]\s*$/iu;
+    const playerPrompt = /^(?:что\s+(?:(?:ты|вы)\s+)?(?:делаешь|делаете|сделаешь|сделаете|будешь\s+делать|будете\s+делать|предпримешь|предпримете|ответишь|ответите|отвечаешь|отвечаете)|как\s+(?:(?:ты|вы)\s+)?(?:отвечаешь|отвечаете|ответишь|ответите|поступаешь|поступаете|поступишь|поступите|действуешь|действуете)|(?:твои|ваши)\s+действия)(?=\s|[,:;.!?？—-])[\s\S]*[?？]\s*$/iu;
     if (!playerPrompt.test(prompt)) return { blockLines: lines, prompt: "" };
     return { blockLines: lines.slice(0, blankIndex), prompt };
   }

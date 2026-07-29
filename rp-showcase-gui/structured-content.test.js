@@ -68,4 +68,35 @@ assert.deepEqual(emailWithoutSeparator.map((segment) => segment.type), ["email",
 assert.equal(emailWithoutSeparator[0].fields["Подпись"], "Отправитель указан в поле «От»\nEmail: petrova@ptsecurity.com");
 assert.equal(emailWithoutSeparator[1].text, "Что ты делаешь и как отвечаешь в рамках своей должности?");
 
+const messageWithoutSeparator = parseStructuredNarrative(`СООБЩЕНИЕ
+Канал: корпоративный мессенджер
+Чат: личный чат
+От: Иван Козырев
+Кому: employee@ptsecurity.com
+Дата/время: текущий интервал
+Вложения: нет
+Ссылки: нет
+Текст:
+Окей, понял. Давай тогда так: я переговорю с клиентом.
+
+Слушай, а что там с обновлением VPN? Ты себе уже поставил или как?
+
+Что ты отвечаешь Ивану?`);
+assert.deepEqual(messageWithoutSeparator.map((segment) => segment.type), ["messenger", "text"]);
+assert.match(messageWithoutSeparator[0].fields["Текст"], /Ты себе уже поставил или как\?/);
+assert.doesNotMatch(messageWithoutSeparator[0].fields["Текст"], /Что ты отвечаешь Ивану/);
+assert.equal(messageWithoutSeparator[1].text, "Что ты отвечаешь Ивану?");
+
+const questionInsideMessage = parseStructuredNarrative(`СООБЩЕНИЕ
+Канал: корпоративный мессенджер
+Чат: личный чат
+От: Иван Козырев
+Кому: employee@ptsecurity.com
+Текст:
+Привет.
+
+Что ты думаешь?`);
+assert.deepEqual(questionInsideMessage.map((segment) => segment.type), ["messenger"]);
+assert.match(questionInsideMessage[0].fields["Текст"], /Что ты думаешь\?/);
+
 console.log("structured content parser: ok");
