@@ -319,14 +319,173 @@ function renderHistory(turns, fallbackOpening = "") {
   if (!turns.length && fallbackOpening) appendMessage("gm", "Рассказчик", fallbackOpening);
 }
 
+function initials(value) {
+  const name = String(value || "").replace(/<[^>]+>/g, " ").trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  return (parts.slice(0, 2).map((part) => part[0]).join("") || "?").toLocaleUpperCase("ru-RU");
+}
+
+function appendArtifactChips(container, fields) {
+  const items = [
+    ["Вложения", fields["Вложения"]],
+    ["Ссылки", fields["Ссылки"]],
+  ].filter(([, value]) => value && String(value).trim().toLocaleLowerCase("ru-RU") !== "нет");
+  if (!items.length) return;
+  const row = document.createElement("div");
+  row.className = "artifact-chips";
+  for (const [label, value] of items) {
+    const chip = document.createElement("span");
+    chip.className = `artifact-chip artifact-chip-${label === "Ссылки" ? "link" : "attachment"}`;
+    chip.textContent = `${label}: ${value}`;
+    row.append(chip);
+  }
+  container.append(row);
+}
+
+function renderEmailArtifact(segment) {
+  const fields = segment.fields;
+  const card = document.createElement("section");
+  card.className = "artifact-card email-card";
+  card.setAttribute("aria-label", `Письмо: ${fields["Тема"] || "без темы"}`);
+
+  const appbar = document.createElement("div");
+  appbar.className = "artifact-appbar email-appbar";
+  const appIcon = document.createElement("span");
+  appIcon.className = "artifact-app-icon";
+  appIcon.textContent = "O";
+  const appName = document.createElement("strong");
+  appName.textContent = "Outlook";
+  const folder = document.createElement("span");
+  folder.textContent = fields["Канал"] ? `Входящие · ${fields["Канал"]}` : "Входящие";
+  appbar.append(appIcon, appName, folder);
+
+  const subject = document.createElement("h3");
+  subject.className = "email-subject";
+  subject.textContent = fields["Тема"] || "Без темы";
+
+  const senderRow = document.createElement("div");
+  senderRow.className = "artifact-sender-row";
+  const avatar = document.createElement("span");
+  avatar.className = "artifact-avatar email-avatar";
+  avatar.textContent = initials(fields["От"]);
+  const senderCopy = document.createElement("div");
+  senderCopy.className = "artifact-sender-copy";
+  const sender = document.createElement("strong");
+  sender.textContent = fields["От"] || "Неизвестный отправитель";
+  const recipient = document.createElement("span");
+  recipient.textContent = `Кому: ${fields["Кому"] || "не указано"}`;
+  senderCopy.append(sender, recipient);
+  const date = document.createElement("time");
+  date.textContent = fields["Дата/время"] || "";
+  senderRow.append(avatar, senderCopy, date);
+
+  const chrome = document.createElement("div");
+  chrome.className = "email-chrome";
+  chrome.append(appbar, subject, senderRow);
+  appendArtifactChips(chrome, fields);
+
+  const body = document.createElement("div");
+  body.className = "email-body";
+  const bodyText = document.createElement("p");
+  bodyText.textContent = fields["Тело"] || "";
+  body.append(bodyText);
+  if (fields["Подпись"]) {
+    const signature = document.createElement("div");
+    signature.className = "email-signature";
+    signature.textContent = fields["Подпись"];
+    body.append(signature);
+  }
+
+  card.append(chrome, body);
+  return card;
+}
+
+function renderMessengerArtifact(segment) {
+  const fields = segment.fields;
+  const card = document.createElement("section");
+  card.className = "artifact-card messenger-card";
+  card.setAttribute("aria-label", `Сообщение: ${fields["Чат"] || "личный чат"}`);
+
+  const header = document.createElement("div");
+  header.className = "messenger-header";
+  const plane = document.createElement("span");
+  plane.className = "telegram-mark";
+  plane.textContent = "➤";
+  const title = document.createElement("div");
+  const channel = document.createElement("strong");
+  channel.textContent = fields["Чат"] || "Личный чат";
+  const status = document.createElement("span");
+  status.textContent = fields["Канал"] || "мессенджер";
+  title.append(channel, status);
+  header.append(plane, title);
+
+  const conversation = document.createElement("div");
+  conversation.className = "messenger-conversation";
+  const avatar = document.createElement("span");
+  avatar.className = "artifact-avatar telegram-avatar";
+  avatar.textContent = initials(fields["От"]);
+  const stack = document.createElement("div");
+  stack.className = "telegram-stack";
+  const sender = document.createElement("strong");
+  sender.className = "telegram-sender";
+  sender.textContent = fields["От"] || "Неизвестный отправитель";
+  const bubble = document.createElement("div");
+  bubble.className = "telegram-bubble";
+  const message = document.createElement("p");
+  message.textContent = fields["Текст"] || "";
+  const meta = document.createElement("span");
+  meta.className = "telegram-meta";
+  meta.textContent = fields["Дата/время"] || "";
+  bubble.append(message, meta);
+  stack.append(sender, bubble);
+  conversation.append(avatar, stack);
+
+  card.append(header, conversation);
+  appendArtifactChips(card, fields);
+  if (fields["Кому"]) {
+    const recipient = document.createElement("small");
+    recipient.className = "messenger-recipient";
+    recipient.textContent = `Получатель: ${fields["Кому"]}`;
+    card.append(recipient);
+  }
+  return card;
+}
+
+function renderNarrativeContent(container, content) {
+  const parser = globalThis.StructuredContent?.parseStructuredNarrative;
+  const segments = parser ? parser(content) : [{ type: "text", text: String(content || "") }];
+  const hasArtifacts = segments.some((segment) => segment.type === "email" || segment.type === "messenger");
+  for (const segment of segments) {
+    if (segment.type === "email") container.append(renderEmailArtifact(segment));
+    else if (segment.type === "messenger") container.append(renderMessengerArtifact(segment));
+    else {
+      const text = document.createElement("p");
+      text.className = "narrative-copy";
+      text.textContent = segment.text;
+      container.append(text);
+    }
+  }
+  return hasArtifacts;
+}
+
 function appendMessage(kind, author, content, pending = false) {
   const article = document.createElement("article");
   article.className = `message message-${kind}${pending ? " message-pending" : ""}`;
   const heading = document.createElement("strong");
   heading.textContent = author;
-  const text = document.createElement("p");
-  text.textContent = content;
-  article.append(heading, text);
+  const body = document.createElement("div");
+  body.className = "message-content";
+  let hasArtifacts = false;
+  if (kind === "gm") {
+    hasArtifacts = renderNarrativeContent(body, content);
+  } else {
+    const text = document.createElement("p");
+    text.className = "narrative-copy";
+    text.textContent = content;
+    body.append(text);
+  }
+  if (hasArtifacts) article.classList.add("message-rich");
+  article.append(heading, body);
   els.chatThread.append(article);
   article.scrollIntoView({ behavior: "smooth", block: "end" });
   return article;
