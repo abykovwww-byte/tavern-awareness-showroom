@@ -533,6 +533,95 @@ h3 {
   text-transform: uppercase;
 }
 
+.message-content {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.message-rich {
+  width: min(900px, 100%);
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  white-space: normal;
+}
+
+.message-rich > .role {
+  margin: 0 0 2px 4px;
+}
+
+.message-rich .narrative-copy {
+  width: fit-content;
+  max-width: 82%;
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(31, 36, 39, 0.78);
+  line-height: 1.52;
+  white-space: pre-wrap;
+}
+
+.artifact-card {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28);
+  overflow-wrap: anywhere;
+}
+
+.artifact-appbar { display: flex; align-items: center; gap: 9px; }
+.artifact-appbar > span:last-child { margin-left: auto; opacity: 0.72; font-size: 0.8rem; }
+.artifact-app-icon { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 5px; font-weight: 800; }
+.artifact-sender-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; }
+.artifact-avatar { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 999px; font-size: 0.78rem; font-weight: 800; }
+.artifact-sender-copy { min-width: 0; display: grid; }
+.artifact-sender-copy strong { overflow-wrap: anywhere; }
+.artifact-sender-copy span,
+.artifact-sender-row time { color: #5e6470; font-size: 0.78rem; }
+.artifact-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.artifact-chip { max-width: 100%; padding: 5px 9px; border-radius: 7px; overflow-wrap: anywhere; font-size: 0.76rem; }
+
+.email-card { background: #f7f8fb; color: #202124; border-color: rgba(0, 0, 0, 0.16); }
+.email-chrome { padding: 14px 18px 16px; border-bottom: 1px solid #e0e3e8; background: #fff; }
+.email-appbar { margin: -14px -18px 16px; padding: 9px 12px; background: #0f6cbd; color: white; }
+.email-appbar .artifact-app-icon { background: white; color: #0f6cbd; }
+.email-subject { margin: 0 0 15px; font-size: 1.15rem; line-height: 1.25; letter-spacing: -0.015em; }
+.email-avatar { background: #d9eaf7; color: #0f548c; }
+.email-body { min-height: 180px; padding: 22px 22px 25px; background: #fff; font-family: "Segoe UI", Arial, sans-serif; }
+.email-body p { margin: 0; line-height: 1.55; white-space: pre-wrap; }
+.email-signature { margin-top: 24px; padding-top: 17px; border-top: 1px solid #e6e8eb; color: #4d5158; white-space: pre-wrap; font-size: 0.88rem; }
+.email-card .artifact-chip { border: 1px solid #d6dbe2; background: #f4f6f9; color: #3f4650; }
+.email-card .artifact-chip-link { color: #0f6cbd; }
+
+.messenger-card {
+  padding-bottom: 13px;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.035) 0 2px, transparent 3px),
+    radial-gradient(circle at 75% 70%, rgba(255, 255, 255, 0.025) 0 2px, transparent 3px),
+    #0e2838;
+  background-size: 42px 42px, 54px 54px, auto;
+  color: #f5f8fa;
+  border-color: rgba(62, 166, 220, 0.28);
+}
+.messenger-header { display: flex; align-items: center; gap: 11px; padding: 11px 15px; background: #172f3f; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.messenger-header > div { display: grid; line-height: 1.2; }
+.messenger-header span:not(.telegram-mark) { margin-top: 3px; color: #8da5b4; font-size: 0.76rem; }
+.telegram-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 999px; background: #2aabee; color: white; transform: rotate(-18deg); }
+.messenger-conversation { display: flex; align-items: flex-end; gap: 9px; padding: 20px 15px 4px; }
+.telegram-avatar { background: linear-gradient(145deg, #4fc3f7, #247ba0); color: white; }
+.telegram-stack { min-width: 0; max-width: min(78%, 620px); }
+.telegram-sender { display: block; margin: 0 0 5px 7px; color: #77d2ff; font-size: 0.78rem; }
+.telegram-bubble { position: relative; padding: 10px 12px 7px; border-radius: 7px 14px 14px 14px; background: #2b5278; box-shadow: 0 5px 16px rgba(0, 0, 0, 0.22); }
+.telegram-bubble::before { content: ""; position: absolute; left: -6px; top: 0; border-top: 7px solid #2b5278; border-left: 7px solid transparent; }
+.telegram-bubble p { margin: 0; line-height: 1.45; white-space: pre-wrap; }
+.telegram-meta { display: block; margin-top: 5px; color: #a8c6d7; text-align: right; font-size: 0.69rem; }
+.messenger-card .artifact-chips { padding: 0 15px 0 64px; }
+.messenger-card .artifact-chip { background: rgba(43, 82, 120, 0.7); color: #d8edf8; border: 1px solid rgba(119, 210, 255, 0.2); }
+.messenger-recipient { display: block; padding: 8px 15px 0 64px; color: #8da5b4; }
+
 .pending-line,
 .message-status-bar {
   display: flex;
@@ -1383,4 +1472,12 @@ button:disabled {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .message-rich .narrative-copy { max-width: 100%; }
+  .artifact-sender-row { grid-template-columns: auto minmax(0, 1fr); }
+  .artifact-sender-row time { grid-column: 2; }
+  .email-body { min-height: 0; padding: 18px; }
+  .telegram-stack { max-width: calc(100% - 49px); }
+  .messenger-card .artifact-chips,
+  .messenger-recipient { padding-left: 15px; }
 }

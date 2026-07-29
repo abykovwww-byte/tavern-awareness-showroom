@@ -2780,10 +2780,91 @@ function stateItem(title, body, hint) {
   return `<div class="state-item" title="${escapeHtml(hint || "")}"><strong>${escapeHtml(title)}</strong>${body}</div>`;
 }
 
+function artifactInitials(value) {
+  const name = String(value || "").replace(/<[^>]+>/g, " ").trim();
+  const parts = name.split(/\s+/).filter(Boolean);
+  return (parts.slice(0, 2).map((part) => part[0]).join("") || "?").toLocaleUpperCase("ru-RU");
+}
+
+function artifactChipsHtml(fields) {
+  const items = [
+    ["Вложения", fields["Вложения"]],
+    ["Ссылки", fields["Ссылки"]],
+  ].filter(([, value]) => value && String(value).trim().toLocaleLowerCase("ru-RU") !== "нет");
+  if (!items.length) return "";
+  return `<div class="artifact-chips">${items
+    .map(([label, value]) => `<span class="artifact-chip artifact-chip-${label === "Ссылки" ? "link" : "attachment"}">${escapeHtml(`${label}: ${value}`)}</span>`)
+    .join("")}</div>`;
+}
+
+function emailArtifactHtml(fields) {
+  const subject = fields["Тема"] || "Без темы";
+  const sender = fields["От"] || "Неизвестный отправитель";
+  const recipient = fields["Кому"] || "не указано";
+  const folder = fields["Канал"] ? `Входящие · ${fields["Канал"]}` : "Входящие";
+  const signature = fields["Подпись"]
+    ? `<div class="email-signature">${escapeHtml(fields["Подпись"])}</div>`
+    : "";
+  return `<section class="artifact-card email-card" aria-label="${escapeHtml(`Письмо: ${subject}`)}">
+    <div class="email-chrome">
+      <div class="artifact-appbar email-appbar"><span class="artifact-app-icon">O</span><strong>Outlook</strong><span>${escapeHtml(folder)}</span></div>
+      <h3 class="email-subject">${escapeHtml(subject)}</h3>
+      <div class="artifact-sender-row">
+        <span class="artifact-avatar email-avatar">${escapeHtml(artifactInitials(sender))}</span>
+        <div class="artifact-sender-copy"><strong>${escapeHtml(sender)}</strong><span>Кому: ${escapeHtml(recipient)}</span></div>
+        <time>${escapeHtml(fields["Дата/время"] || "")}</time>
+      </div>
+      ${artifactChipsHtml(fields)}
+    </div>
+    <div class="email-body"><p>${escapeHtml(fields["Тело"] || "")}</p>${signature}</div>
+  </section>`;
+}
+
+function messengerArtifactHtml(fields) {
+  const chat = fields["Чат"] || "Личный чат";
+  const sender = fields["От"] || "Неизвестный отправитель";
+  const recipient = fields["Кому"]
+    ? `<small class="messenger-recipient">Получатель: ${escapeHtml(fields["Кому"])}</small>`
+    : "";
+  return `<section class="artifact-card messenger-card" aria-label="${escapeHtml(`Сообщение: ${chat}`)}">
+    <div class="messenger-header">
+      <span class="telegram-mark">➤</span>
+      <div><strong>${escapeHtml(chat)}</strong><span>${escapeHtml(fields["Канал"] || "мессенджер")}</span></div>
+    </div>
+    <div class="messenger-conversation">
+      <span class="artifact-avatar telegram-avatar">${escapeHtml(artifactInitials(sender))}</span>
+      <div class="telegram-stack">
+        <strong class="telegram-sender">${escapeHtml(sender)}</strong>
+        <div class="telegram-bubble"><p>${escapeHtml(fields["Текст"] || "")}</p><span class="telegram-meta">${escapeHtml(fields["Дата/время"] || "")}</span></div>
+      </div>
+    </div>
+    ${artifactChipsHtml(fields)}
+    ${recipient}
+  </section>`;
+}
+
+function narrativeContentHtml(content) {
+  const parser = globalThis.StructuredContent?.parseStructuredNarrative;
+  const segments = parser ? parser(content) : [{ type: "text", text: String(content || "") }];
+  const hasArtifacts = segments.some((segment) => segment.type === "email" || segment.type === "messenger");
+  if (!hasArtifacts) return { html: escapeHtml(content || ""), hasArtifacts: false };
+  const html = segments
+    .map((segment) => {
+      if (segment.type === "email") return emailArtifactHtml(segment.fields);
+      if (segment.type === "messenger") return messengerArtifactHtml(segment.fields);
+      return `<div class="narrative-copy">${escapeHtml(segment.text || "")}</div>`;
+    })
+    .join("");
+  return { html, hasArtifacts: true };
+}
+
 function messageHtml(kind, role, content) {
-  return `<article class="message ${kind}">
+  const rendered = kind === "assistant"
+    ? narrativeContentHtml(content)
+    : { html: escapeHtml(content || ""), hasArtifacts: false };
+  return `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>
-    ${escapeHtml(content || "")}
+    <div class="message-content">${rendered.html}</div>
   </article>`;
 }
 
