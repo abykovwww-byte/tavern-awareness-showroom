@@ -364,7 +364,7 @@ async function openAdmin() {
       location.hash = "admin";
       return;
     }
-    if (!auth.user.is_admin) throw new Error("Требуется роль администратора Gateway.");
+    if (auth.user.role !== "admin") throw new Error("Требуется роль администратора Gateway.");
     await loadAdminData();
     showView("admin");
     location.hash = "admin";
@@ -384,7 +384,7 @@ async function loginAdmin(event) {
       username: els.adminUsernameInput.value.trim(),
       password: els.adminPasswordInput.value,
     });
-    if (!result.user?.is_admin) throw new Error("У пользователя нет роли администратора.");
+    if (result.user?.role !== "admin") throw new Error("У пользователя нет роли администратора.");
     els.adminPasswordInput.value = "";
     await openAdmin();
   } catch (error) {
