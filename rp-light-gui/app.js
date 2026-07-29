@@ -1477,7 +1477,7 @@ function renderDialogModelOptions() {
 }
 
 function renderWorldOptions() {
-  const scenarioType = selectedRadioValue("scenarioType");
+  const scenarioType = selectedRadioValue("scenarioType", "");
   const previous = els.worldSelect.value;
   const available = appState.worldpacks.filter((pack) => worldSupportsScenario(pack, scenarioType));
   els.worldSelect.innerHTML = available
@@ -1575,7 +1575,7 @@ function syncReadyCharacterDescription() {
 async function createParty(event) {
   event.preventDefault();
   const modelProfileId = els.modelSelect.value;
-  const scenarioType = selectedRadioValue("scenarioType");
+  const scenarioType = selectedRadioValue("scenarioType", "");
   const characterPrompt = selectedRadioValue("characterSource") === "prompt";
   try {
     setBusy(true, "Создаю партию и стартового персонажа...");
@@ -2808,8 +2808,8 @@ function perMillionPriceValue(value) {
   return price * 1_000_000;
 }
 
-function selectedRadioValue(name) {
-  return document.querySelector(`input[name='${name}']:checked`)?.value || "ready";
+function selectedRadioValue(name, fallback = "ready") {
+  return document.querySelector(`input[name='${name}']:checked`)?.value || fallback;
 }
 
 function sourceLabel(source) {
