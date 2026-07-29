@@ -50,6 +50,30 @@ CONFIDENTIAL_DISCLOSURE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 REPORT_DETAIL_RE = re.compile(r"\b(?:отправител|адрес|домен|врем|тем|вложени|ссылк|канал)\w*", re.IGNORECASE)
+INDEPENDENT_VERIFY_RE = re.compile(
+    r"\b(?:проверяю|уточняю|сверяю|перезваниваю|связываюсь|подтверждаю|verify|check|call back)\b.{0,180}"
+    r"\b(?:по\s+(?:корпоративн|официальн|известн)\w*\s+канал|в\s+каталог|у\s+(?:руководител|отправител|владельц)|"
+    r"через\s+(?:портал|service desk|службу поддержки|менеджер))\w*",
+    re.IGNORECASE | re.DOTALL,
+)
+EXPLICIT_REFUSAL_RE = re.compile(
+    r"\b(?:не\s+(?:открываю|скачиваю|перехожу|ввожу|сообщаю|передаю|отправляю|пересылаю)|"
+    r"отказываюсь|отклоняю|блокирую|не\s+буду|refuse|decline|do\s+not)\b",
+    re.IGNORECASE,
+)
+PROFESSIONAL_RESPONSE_RE = re.compile(
+    r"\b(?:отвечаю|пишу|сообщаю|подтверждаю|уточняю|проверяю|сверяю|фиксирую|обновляю|"
+    r"готовлю|направляю|передаю|назначаю|создаю|регистрирую|отклоняю|эскалирую|"
+    r"reply|respond|confirm|clarify|verify|update|assign|register|decline|escalate)\b",
+    re.IGNORECASE,
+)
+ROLE_ALIGNED_ACTION_RE = re.compile(
+    r"\b(?:статус|задач|тикет|заявк|проект|код|ревью|документ|встреч|календар|дедлайн|"
+    r"срок|блокер|результат|владелец|ответственн|руководител|менеджер|компетенц|"
+    r"полномочи|зона\s+ответственности|служебн\w*\s+обязанност|рабоч\w*\s+канал|"
+    r"status|task|ticket|project|review|document|meeting|deadline|owner|manager|responsibilit)\w*",
+    re.IGNORECASE,
+)
 AWARENESS_TURN_WINDOWS = {
     1: "ход 1, понедельник, 10:00-14:00",
     2: "ход 2, понедельник, 15:00-18:00",
@@ -63,6 +87,20 @@ AWARENESS_TURN_WINDOWS = {
     10: "ход 10, пятница, 15:00-18:00",
 }
 AWARENESS_DEBRIEF_WINDOW = "итоговый разбор после хода 10"
+AWARENESS_ONE_DAY_ID = "awareness-one-day"
+AWARENESS_ONE_DAY_TURN_WINDOWS = {
+    1: "ход 1, понедельник, 09:00-09:30",
+    2: "ход 2, понедельник, 09:30-10:15",
+    3: "ход 3, понедельник, 10:15-11:00",
+    4: "ход 4, понедельник, 11:00-12:00",
+    5: "ход 5, понедельник, 12:00-13:00",
+    6: "ход 6, понедельник, 13:00-14:15",
+    7: "ход 7, понедельник, 14:15-15:15",
+    8: "ход 8, понедельник, 15:15-16:15",
+    9: "ход 9, понедельник, 16:15-17:15",
+    10: "ход 10, понедельник, 17:15-18:00",
+}
+AWARENESS_ONE_DAY_SECURITY_TURNS = {2, 4, 5, 7, 9, 10}
 
 
 def clamp(value: int, low: int, high: int) -> int:
@@ -77,7 +115,22 @@ def normalize_tokens(value: str) -> set[str]:
     return {token for token in re.split(r"[^a-z0-9]+", value.lower()) if len(token) >= 4}
 
 
-def awareness_turn_window(turn: int) -> str | None:
+def awareness_campaign_id(state: dict[str, Any], campaign_id: str | None = None) -> str:
+    state_id = str(state.get("meta", {}).get("worldpack_id") or state.get("meta", {}).get("campaign_id") or "")
+    if campaign_id in {"awareness", AWARENESS_ONE_DAY_ID}:
+        return str(campaign_id)
+    if state_id in {"awareness", AWARENESS_ONE_DAY_ID}:
+        return state_id
+    return ""
+
+
+def awareness_turn_window(
+    turn: int,
+    state: dict[str, Any] | None = None,
+    campaign_id: str | None = None,
+) -> str | None:
+    if state is not None and is_awareness_one_day_campaign(state, campaign_id):
+        return AWARENESS_ONE_DAY_TURN_WINDOWS.get(turn)
     return AWARENESS_TURN_WINDOWS.get(turn)
 
 
@@ -86,7 +139,11 @@ def awareness_turns_remaining(turn: int) -> int:
 
 
 def is_awareness_campaign(state: dict[str, Any], campaign_id: str | None = None) -> bool:
-    return campaign_id == "awareness" or state.get("meta", {}).get("campaign_id") == "awareness"
+    return awareness_campaign_id(state, campaign_id) in {"awareness", AWARENESS_ONE_DAY_ID}
+
+
+def is_awareness_one_day_campaign(state: dict[str, Any], campaign_id: str | None = None) -> bool:
+    return awareness_campaign_id(state, campaign_id) == AWARENESS_ONE_DAY_ID
 
 
 def awareness_state_after_auto_start(
@@ -101,7 +158,7 @@ def awareness_state_after_auto_start(
     cloned = copy.deepcopy(state)
     cloned.setdefault("meta", {})["turn"] = 1
     resources = cloned.setdefault("player", {}).setdefault("resources", {})
-    resources["current-turn-window"] = awareness_turn_window(1)
+    resources["current-turn-window"] = awareness_turn_window(1, cloned, campaign_id)
     resources["turns-remaining"] = awareness_turns_remaining(1)
     return cloned
 
@@ -236,7 +293,10 @@ class RuleEngine:
             )
         ]
         if scenario_type == "training":
-            operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
+            if is_awareness_one_day_campaign(state, campaign_id):
+                operations.extend(self.awareness_one_day_scoring_operations(state, intent, turn, campaign_id))
+            else:
+                operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
             operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
         return StatePatch(
             turn=turn,
@@ -416,7 +476,10 @@ class RuleEngine:
                         turn=turn,
                     )
                 )
-        operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
+        if is_awareness_one_day_campaign(state, campaign_id):
+            operations.extend(self.awareness_one_day_scoring_operations(state, intent, turn, campaign_id))
+        else:
+            operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
         operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
         trust_delta, suspicion_delta = self.relationship_delta(intent.action_type, outcome.result)
         if relationship_key and intent.target and (trust_delta or suspicion_delta):
@@ -516,7 +579,7 @@ class RuleEngine:
     ) -> list[PatchOperation]:
         if not is_awareness_campaign(state, campaign_id):
             return []
-        window = awareness_turn_window(turn)
+        window = awareness_turn_window(turn, state, campaign_id)
         if turn == 11:
             window = AWARENESS_DEBRIEF_WINDOW
         if not window:
@@ -526,14 +589,14 @@ class RuleEngine:
                 state,
                 "current-turn-window",
                 window,
-                "Advances Awareness to the scheduled half-day window.",
+                "Advances Awareness to the next authored message window.",
                 turn,
             ),
             self.resource_value_operation(
                 state,
                 "turns-remaining",
                 awareness_turns_remaining(turn),
-                "Tracks remaining Awareness half-day turns.",
+                "Tracks remaining Awareness message turns.",
                 turn,
             ),
         ]
@@ -548,6 +611,81 @@ class RuleEngine:
                 )
             )
         return operations
+
+    def awareness_one_day_scoring_operations(
+        self,
+        state: dict[str, Any],
+        intent: Intent,
+        turn: int,
+        campaign_id: str | None = None,
+    ) -> list[PatchOperation]:
+        if not is_awareness_one_day_campaign(state, campaign_id):
+            return []
+        text = intent.desired_outcome
+        event_turn = int(state.get("meta", {}).get("turn", 0) or 0)
+        deltas: dict[str, int] = {}
+
+        def add(resource_id: str, delta: int) -> None:
+            deltas[resource_id] = deltas.get(resource_id, 0) + delta
+
+        dangerous_file = bool(DOUBLE_EXTENSION_RE.search(text)) and self.explicit_action(DANGEROUS_FILE_ACTION_RE, text)
+        unsafe_forward = self.explicit_action(FORWARD_TO_OTHERS_RE, text) and bool(SUSPICIOUS_CONTENT_RE.search(text))
+        credential_exposure = self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text)
+        confidential_disclosure = self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text)
+        unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure
+        safe_security_action = (
+            self.explicit_action(SOC_REPORT_RE, text)
+            or self.explicit_action(INDEPENDENT_VERIFY_RE, text)
+            or bool(EXPLICIT_REFUSAL_RE.search(text))
+        )
+        professional_response = self.explicit_action(PROFESSIONAL_RESPONSE_RE, text)
+        role_aligned = professional_response and (
+            bool(ROLE_ALIGNED_ACTION_RE.search(text))
+            or safe_security_action
+        )
+
+        if event_turn in AWARENESS_ONE_DAY_SECURITY_TURNS:
+            if safe_security_action and not unsafe:
+                add("security-score", 10)
+                add("safe-security-responses", 1)
+            if unsafe:
+                add("unsafe-actions", 1)
+                if dangerous_file:
+                    add("suspicious-artifacts-opened", 1)
+                if credential_exposure:
+                    add("credential-exposure", 1)
+                if confidential_disclosure:
+                    add("confidential-disclosures", 1)
+                if unsafe_forward:
+                    add("unnecessary-forwarding", 1)
+        if role_aligned:
+            add("roleplay-score", 3)
+            add("role-aligned-responses", 1)
+        if professional_response:
+            add("communication-score", 1)
+            add("professional-responses", 1)
+
+        resources = state.get("player", {}).get("resources", {})
+        security_score = int(resources.get("security-score", 0) or 0) + deltas.get("security-score", 0)
+        roleplay_score = int(resources.get("roleplay-score", 0) or 0) + deltas.get("roleplay-score", 0)
+        communication_score = int(resources.get("communication-score", 0) or 0) + deltas.get("communication-score", 0)
+        deltas["total-score"] = (
+            clamp(security_score, 0, 60)
+            + clamp(roleplay_score, 0, 30)
+            + clamp(communication_score, 0, 10)
+        ) - int(resources.get("total-score", 0) or 0)
+
+        return [
+            self.resource_delta_operation(
+                state,
+                resource_id,
+                delta,
+                f"Deterministic Awareness One Day scoring delta for explicit player action: {delta:+d}.",
+                turn,
+            )
+            for resource_id, delta in deltas.items()
+            if delta
+        ]
 
     def resource_delta_operation(self, state: dict[str, Any], resource_id: str, delta: int, reason: str, turn: int) -> PatchOperation:
         resources = state.get("player", {}).get("resources", {})

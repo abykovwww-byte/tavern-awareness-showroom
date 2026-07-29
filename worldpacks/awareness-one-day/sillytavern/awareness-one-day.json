@@ -1,0 +1,35 @@
+{
+  "entries": {
+    "0": {
+      "uid": 0,
+      "key": ["Awareness. One day", "рабочий день", "корпоративная почта", "рабочий мессенджер"],
+      "keysecondary": [],
+      "comment": "Awareness One Day compatibility context",
+      "content": "Один рабочий день сотрудника PT Security: десять последовательных писем или сообщений, по одному на ход. Профессия и обычные рабочие запросы адаптируются к описанию персонажа. Canonical Gateway state всегда определяет текущий ход, scoring и момент итогового разбора.",
+      "constant": true,
+      "vectorized": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "addMemo": true,
+      "order": 100,
+      "position": 0,
+      "disable": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "group": "",
+      "groupOverride": false,
+      "groupWeight": 100,
+      "scanDepth": null,
+      "caseSensitive": null,
+      "matchWholeWords": null,
+      "useGroupScoring": null,
+      "automationId": "",
+      "role": 0,
+      "sticky": 0,
+      "cooldown": 0,
+      "delay": 0,
+      "triggers": []
+    }
+  }
+}

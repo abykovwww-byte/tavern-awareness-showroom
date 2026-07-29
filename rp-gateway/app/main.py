@@ -77,7 +77,7 @@ from app.services.nvidia_catalog import normalize_provider, provider_api_key, pr
 from app.services.provider_auth import outbound_headers
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
-from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining
+from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator
@@ -1809,10 +1809,10 @@ def party_start_state_patch(
 ) -> StatePatch | None:
     if scenario_type != "training":
         return None
-    if worldpack_id != "awareness" and state.get("meta", {}).get("campaign_id") != "awareness":
+    if not is_awareness_campaign(state, worldpack_id):
         return None
     turn = 1
-    window = awareness_turn_window(turn)
+    window = awareness_turn_window(turn, state, worldpack_id)
     if not window:
         return None
     resources = state.get("player", {}).get("resources", {})
@@ -1821,14 +1821,14 @@ def party_start_state_patch(
             resources,
             "current-turn-window",
             window,
-            "Marks Awareness opening scene as the first scheduled half-day.",
+            "Marks Awareness opening scene as the first scheduled message window.",
             turn,
         ),
         resource_value_patch(
             resources,
             "turns-remaining",
             awareness_turns_remaining(turn),
-            "Tracks remaining Awareness half-day turns after opening.",
+            "Tracks remaining Awareness message turns after opening.",
             turn,
         ),
         PatchOperation(
@@ -1836,7 +1836,7 @@ def party_start_state_patch(
             path="/timeline/-",
             value={
                 "turn": turn,
-                "event": "Ход 1 Awareness открыт: понедельник, 10:00-14:00.",
+                "event": f"Ход 1 Awareness открыт: {window}.",
                 "confirmed": True,
                 "participants": ["player"],
             },

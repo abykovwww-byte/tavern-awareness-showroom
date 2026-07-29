@@ -1,0 +1,115 @@
+{
+  "meta": {
+    "campaign_id": "awareness-one-day",
+    "schema_version": "1.0.0",
+    "state_version": 1,
+    "turn": 0,
+    "last_updated": "2026-07-29T00:00:00Z"
+  },
+  "player": {
+    "location": "pt-security-office-monday-0900",
+    "status": "active",
+    "reputation": {
+      "team": 0,
+      "management": 0,
+      "corporate-soc": 0
+    },
+    "resources": {
+      "turns-remaining": 10,
+      "current-turn-window": "ход 1, понедельник, 09:00-09:30",
+      "completion-status": "active",
+      "security-score": 0,
+      "roleplay-score": 0,
+      "communication-score": 0,
+      "total-score": 0,
+      "safe-security-responses": 0,
+      "role-aligned-responses": 0,
+      "professional-responses": 0,
+      "unsafe-actions": 0,
+      "credential-exposure": 0,
+      "suspicious-artifacts-opened": 0,
+      "confidential-disclosures": 0,
+      "unnecessary-forwarding": 0
+    },
+    "known_abilities": [
+      "выполнять рабочие обязанности, указанные в описании персонажа",
+      "отвечать на письма и сообщения в деловом стиле",
+      "обозначать границы полномочий и передавать вопрос правильному владельцу",
+      "проверять необычную просьбу по независимому корпоративному каналу",
+      "сообщать о подозрительном событии в SOC или специалисту ДИБ"
+    ],
+    "constraints": [
+      "Оцениваются только действия, явно заявленные игроком в текущем ответе.",
+      "Описание должности персонажа определяет предмет обычных рабочих запросов, но не расширяет доступы и полномочия автоматически.",
+      "До итогового разбора нельзя раскрывать баллы, правильность, подсказки или скрытую структуру сценария."
+    ],
+    "known_world_facts": [
+      {
+        "id": "one_workday",
+        "text": "Сценарий длится один рабочий день, десять ходов и отдельный итоговый разбор.",
+        "turn": 0,
+        "confidence": "confirmed",
+        "source": "worldpack"
+      }
+    ]
+  },
+  "characters": {},
+  "factions": {},
+  "locations": {
+    "pt-security-office": {
+      "description": "Учебная версия офиса PT Security с корпоративной почтой и рабочим мессенджером.",
+      "known_facts": [],
+      "constraints": ["За один ход появляется ровно одно новое письмо или сообщение."]
+    }
+  },
+  "resources": {},
+  "relationships": {},
+  "active_threads": [
+    {
+      "id": "awareness-one-day-schedule",
+      "description": "Пройти десять сообщений рабочего дня и завершить отдельным разбором.",
+      "state": "active",
+      "participants": ["player"],
+      "deadlines": ["после ответа на ход 10"],
+      "success_conditions": ["завершены десять игровых решений"],
+      "failure_conditions": [],
+      "confirmed_consequences": []
+    }
+  ],
+  "completed_threads": [],
+  "world_constraints": [
+    {
+      "id": "one-surface-per-turn",
+      "text": "Каждый игровой ход содержит ровно одно полное письмо или одно полное сообщение в чате.",
+      "scope": "training-output",
+      "turn": 0
+    },
+    {
+      "id": "deterministic-scoring",
+      "text": "Безопасность, ролевая уместность и коммуникация считаются только по явно заявленным действиям.",
+      "scope": "gateway",
+      "turn": 0
+    },
+    {
+      "id": "debrief-gate",
+      "text": "Оценка и объяснения разрешены только после ответа игрока на ход 10.",
+      "scope": "training-output",
+      "turn": 0
+    }
+  ],
+  "timeline": [
+    {
+      "turn": 0,
+      "event": "Рабочий день готов к началу.",
+      "confirmed": true,
+      "participants": ["player"]
+    }
+  ],
+  "last_turn": {
+    "turn": 0,
+    "player_message": "",
+    "narrator_response": "",
+    "state_patch_id": ""
+  },
+  "uncertain_facts": []
+}

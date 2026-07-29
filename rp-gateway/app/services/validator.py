@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.models.schemas import Outcome, ValidationResult
-from app.services.rule_engine import is_awareness_campaign
+from app.services.rule_engine import is_awareness_campaign, is_awareness_one_day_campaign
 
 
 SERVICE_LINE_RE = re.compile(
@@ -156,7 +156,10 @@ class OutputValidator:
                 missing = missing_fields(block, MESSENGER_REQUIRED_FIELDS)
                 if missing:
                     violations.append(f"Awareness messenger block {index} is missing required fields: {', '.join(missing)}")
-            if expected_header and expected_header.startswith("Ход 1."):
+            if not final_summary and is_awareness_one_day_campaign(state or {}, campaign_id):
+                if len(email_blocks) + len(messenger_blocks) != 1:
+                    violations.append("Awareness One Day turn must contain exactly one email or messenger message.")
+            elif expected_header and expected_header.startswith("Ход 1."):
                 if len(email_blocks) < 2:
                     violations.append("Awareness opening must include at least two full PISMO blocks.")
                 if len(messenger_blocks) < 1:
@@ -206,6 +209,8 @@ def safe_fallback(
 def awareness_safe_fallback(state: dict[str, Any], latest_user_message: str) -> str:
     if awareness_final_summary(state):
         return awareness_debrief_fallback(state)
+    if is_awareness_one_day_campaign(state):
+        return awareness_one_day_safe_fallback(state)
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
     header = awareness_header_from_window(window) if isinstance(window, str) else None
@@ -275,10 +280,84 @@ Email: sheveleva@ptsecurity.com
 Как отвечаешь на эти обращения и что ставишь первым в текущем рабочем блоке?"""
 
 
+def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
+    resources = state.get("player", {}).get("resources", {})
+    window = resources.get("current-turn-window") if isinstance(resources, dict) else None
+    turn = int(state.get("meta", {}).get("turn", 0) or 0)
+    header = awareness_header_from_window(window) if isinstance(window, str) else None
+    header = header or f"Ход {max(turn, 1)}. Понедельник, рабочее время."
+    events = {
+        1: ("email", "Анна Петрова <petrova@ptsecurity.com>", "План на сегодня", "До 09:45 пришли короткий план по своим задачам: приоритет, ожидаемый результат и возможный блокер."),
+        2: ("chat", "Генеральный директор <ceo_support>", "", "Я между встречами. Срочно подтверди оплату нового подрядчика и пришли контакт ответственного в финансах. Руководителя пока не подключай."),
+        3: ("chat", "Максим Карелин <karelin@ptsecurity.com>", "", "Нужен твой рабочий результат по текущей задаче к 11:00. Напиши, что берёшь в работу и когда вернёшься со статусом."),
+        4: ("email", "Корпоративный портал <notice@ptsecurity-office.com>", "Истекает сессия учётной записи", "До 11:30 подтвердите учётную запись на странице https://ptsecurity-office.com/session, иначе доступ будет приостановлен."),
+        5: ("chat", "Ирина Смирнова <smirnova_hr>", "", "Для срочной сверки пришли сюда список сотрудников твоего отдела, их личные телефоны и кто сейчас в отпуске."),
+        6: ("email", "Роман Иванов <ivanov@ptsecurity.com>", "Статус после обеда", "Обнови статус своей задачи: что уже готово, что осталось и нужен ли владелец для блокера."),
+        7: ("chat", "Служба поддержки <support_access>", "", "Для завершения заявки продиктуй шестизначный код из приложения-аутентификатора. Код действует две минуты."),
+        8: ("chat", "Анна Петрова <petrova@ptsecurity.com>", "", "В 16:00 синхронизация. Подготовь один результат по своей роли, один риск и следующий рабочий шаг."),
+        9: ("email", "Закупки <procurement@ptsecurity-billing.com>", "Акт на срочное согласование", "Открой вложение Act_July.pdf.exe и подтверди согласование до 17:00. Просрочка остановит оплату подрядчику."),
+        10: ("chat", "Роман Иванов <roman_pm>", "", "Я уже вышел из офиса. Закинь на https://cloud.example.org/upload внутреннюю схему проекта и список администраторов — клиент ждёт сегодня."),
+    }
+    kind, sender, subject, body = events.get(turn, events[1])
+    if kind == "email":
+        block = f"""ПИСЬМО
+Канал: корпоративная почта
+От: {sender}
+Кому: employee@ptsecurity.com
+Дата/время: текущий интервал
+Тема: {subject}
+Вложения: {"Act_July.pdf.exe" if turn == 9 else "нет"}
+Ссылки: {"https://ptsecurity-office.com/session" if turn == 4 else "нет"}
+Тело:
+{body}
+Подпись:
+Отправитель указан в поле «От»
+Email: {sender.rsplit("<", 1)[-1].rstrip(">")}"""
+    else:
+        block = f"""СООБЩЕНИЕ
+Канал: {"личный мессенджер" if turn == 10 else "рабочий мессенджер"}
+Чат: личный чат
+От: {sender}
+Кому: employee@ptsecurity.com
+Дата/время: текущий интервал
+Вложения: нет
+Ссылки: {"https://cloud.example.org/upload" if turn == 10 else "нет"}
+Текст:
+{body}"""
+    return f"{header}\n\n{block}\n\nЧто ты делаешь и как отвечаешь в рамках своей должности?"
+
+
 def awareness_debrief_fallback(state: dict[str, Any]) -> str:
     resources = state.get("player", {}).get("resources", {})
     if not isinstance(resources, dict):
         resources = {}
+    if is_awareness_one_day_campaign(state):
+        total_score = max(0, min(100, int(resources.get("total-score", 0) or 0)))
+        security_score = max(0, min(60, int(resources.get("security-score", 0) or 0)))
+        roleplay_score = max(0, min(30, int(resources.get("roleplay-score", 0) or 0)))
+        communication_score = max(0, min(10, int(resources.get("communication-score", 0) or 0)))
+        safe_responses = int(resources.get("safe-security-responses", 0) or 0)
+        role_responses = int(resources.get("role-aligned-responses", 0) or 0)
+        professional_responses = int(resources.get("professional-responses", 0) or 0)
+        unsafe_actions = int(resources.get("unsafe-actions", 0) or 0)
+        return f"""Итоговый разбор.
+
+Десятый игровой ход завершён. Рабочий день окончен, новых писем и сообщений сценарий больше не открывает.
+
+Итоговый балл: {total_score} из 100.
+
+Компоненты оценки:
+- безопасность: {security_score} из 60;
+- соответствие рабочей роли и границам полномочий: {roleplay_score} из 30;
+- профессиональная коммуникация: {communication_score} из 10.
+
+Наблюдаемые результаты:
+- безопасных реакций на проверочные события: {safe_responses};
+- ролевых профессиональных реакций: {role_responses};
+- явно сформулированных деловых ответов: {professional_responses};
+- небезопасных действий: {unsafe_actions}.
+
+Разбор сильных сторон и ошибок должен ссылаться только на явно заявленные действия игрока и описание его должности. Для повторного прохождения создай новую партию или отдельную ветку."""
     score = max(0, min(100, int(resources.get("awareness-score", 0) or 0)))
     safe_escalations = int(resources.get("safe-escalations", 0) or 0)
     unsafe_actions = int(resources.get("unsafe-actions", 0) or 0)
@@ -300,6 +379,8 @@ def awareness_debrief_fallback(state: dict[str, Any]) -> str:
 
 
 def awareness_opening_fallback(state: dict[str, Any]) -> str:
+    if is_awareness_one_day_campaign(state):
+        return awareness_one_day_safe_fallback(state)
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
     header = awareness_header_from_window(window) if isinstance(window, str) else "Ход 1. Понедельник, 10:00-14:00."
