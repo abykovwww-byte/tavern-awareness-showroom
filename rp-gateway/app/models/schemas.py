@@ -123,6 +123,7 @@ class WorldApplyRequest(BaseModel):
 class WorldPackSummary(BaseModel):
     id: str
     owner_user_id: str | None = None
+    visibility: Literal["public", "private"] = "public"
     title: str
     slug: str
     status: str
@@ -131,6 +132,10 @@ class WorldPackSummary(BaseModel):
     state_seed_path: str
     lorebook_path: str | None = None
     manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorldPackVisibilityUpdate(BaseModel):
+    visibility: Literal["public", "private"]
 
 
 class WorldPromptCreate(BaseModel):

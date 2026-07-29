@@ -23,6 +23,7 @@ const appState = {
   busyText: "",
   pendingMessages: {},
   adminUsers: [],
+  adminWorldpacks: [],
   adminApiKeys: [],
   adminAutotestProfiles: [],
   adminAutotestRuns: [],
@@ -115,6 +116,7 @@ const els = {
   deletePartyButton: document.querySelector("#deletePartyButton"),
   operationStatus: document.querySelector("#operationStatus"),
   adminPanel: document.querySelector("#adminPanel"),
+  adminWorldpacksList: document.querySelector("#adminWorldpacksList"),
   adminUsersList: document.querySelector("#adminUsersList"),
   adminUserForm: document.querySelector("#adminUserForm"),
   adminUsernameInput: document.querySelector("#adminUsernameInput"),
@@ -229,6 +231,7 @@ function bindEvents() {
   els.adminUserForm.addEventListener("submit", createAdminUser);
   els.adminApiKeyForm.addEventListener("submit", createAdminApiKey);
   els.adminUsersList.addEventListener("click", handleAdminUserAction);
+  els.adminWorldpacksList.addEventListener("change", handleAdminWorldpackVisibility);
   els.adminApiKeysList.addEventListener("click", handleAdminApiKeyAction);
   els.adminAutotestForm.addEventListener("submit", createAdminAutotest);
   els.adminAutotestProviderSelect.addEventListener("change", renderAdminAutotestModelOptions);
@@ -1238,12 +1241,14 @@ function renderProposals() {
 
 async function reloadAdminData() {
   if (!isAdmin()) return;
-  const [users, apiKeys, autotestModels] = await Promise.all([
+  const [users, worldpacks, apiKeys, autotestModels] = await Promise.all([
     apiGet("/api/admin/users"),
+    apiGet("/api/worldpacks"),
     apiGet("/api/admin/api-keys"),
     apiGet("/api/admin/autotests/models"),
   ]);
   appState.adminUsers = users.users || [];
+  appState.adminWorldpacks = (worldpacks.worldpacks || []).filter((pack) => !pack.owner_user_id);
   appState.adminApiKeys = apiKeys.api_keys || [];
   appState.adminAutotestProfiles = autotestModels.model_profiles || [];
   await reloadAdminAutotestRuns(appState.activeParty?.id);
@@ -1274,6 +1279,7 @@ function renderAdminPanel() {
   if (!els.adminPanel) return;
   els.adminPanel.classList.toggle("hidden", !isAdmin());
   if (!isAdmin()) {
+    els.adminWorldpacksList.innerHTML = "";
     els.adminUsersList.innerHTML = "";
     els.adminApiKeysList.innerHTML = "";
     els.adminAutotestRunsList.innerHTML = "";
@@ -1281,12 +1287,54 @@ function renderAdminPanel() {
   }
   renderAdminAutotestOptions();
   renderAdminAutotestRuns();
+  els.adminWorldpacksList.innerHTML = appState.adminWorldpacks.length
+    ? appState.adminWorldpacks.map((pack) => adminWorldpackRow(pack)).join("")
+    : `<div class="admin-empty">Миров-пресетов нет.</div>`;
   els.adminUsersList.innerHTML = appState.adminUsers.length
     ? appState.adminUsers.map((user) => adminUserRow(user)).join("")
     : `<div class="admin-empty">Пользователей нет.</div>`;
   els.adminApiKeysList.innerHTML = appState.adminApiKeys.length
     ? appState.adminApiKeys.map((key) => adminApiKeyRow(key)).join("")
     : `<div class="admin-empty">Ключей нет.</div>`;
+}
+
+function adminWorldpackRow(pack) {
+  return `<label class="admin-row admin-worldpack-row">
+    <div>
+      <strong>${escapeHtml(pack.title)}</strong>
+      <span>${escapeHtml(pack.id)}</span>
+    </div>
+    <select data-worldpack-visibility data-worldpack-id="${escapeHtml(pack.id)}" aria-label="Видимость мира ${escapeHtml(pack.title)}">
+      <option value="public" ${pack.visibility !== "private" ? "selected" : ""}>Публичный</option>
+      <option value="private" ${pack.visibility === "private" ? "selected" : ""}>Приватный</option>
+    </select>
+  </label>`;
+}
+
+async function handleAdminWorldpackVisibility(event) {
+  const select = event.target.closest("[data-worldpack-visibility]");
+  if (!select) return;
+  const worldpackId = select.dataset.worldpackId;
+  const previous = appState.adminWorldpacks.find((pack) => pack.id === worldpackId)?.visibility || "public";
+  select.disabled = true;
+  try {
+    const response = await apiPatch(`/api/admin/worldpacks/${encodeURIComponent(worldpackId)}/visibility`, {
+      visibility: select.value,
+    });
+    appState.adminWorldpacks = appState.adminWorldpacks.map((pack) =>
+      pack.id === worldpackId ? response.worldpack : pack,
+    );
+    appState.worldpacks = appState.worldpacks.map((pack) =>
+      pack.id === worldpackId ? response.worldpack : pack,
+    );
+    renderAdminPanel();
+    renderWorldOptions();
+    showToast(response.worldpack.visibility === "private" ? "Мир теперь приватный." : "Мир теперь публичный.");
+  } catch (error) {
+    select.value = previous;
+    select.disabled = false;
+    showToast(error.message);
+  }
 }
 
 function renderAdminAutotestOptions() {

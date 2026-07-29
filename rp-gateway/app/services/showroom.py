@@ -164,6 +164,7 @@ class ShowroomStore:
             world_prompt=request.world_prompt,
         )
         pack = self.party_store.get_worldpack(worldpack_id)
+        self.ensure_public_worldpack(pack)
         self.validate_scenario_type(pack.manifest, request.scenario_type)
         scenario_id = f"scenario_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
@@ -225,6 +226,7 @@ class ShowroomStore:
             worldpack_id = str(current["worldpack_id"])
             world_prompt = current.get("world_prompt")
         pack = self.party_store.get_worldpack(worldpack_id)
+        self.ensure_public_worldpack(pack)
         self.validate_scenario_type(pack.manifest, str(merged["scenario_type"]))
 
         timestamp = now_iso()
@@ -271,6 +273,7 @@ class ShowroomStore:
             if not worldpack_id:
                 raise ValueError("worldpack_id is required for preset world source")
             pack = self.party_store.get_worldpack(str(worldpack_id))
+            self.ensure_public_worldpack(pack)
             return pack.id, None
         if world_source != "prompt":
             raise ValueError("world_source must be preset or prompt")
@@ -284,6 +287,11 @@ class ShowroomStore:
         return pack.id, prompt
 
     @staticmethod
+    def ensure_public_worldpack(pack: Any) -> None:
+        if pack.visibility != "public":
+            raise ValueError("private worldpack cannot be used in ShowRoom")
+
+    @staticmethod
     def validate_scenario_type(manifest: dict[str, Any], scenario_type: str) -> None:
         scenario_types = manifest.get("scenario_types") if isinstance(manifest, dict) else None
         supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
@@ -291,10 +299,10 @@ class ShowroomStore:
             raise ValueError(f"worldpack does not support scenario type {scenario_type}")
 
     def list_scenarios(self, public_only: bool) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM showroom_scenarios"
+        sql = "SELECT ss.* FROM showroom_scenarios ss"
         if public_only:
-            sql += " WHERE status = 'published'"
-        sql += " ORDER BY sort_order, updated_at DESC"
+            sql += " JOIN worldpacks wp ON wp.id = ss.worldpack_id WHERE ss.status = 'published' AND wp.visibility = 'public'"
+        sql += " ORDER BY ss.sort_order, ss.updated_at DESC"
         with self.connect() as connection:
             rows = connection.execute(sql).fetchall()
         return [self.scenario_from_row(row, public=public_only) for row in rows]
@@ -306,9 +314,12 @@ class ShowroomStore:
         public_only: bool,
         include_internal: bool = False,
     ) -> dict[str, Any]:
-        sql = "SELECT * FROM showroom_scenarios WHERE id = ?"
+        sql = "SELECT ss.* FROM showroom_scenarios ss"
         if public_only:
-            sql += " AND status = 'published'"
+            sql += " JOIN worldpacks wp ON wp.id = ss.worldpack_id"
+        sql += " WHERE ss.id = ?"
+        if public_only:
+            sql += " AND ss.status = 'published' AND wp.visibility = 'public'"
         with self.connect() as connection:
             row = connection.execute(sql, (scenario_id,)).fetchone()
         if row is None:
@@ -392,6 +403,7 @@ class ShowroomStore:
         return visitor_id, new_token
 
     def create_run(self, scenario_id: str, visitor_id: str, request: ShowroomRunCreate) -> dict[str, Any]:
+        self.get_scenario(scenario_id, public_only=True)
         if request.client_request_id:
             with self.connect() as connection:
                 existing = connection.execute(
@@ -404,6 +416,8 @@ class ShowroomStore:
         scenario = self.get_scenario(scenario_id, public_only=False, include_internal=True)
         if scenario["status"] != "published":
             raise ValueError(f"showroom scenario not found: {scenario_id}")
+        pack = self.party_store.get_worldpack(scenario["worldpack_id"])
+        self.ensure_public_worldpack(pack)
         character = self.party_store.create_player_character(
             PlayerCharacterCreate(
                 worldpack_id=scenario["worldpack_id"],
@@ -467,7 +481,13 @@ class ShowroomStore:
     def list_runs(self, visitor_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM showroom_runs WHERE visitor_id = ? ORDER BY updated_at DESC",
+                """
+                SELECT sr.* FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN worldpacks wp ON wp.id = ss.worldpack_id
+                WHERE sr.visitor_id = ? AND ss.status = 'published' AND wp.visibility = 'public'
+                ORDER BY sr.updated_at DESC
+                """,
                 (visitor_id,),
             ).fetchall()
         return [self.run_from_row(row) for row in rows]
@@ -475,7 +495,13 @@ class ShowroomStore:
     def get_run(self, run_id: str, visitor_id: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM showroom_runs WHERE id = ? AND visitor_id = ?",
+                """
+                SELECT sr.* FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN worldpacks wp ON wp.id = ss.worldpack_id
+                WHERE sr.id = ? AND sr.visitor_id = ?
+                  AND ss.status = 'published' AND wp.visibility = 'public'
+                """,
                 (run_id, visitor_id),
             ).fetchone()
         if row is None:
@@ -506,7 +532,13 @@ class ShowroomStore:
     def party_id_for_run(self, run_id: str, visitor_id: str) -> str:
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT party_id FROM showroom_runs WHERE id = ? AND visitor_id = ?",
+                """
+                SELECT sr.party_id FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN worldpacks wp ON wp.id = ss.worldpack_id
+                WHERE sr.id = ? AND sr.visitor_id = ?
+                  AND ss.status = 'published' AND wp.visibility = 'public'
+                """,
                 (run_id, visitor_id),
             ).fetchone()
         if row is None:
@@ -617,8 +649,9 @@ class ShowroomStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT cover_filename, cover_mime_type FROM showroom_scenarios
-                WHERE id = ? AND status = 'published'
+                SELECT ss.cover_filename, ss.cover_mime_type FROM showroom_scenarios ss
+                JOIN worldpacks wp ON wp.id = ss.worldpack_id
+                WHERE ss.id = ? AND ss.status = 'published' AND wp.visibility = 'public'
                 """,
                 (scenario_id,),
             ).fetchone()

@@ -708,7 +708,7 @@ function renderModelOptions(preferredId = "") {
 
 function renderWorldpackOptions() {
   els.worldpackSelect.replaceChildren();
-  for (const pack of appState.worldpacks) {
+  for (const pack of appState.worldpacks.filter((item) => item.visibility !== "private")) {
     const option = document.createElement("option");
     option.value = pack.id;
     option.textContent = pack.title;

@@ -79,6 +79,7 @@ class PartyStore:
                 CREATE TABLE IF NOT EXISTS worldpacks (
                     id TEXT PRIMARY KEY,
                     owner_user_id TEXT,
+                    visibility TEXT NOT NULL DEFAULT 'public',
                     title TEXT NOT NULL,
                     slug TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
@@ -166,6 +167,7 @@ class PartyStore:
                 """
             )
             self.migrate_owner_columns(connection)
+            self.migrate_worldpack_visibility(connection)
             self.migrate_scenario_type(connection)
             self.migrate_autotest_branches(connection)
 
@@ -182,6 +184,15 @@ class PartyStore:
                     f"UPDATE {table} SET owner_user_id = ? WHERE owner_user_id IS NULL OR owner_user_id = ''",
                     (self.default_owner_user_id,),
                 )
+
+    def migrate_worldpack_visibility(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
+        if "visibility" not in columns:
+            connection.execute("ALTER TABLE worldpacks ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'")
+        connection.execute(
+            "UPDATE worldpacks SET visibility = 'public' "
+            "WHERE visibility IS NULL OR visibility NOT IN ('public', 'private')"
+        )
 
     def migrate_scenario_type(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
@@ -521,35 +532,67 @@ class PartyStore:
             return str(assumptions[0])[:600]
         return ""
 
-    def list_worldpacks(self, owner_user_id: str | None = None) -> list[WorldPackSummary]:
+    def list_worldpacks(
+        self,
+        owner_user_id: str | None = None,
+        *,
+        include_private: bool = False,
+    ) -> list[WorldPackSummary]:
         self.scan_worldpacks()
         sql = "SELECT * FROM worldpacks"
-        params: tuple[Any, ...] = ()
+        filters: list[str] = []
+        params: list[Any] = []
         if owner_user_id:
-            sql += " WHERE owner_user_id IS NULL OR owner_user_id = ?"
-            params = (owner_user_id,)
+            filters.append("(owner_user_id IS NULL OR owner_user_id = ?)")
+            params.append(owner_user_id)
+        if not include_private:
+            filters.append("visibility = 'public'")
+        if filters:
+            sql += " WHERE " + " AND ".join(filters)
         sql += " ORDER BY title"
         with self.connect() as connection:
-            rows = connection.execute(sql, params).fetchall()
+            rows = connection.execute(sql, tuple(params)).fetchall()
         return [self.worldpack_from_row(row) for row in rows]
 
-    def get_worldpack(self, worldpack_id: str, owner_user_id: str | None = None) -> WorldPackSummary:
+    def get_worldpack(
+        self,
+        worldpack_id: str,
+        owner_user_id: str | None = None,
+        *,
+        include_private: bool = True,
+    ) -> WorldPackSummary:
         self.scan_worldpacks()
         sql = "SELECT * FROM worldpacks WHERE id = ?"
         params: list[Any] = [worldpack_id]
         if owner_user_id:
             sql += " AND (owner_user_id IS NULL OR owner_user_id = ?)"
             params.append(owner_user_id)
+        if not include_private:
+            sql += " AND visibility = 'public'"
         with self.connect() as connection:
             row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"worldpack not found: {worldpack_id}")
         return self.worldpack_from_row(row)
 
+    def set_worldpack_visibility(self, worldpack_id: str, visibility: str) -> WorldPackSummary:
+        if visibility not in {"public", "private"}:
+            raise ValueError("visibility must be public or private")
+        self.scan_worldpacks()
+        with self.connect() as connection:
+            updated = connection.execute(
+                "UPDATE worldpacks SET visibility = ?, updated_at = ? WHERE id = ?",
+                (visibility, now_iso(), worldpack_id),
+            ).rowcount
+        if updated == 0:
+            raise ValueError(f"worldpack not found: {worldpack_id}")
+        return self.get_worldpack(worldpack_id)
+
     def worldpack_from_row(self, row: sqlite3.Row) -> WorldPackSummary:
         return WorldPackSummary(
             id=row["id"],
             owner_user_id=row["owner_user_id"],
+            visibility=row["visibility"],
             title=row["title"],
             slug=row["slug"],
             status=row["status"],
@@ -560,8 +603,14 @@ class PartyStore:
             manifest=json.loads(row["manifest_json"]),
         )
 
-    def player_templates(self, worldpack_id: str, owner_user_id: str | None = None) -> list[PlayerTemplate]:
-        pack = self.get_worldpack(worldpack_id, owner_user_id=owner_user_id)
+    def player_templates(
+        self,
+        worldpack_id: str,
+        owner_user_id: str | None = None,
+        *,
+        include_private: bool = True,
+    ) -> list[PlayerTemplate]:
+        pack = self.get_worldpack(worldpack_id, owner_user_id=owner_user_id, include_private=include_private)
         role = str(pack.manifest.get("player_role") or "Player character")
         return [
             PlayerTemplate(

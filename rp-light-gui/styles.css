@@ -1255,6 +1255,11 @@ button:disabled {
   font-size: 11px;
 }
 
+.admin-worldpack-row select {
+  width: auto;
+  min-width: 128px;
+}
+
 .row-actions {
   display: flex;
   flex-wrap: wrap;

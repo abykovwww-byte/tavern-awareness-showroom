@@ -55,6 +55,7 @@ from app.models.schemas import (
     WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
+    WorldPackVisibilityUpdate,
     StatePatch,
 )
 from app.services.adjudicator import Adjudicator, RequestAlreadyRunning
@@ -279,6 +280,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail="admin role required")
         return user
 
+    def can_view_private_worldpacks(request: Request) -> bool:
+        user = current_user(request)
+        return not settings.auth_enabled or bool(user and user.is_admin)
+
+    def accessible_worldpack(request: Request, worldpack_id: str) -> Any:
+        return party_store.get_worldpack(
+            worldpack_id,
+            owner_user_id=owner_user_id(request),
+            include_private=can_view_private_worldpacks(request),
+        )
+
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         if not settings.auth_enabled or not request.url.path.startswith("/api/"):
@@ -452,7 +464,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/worldpacks")
     def list_worldpacks(request: Request) -> dict[str, Any]:
-        return {"worldpacks": [pack.model_dump(mode="json") for pack in party_store.list_worldpacks(owner_user_id=owner_user_id(request))]}
+        packs = party_store.list_worldpacks(
+            owner_user_id=owner_user_id(request),
+            include_private=can_view_private_worldpacks(request),
+        )
+        return {"worldpacks": [pack.model_dump(mode="json") for pack in packs]}
+
+    @app.patch("/api/admin/worldpacks/{worldpack_id}/visibility")
+    def admin_set_worldpack_visibility(
+        request: Request,
+        worldpack_id: str,
+        payload: WorldPackVisibilityUpdate,
+    ) -> dict[str, Any]:
+        require_admin(request)
+        try:
+            pack = party_store.set_worldpack_visibility(worldpack_id, payload.visibility)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"worldpack": pack.model_dump(mode="json")}
 
     @app.post("/api/worldpacks/prompt")
     def create_prompt_worldpack(request: Request, payload: WorldPromptCreate) -> dict[str, Any]:
@@ -465,7 +494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/worldpacks/{worldpack_id}")
     def get_worldpack(request: Request, worldpack_id: str) -> dict[str, Any]:
         try:
-            pack = party_store.get_worldpack(worldpack_id, owner_user_id=owner_user_id(request))
+            pack = accessible_worldpack(request, worldpack_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"worldpack": pack.model_dump(mode="json")}
@@ -473,7 +502,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/worldpacks/{worldpack_id}/player-templates")
     def player_templates(request: Request, worldpack_id: str) -> dict[str, Any]:
         try:
-            templates = party_store.player_templates(worldpack_id, owner_user_id=owner_user_id(request))
+            templates = party_store.player_templates(
+                worldpack_id,
+                owner_user_id=owner_user_id(request),
+                include_private=can_view_private_worldpacks(request),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"worldpack_id": worldpack_id, "templates": [template.model_dump(mode="json") for template in templates]}
@@ -486,7 +519,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/player-characters/draft")
     def draft_player_character(request: Request, payload: PlayerCharacterDraftRequest) -> dict[str, Any]:
         try:
-            pack = party_store.get_worldpack(payload.worldpack_id, owner_user_id=owner_user_id(request))
+            pack = accessible_worldpack(request, payload.worldpack_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         description = payload.concept.strip() or str(pack.manifest.get("player_role") or "Player character")
@@ -507,6 +540,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/player-characters")
     def create_player_character(request: Request, payload: PlayerCharacterCreate) -> dict[str, Any]:
         try:
+            accessible_worldpack(request, payload.worldpack_id)
             character = party_store.create_player_character(payload, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -525,6 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/parties")
     def create_party(request: Request, payload: PartyCreate) -> dict[str, Any]:
         try:
+            accessible_worldpack(request, payload.worldpack_id)
             party = party_store.create_party(payload, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
