@@ -20,6 +20,66 @@
     "Обязательный проходной порог не задан: итог показывает балл и три компонента без автоматического вердикта сдал или не сдал.",
     "Ролевой балл начисляется только за наблюдаемые профессиональные действия: ответ по рабочему предмету, обозначение следующего шага, соблюдение границ полномочий и передача вопроса правильному владельцу."
   ],
+  "corporate_portal": {
+    "title": "Корпоративный портал",
+    "characters": [
+      {
+        "id": "anna-petrova",
+        "display_name": "Анна Петрова",
+        "type": "dynamic",
+        "position_template": "Руководитель сотрудника · {employee_position}",
+        "city": "Москва",
+        "birthday": "10 января",
+        "phone": "+7 495 000-00-01",
+        "messenger": "petrova",
+        "email": "petrova@ptsecurity.com"
+      },
+      {
+        "id": "sergey-litvinov",
+        "display_name": "Сергей Литвинов",
+        "type": "static",
+        "position": "Специалист ДИБ",
+        "city": "Москва",
+        "birthday": "22 февраля",
+        "phone": "+7 495 000-00-02",
+        "messenger": "litvinov",
+        "email": "litvinov@ptsecurity.com"
+      },
+      {
+        "id": "irina-smirnova",
+        "display_name": "Ирина Смирнова",
+        "type": "static",
+        "position": "HR-специалист",
+        "city": "Москва",
+        "birthday": "8 апреля",
+        "phone": "+7 495 000-00-03",
+        "messenger": "smirnova",
+        "email": "smirnova@ptsecurity.com"
+      },
+      {
+        "id": "maksim-karelin",
+        "display_name": "Максим Карелин",
+        "type": "dynamic",
+        "position_template": "Коллега по рабочему направлению · {employee_position}",
+        "city": "Москва",
+        "birthday": "17 июля",
+        "phone": "+7 495 000-00-04",
+        "messenger": "karelin",
+        "email": "karelin@ptsecurity.com"
+      },
+      {
+        "id": "roman-ivanov",
+        "display_name": "Роман Иванов",
+        "type": "static",
+        "position": "Проектный менеджер",
+        "city": "Москва",
+        "birthday": "3 ноября",
+        "phone": "+7 495 000-00-05",
+        "messenger": "ivanov",
+        "email": "ivanov@ptsecurity.com"
+      }
+    ]
+  },
   "files": {
     "campaign_bible": "campaign-bible.md",
     "state_seed": "state-seed.json",

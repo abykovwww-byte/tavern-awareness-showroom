@@ -22,6 +22,8 @@ from app.services.party_store import PartyStore, now_iso, slug
 
 
 SHOWROOM_WORLD_OWNER = "__showroom__"
+MAX_PORTAL_CHARACTERS = 5
+PORTAL_CONTACT_FIELDS = ("city", "birthday", "phone", "messenger", "email")
 
 
 class ShowroomStore:
@@ -93,6 +95,8 @@ class ShowroomStore:
                     party_id TEXT NOT NULL UNIQUE REFERENCES parties(id),
                     player_character_id TEXT NOT NULL REFERENCES player_characters(id),
                     display_name TEXT NOT NULL,
+                    employee_position TEXT NOT NULL DEFAULT '',
+                    portal_snapshot_json TEXT NOT NULL DEFAULT '{}',
                     leaderboard_opt_in INTEGER NOT NULL DEFAULT 1,
                     client_request_id TEXT,
                     created_at TEXT NOT NULL,
@@ -110,6 +114,12 @@ class ShowroomStore:
                 connection.execute("ALTER TABLE showroom_runs ADD COLUMN scenario_title_snapshot TEXT")
             if "scenario_type_snapshot" not in run_columns:
                 connection.execute("ALTER TABLE showroom_runs ADD COLUMN scenario_type_snapshot TEXT")
+            if "employee_position" not in run_columns:
+                connection.execute("ALTER TABLE showroom_runs ADD COLUMN employee_position TEXT NOT NULL DEFAULT ''")
+            if "portal_snapshot_json" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE showroom_runs ADD COLUMN portal_snapshot_json TEXT NOT NULL DEFAULT '{}'"
+                )
             connection.execute(
                 """
                 UPDATE showroom_runs
@@ -165,6 +175,7 @@ class ShowroomStore:
         )
         pack = self.party_store.get_worldpack(worldpack_id)
         self.ensure_public_worldpack(pack)
+        self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, request.scenario_type)
         scenario_id = f"scenario_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
@@ -227,6 +238,7 @@ class ShowroomStore:
             world_prompt = current.get("world_prompt")
         pack = self.party_store.get_worldpack(worldpack_id)
         self.ensure_public_worldpack(pack)
+        self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, str(merged["scenario_type"]))
 
         timestamp = now_iso()
@@ -333,6 +345,7 @@ class ShowroomStore:
     def scenario_from_row(self, row: sqlite3.Row, *, public: bool) -> dict[str, Any]:
         pack = self.party_store.get_worldpack(row["worldpack_id"])
         model = self.party_store.get_model_profile(row["model_profile_id"])
+        portal = self.portal_from_manifest(pack.manifest, strict=False)
         result: dict[str, Any] = {
             "id": row["id"],
             "slug": row["slug"],
@@ -343,6 +356,7 @@ class ShowroomStore:
             "world_source": row["world_source"],
             "worldpack_id": row["worldpack_id"],
             "world": {"id": pack.id, "title": pack.title},
+            "portal": self.portal_descriptor(portal),
             "cover_url": f"/api/showroom/scenarios/{row['id']}/cover" if row["cover_filename"] else None,
             "leaderboard_enabled": bool(row["leaderboard_enabled"]),
             "leaderboard_metric": row["leaderboard_metric"],
@@ -418,6 +432,11 @@ class ShowroomStore:
             raise ValueError(f"showroom scenario not found: {scenario_id}")
         pack = self.party_store.get_worldpack(scenario["worldpack_id"])
         self.ensure_public_worldpack(pack)
+        portal = self.materialize_portal(
+            pack.manifest,
+            employee_name=request.character_name.strip(),
+            employee_position=request.employee_position.strip(),
+        )
         character = self.party_store.create_player_character(
             PlayerCharacterCreate(
                 worldpack_id=scenario["worldpack_id"],
@@ -427,6 +446,7 @@ class ShowroomStore:
                     "source": "showroom",
                     "scenario_id": scenario_id,
                     "scenario_revision": scenario["revision"],
+                    "employee_position": request.employee_position.strip(),
                 },
             ),
             owner_user_id=SHOWROOM_WORLD_OWNER,
@@ -451,9 +471,10 @@ class ShowroomStore:
                     INSERT INTO showroom_runs(
                         id, scenario_id, scenario_revision, scenario_title_snapshot, scenario_type_snapshot,
                         visitor_id, party_id,
-                        player_character_id, display_name, leaderboard_opt_in,
+                        player_character_id, display_name, employee_position, portal_snapshot_json,
+                        leaderboard_opt_in,
                         client_request_id, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -465,6 +486,8 @@ class ShowroomStore:
                         party.id,
                         character.id,
                         character.name,
+                        request.employee_position.strip(),
+                        json.dumps(portal, ensure_ascii=False),
                         int(request.leaderboard_opt_in),
                         request.client_request_id,
                         timestamp,
@@ -516,6 +539,8 @@ class ShowroomStore:
             "scenario_id": row["scenario_id"],
             "scenario_revision": row["scenario_revision"],
             "display_name": row["display_name"],
+            "employee_position": row["employee_position"],
+            "portal": self.portal_snapshot(row["portal_snapshot_json"]),
             "leaderboard_opt_in": bool(row["leaderboard_opt_in"]),
             "party_status": party.status,
             "scenario": {
@@ -528,6 +553,128 @@ class ShowroomStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    @staticmethod
+    def portal_from_manifest(manifest: dict[str, Any], *, strict: bool) -> dict[str, Any] | None:
+        raw = manifest.get("corporate_portal") if isinstance(manifest, dict) else None
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            if strict:
+                raise ValueError("corporate_portal must be an object")
+            return None
+        characters = raw.get("characters")
+        if not isinstance(characters, list):
+            if strict:
+                raise ValueError("corporate_portal.characters must be a list")
+            return None
+        if len(characters) > MAX_PORTAL_CHARACTERS:
+            if strict:
+                raise ValueError(f"corporate_portal supports at most {MAX_PORTAL_CHARACTERS} characters")
+            characters = characters[:MAX_PORTAL_CHARACTERS]
+
+        normalized: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(characters):
+            if not isinstance(item, dict):
+                if strict:
+                    raise ValueError(f"corporate_portal.characters[{index}] must be an object")
+                continue
+            character_id = str(item.get("id") or "").strip()
+            display_name = str(item.get("display_name") or "").strip()
+            character_type = str(item.get("type") or "static").strip().lower()
+            if not character_id or not display_name or character_type not in {"static", "dynamic"}:
+                if strict:
+                    raise ValueError(
+                        f"corporate_portal.characters[{index}] requires id, display_name, and type static|dynamic"
+                    )
+                continue
+            if character_id in seen_ids:
+                if strict:
+                    raise ValueError(f"duplicate corporate portal character id: {character_id}")
+                continue
+            seen_ids.add(character_id)
+            position = str(item.get("position") or "").strip()
+            position_template = str(item.get("position_template") or "").strip()
+            if character_type == "static" and not position:
+                if strict:
+                    raise ValueError(f"static corporate portal character {character_id} requires position")
+                continue
+            if character_type == "dynamic" and "{employee_position}" not in position_template:
+                if strict:
+                    raise ValueError(
+                        f"dynamic corporate portal character {character_id} requires {{employee_position}} in position_template"
+                    )
+                continue
+            normalized_item = {
+                "id": character_id,
+                "display_name": display_name,
+                "type": character_type,
+                "position": position,
+                "position_template": position_template,
+            }
+            for field in PORTAL_CONTACT_FIELDS:
+                normalized_item[field] = str(item.get(field) or "").strip()
+            normalized.append(normalized_item)
+        return {
+            "title": str(raw.get("title") or "Корпоративный портал").strip()[:120],
+            "characters": normalized,
+        }
+
+    @staticmethod
+    def portal_descriptor(portal: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not portal or not portal.get("characters"):
+            return None
+        characters = portal["characters"]
+        return {
+            "title": portal["title"],
+            "character_count": len(characters),
+            "requires_employee_position": any(item.get("type") == "dynamic" for item in characters),
+        }
+
+    def materialize_portal(
+        self,
+        manifest: dict[str, Any],
+        *,
+        employee_name: str,
+        employee_position: str,
+    ) -> dict[str, Any] | None:
+        portal = self.portal_from_manifest(manifest, strict=True)
+        if not portal or not portal["characters"]:
+            return None
+        requires_position = any(item["type"] == "dynamic" for item in portal["characters"])
+        if requires_position and not employee_position:
+            raise ValueError("employee_position is required for this world's dynamic corporate portal characters")
+
+        materialized: list[dict[str, str]] = []
+        for item in portal["characters"]:
+            position = item["position"]
+            if item["type"] == "dynamic":
+                position = (
+                    item["position_template"]
+                    .replace("{employee_position}", employee_position)
+                    .replace("{employee_name}", employee_name)
+                )
+            card = {
+                "id": item["id"],
+                "display_name": item["display_name"],
+                "position": position,
+                "source_type": item["type"],
+            }
+            for field in PORTAL_CONTACT_FIELDS:
+                card[field] = item[field]
+            materialized.append(card)
+        return {"title": portal["title"], "characters": materialized}
+
+    @staticmethod
+    def portal_snapshot(value: str | None) -> dict[str, Any] | None:
+        try:
+            portal = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(portal, dict) or not isinstance(portal.get("characters"), list):
+            return None
+        return portal
 
     def party_id_for_run(self, run_id: str, visitor_id: str) -> str:
         with self.connect() as connection:

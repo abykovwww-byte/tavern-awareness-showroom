@@ -25,6 +25,15 @@ Visitors do not register. The Gateway issues a random HttpOnly cookie and maps:
 
 `AnonymousVisitor -> ShowroomRun -> Party -> Character + State + TurnHistory`.
 
+Training WorldPacks may also declare a player-visible `corporate_portal` with at
+most five scenario characters. Each card is `static` (fixed `position`) or
+`dynamic` (`position_template` containing `{employee_position}`). The showroom
+collects the employee position explicitly, resolves dynamic titles when it
+creates the party, and stores the resolved portal JSON on `ShowroomRun`. This
+snapshot prevents later WorldPack edits from changing an existing session.
+Portal metadata is presentational and never owns training schedule, score,
+debrief, secrets, or other canonical facts.
+
 The public API exposes only run IDs. The underlying party ID and technical showroom
 owner are not returned. Every run is checked against the visitor cookie before the
 Gateway delegates to the existing party start, history, and message handlers.

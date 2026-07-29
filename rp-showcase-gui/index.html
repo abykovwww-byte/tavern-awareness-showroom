@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>RP Showroom</title>
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260729-corporate-portal">
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -84,6 +84,11 @@
             <span>Имя персонажа</span>
             <input id="characterNameInput" maxlength="120" required placeholder="Например, Анна Вяземская">
           </label>
+          <label class="hidden" id="employeePositionField">
+            <span>Должность сотрудника</span>
+            <input id="employeePositionInput" maxlength="160" placeholder="Например, аналитик информационной безопасности">
+            <small>По этой должности мир настроит динамических коллег и руководителей в корпоративном портале.</small>
+          </label>
           <label>
             <span>Кто он и с чего начинает</span>
             <textarea id="characterPromptInput" maxlength="4000" required rows="7" placeholder="Роль, характер, опыт, ограничения и исходное положение..."></textarea>
@@ -134,11 +139,23 @@
           <button class="button button-quiet" type="button" data-open-view="storefront">Витрина</button>
         </div>
       </header>
-      <div class="chat-thread" id="chatThread" aria-live="polite"></div>
-      <form class="composer" id="messageForm">
-        <textarea id="messageInput" maxlength="12000" rows="3" required placeholder="Что вы делаете или говорите?"></textarea>
-        <button class="button button-primary" type="submit">Отправить</button>
-      </form>
+      <div class="chat-layout without-portal" id="chatLayout">
+        <div class="chat-main">
+          <div class="chat-thread" id="chatThread" aria-live="polite"></div>
+          <form class="composer" id="messageForm">
+            <textarea id="messageInput" maxlength="12000" rows="3" required placeholder="Что вы делаете или говорите?"></textarea>
+            <button class="button button-primary" type="submit">Отправить</button>
+          </form>
+        </div>
+        <aside class="corporate-portal hidden" id="corporatePortal" aria-label="Корпоративный портал">
+          <div class="portal-heading">
+            <p class="eyebrow">Справочник</p>
+            <h2 id="portalTitle">Корпоративный портал</h2>
+            <p class="portal-context" id="portalContext"></p>
+          </div>
+          <div class="portal-character-list" id="portalCharacterList"></div>
+        </aside>
+      </div>
     </section>
 
     <section class="view" id="adminLoginView">
@@ -226,6 +243,6 @@
   <div class="busy hidden" id="busy"><span class="spinner"></span><span id="busyText">Загрузка...</span></div>
 
   <script src="/structured-content.js?v=20260729-boundary-fix" defer></script>
-  <script src="/app.js" defer></script>
+  <script src="/app.js?v=20260729-corporate-portal" defer></script>
 </body>
 </html>

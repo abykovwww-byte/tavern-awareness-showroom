@@ -332,6 +332,7 @@ class ShowroomScenarioUpdate(BaseModel):
 class ShowroomRunCreate(BaseModel):
     character_name: str = Field(min_length=1, max_length=120)
     character_prompt: str = Field(min_length=1, max_length=4000)
+    employee_position: str = Field(default="", max_length=160)
     leaderboard_opt_in: bool = True
     client_request_id: str | None = Field(default=None, max_length=160)
 

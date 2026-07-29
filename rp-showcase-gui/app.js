@@ -37,6 +37,8 @@ const els = {
   selectedLeaderboardButton: document.querySelector("#selectedLeaderboardButton"),
   startForm: document.querySelector("#startForm"),
   characterNameInput: document.querySelector("#characterNameInput"),
+  employeePositionField: document.querySelector("#employeePositionField"),
+  employeePositionInput: document.querySelector("#employeePositionInput"),
   characterPromptInput: document.querySelector("#characterPromptInput"),
   leaderboardOptInInput: document.querySelector("#leaderboardOptInInput"),
   leaderboardTitle: document.querySelector("#leaderboardTitle"),
@@ -48,7 +50,12 @@ const els = {
   chatTitle: document.querySelector("#chatTitle"),
   chatCharacter: document.querySelector("#chatCharacter"),
   chatLeaderboardButton: document.querySelector("#chatLeaderboardButton"),
+  chatLayout: document.querySelector("#chatLayout"),
   chatThread: document.querySelector("#chatThread"),
+  corporatePortal: document.querySelector("#corporatePortal"),
+  portalTitle: document.querySelector("#portalTitle"),
+  portalContext: document.querySelector("#portalContext"),
+  portalCharacterList: document.querySelector("#portalCharacterList"),
   messageForm: document.querySelector("#messageForm"),
   messageInput: document.querySelector("#messageInput"),
   adminLoginForm: document.querySelector("#adminLoginForm"),
@@ -217,6 +224,10 @@ function openStart(scenario) {
   els.selectedCover.style.backgroundImage = scenario.cover_url ? `url("${scenario.cover_url}")` : "";
   els.selectedLeaderboardButton.disabled = !scenario.leaderboard_enabled;
   els.leaderboardOptInInput.checked = Boolean(scenario.leaderboard_enabled);
+  const needsEmployeePosition = Boolean(scenario.portal?.requires_employee_position);
+  els.employeePositionField.classList.toggle("hidden", !needsEmployeePosition);
+  els.employeePositionInput.required = needsEmployeePosition;
+  els.employeePositionInput.value = "";
   showView("start");
   els.characterNameInput.focus();
 }
@@ -265,6 +276,7 @@ async function createRun(event) {
     const created = await apiPost(`/api/showroom/scenarios/${encodeURIComponent(appState.selectedScenario.id)}/runs`, {
       character_name: els.characterNameInput.value.trim(),
       character_prompt: els.characterPromptInput.value.trim(),
+      employee_position: els.employeePositionInput.value.trim(),
       leaderboard_opt_in: els.leaderboardOptInInput.checked,
       client_request_id: makeRequestId("showroom-create"),
     });
@@ -314,6 +326,7 @@ async function openRun(run, fallbackOpening = "") {
     els.chatTitle.textContent = scenario.title;
     els.chatCharacter.textContent = details.run.display_name;
     els.chatLeaderboardButton.disabled = !details.run.scenario.leaderboard_enabled;
+    renderCorporatePortal(details.run.portal, details.run.employee_position);
     renderHistory(history.turns || [], fallbackOpening);
     showView("chat");
   } catch (error) {
@@ -321,6 +334,95 @@ async function openRun(run, fallbackOpening = "") {
   } finally {
     setBusy(false);
   }
+}
+
+function renderCorporatePortal(portal, employeePosition = "") {
+  const characters = Array.isArray(portal?.characters) ? portal.characters.slice(0, 5) : [];
+  const visible = characters.length > 0;
+  els.corporatePortal.classList.toggle("hidden", !visible);
+  els.chatLayout.classList.toggle("without-portal", !visible);
+  els.portalCharacterList.replaceChildren();
+  if (!visible) return;
+
+  els.portalTitle.textContent = portal.title || "Корпоративный портал";
+  els.portalContext.textContent = employeePosition
+    ? `Контакты команды для должности «${employeePosition}»`
+    : "Контакты участников сценария";
+  for (const character of characters) {
+    els.portalCharacterList.append(portalCharacterCard(character));
+  }
+}
+
+function portalCharacterCard(character) {
+  const article = document.createElement("article");
+  article.className = "portal-character-card";
+
+  const header = document.createElement("div");
+  header.className = "portal-character-header";
+  const avatar = document.createElement("span");
+  avatar.className = "portal-avatar";
+  avatar.textContent = initials(character.display_name);
+  const identity = document.createElement("div");
+  const name = document.createElement("h3");
+  name.textContent = character.display_name || "Сотрудник";
+  const position = document.createElement("p");
+  position.textContent = character.position || "Должность не указана";
+  identity.append(name, position);
+  header.append(avatar, identity);
+
+  const details = document.createElement("div");
+  details.className = "portal-details";
+  const fields = [
+    ["city", "⌂", "Город", false],
+    ["birthday", "▣", "День рождения", false],
+    ["phone", "☎", "Телефон", true],
+    ["messenger", "➤", "Мессенджер", true],
+    ["email", "✉", "Почта", true],
+  ];
+  for (const [field, icon, label, copyable] of fields) {
+    const value = String(character[field] || "").trim();
+    if (!value) continue;
+    const row = document.createElement("div");
+    row.className = "portal-detail-row";
+    const mark = document.createElement("span");
+    mark.className = "portal-detail-icon";
+    mark.textContent = icon;
+    mark.title = label;
+    const text = document.createElement(field === "phone" || field === "email" ? "a" : "span");
+    text.className = "portal-detail-value";
+    text.textContent = value;
+    if (field === "phone") text.href = `tel:${value.replace(/[^+\d]/g, "")}`;
+    if (field === "email") text.href = `mailto:${value}`;
+    row.append(mark, text);
+    if (copyable) {
+      const copy = button("□", "portal-copy-button");
+      copy.type = "button";
+      copy.title = `Скопировать: ${label.toLocaleLowerCase("ru-RU")}`;
+      copy.setAttribute("aria-label", copy.title);
+      copy.addEventListener("click", () => copyPortalValue(value));
+      row.append(copy);
+    }
+    details.append(row);
+  }
+
+  article.append(header, details);
+  return article;
+}
+
+async function copyPortalValue(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (_error) {
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.append(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
+  }
+  showToast("Скопировано.");
 }
 
 function renderHistory(turns, fallbackOpening = "") {
