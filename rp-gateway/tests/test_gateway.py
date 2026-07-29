@@ -355,6 +355,13 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
     assert history.status_code == 200
     assert len(history.json()["turns"]) == 1
 
+    player_turn = public.post(
+        f"/api/showroom/runs/{run['id']}/messages",
+        json={"content": "I inspect the room.", "idempotency_key": "showroom-turn-1"},
+    )
+    assert player_turn.status_code == 200, player_turn.text
+    assert "party_id" not in player_turn.json()
+
     leaderboard = public.get(f"/api/showroom/scenarios/{first_scenario['id']}/leaderboard")
     assert leaderboard.status_code == 200
     assert leaderboard.json()["entries"][0]["display_name"] == "Anonymous Hero"
