@@ -77,3 +77,42 @@ def test_world_without_training_portal_keeps_existing_showroom_behavior():
     store = showroom_store_without_db()
     assert store.portal_from_manifest({"scenario_types": {"supported": ["rp"]}}, strict=True) is None
     assert store.materialize_portal({}, employee_name="Mira", employee_position="") is None
+
+
+def test_training_world_owns_showroom_result_path():
+    result = showroom_store_without_db().result_from_manifest(
+        {
+            "scenario_types": {"recommended": "training", "supported": ["training"]},
+            "showroom_result": {
+                "metric": "state_path",
+                "state_path": "player.resources.total-score",
+            },
+        },
+        strict=True,
+        fallback_metric="turn_count",
+        fallback_state_path="meta.turn",
+    )
+
+    assert result == {
+        "metric": "state_path",
+        "state_path": "player.resources.total-score",
+    }
+
+
+def test_training_world_requires_showroom_result():
+    with pytest.raises(ValueError, match="requires showroom_result"):
+        showroom_store_without_db().result_from_manifest(
+            {"scenario_types": {"recommended": "training", "supported": ["training"]}},
+            strict=True,
+        )
+
+
+def test_non_training_world_preserves_legacy_showroom_result():
+    result = showroom_store_without_db().result_from_manifest(
+        {"scenario_types": {"recommended": "rp", "supported": ["rp"]}},
+        strict=True,
+        fallback_metric="turn_count",
+        fallback_state_path="meta.turn",
+    )
+
+    assert result == {"metric": "turn_count", "state_path": "meta.turn"}

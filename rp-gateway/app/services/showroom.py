@@ -25,6 +25,8 @@ from app.services.party_store import PartyStore, now_iso, slug
 SHOWROOM_WORLD_OWNER = "__showroom__"
 MAX_PORTAL_CHARACTERS = 5
 PORTAL_CONTACT_FIELDS = ("city", "birthday", "phone", "messenger", "email")
+DEFAULT_LEADERBOARD_METRIC = "state_path"
+DEFAULT_LEADERBOARD_STATE_PATH = "meta.turn"
 
 
 class ShowroomStore:
@@ -178,6 +180,12 @@ class ShowroomStore:
         self.ensure_public_worldpack(pack)
         self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, request.scenario_type)
+        leaderboard_result = self.result_from_manifest(
+            pack.manifest,
+            strict=True,
+            fallback_metric=request.leaderboard_metric,
+            fallback_state_path=request.leaderboard_state_path,
+        )
         scenario_id = f"scenario_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         with self.connect() as connection:
@@ -202,8 +210,8 @@ class ShowroomStore:
                     worldpack_id,
                     world_prompt,
                     int(request.leaderboard_enabled),
-                    request.leaderboard_metric,
-                    request.leaderboard_state_path.strip(),
+                    leaderboard_result["metric"],
+                    leaderboard_result["state_path"],
                     request.leaderboard_label.strip(),
                     request.sort_order,
                     created_by,
@@ -241,6 +249,12 @@ class ShowroomStore:
         self.ensure_public_worldpack(pack)
         self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, str(merged["scenario_type"]))
+        leaderboard_result = self.result_from_manifest(
+            pack.manifest,
+            strict=True,
+            fallback_metric=str(merged["leaderboard_metric"]),
+            fallback_state_path=str(merged["leaderboard_state_path"]),
+        )
 
         timestamp = now_iso()
         with self.connect() as connection:
@@ -264,8 +278,8 @@ class ShowroomStore:
                     worldpack_id,
                     world_prompt,
                     int(bool(merged["leaderboard_enabled"])),
-                    str(merged["leaderboard_metric"]),
-                    str(merged["leaderboard_state_path"]).strip(),
+                    leaderboard_result["metric"],
+                    leaderboard_result["state_path"],
                     str(merged["leaderboard_label"]).strip(),
                     int(merged["sort_order"]),
                     timestamp,
@@ -347,6 +361,12 @@ class ShowroomStore:
         pack = self.party_store.get_worldpack(row["worldpack_id"])
         model = self.party_store.get_model_profile(row["model_profile_id"])
         portal = self.portal_from_manifest(pack.manifest, strict=False)
+        leaderboard_result = self.result_from_manifest(
+            pack.manifest,
+            strict=False,
+            fallback_metric=row["leaderboard_metric"],
+            fallback_state_path=row["leaderboard_state_path"],
+        )
         result: dict[str, Any] = {
             "id": row["id"],
             "slug": row["slug"],
@@ -360,8 +380,8 @@ class ShowroomStore:
             "portal": self.portal_descriptor(portal),
             "cover_url": f"/api/showroom/scenarios/{row['id']}/cover" if row["cover_filename"] else None,
             "leaderboard_enabled": bool(row["leaderboard_enabled"]),
-            "leaderboard_metric": row["leaderboard_metric"],
-            "leaderboard_state_path": row["leaderboard_state_path"],
+            "leaderboard_metric": leaderboard_result["metric"],
+            "leaderboard_state_path": leaderboard_result["state_path"],
             "leaderboard_label": row["leaderboard_label"],
             "sort_order": row["sort_order"],
             "revision": row["revision"],
@@ -383,6 +403,46 @@ class ShowroomStore:
                 }
             )
         return result
+
+    @staticmethod
+    def result_from_manifest(
+        manifest: dict[str, Any],
+        *,
+        strict: bool,
+        fallback_metric: str = DEFAULT_LEADERBOARD_METRIC,
+        fallback_state_path: str = DEFAULT_LEADERBOARD_STATE_PATH,
+    ) -> dict[str, str]:
+        scenario_types = manifest.get("scenario_types") if isinstance(manifest, dict) else None
+        supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
+        training_only = isinstance(supported, list) and supported == ["training"]
+        raw = manifest.get("showroom_result") if isinstance(manifest, dict) else None
+        if raw is None:
+            if strict and training_only:
+                raise ValueError("training worldpack requires showroom_result in manifest")
+            return {
+                "metric": str(fallback_metric or DEFAULT_LEADERBOARD_METRIC),
+                "state_path": str(fallback_state_path or DEFAULT_LEADERBOARD_STATE_PATH).strip(),
+            }
+        if not isinstance(raw, dict):
+            if strict:
+                raise ValueError("showroom_result must be an object")
+            return {
+                "metric": str(fallback_metric or DEFAULT_LEADERBOARD_METRIC),
+                "state_path": str(fallback_state_path or DEFAULT_LEADERBOARD_STATE_PATH).strip(),
+            }
+
+        metric = str(raw.get("metric") or "").strip()
+        state_path = str(raw.get("state_path") or "").strip()
+        if metric not in {"state_path", "turn_count"}:
+            raise ValueError("showroom_result.metric must be state_path or turn_count")
+        if metric == "state_path" and not state_path:
+            raise ValueError("showroom_result.state_path is required for state_path metric")
+        if len(state_path) > 240:
+            raise ValueError("showroom_result.state_path must be at most 240 characters")
+        return {
+            "metric": metric,
+            "state_path": state_path or DEFAULT_LEADERBOARD_STATE_PATH,
+        }
 
     @staticmethod
     def token_hash(token: str) -> str:

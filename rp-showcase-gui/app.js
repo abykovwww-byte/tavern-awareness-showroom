@@ -80,8 +80,6 @@ const els = {
   worldPromptInput: document.querySelector("#worldPromptInput"),
   leaderboardEnabledInput: document.querySelector("#leaderboardEnabledInput"),
   leaderboardLabelInput: document.querySelector("#leaderboardLabelInput"),
-  leaderboardMetricSelect: document.querySelector("#leaderboardMetricSelect"),
-  leaderboardPathInput: document.querySelector("#leaderboardPathInput"),
   coverInput: document.querySelector("#coverInput"),
   coverPreview: document.querySelector("#coverPreview"),
   deleteCoverButton: document.querySelector("#deleteCoverButton"),
@@ -110,7 +108,6 @@ function bindEvents() {
   els.scenarioForm.addEventListener("submit", saveScenario);
   els.providerSelect.addEventListener("change", () => renderModelOptions());
   els.scenarioStatusSelect.addEventListener("change", renderStatusPill);
-  els.leaderboardMetricSelect.addEventListener("change", renderLeaderboardMetricFields);
   document.querySelectorAll('input[name="worldSource"]').forEach((radio) => {
     radio.addEventListener("change", renderWorldSource);
   });
@@ -749,15 +746,12 @@ function newScenario() {
   els.scenarioTypeSelect.value = "rp";
   els.scenarioStatusSelect.value = "draft";
   els.leaderboardEnabledInput.checked = true;
-  els.leaderboardMetricSelect.value = "state_path";
-  els.leaderboardPathInput.value = "meta.turn";
   els.leaderboardLabelInput.value = "Очки";
   const preset = document.querySelector('input[name="worldSource"][value="preset"]');
   preset.checked = true;
   renderProviderOptions();
   renderModelOptions();
   renderWorldSource();
-  renderLeaderboardMetricFields();
   renderStatusPill();
   els.coverPreview.textContent = "Обложка не выбрана";
   els.coverPreview.style.backgroundImage = "";
@@ -777,8 +771,6 @@ function editScenario(scenario) {
   els.scenarioTypeSelect.value = scenario.scenario_type;
   els.scenarioStatusSelect.value = scenario.status;
   els.leaderboardEnabledInput.checked = scenario.leaderboard_enabled;
-  els.leaderboardMetricSelect.value = scenario.leaderboard_metric;
-  els.leaderboardPathInput.value = scenario.leaderboard_state_path || "meta.turn";
   els.leaderboardLabelInput.value = scenario.leaderboard_label || "Очки";
   const worldSource = document.querySelector(`input[name="worldSource"][value="${scenario.world_source}"]`);
   if (worldSource) worldSource.checked = true;
@@ -787,7 +779,6 @@ function editScenario(scenario) {
   els.providerSelect.value = scenario.model_profile?.provider || "";
   renderModelOptions(scenario.model_profile_id);
   renderWorldSource();
-  renderLeaderboardMetricFields();
   renderStatusPill();
   els.coverInput.value = "";
   els.coverPreview.textContent = scenario.cover_url ? "Текущая обложка" : "Обложка не выбрана";
@@ -846,11 +837,6 @@ function renderStatusPill() {
   els.scenarioStatusPill.textContent = statusLabels[els.scenarioStatusSelect.value] || els.scenarioStatusSelect.value;
 }
 
-function renderLeaderboardMetricFields() {
-  const statePath = els.leaderboardMetricSelect.value === "state_path";
-  els.leaderboardPathInput.disabled = !statePath;
-}
-
 function previewCover() {
   appState.coverFile = els.coverInput.files?.[0] || null;
   if (!appState.coverFile) return;
@@ -877,8 +863,6 @@ async function saveScenario(event) {
     worldpack_id: source === "preset" ? els.worldpackSelect.value : null,
     world_prompt: source === "prompt" ? els.worldPromptInput.value.trim() : null,
     leaderboard_enabled: els.leaderboardEnabledInput.checked,
-    leaderboard_metric: els.leaderboardMetricSelect.value,
-    leaderboard_state_path: els.leaderboardPathInput.value.trim() || "meta.turn",
     leaderboard_label: els.leaderboardLabelInput.value.trim() || "Очки",
     sort_order: editorMode === "edit" ? appState.editingScenario?.sort_order ?? 100 : 100,
   };

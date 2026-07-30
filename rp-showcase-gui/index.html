@@ -220,10 +220,6 @@
             <label class="switch-row"><input id="leaderboardEnabledInput" type="checkbox" checked><span>Таблица лидеров этого сценария</span></label>
             <label><span>Подпись результата</span><input id="leaderboardLabelInput" maxlength="80" value="Очки"></label>
           </div>
-          <div class="form-grid">
-            <label><span>Источник результата</span><select id="leaderboardMetricSelect"><option value="state_path">Число из canonical state</option><option value="turn_count">Количество ходов</option></select></label>
-            <label><span>Путь в state</span><input id="leaderboardPathInput" maxlength="240" value="meta.turn"><small>Например: player.resources.awareness-score</small></label>
-          </div>
 
           <label><span>Обложка — необязательно</span><input id="coverInput" type="file" accept="image/png,image/jpeg,image/webp"><small>PNG, JPEG или WebP, до 5 МБ.</small></label>
           <div class="cover-preview" id="coverPreview">Обложка не выбрана</div>
@@ -242,6 +238,6 @@
 
   <script src="/structured-content.js?v=20260729-messenger-boundary" defer></script>
   <script src="/message-time.js?v=20260729-message-time" defer></script>
-  <script src="/app.js?v=20260730-storefront-copy" defer></script>
+  <script src="/app.js?v=20260730-world-owned-result" defer></script>
 </body>
 </html>
