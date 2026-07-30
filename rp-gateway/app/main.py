@@ -33,7 +33,6 @@ from app.models.schemas import (
     PartyCheckRequest,
     PartyCreate,
     PartyDatasetUpdate,
-    PartyJournalSummarizeRequest,
     PartyLoreCardCreate,
     PartyLoreCardUpdate,
     PartyMemorySummarizeRequest,
@@ -48,6 +47,7 @@ from app.models.schemas import (
     PlayerCharacterDraftRequest,
     ProviderApiKeyCreate,
     ProviderApiKeyUpdate,
+    ServiceModelUpdate,
     ShowroomRunCreate,
     ShowroomScenarioCreate,
     ShowroomScenarioUpdate,
@@ -67,7 +67,6 @@ from app.services.autotest import AutoPlayerClient
 from app.services.character_view import party_character_sheets
 from app.services.context_budget import estimate_tokens, model_context_limit_tokens, split_turns_by_token_budget
 from app.services.context_estimator import estimate_party_context
-from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.narrative import (
     ProviderRateLimitError,
@@ -79,6 +78,12 @@ from app.services.narrative import (
 )
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
 from app.services.provider_auth import outbound_headers
+from app.services.service_models import (
+    SERVICE_MODEL_SETTING_KEY,
+    service_model_choice,
+    service_model_choices,
+    service_model_settings,
+)
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
@@ -109,7 +114,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.showroom_store = showroom_store
     app.state.autotest_tasks = {}
 
-    def settings_with_provider_key(base: Settings) -> Settings:
+    def settings_with_global_service_model(base: Settings) -> Settings:
+        choice_id = auth_store.get_global_setting(SERVICE_MODEL_SETTING_KEY, base.service_model_choice)
+        return replace(base, service_model_choice=choice_id)
+
+    def settings_with_provider_key(base: Settings, party: Any | None = None) -> Settings:
+        if party is None:
+            return settings_with_global_service_model(base)
         updates: dict[str, Any] = {}
         key_fields = {
             "nvidia": "nvidia_api_key",
@@ -117,20 +128,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "openrouter": "openrouter_api_key",
         }
         for provider, field_name in key_fields.items():
-            secret = auth_store.default_provider_secret(provider_base_url(base, provider), provider=provider)
+            secret = auth_store.default_provider_secret(
+                provider_base_url(base, provider),
+                provider=provider,
+                owner_user_id=party.owner_user_id,
+                party_id=party.id,
+            )
             if secret:
                 updates[field_name] = secret
         hydrated = replace(base, **updates) if updates else base
         selected_key = provider_api_key(hydrated, hydrated.llm_provider)
         if selected_key != hydrated.nvidia_api_key:
             hydrated = replace(hydrated, nvidia_api_key=selected_key)
-        return hydrated
+        return settings_with_global_service_model(hydrated)
 
     def runtime_settings_for_party(party: Any) -> Settings:
-        return settings_with_provider_key(settings_for_party(settings, party))
+        return settings_with_provider_key(settings_for_party(settings, party), party)
 
-    def runtime_settings_for_profile(profile: Any, cache_session_id: str) -> Settings:
-        return settings_with_provider_key(settings_for_model_profile(settings, profile, cache_session_id))
+    app.state.adjudicator = Adjudicator(settings_with_global_service_model(settings), store)
+
+    def runtime_settings_for_profile(profile: Any, cache_session_id: str, party: Any | None = None) -> Settings:
+        return settings_with_provider_key(settings_for_model_profile(settings, profile, cache_session_id), party)
 
     def runtime_settings_for_branch(party: Any, branch_id: str) -> Settings:
         return replace(
@@ -167,7 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_state_store = party_store.store_for_party(party.id, owner_user_id=run["owner_user_id"])
                     party_settings = runtime_settings_for_party(party)
                 player_profile = party_store.get_model_profile(run["player_model_profile_id"])
-                player_settings = runtime_settings_for_profile(player_profile, f"rp-autotest-player:{run_id}")
+                player_settings = runtime_settings_for_profile(player_profile, f"rp-autotest-player:{run_id}", party)
                 turn_number = completed_turns + 1
                 request_id = f"autotest_{run_id}_{turn_number}"
 
@@ -412,48 +430,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"deleted": True, "user_id": user_id, "deleted_data": payload.delete_data}
 
-    @app.get("/api/admin/api-keys")
-    def admin_list_api_keys(request: Request) -> dict[str, Any]:
+    @app.get("/api/admin/global-settings/service-model")
+    def admin_get_service_model(request: Request) -> dict[str, Any]:
         require_admin(request)
-        return {"api_keys": [key.public_dict() for key in auth_store.list_provider_api_keys()]}
+        runtime = settings_with_global_service_model(settings)
+        return {
+            "term": "Служебная модель",
+            "scope": "Весь RP Stack: все текущие и будущие партии всех пользователей",
+            "uses": ["Долговременная память", "Изменение мира", "Генерация персонажей"],
+            "choice_id": runtime.service_model_choice,
+            "selected": service_model_choice(runtime),
+            "choices": service_model_choices(runtime),
+        }
 
-    @app.post("/api/admin/api-keys")
-    def admin_create_api_key(request: Request, payload: ProviderApiKeyCreate) -> dict[str, Any]:
+    @app.patch("/api/admin/global-settings/service-model")
+    def admin_set_service_model(request: Request, payload: ServiceModelUpdate) -> dict[str, Any]:
         require_admin(request)
-        try:
-            key = auth_store.create_provider_api_key(
-                label=payload.label,
-                secret_value=payload.api_key,
-                provider=payload.provider,
-                base_url=payload.base_url,
-                is_default=payload.is_default,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"api_key": key.public_dict()}
-
-    @app.patch("/api/admin/api-keys/{key_id}")
-    def admin_update_api_key(request: Request, key_id: str, payload: ProviderApiKeyUpdate) -> dict[str, Any]:
-        require_admin(request)
-        try:
-            key = auth_store.update_provider_api_key(
-                key_id,
-                label=payload.label,
-                secret_value=payload.api_key,
-                is_default=payload.is_default,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"api_key": key.public_dict()}
-
-    @app.delete("/api/admin/api-keys/{key_id}")
-    def admin_delete_api_key(request: Request, key_id: str) -> dict[str, Any]:
-        require_admin(request)
-        try:
-            auth_store.delete_provider_api_key(key_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"deleted": True, "api_key_id": key_id}
+        choices = service_model_choices(settings)
+        selected = next((choice for choice in choices if choice["id"] == payload.choice_id), None)
+        if selected is None:
+            raise HTTPException(status_code=400, detail="unknown service model choice")
+        if not selected["available"]:
+            detail = "local service model is disabled" if selected["provider"] == "local" else "server OpenRouter API key is not configured"
+            raise HTTPException(status_code=400, detail=detail)
+        auth_store.set_global_setting(SERVICE_MODEL_SETTING_KEY, payload.choice_id)
+        runtime = settings_with_global_service_model(settings)
+        return {
+            "term": "Служебная модель",
+            "scope": "Весь RP Stack: все текущие и будущие партии всех пользователей",
+            "uses": ["Долговременная память", "Изменение мира", "Генерация персонажей"],
+            "choice_id": runtime.service_model_choice,
+            "selected": service_model_choice(runtime),
+            "choices": service_model_choices(runtime),
+        }
 
     @app.patch("/api/admin/datasets/parties/{party_id}")
     def admin_update_party_dataset(
@@ -662,6 +671,68 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
+    @app.get("/api/parties/{party_id}/byok")
+    def list_party_byok(request: Request, party_id: str) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "party_id": party_id,
+            "api_keys": [key.public_dict() for key in auth_store.list_provider_api_keys(owner_id, party_id)],
+        }
+
+    @app.post("/api/parties/{party_id}/byok")
+    def create_party_byok(request: Request, party_id: str, payload: ProviderApiKeyCreate) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_id)
+            key = auth_store.create_provider_api_key(
+                label=payload.label,
+                secret_value=payload.api_key,
+                provider=payload.provider,
+                base_url=payload.base_url,
+                is_default=payload.is_default,
+                owner_user_id=owner_id,
+                party_id=party_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, "api_key": key.public_dict()}
+
+    @app.patch("/api/parties/{party_id}/byok/{key_id}")
+    def update_party_byok(
+        request: Request,
+        party_id: str,
+        key_id: str,
+        payload: ProviderApiKeyUpdate,
+    ) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_id)
+            key = auth_store.update_provider_api_key(
+                key_id,
+                label=payload.label,
+                secret_value=payload.api_key,
+                is_default=payload.is_default,
+                owner_user_id=owner_id,
+                party_id=party_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, "api_key": key.public_dict()}
+
+    @app.delete("/api/parties/{party_id}/byok/{key_id}")
+    def delete_party_byok(request: Request, party_id: str, key_id: str) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_id)
+            auth_store.delete_provider_api_key(key_id, owner_id, party_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"deleted": True, "party_id": party_id, "api_key_id": key_id}
+
     @app.post("/api/parties/{party_id}/activate")
     def activate_party(request: Request, party_id: str) -> dict[str, Any]:
         try:
@@ -672,8 +743,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/parties/{party_id}")
     def delete_party(request: Request, party_id: str) -> dict[str, Any]:
+        owner_id = owner_user_id(request)
         try:
-            party_store.delete_party(party_id, owner_user_id=owner_user_id(request))
+            party_store.get_party(party_id, owner_user_id=owner_id)
+            auth_store.delete_party_provider_api_keys(owner_id, party_id)
+            party_store.delete_party(party_id, owner_user_id=owner_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"deleted": True, "party_id": party_id}
@@ -1007,7 +1081,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             character_id = stable_character_id(generated.character_id or generated.name or "")
             party_state_store.audit(
                 "party_character_generate",
-                {"request_id": request_id, "character_id": character_id, "model": party_settings.intent_model},
+                {
+                    "request_id": request_id,
+                    "character_id": character_id,
+                    "model": service_model_settings(party_settings).intent_model,
+                    "service_model": True,
+                },
                 request_id,
             )
         except PermissionError as exc:
@@ -1029,68 +1108,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "generated": generated.model_dump(mode="json"),
             "patch": patch.model_dump(mode="json"),
             "state": state,
-        }
-
-    @app.get("/api/parties/{party_id}/journal")
-    def get_party_journal(request: Request, party_id: str, limit: int = 8) -> dict[str, Any]:
-        try:
-            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
-            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
-            party_settings = runtime_settings_for_party(party)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        journal = JournalBuilder(party_settings, party_state_store)
-        return {
-            "party_id": party_id,
-            "journal": party_state_store.latest_journal_entry(),
-            "entries": party_state_store.journal_entries(limit=limit),
-            "stats": journal.stats(),
-        }
-
-    @app.post("/api/parties/{party_id}/journal/summarize")
-    async def summarize_party_journal(
-        http_request: Request,
-        party_id: str,
-        request: PartyJournalSummarizeRequest = PartyJournalSummarizeRequest(),
-        authorization: str | None = Header(default=None),
-    ) -> dict[str, Any]:
-        try:
-            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
-            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            party_settings = runtime_settings_for_party(party)
-            result = await JournalBuilder(party_settings, party_state_store).summarize(
-                authorization,
-                force=request.force,
-                fail_open=False,
-            )
-        except PermissionError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code if exc.response is not None else "unknown"
-            raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"party_id": party_id, **result}
-
-    @app.delete("/api/parties/{party_id}/journal/latest")
-    def delete_party_journal_latest(request: Request, party_id: str) -> dict[str, Any]:
-        try:
-            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
-            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
-            party_settings = runtime_settings_for_party(party)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        deleted = party_state_store.delete_latest_journal_entry()
-        journal = JournalBuilder(party_settings, party_state_store)
-        return {
-            "party_id": party_id,
-            "deleted": deleted is not None,
-            "deleted_journal": deleted,
-            "journal": party_state_store.latest_journal_entry(),
-            "entries": party_state_store.journal_entries(limit=8),
-            "stats": journal.stats(),
         }
 
     @app.post("/api/parties/{party_id}/prompt/preview")
@@ -2134,14 +2151,15 @@ async def generate_character_edit(
     request_id: str,
 ) -> PartyCharacterStateEditRequest:
     state = store.get_state()
-    if settings.nvidia_api_base.startswith("mock://"):
+    runtime = service_model_settings(settings)
+    if runtime.nvidia_api_base.startswith("mock://"):
         return mock_generated_character_edit(settings, state, request)
 
-    headers = outbound_headers(settings, authorization)
+    headers = outbound_headers(runtime, None)
 
     world = WorldInstructor(settings, store)
     payload: dict[str, Any] = {
-        "model": settings.intent_model,
+        "model": runtime.intent_model,
         "temperature": 0.35,
         "max_tokens": 1200,
         "stream": False,
@@ -2159,8 +2177,8 @@ async def generate_character_edit(
             },
         ],
     }
-    timeout = httpx.Timeout(settings.model_attempt_timeout_seconds, connect=15.0)
-    attempts = world.model_attempts(settings.intent_model)
+    timeout = httpx.Timeout(runtime.model_attempt_timeout_seconds, connect=15.0)
+    attempts = world.model_attempts(runtime.intent_model, runtime)
     last_timeout: httpx.TimeoutException | None = None
     last_status: httpx.HTTPStatusError | None = None
     last_parse_error: ValueError | None = None
@@ -2174,11 +2192,11 @@ async def generate_character_edit(
                 model,
                 index + 1,
                 len(attempts),
-                settings.model_attempt_timeout_seconds,
+                runtime.model_attempt_timeout_seconds,
             )
             try:
                 response = await client.post(
-                    f"{settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                    f"{runtime.nvidia_api_base.rstrip('/')}/chat/completions",
                     json=payload,
                     headers=headers,
                 )
@@ -2205,7 +2223,7 @@ async def generate_character_edit(
                     model,
                     elapsed_ms,
                 )
-                raise RuntimeError(f"{settings.llm_provider} API returned 429 rate limit")
+                raise RuntimeError(f"{runtime.llm_provider} API returned 429 rate limit")
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -2244,7 +2262,7 @@ async def generate_character_edit(
                 request_id,
                 model,
                 elapsed_ms,
-                index > 0 or model != settings.intent_model,
+                index > 0 or model != runtime.intent_model,
             )
             return coerce_generated_character_edit(data, request, state)
     if last_status:
@@ -2253,7 +2271,7 @@ async def generate_character_edit(
         raise last_timeout
     if last_parse_error:
         raise RuntimeError("LLM did not return character JSON") from last_parse_error
-    raise RuntimeError(f"No model attempts configured for provider {settings.llm_provider}")
+    raise RuntimeError(f"No model attempts configured for provider {runtime.llm_provider}")
 
 
 def character_generation_prompt() -> str:

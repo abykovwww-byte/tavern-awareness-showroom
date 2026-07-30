@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -40,7 +40,9 @@ class Settings:
     state_schema_path: str = os.getenv("STATE_SCHEMA_PATH", "/state/schema.json")
     worldpacks_path: str = os.getenv("WORLD_PACKS_PATH", "/worldpacks")
     nvidia_api_base: str = os.getenv("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
+    service_nvidia_api_base: str = os.getenv("SERVICE_NVIDIA_API_BASE", os.getenv("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1"))
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
+    service_nvidia_api_key: str = os.getenv("SERVICE_NVIDIA_API_KEY", os.getenv("NVIDIA_API_KEY", ""))
     llm_provider: str = os.getenv("LLM_PROVIDER", "nvidia")
     gemini_api_base: str = os.getenv(
         "GEMINI_API_BASE",
@@ -54,6 +56,9 @@ class Settings:
     gemini_model_catalog_live: bool = env_bool("GEMINI_MODEL_CATALOG_LIVE", True)
     openrouter_api_base: str = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
     openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    # Kept separate so party-scoped BYOK can never become the credential of
+    # the stack-wide service model.
+    service_openrouter_api_key: str = os.getenv("SERVICE_OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
     openrouter_models: tuple[str, ...] = env_list("OPENROUTER_MODELS", "openrouter/auto,openrouter/free")
     openrouter_model_catalog_live: bool = env_bool("OPENROUTER_MODEL_CATALOG_LIVE", True)
     local_llm_enabled: bool = env_bool("LOCAL_LLM_ENABLED", False)
@@ -61,6 +66,10 @@ class Settings:
     local_llm_model_alias: str = os.getenv("LOCAL_LLM_MODEL_ALIAS", "gemma-4-26b-a4b-it-rp-q4")
     local_llm_context_tokens: int = env_int("LOCAL_LLM_CONTEXT_TOKENS", 32_768)
     local_llm_timeout_seconds: float = float(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "240"))
+    # "Service model" (служебная модель) is the global LLM used by background
+    # memory, world-edit drafting, and character generation. It never narrates turns.
+    service_model_choice: str = os.getenv("SERVICE_MODEL_CHOICE", "local-gemma")
+    service_fallback_model: str = os.getenv("SERVICE_FALLBACK_MODEL", os.getenv("NARRATIVE_MODEL", "z-ai/glm-5.2"))
     provider_model_catalog_ttl_seconds: int = env_int("PROVIDER_MODEL_CATALOG_TTL_SECONDS", 86400)
     nvidia_model_catalog_live: bool = env_bool("NVIDIA_MODEL_CATALOG_LIVE", True)
     nvidia_model_catalog_url: str = os.getenv("NVIDIA_MODEL_CATALOG_URL", "https://build.nvidia.com/models?q=llm")
@@ -88,8 +97,6 @@ class Settings:
     party_context_system_reserve_tokens: int = env_int("PARTY_CONTEXT_SYSTEM_RESERVE_TOKENS", 32_768)
     party_context_min_history_tokens: int = env_int("PARTY_CONTEXT_MIN_HISTORY_TOKENS", 8_192)
     memory_summary_batch_tokens: int = env_int("MEMORY_SUMMARY_BATCH_TOKENS", 10_000)
-    memory_llm_provider: str = os.getenv("MEMORY_LLM_PROVIDER", "local")
-    memory_llm_model: str = os.getenv("MEMORY_LLM_MODEL", "")
     party_memory_chapter_max_tokens: int = env_int("PARTY_MEMORY_CHAPTER_MAX_TOKENS", 6_000)
     party_memory_chapter_max_chars: int = env_int("PARTY_MEMORY_CHAPTER_MAX_CHARS", 24_000)
     party_memory_prompt_max_chars: int = env_int("PARTY_MEMORY_PROMPT_MAX_CHARS", 60_000)
@@ -105,10 +112,6 @@ class Settings:
     openrouter_prompt_cache_enabled: bool = env_bool("OPENROUTER_PROMPT_CACHE_ENABLED", True)
     openrouter_prompt_cache_ttl: str = os.getenv("OPENROUTER_PROMPT_CACHE_TTL", "5m")
     prompt_cache_session_id: str = os.getenv("PROMPT_CACHE_SESSION_ID", "")
-    journal_auto_min_unsummarized_turns: int = field(
-        default_factory=lambda: env_int("JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS", 24)
-    )
-    journal_max_batch_turns: int = field(default_factory=lambda: env_int("JOURNAL_MAX_BATCH_TURNS", 48))
     auth_enabled: bool = env_bool("GATEWAY_AUTH_ENABLED", True)
     auth_session_cookie_name: str = os.getenv("GATEWAY_SESSION_COOKIE_NAME", "rp_gateway_session")
     auth_session_ttl_seconds: int = env_int("GATEWAY_SESSION_TTL_SECONDS", 60 * 60 * 24 * 14)

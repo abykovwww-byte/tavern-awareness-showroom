@@ -308,7 +308,7 @@ class PromptInspector:
                         "last_error": job["last_error"],
                     }
                     for job in self.store.service_jobs(limit=4)
-                    if job["job_type"] in {"memory", "journal"}
+                    if job["job_type"] == "memory"
                 ],
             },
             "retrieval": [

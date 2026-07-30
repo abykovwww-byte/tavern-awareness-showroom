@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -18,7 +18,7 @@ from app.services.context_budget import (
     turns_token_count,
 )
 from app.services.narrative import response_text
-from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
+from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
 
 
@@ -176,11 +176,10 @@ class MemorySummarizer:
         )
 
     async def generate(self, plan: SummaryPlan, authorization: str | None) -> dict[str, Any]:
-        if self.settings.nvidia_api_base.startswith("mock://"):
-            return self.mock_summary(plan)
-
         service_settings = self.memory_service_settings()
-        headers = outbound_headers(service_settings, authorization)
+        if service_settings.nvidia_api_base.startswith("mock://"):
+            return self.mock_summary(plan)
+        headers = outbound_headers(service_settings, None)
 
         payload = self.summary_payload(plan)
         timeout = httpx.Timeout(service_settings.model_attempt_timeout_seconds, connect=15.0)
@@ -258,24 +257,7 @@ class MemorySummarizer:
         }
 
     def memory_service_settings(self) -> Settings:
-        provider = normalize_provider(self.settings.memory_llm_provider or self.settings.llm_provider)
-        if provider == "local" and not self.settings.local_llm_enabled:
-            provider = normalize_provider(self.settings.llm_provider)
-        model = self.settings.memory_llm_model.strip()
-        if not model:
-            model = self.settings.local_llm_model_alias if provider == "local" else self.settings.narrative_model
-        return replace(
-            self.settings,
-            llm_provider=provider,
-            nvidia_api_base=provider_base_url(self.settings, provider),
-            nvidia_api_key=provider_api_key(self.settings, provider),
-            narrative_model=model,
-            nvidia_fallback_models=self.settings.nvidia_fallback_models if provider == "nvidia" else (),
-            nvidia_disabled_models=self.settings.nvidia_disabled_models if provider == "nvidia" else (),
-            model_attempt_timeout_seconds=(
-                self.settings.local_llm_timeout_seconds if provider == "local" else self.settings.model_attempt_timeout_seconds
-            ),
-        )
+        return service_model_settings(self.settings)
 
     def model_attempts(self, primary_model: str, service_settings: Settings) -> list[str]:
         disabled = set(service_settings.nvidia_disabled_models)

@@ -10,9 +10,15 @@ Browser
 ```
 
 Light GUI depends only on Gateway. Gateway owns the active binding between a
-world pack, player character, model profile, canonical state, turn history,
-memory chapters, and journal. All persistent party data is scoped by party and
-stored in SQLite plus isolated state files.
+world pack, player character, model profile, canonical state, turn history, and
+memory chapters. All persistent party data is scoped by party and stored in
+SQLite plus isolated state files.
+
+The canonical term **service model / служебная модель** means the one global
+LLM selected by an administrator for long-term memory, world-state changes,
+and character generation across all current and future parties. It is not a
+narrator model. BYOK credentials are user-owned and party-scoped; service-model
+requests use only stack-managed credentials.
 
 World-pack prompts and `world-info/index.md` provide immutable context.
 `state-seed.json` initializes each party. Canonical state and

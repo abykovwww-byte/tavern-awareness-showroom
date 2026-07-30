@@ -17,6 +17,7 @@ from app.services.provider_auth import outbound_headers
 from app.core.json_patch import PatchError
 from app.models.schemas import PatchOperation, StatePatch, WorldInstructionDraft
 from app.services.narrative import response_text
+from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
 
 
@@ -110,7 +111,7 @@ class WorldInstructor:
             raise ValueError("world instruction is empty")
         state = self.store.get_state()
         proposal_id = f"world-{uuid.uuid4().hex[:12]}"
-        if not use_llm or self.settings.nvidia_api_base.startswith("mock://"):
+        if not use_llm or service_model_settings(self.settings).nvidia_api_base.startswith("mock://"):
             draft = self.mock_draft(state, instruction, proposal_id)
         else:
             try:
@@ -131,11 +132,12 @@ class WorldInstructor:
         proposal_id: str,
         inbound_authorization: str | None,
     ) -> WorldInstructionDraft:
-        headers = outbound_headers(self.settings, inbound_authorization)
+        runtime = service_model_settings(self.settings)
+        headers = outbound_headers(runtime, None)
 
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         payload = {
-            "model": self.settings.intent_model,
+            "model": runtime.intent_model,
             "temperature": 0,
             "max_tokens": 1400,
             "stream": False,
@@ -158,8 +160,8 @@ class WorldInstructor:
                 },
             ],
         }
-        timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
-        attempts = self.model_attempts(self.settings.intent_model)
+        timeout = httpx.Timeout(runtime.model_attempt_timeout_seconds, connect=15.0)
+        attempts = self.model_attempts(runtime.intent_model, runtime)
         async with httpx.AsyncClient(timeout=timeout) as client:
             for index, model in enumerate(attempts):
                 payload["model"] = model
@@ -170,11 +172,11 @@ class WorldInstructor:
                     model,
                     index + 1,
                     len(attempts),
-                    self.settings.model_attempt_timeout_seconds,
+                    runtime.model_attempt_timeout_seconds,
                 )
                 try:
                     response = await client.post(
-                        f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                        f"{runtime.nvidia_api_base.rstrip('/')}/chat/completions",
                         json=payload,
                         headers=headers,
                     )
@@ -200,7 +202,7 @@ class WorldInstructor:
                         model,
                         elapsed_ms,
                     )
-                    raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
+                    raise RuntimeError(f"{runtime.llm_provider} API returned 429 rate limit")
                 try:
                     response.raise_for_status()
                 except httpx.HTTPStatusError:
@@ -223,7 +225,7 @@ class WorldInstructor:
                     model,
                     response.status_code,
                     elapsed_ms,
-                    index > 0 or model != self.settings.intent_model,
+                    index > 0 or model != runtime.intent_model,
                 )
                 break
         data = self.extract_json(response_text(response.json()))
@@ -247,9 +249,10 @@ class WorldInstructor:
             patch=patch,
         )
 
-    def model_attempts(self, primary_model: str) -> list[str]:
-        disabled = set(self.settings.nvidia_disabled_models)
-        candidates = [primary_model, *self.settings.nvidia_fallback_models]
+    def model_attempts(self, primary_model: str, runtime: Settings | None = None) -> list[str]:
+        runtime = runtime or self.settings
+        disabled = set(runtime.nvidia_disabled_models)
+        candidates = [primary_model, *runtime.nvidia_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if not model or model in disabled or model in attempts:

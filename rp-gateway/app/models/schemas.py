@@ -229,10 +229,6 @@ class PartyMemorySummarizeRequest(BaseModel):
     force: bool = True
 
 
-class PartyJournalSummarizeRequest(BaseModel):
-    force: bool = True
-
-
 class PartyPromptPreviewRequest(BaseModel):
     content: str = Field(default="", max_length=12000)
     source: Literal["current", "last"] = "last"
@@ -441,3 +437,7 @@ class ProviderApiKeyUpdate(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=120)
     api_key: str | None = Field(default=None, min_length=1, max_length=400)
     is_default: bool | None = None
+
+
+class ServiceModelUpdate(BaseModel):
+    choice_id: str = Field(min_length=1, max_length=120)

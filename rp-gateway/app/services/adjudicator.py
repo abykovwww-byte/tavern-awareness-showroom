@@ -13,7 +13,6 @@ import httpx
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, Outcome
 from app.services.intent_parser import IntentParser
-from app.services.journal import JournalBuilder
 from app.services.memory import MemorySummarizer
 from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
@@ -44,7 +43,6 @@ class Adjudicator:
         self.validator = OutputValidator()
         self.narrative = NarrativeClient(settings)
         self.memory = MemorySummarizer(settings, store)
-        self.journal = JournalBuilder(settings, store)
         self.world = WorldInstructor(settings, store)
 
     async def handle_chat(
@@ -367,7 +365,7 @@ class Adjudicator:
         }
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
-        for job_type in ("memory", "journal"):
+        for job_type in ("memory",):
             self.store.enqueue_service_job(job_type, request_id, self.settings.service_job_max_attempts)
         if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
             await self.drain_service_jobs(authorization, wait_for_retries=False)
@@ -424,16 +422,14 @@ class Adjudicator:
                     request_id=job.get("request_id"),
                 )
             elif job["job_type"] == "journal":
-                result = await self.journal.summarize(
-                    authorization,
-                    fail_open=True,
-                    request_id=job.get("request_id"),
-                )
+                # Retire jobs queued by versions that still had a party journal.
+                # Returning a terminal no-op prevents endless retries after upgrade.
+                return
             else:
                 raise ValueError(f"unsupported service job type: {job['job_type']}")
             if result.get("generated"):
                 continue
-            if result.get("reason") in {"summary_failed", "journal_failed"} or result.get("error"):
+            if result.get("reason") == "summary_failed" or result.get("error"):
                 raise RuntimeError(str(result.get("reason") or result.get("error") or "service job failed"))
             return
         raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")

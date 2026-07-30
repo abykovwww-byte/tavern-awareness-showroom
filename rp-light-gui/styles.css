@@ -1000,7 +1000,6 @@ button:disabled {
 }
 
 .prompt-preview,
-.journal-summary,
 .character-sheets {
   display: grid;
   gap: 9px;
@@ -1057,8 +1056,7 @@ button:disabled {
   line-height: 1.45;
 }
 
-.character-card,
-.journal-entry {
+.character-card {
   padding: 9px;
   border: 1px solid rgba(52, 60, 63, 0.74);
   border-radius: 6px;
@@ -1068,8 +1066,7 @@ button:disabled {
   line-height: 1.45;
 }
 
-.character-card strong,
-.journal-entry strong {
+.character-card strong {
   display: block;
   margin-bottom: 5px;
   color: var(--text);

@@ -12,9 +12,14 @@ Browser
 ```
 
 Gateway owns authentication, world packs, player characters, model profiles,
-party state, history, memory chapters, journal entries, deterministic checks,
-and training progression. The browser stores only its active session and party
-preference.
+party state, history, memory chapters, deterministic checks, and training
+progression. The browser stores only its active session and party preference.
+
+**Service model / Служебная модель** is the single administrator-selected LLM
+for the whole RP Stack. It serves long-term memory, world-state change drafts,
+and character generation for every current and future party. Party narrator
+models remain independent. User BYOK credentials are scoped to exactly one
+party and are never used by the service model.
 
 ## Runtime paths
 

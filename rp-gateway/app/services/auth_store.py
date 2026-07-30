@@ -84,6 +84,8 @@ class ProviderApiKey:
     provider: str
     base_url: str
     secret_value: str
+    owner_user_id: str | None
+    party_id: str | None
     is_default: bool
     created_at: str
     updated_at: str
@@ -94,6 +96,7 @@ class ProviderApiKey:
             "label": self.label,
             "provider": self.provider,
             "base_url": self.base_url,
+            "party_id": self.party_id,
             "is_default": self.is_default,
             "secret_hint": self.secret_value[-4:] if self.secret_value else "",
             "created_at": self.created_at,
@@ -154,7 +157,20 @@ class AuthStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS global_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
+            )
+            key_columns = {row["name"] for row in connection.execute("PRAGMA table_info(provider_api_keys)").fetchall()}
+            if "owner_user_id" not in key_columns:
+                connection.execute("ALTER TABLE provider_api_keys ADD COLUMN owner_user_id TEXT")
+            if "party_id" not in key_columns:
+                connection.execute("ALTER TABLE provider_api_keys ADD COLUMN party_id TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_party ON provider_api_keys(owner_user_id, party_id, provider, is_default)"
             )
 
     def ensure_bootstrap_admin(self) -> None:
@@ -313,13 +329,17 @@ class AuthStore:
 
     def delete_user(self, user_id: str) -> None:
         with self.connect() as connection:
+            connection.execute("DELETE FROM provider_api_keys WHERE owner_user_id = ?", (user_id,))
             deleted = connection.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount
         if deleted == 0:
             raise ValueError(f"user not found: {user_id}")
 
-    def list_provider_api_keys(self) -> list[ProviderApiKey]:
+    def list_provider_api_keys(self, owner_user_id: str | None, party_id: str) -> list[ProviderApiKey]:
         with self.connect() as connection:
-            rows = connection.execute("SELECT * FROM provider_api_keys ORDER BY is_default DESC, label").fetchall()
+            rows = connection.execute(
+                "SELECT * FROM provider_api_keys WHERE owner_user_id IS ? AND party_id = ? ORDER BY is_default DESC, label",
+                (owner_user_id, party_id),
+            ).fetchall()
         return [self.provider_key_from_row(row) for row in rows]
 
     def create_provider_api_key(
@@ -329,20 +349,30 @@ class AuthStore:
         provider: str = "nvidia",
         base_url: str | None = None,
         is_default: bool = True,
+        owner_user_id: str | None = None,
+        party_id: str | None = None,
     ) -> ProviderApiKey:
         label = " ".join(label.split())[:120] or "Provider key"
         secret_value = secret_value.strip()
         if not secret_value:
             raise ValueError("api key is required")
+        if not party_id:
+            raise ValueError("party_id is required for BYOK")
         key_id = f"key_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         with self.connect() as connection:
             if is_default:
-                connection.execute("UPDATE provider_api_keys SET is_default = 0 WHERE provider = ?", (provider,))
+                connection.execute(
+                    "UPDATE provider_api_keys SET is_default = 0 WHERE provider = ? AND owner_user_id IS ? AND party_id = ?",
+                    (provider, owner_user_id, party_id),
+                )
             connection.execute(
                 """
-                INSERT INTO provider_api_keys(id, label, provider, base_url, secret_value, is_default, created_at, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO provider_api_keys(
+                    id, label, provider, base_url, secret_value, is_default, created_at, updated_at,
+                    owner_user_id, party_id
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key_id,
@@ -353,9 +383,11 @@ class AuthStore:
                     1 if is_default else 0,
                     timestamp,
                     timestamp,
+                    owner_user_id,
+                    party_id,
                 ),
             )
-        return self.get_provider_api_key(key_id)
+        return self.get_provider_api_key(key_id, owner_user_id=owner_user_id, party_id=party_id)
 
     def provider_base_url(self, provider: str) -> str:
         if provider == "gemini":
@@ -370,8 +402,10 @@ class AuthStore:
         label: str | None = None,
         secret_value: str | None = None,
         is_default: bool | None = None,
+        owner_user_id: str | None = None,
+        party_id: str | None = None,
     ) -> ProviderApiKey:
-        current = self.get_provider_api_key(key_id)
+        current = self.get_provider_api_key(key_id, owner_user_id=owner_user_id, party_id=party_id)
         timestamp = now_iso()
         next_label = " ".join((label if label is not None else current.label).split())[:120] or current.label
         next_secret = secret_value.strip() if secret_value is not None else current.secret_value
@@ -380,46 +414,93 @@ class AuthStore:
         next_default = current.is_default if is_default is None else is_default
         with self.connect() as connection:
             if next_default:
-                connection.execute("UPDATE provider_api_keys SET is_default = 0 WHERE provider = ?", (current.provider,))
+                connection.execute(
+                    "UPDATE provider_api_keys SET is_default = 0 WHERE provider = ? AND owner_user_id IS ? AND party_id = ?",
+                    (current.provider, owner_user_id, party_id),
+                )
             connection.execute(
                 """
                 UPDATE provider_api_keys
                 SET label = ?, secret_value = ?, is_default = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND owner_user_id IS ? AND party_id = ?
                 """,
-                (next_label, next_secret, 1 if next_default else 0, timestamp, key_id),
+                (next_label, next_secret, 1 if next_default else 0, timestamp, key_id, owner_user_id, party_id),
             )
-        return self.get_provider_api_key(key_id)
+        return self.get_provider_api_key(key_id, owner_user_id=owner_user_id, party_id=party_id)
 
-    def delete_provider_api_key(self, key_id: str) -> None:
+    def delete_provider_api_key(self, key_id: str, owner_user_id: str | None, party_id: str) -> None:
         with self.connect() as connection:
-            deleted = connection.execute("DELETE FROM provider_api_keys WHERE id = ?", (key_id,)).rowcount
+            deleted = connection.execute(
+                "DELETE FROM provider_api_keys WHERE id = ? AND owner_user_id IS ? AND party_id = ?",
+                (key_id, owner_user_id, party_id),
+            ).rowcount
         if deleted == 0:
             raise ValueError(f"api key not found: {key_id}")
 
-    def get_provider_api_key(self, key_id: str) -> ProviderApiKey:
+    def get_provider_api_key(
+        self,
+        key_id: str,
+        owner_user_id: str | None = None,
+        party_id: str | None = None,
+    ) -> ProviderApiKey:
+        sql = "SELECT * FROM provider_api_keys WHERE id = ?"
+        params: list[Any] = [key_id]
+        if party_id is not None:
+            sql += " AND owner_user_id IS ? AND party_id = ?"
+            params.extend([owner_user_id, party_id])
         with self.connect() as connection:
-            row = connection.execute("SELECT * FROM provider_api_keys WHERE id = ?", (key_id,)).fetchone()
+            row = connection.execute(sql, params).fetchone()
         if row is None:
             raise ValueError(f"api key not found: {key_id}")
         return self.provider_key_from_row(row)
 
-    def default_provider_secret(self, base_url: str | None = None, provider: str = "nvidia") -> str | None:
+    def default_provider_secret(
+        self,
+        base_url: str | None = None,
+        provider: str = "nvidia",
+        *,
+        owner_user_id: str | None,
+        party_id: str,
+    ) -> str | None:
         params: tuple[Any, ...]
-        sql = "SELECT * FROM provider_api_keys WHERE provider = ? AND is_default = 1"
-        params = (provider,)
+        sql = "SELECT * FROM provider_api_keys WHERE provider = ? AND is_default = 1 AND owner_user_id IS ? AND party_id = ?"
+        params = (provider, owner_user_id, party_id)
         if base_url:
             sql += " AND base_url = ?"
-            params = (provider, base_url)
+            params = (provider, owner_user_id, party_id, base_url)
         sql += " ORDER BY updated_at DESC LIMIT 1"
         with self.connect() as connection:
             row = connection.execute(sql, params).fetchone()
             if row is None and base_url:
                 row = connection.execute(
-                    "SELECT * FROM provider_api_keys WHERE provider = ? AND is_default = 1 ORDER BY updated_at DESC LIMIT 1",
-                    (provider,),
+                    "SELECT * FROM provider_api_keys WHERE provider = ? AND is_default = 1 AND owner_user_id IS ? AND party_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (provider, owner_user_id, party_id),
                 ).fetchone()
         return str(row["secret_value"]) if row else None
+
+    def delete_party_provider_api_keys(self, owner_user_id: str | None, party_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM provider_api_keys WHERE owner_user_id IS ? AND party_id = ?",
+                (owner_user_id, party_id),
+            )
+
+    def get_global_setting(self, key: str, default: str = "") -> str:
+        with self.connect() as connection:
+            row = connection.execute("SELECT value FROM global_settings WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else default
+
+    def set_global_setting(self, key: str, value: str) -> str:
+        timestamp = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO global_settings(key, value, updated_at) VALUES(?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, timestamp),
+            )
+        return value
 
     def user_from_row(self, row: sqlite3.Row) -> AuthUser:
         return AuthUser(
@@ -439,6 +520,8 @@ class AuthStore:
             provider=row["provider"],
             base_url=row["base_url"],
             secret_value=row["secret_value"],
+            owner_user_id=row["owner_user_id"],
+            party_id=row["party_id"],
             is_default=bool(row["is_default"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

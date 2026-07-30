@@ -27,6 +27,7 @@ from app.services.nvidia_catalog import (
     provider_model_is_suitable,
 )
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
+from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
 
@@ -119,6 +120,8 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "worldpacks_path": str(tmp_path / "worldpacks"),
         "nvidia_api_base": f"mock://{mode}",
         "nvidia_api_key": api_key,
+        "service_nvidia_api_base": f"mock://{mode}",
+        "service_nvidia_api_key": api_key,
         "post_turn_helpers_inline": True,
         "auth_enabled": False,
     }
@@ -717,6 +720,13 @@ def test_auth_required_and_parties_are_user_scoped(tmp_path: Path):
     assert alice.get(f"/api/parties/{admin_party['id']}").status_code == 404
 
     alice_party = create_demo_party(alice, title="Alice Party", character_name="Alice Hero")
+    byok = alice.post(
+        f"/api/parties/{alice_party['id']}/byok",
+        json={"label": "Alice OpenRouter", "api_key": "alice-party-key", "provider": "openrouter"},
+    )
+    assert byok.status_code == 200, byok.text
+    assert alice.get(f"/api/parties/{alice_party['id']}/byok").json()["api_keys"][0]["secret_hint"] == "-key"
+    assert admin.get(f"/api/parties/{alice_party['id']}/byok").status_code == 404
     alice_parties = alice.get("/api/parties").json()["parties"]
     assert [party["id"] for party in alice_parties] == [alice_party["id"]]
     assert admin.get("/api/parties").json()["parties"][0]["id"] == admin_party["id"]
@@ -724,6 +734,46 @@ def test_auth_required_and_parties_are_user_scoped(tmp_path: Path):
     users = admin.get("/api/admin/users").json()["users"]
     alice_summary = next(user for user in users if user["username"] == "alice")
     assert alice_summary["party_count"] == 1
+
+
+def test_admin_selects_one_service_model_for_entire_stack(tmp_path: Path):
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+        service_openrouter_api_key="stack-openrouter-key",
+        local_llm_enabled=True,
+        local_llm_base_url="http://local-service/v1",
+    )
+    login(admin)
+    admin.post("/api/admin/users", json={"username": "alice", "password": "alice-secret", "role": "user"})
+
+    before = admin.get("/api/admin/global-settings/service-model")
+    assert before.status_code == 200
+    assert before.json()["term"] == "Служебная модель"
+    assert len(before.json()["choices"]) == 11
+
+    selected = admin.patch(
+        "/api/admin/global-settings/service-model",
+        json={"choice_id": "or-qwen-3.5-flash"},
+    )
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["selected"]["model"] == "qwen/qwen3.5-flash-02-23"
+    assert admin.app.state.auth_store.get_global_setting(SERVICE_MODEL_SETTING_KEY) == "or-qwen-3.5-flash"
+
+    runtime = service_model_settings(replace(admin.app.state.settings, service_model_choice="or-qwen-3.5-flash"))
+    assert runtime.llm_provider == "openrouter"
+    assert runtime.nvidia_api_key == "stack-openrouter-key"
+    assert runtime.narrative_model == "qwen/qwen3.5-flash-02-23"
+
+    alice = TestClient(admin.app)
+    login(alice, "alice", "alice-secret")
+    assert alice.get("/api/admin/global-settings/service-model").status_code == 403
+    assert alice.patch(
+        "/api/admin/global-settings/service-model",
+        json={"choice_id": "local-gemma"},
+    ).status_code == 403
 
 
 def test_admin_user_lifecycle_and_data_delete(tmp_path: Path):
@@ -923,7 +973,8 @@ def test_admin_autotest_continues_with_audited_fallback_after_narrative_validati
     assert response["choices"][0]["finish_reason"] == "provider_fallback"
 
 
-def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Path):
+def test_party_byok_is_scoped_to_current_party(tmp_path: Path):
+    write_worldpack(tmp_path)
     c = client(
         tmp_path,
         api_key="",
@@ -932,8 +983,10 @@ def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Pa
         bootstrap_admin_password="admin-secret",
     )
     login(c)
+    first = create_demo_party(c, title="BYOK A", character_name="A")
+    second = create_demo_party(c, title="BYOK B", character_name="B")
     response = c.post(
-        "/api/admin/api-keys",
+        f"/api/parties/{first['id']}/byok",
         json={"label": "Test NVIDIA", "api_key": "managed-provider-key", "provider": "nvidia", "is_default": True},
     )
     assert response.status_code == 200, response.text
@@ -941,13 +994,16 @@ def test_managed_provider_api_key_used_without_authorization_header(tmp_path: Pa
     assert "api_key" not in key
     assert key["secret_hint"] == "-key"
 
-    completion = c.post(
-        "/v1/chat/completions",
-        json=chat_payload("/check stealth skill=1 difficulty=10"),
-        headers={"Idempotency-Key": "managed-key"},
-    )
-    assert completion.status_code == 200, completion.text
-    assert completion.json()["choices"][0]["message"]["content"]
+    assert c.get(f"/api/parties/{first['id']}/byok").json()["api_keys"][0]["id"] == key["id"]
+    assert c.get(f"/api/parties/{second['id']}/byok").json()["api_keys"] == []
+    first_party = c.app.state.party_store.get_party(first["id"])
+    second_party = c.app.state.party_store.get_party(second["id"])
+    assert c.app.state.auth_store.default_provider_secret(
+        provider="nvidia", owner_user_id=first_party.owner_user_id, party_id=first["id"]
+    ) == "managed-provider-key"
+    assert c.app.state.auth_store.default_provider_secret(
+        provider="nvidia", owner_user_id=second_party.owner_user_id, party_id=second["id"]
+    ) is None
 
 
 def test_party_start_endpoint_is_idempotent_and_party_isolated(tmp_path: Path):
@@ -1106,8 +1162,6 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
         "PARTY_MEMORY_RETRIEVAL_ENABLED",
         "PARTY_MEMORY_RETRIEVAL_LIMIT",
         "PARTY_MEMORY_RETRIEVAL_MAX_CHARS",
-        "JOURNAL_AUTO_MIN_UNSUMMARIZED_TURNS",
-        "JOURNAL_MAX_BATCH_TURNS",
         "POST_TURN_HELPERS_INLINE",
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -1117,13 +1171,10 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
     assert settings.effective_party_context_limit_tokens == 131_072
     assert settings.effective_party_history_token_budget == 81_920
     assert settings.memory_summary_batch_tokens == 10_000
-    assert settings.memory_llm_provider == "local"
     assert settings.party_memory_chapter_max_tokens == 6_000
     assert settings.party_memory_chapter_max_chars == 24_000
     assert settings.party_memory_prompt_max_chars == 60_000
     assert settings.party_memory_retrieval_enabled is True
-    assert settings.journal_auto_min_unsummarized_turns == 24
-    assert settings.journal_max_batch_turns == 48
 
 
 def test_context_overflow_is_omitted_until_episodic_chapter_catches_up(tmp_path: Path):
@@ -1779,38 +1830,6 @@ def test_party_memory_auto_summary_is_party_isolated(tmp_path: Path):
     assert second_memory["stats"]["total_turns"] == 0
 
 
-def test_party_journal_auto_summary_is_party_isolated(tmp_path: Path):
-    write_worldpack(tmp_path)
-    c = client(
-        tmp_path,
-        journal_auto_min_unsummarized_turns=6,
-        journal_max_batch_turns=18,
-    )
-    first = create_demo_party(c, title="Journal A", character_name="A")
-    second = create_demo_party(c, title="Journal B", character_name="B")
-
-    for index in range(6):
-        response = c.post(
-            f"/api/parties/{first['id']}/messages",
-            json={
-                "content": f'/check information skill=1 difficulty=5 goal="journal clue {index}"',
-                "idempotency_key": f"journal-a-{index}",
-            },
-            headers={"Authorization": "Bearer test"},
-        )
-        assert response.status_code == 200
-
-    first_journal = c.get(f"/api/parties/{first['id']}/journal").json()
-    assert first_journal["journal"] is not None
-    assert first_journal["journal"]["from_turn_id"] == 1
-    assert first_journal["journal"]["to_turn_id"] == 6
-    assert "journal clue 0" in first_journal["journal"]["recap_text"]
-
-    second_journal = c.get(f"/api/parties/{second['id']}/journal").json()
-    assert second_journal["journal"] is None
-    assert second_journal["stats"]["total_turns"] == 0
-
-
 def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
@@ -1852,40 +1871,6 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
     assert deleted.json()["deleted"] is True
     assert deleted.json()["memory"] is not None
     assert deleted.json()["memory"]["to_turn_id"] == before["memory"]["to_turn_id"]
-
-
-def test_party_journal_manual_summarize_and_clear_latest(tmp_path: Path):
-    write_worldpack(tmp_path)
-    c = client(tmp_path)
-    party = create_demo_party(c, title="Manual Journal")
-
-    for index in range(2):
-        response = c.post(
-            f"/api/parties/{party['id']}/messages",
-            json={
-                "content": f'/check information skill=1 difficulty=5 goal="manual journal {index}"',
-                "idempotency_key": f"journal-manual-{index}",
-            },
-            headers={"Authorization": "Bearer test"},
-        )
-        assert response.status_code == 200
-
-    before = c.get(f"/api/parties/{party['id']}/journal").json()
-    assert before["journal"] is None
-
-    generated = c.post(
-        f"/api/parties/{party['id']}/journal/summarize",
-        json={"force": True},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert generated.status_code == 200
-    assert generated.json()["generated"] is True
-    assert generated.json()["journal"]["to_turn_id"] == 2
-
-    deleted = c.delete(f"/api/parties/{party['id']}/journal/latest")
-    assert deleted.status_code == 200
-    assert deleted.json()["deleted"] is True
-    assert deleted.json()["journal"] is None
 
 
 def test_narrative_prompt_includes_long_term_party_memory():

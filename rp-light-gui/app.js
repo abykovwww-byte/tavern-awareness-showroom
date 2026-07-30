@@ -14,7 +14,6 @@ const appState = {
   branches: [],
   serviceJobs: [],
   characters: null,
-  journal: null,
   promptPreview: null,
   history: null,
   chatArchiveExpanded: false,
@@ -24,7 +23,8 @@ const appState = {
   pendingMessages: {},
   adminUsers: [],
   adminWorldpacks: [],
-  adminApiKeys: [],
+  byokKeys: [],
+  serviceModelSettings: null,
   adminAutotestProfiles: [],
   adminAutotestRuns: [],
   adminDatasetTurns: [],
@@ -86,9 +86,6 @@ const els = {
   characterLlmDraftButton: document.querySelector("#characterLlmDraftButton"),
   promptPreviewButton: document.querySelector("#promptPreviewButton"),
   promptPreview: document.querySelector("#promptPreview"),
-  journalSummary: document.querySelector("#journalSummary"),
-  journalSummarizeButton: document.querySelector("#journalSummarizeButton"),
-  journalClearButton: document.querySelector("#journalClearButton"),
   proposalList: document.querySelector("#proposalList"),
   toast: document.querySelector("#toast"),
   partyDialog: document.querySelector("#partyDialog"),
@@ -117,17 +114,21 @@ const els = {
   deletePartyButton: document.querySelector("#deletePartyButton"),
   operationStatus: document.querySelector("#operationStatus"),
   adminPanel: document.querySelector("#adminPanel"),
+  autotestBlock: document.querySelector("#autotestBlock"),
   adminWorldpacksList: document.querySelector("#adminWorldpacksList"),
   adminUsersList: document.querySelector("#adminUsersList"),
   adminUserForm: document.querySelector("#adminUserForm"),
   adminUsernameInput: document.querySelector("#adminUsernameInput"),
   adminPasswordInput: document.querySelector("#adminPasswordInput"),
   adminRoleSelect: document.querySelector("#adminRoleSelect"),
-  adminApiKeysList: document.querySelector("#adminApiKeysList"),
-  adminApiKeyForm: document.querySelector("#adminApiKeyForm"),
-  adminApiKeyProviderSelect: document.querySelector("#adminApiKeyProviderSelect"),
-  adminApiKeyLabelInput: document.querySelector("#adminApiKeyLabelInput"),
-  adminApiKeyInput: document.querySelector("#adminApiKeyInput"),
+  byokKeysList: document.querySelector("#byokKeysList"),
+  byokKeyForm: document.querySelector("#byokKeyForm"),
+  byokKeyProviderSelect: document.querySelector("#byokKeyProviderSelect"),
+  byokKeyLabelInput: document.querySelector("#byokKeyLabelInput"),
+  byokKeyInput: document.querySelector("#byokKeyInput"),
+  serviceModelForm: document.querySelector("#serviceModelForm"),
+  serviceModelSelect: document.querySelector("#serviceModelSelect"),
+  serviceModelMeta: document.querySelector("#serviceModelMeta"),
   adminAutotestForm: document.querySelector("#adminAutotestForm"),
   adminAutotestPromptInput: document.querySelector("#adminAutotestPromptInput"),
   adminAutotestProviderSelect: document.querySelector("#adminAutotestProviderSelect"),
@@ -157,7 +158,7 @@ const metaHints = {
   "Мир": "Worldpack или prompt-мир, из которого взят стартовый state.",
   "Персонаж": "Активный игроковый персонаж этой партии.",
   "Провайдер": "API-провайдер выбранной модели.",
-  "Модель": "Модель, выбранная для нарратива, проверок и world edits.",
+  "Модель": "Модель ведущего для реплик партии. Память, изменение мира и генерация персонажей используют отдельную глобальную служебную модель.",
   "ID партии": "Стабильный party_id; он связывает историю, state и выбранные профили.",
   "State": "campaign_id изолированного состояния партии.",
 };
@@ -217,8 +218,6 @@ function bindEvents() {
   els.characterManualDraftButton.addEventListener("click", previewCharacterManualDraft);
   els.characterLlmDraftButton.addEventListener("click", previewCharacterLlmDraft);
   els.promptPreviewButton.addEventListener("click", previewPrompt);
-  els.journalSummarizeButton.addEventListener("click", summarizeJournal);
-  els.journalClearButton.addEventListener("click", clearLatestJournal);
   els.changePartyModelButton.addEventListener("click", changePartyModel);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
@@ -235,10 +234,12 @@ function bindEvents() {
   els.partyForm.addEventListener("submit", createParty);
   els.checkForm.addEventListener("submit", runCheck);
   els.adminUserForm.addEventListener("submit", createAdminUser);
-  els.adminApiKeyForm.addEventListener("submit", createAdminApiKey);
+  els.byokKeyForm.addEventListener("submit", createByokKey);
+  els.serviceModelForm.addEventListener("submit", saveServiceModel);
+  els.serviceModelSelect.addEventListener("change", renderServiceModelMeta);
   els.adminUsersList.addEventListener("click", handleAdminUserAction);
   els.adminWorldpacksList.addEventListener("change", handleAdminWorldpackVisibility);
-  els.adminApiKeysList.addEventListener("click", handleAdminApiKeyAction);
+  els.byokKeysList.addEventListener("click", handleByokKeyAction);
   els.adminAutotestForm.addEventListener("submit", createAdminAutotest);
   els.adminAutotestProviderSelect.addEventListener("change", renderAdminAutotestModelOptions);
   els.adminAutotestRunsList.addEventListener("click", handleAdminAutotestAction);
@@ -370,7 +371,7 @@ async function boot() {
       appState.contextEstimate = null;
       appState.memory = null;
       appState.characters = null;
-      appState.journal = null;
+      appState.byokKeys = [];
       appState.promptPreview = null;
       appState.history = null;
       appState.chatArchiveExpanded = false;
@@ -449,14 +450,14 @@ function clearWorkspaceState() {
   appState.branches = [];
   appState.serviceJobs = [];
   appState.characters = null;
-  appState.journal = null;
   appState.promptPreview = null;
   appState.history = null;
   appState.chatArchiveExpanded = false;
   appState.proposals = [];
   appState.pendingMessages = {};
   appState.adminUsers = [];
-  appState.adminApiKeys = [];
+  appState.byokKeys = [];
+  appState.serviceModelSettings = null;
   appState.adminAutotestProfiles = [];
   appState.adminAutotestRuns = [];
   appState.adminDatasetTurns = [];
@@ -470,6 +471,9 @@ function renderAuth() {
   }
   if (els.adminPanel) {
     els.adminPanel.classList.toggle("hidden", !isAdmin());
+  }
+  if (els.autotestBlock) {
+    els.autotestBlock.classList.toggle("hidden", !isAdmin());
   }
 }
 
@@ -495,6 +499,7 @@ async function selectParty(partyId) {
     appState.checkpoints = [];
     appState.branches = [];
     appState.serviceJobs = [];
+    appState.byokKeys = [];
   }
   appState.activeParty = party;
   appState.activeBranch = null;
@@ -513,7 +518,7 @@ async function reloadActiveParty() {
   const optionalPartyData = loadOptionalPartyData(partyId, reloadGeneration).catch((error) => {
     console.warn("Optional party data was not refreshed", error);
   });
-  const [party, partyState, history, proposals, context, memory, characters, journal] = await Promise.all([
+  const [party, partyState, history, proposals, context, memory, characters] = await Promise.all([
     apiGet(`/api/parties/${partyId}`),
     apiGet(`/api/parties/${partyId}/state`),
     apiGet(`/api/parties/${partyId}/history`),
@@ -521,7 +526,6 @@ async function reloadActiveParty() {
     apiGet(`/api/parties/${partyId}/context`),
     apiGet(`/api/parties/${partyId}/memory`),
     apiGet(`/api/parties/${partyId}/characters`),
-    apiGet(`/api/parties/${partyId}/journal`),
   ]);
   if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
   appState.activeParty = party.party;
@@ -531,7 +535,6 @@ async function reloadActiveParty() {
   appState.contextEstimate = context.context || null;
   appState.memory = memory;
   appState.characters = characters;
-  appState.journal = journal;
   appState.promptPreview = null;
   appState.chatArchiveExpanded = false;
   reconcilePendingFromHistory(partyId, history);
@@ -558,7 +561,7 @@ async function openPartyBranch(partyId, branchId) {
   appState.characters = { characters: payload.characters || {} };
   appState.contextEstimate = null;
   appState.memory = null;
-  appState.journal = null;
+  appState.byokKeys = [];
   appState.proposals = [];
   appState.chatArchiveExpanded = false;
   if (isAdmin()) await reloadAdminDatasetTurns(partyId, branchId);
@@ -573,18 +576,21 @@ async function reloadActiveBranch() {
 }
 
 async function loadOptionalPartyData(partyId, reloadGeneration) {
-  const [loreCards, checkpoints, branches, serviceJobs] = await Promise.allSettled([
+  const [loreCards, checkpoints, branches, serviceJobs, byok] = await Promise.allSettled([
     apiGet(`/api/parties/${partyId}/lore-cards`),
     apiGet(`/api/parties/${partyId}/checkpoints`),
     apiGet(`/api/parties/${partyId}/branches`),
     apiGet(`/api/parties/${partyId}/service-jobs`),
+    apiGet(`/api/parties/${partyId}/byok`),
   ]);
   if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
   if (loreCards.status === "fulfilled") appState.loreCards = loreCards.value.cards || [];
   if (checkpoints.status === "fulfilled") appState.checkpoints = checkpoints.value.checkpoints || [];
   if (branches.status === "fulfilled") appState.branches = branches.value.branches || [];
   if (serviceJobs.status === "fulfilled") appState.serviceJobs = serviceJobs.value.jobs || [];
+  if (byok.status === "fulfilled") appState.byokKeys = byok.value.api_keys || [];
   renderMemoryTools();
+  renderByok();
   renderBranchReadOnlyControls();
 }
 
@@ -598,11 +604,11 @@ function renderAll() {
   renderMemoryTools();
   renderCharacters();
   renderPromptPreview();
-  renderJournal();
   renderChat();
   renderProposals();
   renderMessageControls();
   renderAdminPanel();
+  renderByok();
   renderBranchReadOnlyControls();
 }
 
@@ -615,8 +621,6 @@ function renderBranchReadOnlyControls() {
   [
     els.memorySummarizeButton,
     els.memoryClearButton,
-    els.journalSummarizeButton,
-    els.journalClearButton,
     els.characterEditTarget,
     els.characterEditId,
     els.characterEditName,
@@ -1128,42 +1132,6 @@ function promptBlock(block, index) {
   </details>`;
 }
 
-function renderJournal() {
-  if (!els.journalSummary) return;
-  const payload = appState.journal || {};
-  const journal = payload.journal || null;
-  const stats = payload.stats || {};
-  if (els.journalSummarizeButton) {
-    els.journalSummarizeButton.disabled = !appState.activeParty;
-  }
-  if (els.journalClearButton) {
-    els.journalClearButton.disabled = !appState.activeParty || !journal;
-  }
-  if (!appState.activeParty) {
-    els.journalSummary.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
-    return;
-  }
-  if (!journal) {
-    const total = stats.total_turns ?? 0;
-    const waiting = stats.next_auto_entry_turns_remaining ?? 0;
-    els.journalSummary.innerHTML = [
-      stateItem("Recap", "еще не собран", "Журнал нужен человеку, не модели."),
-      stateItem("Покрытие", `ходов ${escapeHtml(total)} · до auto ${escapeHtml(waiting)}`, "Auto-journal собирается пачками новых ходов."),
-    ].join("");
-    return;
-  }
-  const covered = `${journal.from_turn_id ?? "-"}-${journal.to_turn_id ?? "-"}`;
-  els.journalSummary.innerHTML = `<div class="journal-entry">
-    <strong>${escapeHtml(journal.title || "Журнал партии")}</strong>
-    <div class="mini-metrics">
-      <span>ходы ${escapeHtml(covered)}</span>
-      <span>state v${escapeHtml(journal.state_version ?? "-")}</span>
-    </div>
-    <div>${escapeHtml(clipText(journal.recap_text || "", 1000))}</div>
-    ${memoryList("Важные изменения", journal.important_changes)}
-  </div>`;
-}
-
 function renderChat({ scrollMode = "bottom" } = {}) {
   const turns = appState.history?.turns || [];
   const pending = activePendingMessage();
@@ -1336,15 +1304,15 @@ function renderProposals() {
 
 async function reloadAdminData() {
   if (!isAdmin()) return;
-  const [users, worldpacks, apiKeys, autotestModels] = await Promise.all([
+  const [users, worldpacks, serviceModel, autotestModels] = await Promise.all([
     apiGet("/api/admin/users"),
     apiGet("/api/worldpacks"),
-    apiGet("/api/admin/api-keys"),
+    apiGet("/api/admin/global-settings/service-model"),
     apiGet("/api/admin/autotests/models"),
   ]);
   appState.adminUsers = users.users || [];
   appState.adminWorldpacks = (worldpacks.worldpacks || []).filter((pack) => !pack.owner_user_id);
-  appState.adminApiKeys = apiKeys.api_keys || [];
+  appState.serviceModelSettings = serviceModel;
   appState.adminAutotestProfiles = autotestModels.model_profiles || [];
   await Promise.all([
     reloadAdminAutotestRuns(appState.activeParty?.id),
@@ -1392,11 +1360,11 @@ function renderAdminPanel() {
   if (!isAdmin()) {
     els.adminWorldpacksList.innerHTML = "";
     els.adminUsersList.innerHTML = "";
-    els.adminApiKeysList.innerHTML = "";
     els.adminAutotestRunsList.innerHTML = "";
     els.adminDatasetTurnsList.innerHTML = "";
     return;
   }
+  renderServiceModel();
   renderAdminDataset();
   renderAdminAutotestOptions();
   renderAdminAutotestRuns();
@@ -1406,9 +1374,6 @@ function renderAdminPanel() {
   els.adminUsersList.innerHTML = appState.adminUsers.length
     ? appState.adminUsers.map((user) => adminUserRow(user)).join("")
     : `<div class="admin-empty">Пользователей нет.</div>`;
-  els.adminApiKeysList.innerHTML = appState.adminApiKeys.length
-    ? appState.adminApiKeys.map((key) => adminApiKeyRow(key)).join("")
-    : `<div class="admin-empty">Ключей нет.</div>`;
 }
 
 function adminWorldpackRow(pack) {
@@ -1623,17 +1588,61 @@ function adminUserRow(user) {
   </div>`;
 }
 
-function adminApiKeyRow(key) {
+function renderByok() {
+  if (!els.byokKeysList || !els.byokKeyForm) return;
+  const party = appState.activeParty;
+  els.byokKeyForm.querySelectorAll("input, select, button").forEach((node) => {
+    node.disabled = !party || Boolean(appState.activeBranch);
+  });
+  if (!party) {
+    els.byokKeysList.innerHTML = `<div class="admin-empty">Сначала выберите партию.</div>`;
+    return;
+  }
+  els.byokKeysList.innerHTML = appState.byokKeys.length
+    ? appState.byokKeys.map((key) => byokKeyRow(key)).join("")
+    : `<div class="admin-empty">У этой партии нет BYOK-ключей.</div>`;
+}
+
+function byokKeyRow(key) {
   return `<div class="admin-row">
     <div>
       <strong>${escapeHtml(key.label)}</strong>
       <span>${escapeHtml(providerLabel(key.provider))} · ${escapeHtml(key.is_default ? "default" : "backup")} · ...${escapeHtml(key.secret_hint || "----")}</span>
     </div>
     <div class="row-actions">
-      <button class="text-button" type="button" data-admin-key-action="default" data-key-id="${escapeHtml(key.id)}" ${key.is_default ? "disabled" : ""}>Default</button>
-      <button class="text-button danger-text" type="button" data-admin-key-action="delete" data-key-id="${escapeHtml(key.id)}">Удалить</button>
+      <button class="text-button" type="button" data-byok-action="default" data-key-id="${escapeHtml(key.id)}" ${key.is_default ? "disabled" : ""}>Default</button>
+      <button class="text-button danger-text" type="button" data-byok-action="delete" data-key-id="${escapeHtml(key.id)}">Удалить</button>
     </div>
   </div>`;
+}
+
+function renderServiceModel() {
+  const payload = appState.serviceModelSettings;
+  if (!isAdmin() || !payload) return;
+  els.serviceModelSelect.innerHTML = (payload.choices || []).map((choice) => {
+    const price = choice.provider === "local"
+      ? "бесплатно"
+      : `$${formatPrice(choice.input_price)}/$${formatPrice(choice.output_price)} за 1M`;
+    const unavailable = choice.available ? "" : " · недоступна";
+    return `<option value="${escapeHtml(choice.id)}" ${choice.id === payload.choice_id ? "selected" : ""} ${choice.available ? "" : "disabled"}>${escapeHtml(choice.title)} · ${escapeHtml(price + unavailable)}</option>`;
+  }).join("");
+  renderServiceModelMeta();
+}
+
+function renderServiceModelMeta() {
+  const payload = appState.serviceModelSettings;
+  if (!payload || !els.serviceModelMeta) return;
+  const choice = (payload.choices || []).find((item) => item.id === els.serviceModelSelect.value) || payload.selected;
+  if (!choice) return;
+  const context = Number(choice.context_tokens || 0).toLocaleString("ru-RU");
+  const price = choice.provider === "local"
+    ? "Локально, без оплаты API"
+    : `OpenRouter: $${formatPrice(choice.input_price)} вход / $${formatPrice(choice.output_price)} выход за 1M токенов`;
+  els.serviceModelMeta.textContent = `${choice.model} · контекст ${context} · ${price}`;
+}
+
+function formatPrice(value) {
+  return Number(value || 0).toFixed(5).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function openPartyDialog() {
@@ -2101,24 +2110,28 @@ async function handleAdminUserAction(event) {
   }
 }
 
-async function createAdminApiKey(event) {
+async function createByokKey(event) {
   event.preventDefault();
-  if (!isAdmin()) return;
+  const partyId = appState.activeParty?.id;
+  if (!partyId || appState.activeBranch) return;
   try {
-    setBusy(true, "Сохраняю API ключ провайдера...");
-    await apiPost("/api/admin/api-keys", {
-      label: els.adminApiKeyLabelInput.value.trim(),
-      api_key: els.adminApiKeyInput.value,
-      provider: els.adminApiKeyProviderSelect.value,
+    setBusy(true, "Сохраняю BYOK для выбранной партии...");
+    await apiPost(`/api/parties/${encodeURIComponent(partyId)}/byok`, {
+      label: els.byokKeyLabelInput.value.trim(),
+      api_key: els.byokKeyInput.value,
+      provider: els.byokKeyProviderSelect.value,
       is_default: true,
     });
-    els.adminApiKeyLabelInput.value = "";
-    els.adminApiKeyInput.value = "";
-    await reloadAdminData();
+    els.byokKeyLabelInput.value = "";
+    els.byokKeyInput.value = "";
+    const keys = await apiGet(`/api/parties/${encodeURIComponent(partyId)}/byok`);
+    if (appState.activeParty?.id !== partyId) return;
+    appState.byokKeys = keys.api_keys || [];
     const models = await apiGet("/api/model-profiles");
     appState.modelProfiles = models.model_profiles || [];
     renderMeta();
-    showToast("API ключ сохранен.");
+    renderByok();
+    showToast("BYOK сохранён только для выбранной партии.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -2126,23 +2139,26 @@ async function createAdminApiKey(event) {
   }
 }
 
-async function handleAdminApiKeyAction(event) {
-  const button = event.target.closest("[data-admin-key-action]");
-  if (!button || !isAdmin()) return;
+async function handleByokKeyAction(event) {
+  const button = event.target.closest("[data-byok-action]");
+  const partyId = appState.activeParty?.id;
+  if (!button || !partyId || appState.activeBranch) return;
   const keyId = button.dataset.keyId;
-  const action = button.dataset.adminKeyAction;
+  const action = button.dataset.byokAction;
   try {
-    setBusy(true, "Обновляю API ключ провайдера...");
+    setBusy(true, "Обновляю BYOK выбранной партии...");
     if (action === "default") {
-      await apiPatch(`/api/admin/api-keys/${keyId}`, { is_default: true });
-      showToast("Default API ключ обновлен.");
+      await apiPatch(`/api/parties/${encodeURIComponent(partyId)}/byok/${encodeURIComponent(keyId)}`, { is_default: true });
+      showToast("Default BYOK обновлён для этой партии.");
     } else if (action === "delete") {
-      const ok = window.confirm("Удалить API ключ из Gateway?");
+      const ok = window.confirm("Удалить BYOK из выбранной партии?");
       if (!ok) return;
-      await apiDelete(`/api/admin/api-keys/${keyId}`);
-      showToast("API ключ удален.");
+      await apiDelete(`/api/parties/${encodeURIComponent(partyId)}/byok/${encodeURIComponent(keyId)}`);
+      showToast("BYOK удалён из этой партии.");
     }
-    await reloadAdminData();
+    const keys = await apiGet(`/api/parties/${encodeURIComponent(partyId)}/byok`);
+    if (appState.activeParty?.id === partyId) appState.byokKeys = keys.api_keys || [];
+    renderByok();
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -2435,42 +2451,6 @@ async function previewPrompt() {
     renderPromptPreview();
     openPanelFor(els.promptPreview);
     showToast(source === "current" ? "Собран dry-run следующего хода." : "Prompt предыдущего хода открыт.");
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function summarizeJournal() {
-  if (!appState.activeParty) return;
-  try {
-    setBusy(true, "LLM собирает журнал партии...");
-    const result = await apiPost(`/api/parties/${appState.activeParty.id}/journal/summarize`, { force: true });
-    appState.journal = result;
-    renderJournal();
-    await reloadActiveParty();
-    openPanelFor(els.journalSummary);
-    showToast(result.generated ? "Журнал обновлен." : journalReason(result.reason));
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function clearLatestJournal() {
-  if (!appState.activeParty) return;
-  const ok = window.confirm("Удалить последнюю запись журнала этой партии?");
-  if (!ok) return;
-  try {
-    setBusy(true, "Удаляю последнюю запись журнала...");
-    const result = await apiDelete(`/api/parties/${appState.activeParty.id}/journal/latest`);
-    appState.journal = result;
-    renderJournal();
-    await reloadActiveParty();
-    openPanelFor(els.journalSummary);
-    showToast(result.deleted ? "Последняя запись журнала удалена." : "Журнала пока нет.");
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -2806,6 +2786,23 @@ async function apiPatch(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+async function saveServiceModel(event) {
+  event.preventDefault();
+  if (!isAdmin()) return;
+  try {
+    setBusy(true, "Применяю служебную модель ко всему RP Stack...");
+    appState.serviceModelSettings = await apiPatch("/api/admin/global-settings/service-model", {
+      choice_id: els.serviceModelSelect.value,
+    });
+    renderServiceModel();
+    showToast("Служебная модель применена ко всем текущим и будущим партиям.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function apiPut(path, body) {
@@ -3184,14 +3181,6 @@ function memoryReason(reason) {
     up_to_date: "Память уже актуальна.",
   };
   return labels[reason] || "Память не изменилась.";
-}
-
-function journalReason(reason) {
-  const labels = {
-    not_enough_unsummarized_turns: "Для auto-journal пока мало новых ходов.",
-    up_to_date: "Журнал уже актуален.",
-  };
-  return labels[reason] || "Журнал не изменился.";
 }
 
 function clipText(value, limit) {
