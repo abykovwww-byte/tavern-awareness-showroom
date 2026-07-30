@@ -209,6 +209,21 @@ class PartyModelUpdate(BaseModel):
     model_profile_id: str
 
 
+class PartyDatasetUpdate(BaseModel):
+    review_status: Literal["excluded", "review", "approved"] = "review"
+    tags: list[str] = Field(default_factory=list, max_length=40)
+
+
+class PartyTurnDatasetUpdate(BaseModel):
+    review_status: Literal["excluded", "review", "approved"] = "review"
+    tags: list[str] = Field(default_factory=list, max_length=40)
+    notes: str = Field(default="", max_length=2000)
+
+
+class TurnFeedbackUpdate(BaseModel):
+    liked: bool
+
+
 class PartyMemorySummarizeRequest(BaseModel):
     force: bool = True
 
@@ -283,6 +298,8 @@ class PartySummary(BaseModel):
     model_profile_id: str
     state_campaign_id: str
     status: str
+    dataset_review_status: Literal["excluded", "review", "approved"] = "review"
+    dataset_tags: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
     worldpack: WorldPackSummary | None = None

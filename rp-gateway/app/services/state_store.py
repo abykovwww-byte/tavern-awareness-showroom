@@ -101,11 +101,24 @@ class StateStore:
                     narrative_response TEXT NOT NULL,
                     response_json TEXT NOT NULL,
                     prompt_json TEXT,
+                    metadata_json TEXT,
                     state_version INTEGER NOT NULL,
                     created_at INTEGER NOT NULL,
                     UNIQUE(campaign_id, idempotency_key),
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
+                CREATE TABLE IF NOT EXISTS turn_feedback (
+                    campaign_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+                    liked INTEGER NOT NULL DEFAULT 0,
+                    source_ui TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(campaign_id, turn_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_feedback_liked
+                    ON turn_feedback(liked, campaign_id, turn_id);
                 CREATE TABLE IF NOT EXISTS turn_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -265,6 +278,8 @@ class StateStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)").fetchall()}
         if "prompt_json" not in columns:
             connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
+        if "metadata_json" not in columns:
+            connection.execute("ALTER TABLE turns ADD COLUMN metadata_json TEXT")
 
     def recover_interrupted_work(self) -> dict[str, int]:
         """Reconcile work that could only remain running after a process restart."""
@@ -673,8 +688,9 @@ class StateStore:
                             """
                             INSERT INTO turns(
                                 campaign_id, idempotency_key, request_id, player_message,
-                                narrative_response, response_json, prompt_json, state_version, created_at
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                narrative_response, response_json, prompt_json, metadata_json,
+                                state_version, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 target_campaign_id,
@@ -684,6 +700,7 @@ class StateStore:
                                 row["narrative_response"],
                                 row["response_json"],
                                 row["prompt_json"],
+                                row["metadata_json"],
                                 row["state_version"],
                                 row["created_at"],
                             ),
@@ -946,15 +963,71 @@ class StateStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, request_id, player_message, narrative_response, state_version, created_at
-                FROM turns
-                WHERE campaign_id = ?
-                ORDER BY id DESC
+                SELECT t.id, t.request_id, t.player_message, t.narrative_response,
+                       t.state_version, t.created_at, COALESCE(f.liked, 0) AS player_liked
+                FROM turns t
+                LEFT JOIN turn_feedback f
+                  ON f.campaign_id = t.campaign_id AND f.turn_id = t.id
+                WHERE t.campaign_id = ?
+                ORDER BY t.id DESC
                 LIMIT ?
                 """,
                 (self.campaign_id, limit),
             ).fetchall()
-        return [dict(row) for row in reversed(rows)]
+        turns = [dict(row) for row in reversed(rows)]
+        for turn in turns:
+            turn["player_liked"] = bool(turn["player_liked"])
+        return turns
+
+    def set_turn_feedback(self, turn_id: int, *, liked: bool, source_ui: str) -> dict[str, Any]:
+        if source_ui not in {"light-gui", "showroom"}:
+            raise ValueError("unsupported turn feedback source")
+        timestamp = now_ts()
+        with self.connect() as connection:
+            turn = connection.execute(
+                "SELECT id, player_message FROM turns WHERE id = ? AND campaign_id = ?",
+                (int(turn_id), self.campaign_id),
+            ).fetchone()
+            if turn is None:
+                raise ValueError(f"turn not found: {turn_id}")
+            if str(turn["player_message"]).startswith("[AUTO_START]"):
+                raise ValueError("opening scene has no player and assistant pair to like")
+            connection.execute(
+                """
+                INSERT INTO turn_feedback(
+                    campaign_id, turn_id, liked, source_ui, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_id, turn_id) DO UPDATE SET
+                    liked = excluded.liked,
+                    source_ui = excluded.source_ui,
+                    updated_at = excluded.updated_at
+                """,
+                (self.campaign_id, int(turn_id), int(liked), source_ui, timestamp, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                VALUES(?, NULL, 'turn_feedback_updated', ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    json.dumps(
+                        {"turn_id": int(turn_id), "liked": bool(liked), "source_ui": source_ui},
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT campaign_id, turn_id, liked, source_ui, created_at, updated_at
+                FROM turn_feedback WHERE campaign_id = ? AND turn_id = ?
+                """,
+                (self.campaign_id, int(turn_id)),
+            ).fetchone()
+        feedback = dict(row)
+        feedback["liked"] = bool(feedback["liked"])
+        return feedback
 
     def has_running_turn_request(self) -> bool:
         with self.connect() as connection:
@@ -1781,15 +1854,17 @@ class StateStore:
         response_json: dict[str, Any],
         state_version: int,
         prompt_messages: list[dict[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO turns(
                     campaign_id, idempotency_key, request_id, player_message,
-                    narrative_response, response_json, prompt_json, state_version, created_at
+                    narrative_response, response_json, prompt_json, metadata_json,
+                    state_version, created_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.campaign_id,
@@ -1799,6 +1874,7 @@ class StateStore:
                     narrative_response,
                     json.dumps(response_json, ensure_ascii=False),
                     json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
+                    json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
                     state_version,
                     now_ts(),
                 ),

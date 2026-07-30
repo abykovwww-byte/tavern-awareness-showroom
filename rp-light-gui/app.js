@@ -27,6 +27,7 @@ const appState = {
   adminApiKeys: [],
   adminAutotestProfiles: [],
   adminAutotestRuns: [],
+  adminDatasetTurns: [],
 };
 
 const els = {
@@ -134,6 +135,11 @@ const els = {
   adminAutotestTurnsInput: document.querySelector("#adminAutotestTurnsInput"),
   adminAutotestStartButton: document.querySelector("#adminAutotestStartButton"),
   adminAutotestRunsList: document.querySelector("#adminAutotestRunsList"),
+  adminDatasetPartyForm: document.querySelector("#adminDatasetPartyForm"),
+  adminDatasetPartyStatus: document.querySelector("#adminDatasetPartyStatus"),
+  adminDatasetPartyTags: document.querySelector("#adminDatasetPartyTags"),
+  adminDatasetExportButton: document.querySelector("#adminDatasetExportButton"),
+  adminDatasetTurnsList: document.querySelector("#adminDatasetTurnsList"),
 };
 
 const checkLabels = {
@@ -236,6 +242,10 @@ function bindEvents() {
   els.adminAutotestForm.addEventListener("submit", createAdminAutotest);
   els.adminAutotestProviderSelect.addEventListener("change", renderAdminAutotestModelOptions);
   els.adminAutotestRunsList.addEventListener("click", handleAdminAutotestAction);
+  els.adminDatasetPartyForm.addEventListener("submit", saveAdminDatasetParty);
+  els.adminDatasetExportButton.addEventListener("click", downloadAdminDataset);
+  els.adminDatasetTurnsList.addEventListener("click", handleAdminDatasetTurnAction);
+  els.chatLog.addEventListener("click", handleTurnLikeClick);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
@@ -449,6 +459,7 @@ function clearWorkspaceState() {
   appState.adminApiKeys = [];
   appState.adminAutotestProfiles = [];
   appState.adminAutotestRuns = [];
+  appState.adminDatasetTurns = [];
 }
 
 function renderAuth() {
@@ -525,6 +536,7 @@ async function reloadActiveParty() {
   appState.chatArchiveExpanded = false;
   reconcilePendingFromHistory(partyId, history);
   ensurePendingRecovery(partyId);
+  if (isAdmin()) await reloadAdminDatasetTurns(partyId);
   renderAll();
   void optionalPartyData;
 }
@@ -549,6 +561,7 @@ async function openPartyBranch(partyId, branchId) {
   appState.journal = null;
   appState.proposals = [];
   appState.chatArchiveExpanded = false;
+  if (isAdmin()) await reloadAdminDatasetTurns(partyId, branchId);
   renderAll();
 }
 
@@ -1172,12 +1185,19 @@ function renderChat({ scrollMode = "bottom" } = {}) {
     messages.push(chatArchiveHtml(hiddenTurnCount));
   }
   for (const turn of visibleTurns) {
-    if (isAutoStartTurn(turn)) {
+    const autoStart = isAutoStartTurn(turn);
+    if (autoStart) {
       messages.push(messageHtml("system", "Старт", "Партия началась автоматически.", turn.created_at));
     } else {
       messages.push(messageHtml("user", "Игрок", turn.player_message, turn.created_at));
     }
-    messages.push(messageHtml("assistant", "GM", turn.narrative_response, turn.created_at));
+    messages.push(messageHtml(
+      "assistant",
+      "GM",
+      turn.narrative_response,
+      turn.created_at,
+      autoStart ? null : { turnId: turn.id, liked: Boolean(turn.player_liked) },
+    ));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
     if (!pending.autoStart) {
@@ -1224,6 +1244,36 @@ function isAutoStartTurn(turn) {
   return String(turn?.player_message || "").startsWith(AUTO_START_HISTORY_MESSAGE);
 }
 
+async function handleTurnLikeClick(event) {
+  const button = event.target.closest("[data-turn-like]");
+  if (!button || !appState.activeParty) return;
+  const turnId = Number(button.dataset.turnLike);
+  if (!Number.isInteger(turnId) || turnId <= 0) return;
+  const liked = button.getAttribute("aria-pressed") !== "true";
+  button.disabled = true;
+  try {
+    const result = await apiPut(
+      `/api/parties/${encodeURIComponent(appState.activeParty.id)}/turns/${turnId}/feedback`,
+      { liked },
+    );
+    const saved = Boolean(result.feedback?.liked);
+    const turn = (appState.history?.turns || []).find((item) => Number(item.id) === turnId);
+    if (turn) turn.player_liked = saved;
+    updateTurnLikeButton(button, saved);
+    showToast(saved ? "Связка отмечена как удачная." : "Отметка убрана.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function updateTurnLikeButton(button, liked) {
+  button.setAttribute("aria-pressed", String(liked));
+  button.title = liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную";
+  button.innerHTML = `<span aria-hidden="true">${liked ? "♥" : "♡"}</span><span>${liked ? "Связка понравилась" : "Нравится связка"}</span>`;
+}
+
 function renderProposals() {
   if (!appState.proposals.length) {
     els.proposalList.innerHTML = `<div class="proposal">Нет черновиков изменений.</div>`;
@@ -1251,13 +1301,29 @@ async function reloadAdminData() {
   appState.adminWorldpacks = (worldpacks.worldpacks || []).filter((pack) => !pack.owner_user_id);
   appState.adminApiKeys = apiKeys.api_keys || [];
   appState.adminAutotestProfiles = autotestModels.model_profiles || [];
-  await reloadAdminAutotestRuns(appState.activeParty?.id);
+  await Promise.all([
+    reloadAdminAutotestRuns(appState.activeParty?.id),
+    reloadAdminDatasetTurns(appState.activeParty?.id, appState.activeBranch?.id),
+  ]);
   renderAdminPanel();
   renderMessageControls();
 }
 
 function adminAutotestsUrl(partyId) {
   return `/api/admin/autotests?source_party_id=${encodeURIComponent(partyId)}`;
+}
+
+async function reloadAdminDatasetTurns(partyId, branchId = null) {
+  if (!isAdmin() || !partyId) {
+    appState.adminDatasetTurns = [];
+    renderAdminDataset();
+    return;
+  }
+  const query = branchId ? `?branch_id=${encodeURIComponent(branchId)}` : "";
+  const response = await apiGet(`/api/admin/datasets/parties/${encodeURIComponent(partyId)}/turns${query}`);
+  if (appState.activeParty?.id !== partyId || (appState.activeBranch?.id || null) !== (branchId || null)) return;
+  appState.adminDatasetTurns = response.turns || [];
+  renderAdminDataset();
 }
 
 async function reloadAdminAutotestRuns(partyId) {
@@ -1283,8 +1349,10 @@ function renderAdminPanel() {
     els.adminUsersList.innerHTML = "";
     els.adminApiKeysList.innerHTML = "";
     els.adminAutotestRunsList.innerHTML = "";
+    els.adminDatasetTurnsList.innerHTML = "";
     return;
   }
+  renderAdminDataset();
   renderAdminAutotestOptions();
   renderAdminAutotestRuns();
   els.adminWorldpacksList.innerHTML = appState.adminWorldpacks.length
@@ -1335,6 +1403,97 @@ async function handleAdminWorldpackVisibility(event) {
     select.disabled = false;
     showToast(error.message);
   }
+}
+
+function renderAdminDataset() {
+  if (!els.adminDatasetPartyForm) return;
+  const party = appState.activeParty;
+  const disabled = !party;
+  els.adminDatasetPartyStatus.disabled = disabled;
+  els.adminDatasetPartyTags.disabled = disabled;
+  els.adminDatasetPartyForm.querySelector("button[type='submit']").disabled = disabled;
+  els.adminDatasetExportButton.disabled = !isAdmin();
+  if (!party) {
+    els.adminDatasetPartyStatus.value = "review";
+    els.adminDatasetPartyTags.value = "";
+    els.adminDatasetTurnsList.innerHTML = `<div class="admin-empty">Выберите партию для разметки.</div>`;
+    return;
+  }
+  els.adminDatasetPartyStatus.value = party.dataset_review_status || "review";
+  els.adminDatasetPartyTags.value = (party.dataset_tags || []).join(", ");
+  const visibleTurns = [...appState.adminDatasetTurns].reverse().slice(0, 100);
+  els.adminDatasetTurnsList.innerHTML = visibleTurns.length
+    ? visibleTurns.map(adminDatasetTurnRow).join("")
+    : `<div class="admin-empty">В выбранной линии пока нет записанных ходов.</div>`;
+}
+
+function adminDatasetTurnRow(turn) {
+  const statusLabels = { review: "на проверке", approved: "одобрено", excluded: "исключено" };
+  const tags = [...(turn.auto_tags || []), ...(turn.tags || [])].join(", ");
+  const preview = String(turn.player_message || "").replace(/\s+/g, " ").slice(0, 180);
+  return `<div class="admin-row">
+    <div>
+      <strong>#${escapeHtml(turn.turn_id)} · ${escapeHtml(statusLabels[turn.review_status] || turn.review_status)}</strong>
+      <span>${escapeHtml(preview || "без сообщения игрока")}</span>
+      <span>${escapeHtml(tags)}</span>
+    </div>
+    <div class="row-actions">
+      <button class="text-button" type="button" data-dataset-status="approved" data-turn-id="${escapeHtml(turn.turn_id)}">Одобрить</button>
+      <button class="text-button" type="button" data-dataset-status="review" data-turn-id="${escapeHtml(turn.turn_id)}">Проверить</button>
+      <button class="text-button danger-text" type="button" data-dataset-status="excluded" data-turn-id="${escapeHtml(turn.turn_id)}">Исключить</button>
+    </div>
+  </div>`;
+}
+
+function datasetTagsFromInput(value) {
+  return String(value || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+
+async function saveAdminDatasetParty(event) {
+  event.preventDefault();
+  const party = appState.activeParty;
+  if (!party) return;
+  try {
+    const response = await apiPatch(`/api/admin/datasets/parties/${encodeURIComponent(party.id)}`, {
+      review_status: els.adminDatasetPartyStatus.value,
+      tags: datasetTagsFromInput(els.adminDatasetPartyTags.value),
+    });
+    appState.activeParty = response.party;
+    appState.parties = appState.parties.map((item) => item.id === response.party.id ? response.party : item);
+    renderAdminDataset();
+    renderPartyList();
+    showToast("Разметка партии сохранена.");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function handleAdminDatasetTurnAction(event) {
+  const button = event.target.closest("[data-dataset-status]");
+  const party = appState.activeParty;
+  if (!button || !party) return;
+  const branchQuery = appState.activeBranch?.id
+    ? `?branch_id=${encodeURIComponent(appState.activeBranch.id)}`
+    : "";
+  const turn = appState.adminDatasetTurns.find((item) => String(item.turn_id) === button.dataset.turnId);
+  try {
+    await apiPut(
+      `/api/admin/datasets/parties/${encodeURIComponent(party.id)}/turns/${encodeURIComponent(button.dataset.turnId)}${branchQuery}`,
+      {
+        review_status: button.dataset.datasetStatus,
+        tags: turn?.tags || [],
+        notes: turn?.notes || "",
+      },
+    );
+    await reloadAdminDatasetTurns(party.id, appState.activeBranch?.id);
+    showToast("Статус хода сохранён.");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function downloadAdminDataset() {
+  window.location.assign("/api/admin/datasets/export.jsonl");
 }
 
 function renderAdminAutotestOptions() {
@@ -2604,6 +2763,14 @@ async function apiPatch(path, body) {
   });
 }
 
+async function apiPut(path, body) {
+  return api(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 async function apiDelete(path, body = null) {
   const options = { method: "DELETE" };
   if (body) {
@@ -2915,15 +3082,21 @@ function messageTimeHtml(timestamp) {
   return `<time class="message-time" datetime="${escapeHtml(formatted.iso)}" title="${escapeHtml(formatted.title)}">${escapeHtml(formatted.text)}</time>`;
 }
 
-function messageHtml(kind, role, content, timestamp = Date.now()) {
+function messageHtml(kind, role, content, timestamp = Date.now(), feedback = null) {
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
     : { html: escapeHtml(content || ""), hasArtifacts: false };
-  return `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
+  const liked = Boolean(feedback?.liked);
+  const feedbackHtml = feedback?.turnId
+    ? `<div class="message-feedback"><button class="turn-like-button" type="button" data-turn-like="${escapeHtml(feedback.turnId)}" aria-pressed="${liked}" title="${liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную"}"><span aria-hidden="true">${liked ? "♥" : "♡"}</span><span>${liked ? "Связка понравилась" : "Нравится связка"}</span></button></div>`
+    : "";
+  const html = `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>
     <div class="message-content">${rendered.html}</div>
     ${messageTimeHtml(timestamp)}
+    ${feedbackHtml}
   </article>`;
+  return html;
 }
 
 function compactJson(value) {

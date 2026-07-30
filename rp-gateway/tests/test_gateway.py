@@ -869,9 +869,17 @@ def test_admin_autotest_continues_with_audited_fallback_after_narrative_validati
     login(admin)
 
     async def failing_check_action(*args: object, **kwargs: object) -> str:
-        return "/check stealth skill=1 difficulty=10"
+        return "I take the next action."
+
+    def reject_narrative(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            valid=False,
+            violations=["forced invalid narrative for fallback coverage"],
+            repair_instruction="Return a valid narrative.",
+        )
 
     monkeypatch.setattr("app.main.AutoPlayerClient.next_action", failing_check_action)
+    monkeypatch.setattr("app.services.adjudicator.OutputValidator.validate", reject_narrative)
     source_party = create_demo_party(admin, title="Fallback autotest source")
     local_profile = next(
         profile
@@ -2166,7 +2174,9 @@ def test_awareness_attachment_fallback_is_stealthy():
     assert "цену" not in text.lower()
     assert "вирус" not in text.lower()
     assert "подозр" not in text.lower()
-    assert "без заметных" in text
+    assert "ПИСЬМО\n" in text
+    assert "СООБЩЕНИЕ\n" in text
+    assert "WorkSchedule_Update" not in text
 
 
 def test_awareness_double_extension_action_updates_score_counters():

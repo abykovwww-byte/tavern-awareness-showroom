@@ -122,6 +122,8 @@ class PartyStore:
                     model_profile_id TEXT NOT NULL REFERENCES model_profiles(id),
                     state_campaign_id TEXT NOT NULL UNIQUE,
                     status TEXT NOT NULL,
+                    dataset_review_status TEXT NOT NULL DEFAULT 'review',
+                    dataset_tags_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -159,6 +161,30 @@ class PartyStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_autotest_runs_status
                     ON autotest_runs(status, updated_at);
+                CREATE TABLE IF NOT EXISTS dataset_turn_labels (
+                    campaign_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+                    review_status TEXT NOT NULL DEFAULT 'review',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    notes TEXT NOT NULL DEFAULT '',
+                    updated_by_user_id TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(campaign_id, turn_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_dataset_turn_labels_status
+                    ON dataset_turn_labels(review_status, campaign_id, turn_id);
+                CREATE TABLE IF NOT EXISTS turn_feedback (
+                    campaign_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+                    liked INTEGER NOT NULL DEFAULT 0,
+                    source_ui TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(campaign_id, turn_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_feedback_liked
+                    ON turn_feedback(liked, campaign_id, turn_id);
                 CREATE TABLE IF NOT EXISTS app_cache (
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL,
@@ -170,6 +196,7 @@ class PartyStore:
             self.migrate_worldpack_visibility(connection)
             self.migrate_scenario_type(connection)
             self.migrate_autotest_branches(connection)
+            self.migrate_dataset_columns(connection)
 
     def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
         worldpack_columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
@@ -210,6 +237,17 @@ class PartyStore:
             connection.execute("ALTER TABLE autotest_runs ADD COLUMN fallback_turns INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_autotest_runs_branch ON autotest_runs(branch_id, updated_at)"
+        )
+
+    def migrate_dataset_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
+        if "dataset_review_status" not in columns:
+            connection.execute("ALTER TABLE parties ADD COLUMN dataset_review_status TEXT NOT NULL DEFAULT 'review'")
+        if "dataset_tags_json" not in columns:
+            connection.execute("ALTER TABLE parties ADD COLUMN dataset_tags_json TEXT NOT NULL DEFAULT '[]'")
+        connection.execute(
+            "UPDATE parties SET dataset_review_status = 'review' "
+            "WHERE dataset_review_status NOT IN ('excluded', 'review', 'approved')"
         )
 
     def seed_model_profiles(self) -> None:
@@ -899,12 +937,291 @@ class PartyStore:
             raise ValueError(f"party not found: {party_id}")
         return self.get_party(party_id, owner_user_id=owner_user_id)
 
+    @staticmethod
+    def normalize_dataset_tags(tags: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in tags:
+            tag = re.sub(r"\s+", "-", str(raw).strip().lower())
+            tag = re.sub(r"[^\w:.-]+", "", tag, flags=re.UNICODE)[:80]
+            if tag and tag not in normalized:
+                normalized.append(tag)
+        return normalized[:40]
+
+    @staticmethod
+    def validate_dataset_review_status(review_status: str) -> str:
+        if review_status not in {"excluded", "review", "approved"}:
+            raise ValueError("dataset review status must be excluded, review, or approved")
+        return review_status
+
+    def update_party_dataset(
+        self,
+        party_id: str,
+        *,
+        review_status: str,
+        tags: list[str],
+        owner_user_id: str | None = None,
+    ) -> PartySummary:
+        self.get_party(party_id, owner_user_id=owner_user_id)
+        status = self.validate_dataset_review_status(review_status)
+        normalized_tags = self.normalize_dataset_tags(tags)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE parties
+                SET dataset_review_status = ?, dataset_tags_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, json.dumps(normalized_tags, ensure_ascii=False), now_iso(), party_id),
+            )
+        return self.get_party(party_id, owner_user_id=owner_user_id)
+
+    def dataset_campaign_id(
+        self,
+        party_id: str,
+        branch_id: str | None,
+        owner_user_id: str | None,
+    ) -> tuple[PartySummary, str]:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
+        if not branch_id:
+            return party, party.state_campaign_id
+        branch = self.get_party_branch(party_id, branch_id, owner_user_id=owner_user_id)
+        return party, str(branch["state_campaign_id"])
+
+    def set_turn_dataset_label(
+        self,
+        party_id: str,
+        turn_id: int,
+        *,
+        branch_id: str | None,
+        review_status: str,
+        tags: list[str],
+        notes: str,
+        owner_user_id: str | None,
+        updated_by_user_id: str | None,
+    ) -> dict[str, Any]:
+        _, campaign_id = self.dataset_campaign_id(party_id, branch_id, owner_user_id)
+        status = self.validate_dataset_review_status(review_status)
+        normalized_tags = self.normalize_dataset_tags(tags)
+        with self.connect() as connection:
+            turn = connection.execute(
+                "SELECT id FROM turns WHERE id = ? AND campaign_id = ?",
+                (int(turn_id), campaign_id),
+            ).fetchone()
+            if turn is None:
+                raise ValueError(f"turn not found: {turn_id}")
+            connection.execute(
+                """
+                INSERT INTO dataset_turn_labels(
+                    campaign_id, turn_id, review_status, tags_json, notes,
+                    updated_by_user_id, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_id, turn_id) DO UPDATE SET
+                    review_status = excluded.review_status,
+                    tags_json = excluded.tags_json,
+                    notes = excluded.notes,
+                    updated_by_user_id = excluded.updated_by_user_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    campaign_id,
+                    int(turn_id),
+                    status,
+                    json.dumps(normalized_tags, ensure_ascii=False),
+                    notes.strip(),
+                    updated_by_user_id,
+                    now_iso(),
+                ),
+            )
+        return self.get_turn_dataset_label(campaign_id, int(turn_id))
+
+    def get_turn_dataset_label(self, campaign_id: str, turn_id: int) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM dataset_turn_labels WHERE campaign_id = ? AND turn_id = ?",
+                (campaign_id, int(turn_id)),
+            ).fetchone()
+        if row is None:
+            return {
+                "campaign_id": campaign_id,
+                "turn_id": int(turn_id),
+                "review_status": "review",
+                "tags": [],
+                "notes": "",
+                "updated_by_user_id": None,
+                "updated_at": None,
+            }
+        label = dict(row)
+        label["tags"] = json.loads(label.pop("tags_json") or "[]")
+        return label
+
+    def list_dataset_turns(
+        self,
+        party_id: str,
+        *,
+        branch_id: str | None = None,
+        owner_user_id: str | None = None,
+        limit: int | None = 500,
+    ) -> list[dict[str, Any]]:
+        party, campaign_id = self.dataset_campaign_id(party_id, branch_id, owner_user_id)
+        limit_sql = " LIMIT ?" if limit is not None else ""
+        params: tuple[Any, ...] = (
+            (campaign_id, min(max(limit, 1), 5000)) if limit is not None else (campaign_id,)
+        )
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT t.*, l.review_status, l.tags_json, l.notes, l.updated_at AS label_updated_at,
+                       COALESCE(f.liked, 0) AS player_liked, f.source_ui AS feedback_source
+                FROM turns t
+                LEFT JOIN dataset_turn_labels l
+                  ON l.campaign_id = t.campaign_id AND l.turn_id = t.id
+                LEFT JOIN turn_feedback f
+                  ON f.campaign_id = t.campaign_id AND f.turn_id = t.id
+                WHERE t.campaign_id = ?
+                ORDER BY t.id ASC
+                {limit_sql}
+                """,
+                params,
+            ).fetchall()
+        return [self.dataset_turn_from_row(party, branch_id, row) for row in rows]
+
+    def export_dataset_records(
+        self,
+        *,
+        owner_user_id: str | None,
+        scenario_type: str | None = None,
+        include_branches: bool = True,
+    ) -> dict[str, Any]:
+        parties = self.list_parties(owner_user_id=owner_user_id)
+        records: list[dict[str, Any]] = []
+        for party in parties:
+            if party.dataset_review_status != "approved":
+                continue
+            if scenario_type and party.scenario_type != scenario_type:
+                continue
+            records.extend(
+                turn for turn in self.list_dataset_turns(
+                    party.id,
+                    owner_user_id=owner_user_id,
+                    limit=None,
+                )
+                if turn["review_status"] == "approved"
+            )
+            if include_branches:
+                branch_sql = "SELECT id FROM party_branches WHERE party_id = ?"
+                branch_params: tuple[Any, ...] = (party.id,)
+                if owner_user_id:
+                    branch_sql += " AND owner_user_id = ?"
+                    branch_params = (party.id, owner_user_id)
+                with self.connect() as connection:
+                    branches = connection.execute(branch_sql + " ORDER BY created_at ASC", branch_params).fetchall()
+                for branch in branches:
+                    records.extend(
+                        turn for turn in self.list_dataset_turns(
+                            party.id,
+                            branch_id=branch["id"],
+                            owner_user_id=owner_user_id,
+                            limit=None,
+                        )
+                        if turn["review_status"] == "approved"
+                    )
+        exportable = [turn for turn in records if turn.get("prompt_messages")]
+        return {
+            "records": [self.dataset_sft_record(turn) for turn in exportable],
+            "approved_turns": len(records),
+            "skipped_missing_prompt": len(records) - len(exportable),
+        }
+
+    def dataset_turn_from_row(
+        self,
+        party: PartySummary,
+        branch_id: str | None,
+        row: sqlite3.Row,
+    ) -> dict[str, Any]:
+        response = json.loads(row["response_json"] or "{}")
+        metadata = json.loads(row["metadata_json"] or "{}")
+        prompt_messages = json.loads(row["prompt_json"]) if row["prompt_json"] else None
+        choices = response.get("choices") if isinstance(response, dict) else []
+        first_choice = choices[0] if isinstance(choices, list) and choices else {}
+        response_id = str(response.get("id") or "") if isinstance(response, dict) else ""
+        finish_reason = str(first_choice.get("finish_reason") or "") if isinstance(first_choice, dict) else ""
+        auto_tags = [party.scenario_type, "branch" if branch_id else "main"]
+        if str(row["player_message"]).startswith("[AUTO_START]"):
+            auto_tags.append("opening-scene")
+        if branch_id:
+            auto_tags.append("autotest" if str(row["idempotency_key"]).startswith("autotest:") else "manual-branch")
+        if response_id.startswith("fallback-") or finish_reason == "provider_fallback" or metadata.get("fallback"):
+            auto_tags.append("fallback")
+        if metadata.get("repaired"):
+            auto_tags.append("repaired")
+        if metadata.get("validator_valid") is False:
+            auto_tags.append("validator-invalid")
+        if not prompt_messages:
+            auto_tags.append("missing-prompt")
+        if bool(row["player_liked"]):
+            auto_tags.append("player-liked")
+        return {
+            "schema_version": "rp-gateway.dataset-candidate.v1",
+            "party_id": party.id,
+            "campaign_id": row["campaign_id"],
+            "branch_id": branch_id,
+            "turn_id": int(row["id"]),
+            "request_id": row["request_id"],
+            "player_message": row["player_message"],
+            "scenario_type": party.scenario_type,
+            "worldpack_id": party.worldpack_id,
+            "party_tags": party.dataset_tags,
+            "review_status": row["review_status"] or "review",
+            "tags": json.loads(row["tags_json"] or "[]") if row["tags_json"] else [],
+            "auto_tags": self.normalize_dataset_tags(auto_tags),
+            "notes": row["notes"] or "",
+            "prompt_messages": prompt_messages,
+            "assistant_response": row["narrative_response"],
+            "player_feedback": {
+                "liked": bool(row["player_liked"]),
+                "source_ui": row["feedback_source"],
+            },
+            "metadata": metadata,
+            "state_version": int(row["state_version"]),
+            "created_at": int(row["created_at"]),
+        }
+
+    @staticmethod
+    def dataset_sft_record(turn: dict[str, Any]) -> dict[str, Any]:
+        messages = [
+            {"role": str(message.get("role") or "user"), "content": str(message.get("content") or "")}
+            for message in turn["prompt_messages"]
+            if isinstance(message, dict)
+        ]
+        messages.append({"role": "assistant", "content": turn["assistant_response"]})
+        return {
+            "messages": messages,
+            "metadata": {
+                "schema_version": "rp-gateway.sft.v1",
+                "sample_id": f"{turn['campaign_id']}:{turn['turn_id']}",
+                "group_id": turn["campaign_id"],
+                "party_id": turn["party_id"],
+                "branch_id": turn["branch_id"],
+                "turn_id": turn["turn_id"],
+                "scenario_type": turn["scenario_type"],
+                "worldpack_id": turn["worldpack_id"],
+                "tags": PartyStore.normalize_dataset_tags(
+                    [*turn["party_tags"], *turn["tags"], *turn["auto_tags"]]
+                ),
+                "player_feedback": turn["player_feedback"],
+                "state_version": turn["state_version"],
+                "source": turn["metadata"],
+            },
+        }
+
     def delete_party(self, party_id: str, owner_user_id: str | None = None) -> None:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         branches = self.list_party_branches(party_id, owner_user_id=owner_user_id, limit=200)
         with self.connect() as connection:
             campaign_ids = [party.state_campaign_id, *[branch["state_campaign_id"] for branch in branches]]
             for campaign_id in campaign_ids:
+                connection.execute("DELETE FROM dataset_turn_labels WHERE campaign_id = ?", (campaign_id,))
+                connection.execute("DELETE FROM turn_feedback WHERE campaign_id = ?", (campaign_id,))
                 for table in (
                     "turns",
                     "turn_requests",
@@ -1216,6 +1533,8 @@ class PartyStore:
             model_profile_id=row["model_profile_id"],
             state_campaign_id=row["state_campaign_id"],
             status=row["status"],
+            dataset_review_status=row["dataset_review_status"],
+            dataset_tags=json.loads(row["dataset_tags_json"] or "[]"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

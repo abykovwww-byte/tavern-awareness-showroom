@@ -82,7 +82,20 @@ class Adjudicator:
                 )
                 text = response_text(response)
                 state_version = self.store.current_version() or 1
-                self.store.record_turn(idempotency_key, request_id, latest, text, response, state_version)
+                self.store.record_turn(
+                    idempotency_key,
+                    request_id,
+                    latest,
+                    text,
+                    response,
+                    state_version,
+                    metadata=self.turn_metadata(
+                        turn_kind="world_command",
+                        validator_valid=None,
+                        repaired=False,
+                        fallback_reason=None,
+                    ),
+                )
                 self.store.complete_turn_request(idempotency_key, response)
                 await self.after_turn_recorded(authorization, request_id)
                 return response
@@ -107,6 +120,7 @@ class Adjudicator:
             llm_calls = 0
             repaired = False
             provider_fallback_reason: str | None = None
+            gateway_fallback_reason: str | None = None
             prompt_messages: list[dict[str, str]] | None = None
             try:
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
@@ -169,6 +183,7 @@ class Adjudicator:
                         scenario_type=self.settings.scenario_type,
                     )
                 if not validation.valid:
+                    gateway_fallback_reason = "validation_failed"
                     self.store.audit(
                         "llm_validation_failed",
                         {"request_id": request_id, "model": self.settings.narrative_model, "violations": validation.violations},
@@ -229,7 +244,31 @@ class Adjudicator:
             text = response_text(response)
             updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
             version = int(updated_state.get("meta", {}).get("state_version", 0))
-            turn_id = self.store.record_turn(idempotency_key, request_id, latest, text, response, version, prompt_messages)
+            final_validation = self.validator.validate(
+                text,
+                outcome,
+                updated_state,
+                campaign_id=self.settings.campaign_id,
+                latest_user_message=latest,
+                scenario_type=self.settings.scenario_type,
+            )
+            turn_id = self.store.record_turn(
+                idempotency_key,
+                request_id,
+                latest,
+                text,
+                response,
+                version,
+                prompt_messages,
+                self.turn_metadata(
+                    turn_kind="narrative",
+                    validator_valid=final_validation.valid,
+                    repaired=repaired,
+                    fallback_reason=provider_fallback_reason or gateway_fallback_reason,
+                    outcome=outcome.model_dump(mode="json"),
+                    llm_calls=llm_calls,
+                ),
+            )
             self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp":
                 self.store.record_check(turn_id, outcome)
@@ -242,14 +281,7 @@ class Adjudicator:
                     "duration_ms": duration_ms,
                     "llm_calls": llm_calls,
                     "model": self.settings.narrative_model,
-                    "validator_valid": self.validator.validate(
-                        text,
-                        outcome,
-                        updated_state,
-                        campaign_id=self.settings.campaign_id,
-                        latest_user_message=latest,
-                        scenario_type=self.settings.scenario_type,
-                    ).valid,
+                    "validator_valid": final_validation.valid,
                     "repair": repaired,
                     "provider_fallback_reason": provider_fallback_reason,
                     "check_id": outcome.check_id,
@@ -262,6 +294,33 @@ class Adjudicator:
         except Exception as exc:
             self.store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise
+
+    def turn_metadata(
+        self,
+        *,
+        turn_kind: str,
+        validator_valid: bool | None,
+        repaired: bool,
+        fallback_reason: str | None,
+        outcome: dict[str, Any] | None = None,
+        llm_calls: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "rp-gateway.turn.v1",
+            "turn_kind": turn_kind,
+            "scenario_type": self.settings.scenario_type,
+            "worldpack_id": self.settings.campaign_id,
+            "state_campaign_id": self.store.campaign_id,
+            "narrative_provider": self.settings.llm_provider,
+            "narrative_model": self.settings.narrative_model,
+            "generated_by": "autotest" if self.store.campaign_id.find("--branch_") >= 0 else "human",
+            "validator_valid": validator_valid,
+            "repaired": repaired,
+            "fallback": fallback_reason is not None,
+            "fallback_reason": fallback_reason,
+            "llm_calls": llm_calls,
+            "outcome": outcome,
+        }
 
     def preview_applied_state(self, patch: Any) -> dict[str, Any]:
         candidate = self.store.preview_patch(patch)

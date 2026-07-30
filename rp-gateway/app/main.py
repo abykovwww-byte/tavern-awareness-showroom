@@ -32,6 +32,7 @@ from app.models.schemas import (
     PartyBranchCreate,
     PartyCheckRequest,
     PartyCreate,
+    PartyDatasetUpdate,
     PartyJournalSummarizeRequest,
     PartyLoreCardCreate,
     PartyLoreCardUpdate,
@@ -40,6 +41,8 @@ from app.models.schemas import (
     PartyModelUpdate,
     PartyPromptPreviewRequest,
     PartyStartRequest,
+    PartyTurnDatasetUpdate,
+    TurnFeedbackUpdate,
     PartyCheckpointCreate,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
@@ -452,6 +455,92 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"deleted": True, "api_key_id": key_id}
 
+    @app.patch("/api/admin/datasets/parties/{party_id}")
+    def admin_update_party_dataset(
+        request: Request,
+        party_id: str,
+        payload: PartyDatasetUpdate,
+    ) -> dict[str, Any]:
+        admin = require_admin(request)
+        try:
+            party = party_store.update_party_dataset(
+                party_id,
+                review_status=payload.review_status,
+                tags=payload.tags,
+                owner_user_id=admin.id if admin else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party": party.model_dump(mode="json")}
+
+    @app.get("/api/admin/datasets/parties/{party_id}/turns")
+    def admin_list_dataset_turns(
+        request: Request,
+        party_id: str,
+        branch_id: str | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        admin = require_admin(request)
+        try:
+            turns = party_store.list_dataset_turns(
+                party_id,
+                branch_id=branch_id,
+                owner_user_id=admin.id if admin else None,
+                limit=limit,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "branch_id": branch_id, "turns": turns}
+
+    @app.put("/api/admin/datasets/parties/{party_id}/turns/{turn_id}")
+    def admin_label_dataset_turn(
+        request: Request,
+        party_id: str,
+        turn_id: int,
+        payload: PartyTurnDatasetUpdate,
+        branch_id: str | None = None,
+    ) -> dict[str, Any]:
+        admin = require_admin(request)
+        try:
+            label = party_store.set_turn_dataset_label(
+                party_id,
+                turn_id,
+                branch_id=branch_id,
+                review_status=payload.review_status,
+                tags=payload.tags,
+                notes=payload.notes,
+                owner_user_id=admin.id if admin else None,
+                updated_by_user_id=admin.id if admin else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "branch_id": branch_id, "label": label}
+
+    @app.get("/api/admin/datasets/export.jsonl")
+    def admin_export_dataset(
+        request: Request,
+        scenario_type: str | None = None,
+        include_branches: bool = True,
+    ) -> StreamingResponse:
+        admin = require_admin(request)
+        if scenario_type and scenario_type not in {"rp", "novel", "training"}:
+            raise HTTPException(status_code=400, detail="scenario_type must be rp, novel, or training")
+        export = party_store.export_dataset_records(
+            owner_user_id=admin.id if admin else None,
+            scenario_type=scenario_type,
+            include_branches=include_branches,
+        )
+        body = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in export["records"])
+        return StreamingResponse(
+            iter([body]),
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": 'attachment; filename="rp-gateway-sft-v1.jsonl"',
+                "X-Dataset-Approved-Turns": str(export["approved_turns"]),
+                "X-Dataset-Skipped-Missing-Prompt": str(export["skipped_missing_prompt"]),
+            },
+        )
+
     @app.get("/api/state")
     def get_state(request: Request) -> dict[str, Any]:
         require_admin(request)
@@ -618,6 +707,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "turns": party_state_store.turn_history(limit=limit),
             "state_versions": party_state_store.history(limit=limit),
         }
+
+    @app.put("/api/parties/{party_id}/turns/{turn_id}/feedback")
+    def update_party_turn_feedback(
+        request: Request,
+        party_id: str,
+        turn_id: int,
+        payload: TurnFeedbackUpdate,
+    ) -> dict[str, Any]:
+        try:
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            feedback = party_state_store.set_turn_feedback(
+                turn_id,
+                liked=payload.liked,
+                source_ui="light-gui",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party_id": party_id, "feedback": feedback}
 
     @app.get("/api/parties/{party_id}/requests/{request_id}")
     def get_party_request(request: Request, party_id: str, request_id: str) -> dict[str, Any]:
@@ -1089,6 +1196,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repair_instruction=None,
                 memory_summary=memory_summary,
             )
+            repaired = False
+            fallback_reason: str | None = None
             raw = await narrative.complete(
                 chat_request,
                 narrative_state,
@@ -1109,6 +1218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 scenario_type=party.scenario_type,
             )
             if not validation.valid and party_settings.max_repair_attempts > 0:
+                repaired = True
                 raw = await narrative.complete(
                     chat_request,
                     narrative_state,
@@ -1128,6 +1238,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     scenario_type=party.scenario_type,
                 )
             if not validation.valid:
+                fallback_reason = "validation_failed"
                 party_state_store.audit(
                     "party_start_validation_failed",
                     {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
@@ -1163,6 +1274,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 response,
                 state_version,
                 prompt_messages,
+                {
+                    "schema_version": "rp-gateway.turn.v1",
+                    "turn_kind": "opening_scene",
+                    "scenario_type": party.scenario_type,
+                    "worldpack_id": party.worldpack_id,
+                    "state_campaign_id": party_state_store.campaign_id,
+                    "narrative_provider": party_settings.llm_provider,
+                    "narrative_model": model_profile.model,
+                    "generated_by": "human",
+                    "validator_valid": validation.valid,
+                    "repaired": repaired,
+                    "fallback": fallback_reason is not None,
+                    "fallback_reason": fallback_reason,
+                    "llm_calls": 2 if repaired else 1,
+                    "outcome": start_outcome.model_dump(mode="json"),
+                },
             )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
@@ -1326,6 +1453,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"run_id": run_id, "turns": history["turns"]}
+
+    @app.put("/api/showroom/runs/{run_id}/turns/{turn_id}/feedback")
+    def update_showroom_turn_feedback(
+        request: Request,
+        run_id: str,
+        turn_id: int,
+        payload: TurnFeedbackUpdate,
+    ) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            request.state.showroom_party_access = True
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+            feedback = party_state_store.set_turn_feedback(
+                turn_id,
+                liked=payload.liked,
+                source_ui="showroom",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"run_id": run_id, "feedback": feedback}
 
     @app.post("/api/showroom/runs/{run_id}/start")
     async def start_showroom_run(

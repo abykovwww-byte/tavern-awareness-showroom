@@ -102,6 +102,7 @@ function bindEvents() {
   els.chatLeaderboardButton.addEventListener("click", () => openLeaderboard(appState.currentRun?.scenario));
   els.startForm.addEventListener("submit", createRun);
   els.messageForm.addEventListener("submit", sendMessage);
+  els.chatThread.addEventListener("click", handleTurnLikeClick);
   els.adminLoginForm.addEventListener("submit", loginAdmin);
   els.adminLogoutButton.addEventListener("click", logoutAdmin);
   els.newScenarioButton.addEventListener("click", newScenario);
@@ -428,12 +429,28 @@ async function copyPortalValue(value) {
 function renderHistory(turns, fallbackOpening = "") {
   els.chatThread.replaceChildren();
   for (const turn of turns) {
-    if (turn.player_message && !String(turn.player_message).startsWith("[AUTO_START]")) {
+    const autoStart = String(turn.player_message || "").startsWith("[AUTO_START]");
+    if (turn.player_message && !autoStart) {
       appendMessage("player", appState.currentRun.display_name, turn.player_message, false, turn.created_at);
     }
-    if (turn.narrative_response) appendMessage("gm", "Рассказчик", turn.narrative_response, false, turn.created_at);
+    if (turn.narrative_response) {
+      appendMessage(
+        "gm",
+        "Рассказчик",
+        turn.narrative_response,
+        false,
+        turn.created_at,
+        autoStart ? null : { turnId: turn.id, liked: Boolean(turn.player_liked) },
+      );
+    }
   }
   if (!turns.length && fallbackOpening) appendMessage("gm", "Рассказчик", fallbackOpening);
+}
+
+async function refreshCurrentRunHistory() {
+  if (!appState.currentRun) return;
+  const history = await apiGet(`/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/history?limit=300`);
+  renderHistory(history.turns || []);
 }
 
 function initials(value) {
@@ -596,7 +613,7 @@ function messageTimeElement(timestamp) {
   return time;
 }
 
-function appendMessage(kind, author, content, pending = false, timestamp = Date.now()) {
+function appendMessage(kind, author, content, pending = false, timestamp = Date.now(), feedback = null) {
   const article = document.createElement("article");
   article.className = `message message-${kind}${pending ? " message-pending" : ""}`;
   const heading = document.createElement("strong");
@@ -616,9 +633,56 @@ function appendMessage(kind, author, content, pending = false, timestamp = Date.
   const time = messageTimeElement(timestamp);
   article.append(heading, body);
   if (time) article.append(time);
+  if (feedback?.turnId) article.append(turnLikeControl(feedback));
   els.chatThread.append(article);
   article.scrollIntoView({ behavior: "smooth", block: "end" });
   return article;
+}
+
+function turnLikeControl(feedback) {
+  const row = document.createElement("div");
+  row.className = "message-feedback";
+  const button = document.createElement("button");
+  button.className = "turn-like-button";
+  button.type = "button";
+  button.dataset.turnLike = String(feedback.turnId);
+  updateTurnLikeButton(button, Boolean(feedback.liked));
+  row.append(button);
+  return row;
+}
+
+function updateTurnLikeButton(button, liked) {
+  button.setAttribute("aria-pressed", String(liked));
+  button.title = liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную";
+  button.replaceChildren();
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = liked ? "♥" : "♡";
+  const label = document.createElement("span");
+  label.textContent = liked ? "Связка понравилась" : "Нравится связка";
+  button.append(icon, label);
+}
+
+async function handleTurnLikeClick(event) {
+  const button = event.target.closest("[data-turn-like]");
+  if (!button || !appState.currentRun) return;
+  const turnId = Number(button.dataset.turnLike);
+  if (!Number.isInteger(turnId) || turnId <= 0) return;
+  const liked = button.getAttribute("aria-pressed") !== "true";
+  button.disabled = true;
+  try {
+    const result = await apiPut(
+      `/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/turns/${turnId}/feedback`,
+      { liked },
+    );
+    const saved = Boolean(result.feedback?.liked);
+    updateTurnLikeButton(button, saved);
+    showToast(saved ? "Связка отмечена как удачная." : "Отметка убрана.");
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function sendMessage(event) {
@@ -635,7 +699,11 @@ async function sendMessage(event) {
       { "X-Request-ID": makeRequestId("showroom-request") },
     );
     pending.remove();
-    appendMessage("gm", "Рассказчик", result.message?.content || "Ответ получен без текста.");
+    try {
+      await refreshCurrentRunHistory();
+    } catch (_historyError) {
+      appendMessage("gm", "Рассказчик", result.message?.content || "Ответ получен без текста.");
+    }
     await refreshRuns();
   } catch (error) {
     pending.remove();
@@ -969,6 +1037,10 @@ async function apiPost(path, body, headers = {}) {
 
 async function apiPatch(path, body) {
   return apiRequest(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+async function apiPut(path, body) {
+  return apiRequest(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
 async function apiDelete(path) {

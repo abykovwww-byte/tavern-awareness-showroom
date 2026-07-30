@@ -542,6 +542,43 @@ h3 {
   text-align: right;
 }
 
+.message-feedback {
+  display: flex;
+  margin-top: 9px;
+  white-space: normal;
+}
+
+.turn-like-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(24, 29, 32, 0.72);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.turn-like-button:hover,
+.turn-like-button[aria-pressed="true"] {
+  border-color: rgba(127, 182, 133, 0.72);
+  background: rgba(42, 58, 46, 0.82);
+  color: var(--green-strong);
+}
+
+.turn-like-button:focus-visible {
+  outline: 2px solid var(--green-strong);
+  outline-offset: 2px;
+}
+
+.turn-like-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .message-content {
   display: grid;
   gap: 14px;

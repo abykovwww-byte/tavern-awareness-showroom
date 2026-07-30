@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RP Light GUI</title>
-    <link rel="stylesheet" href="/styles.css?v=20260729-message-time" />
+    <link rel="stylesheet" href="/styles.css?v=20260730-turn-like" />
   </head>
   <body>
     <section class="login-screen hidden" id="loginScreen">
@@ -292,6 +292,31 @@
         </section>
 
         <section class="summary-panel admin-panel hidden" id="adminPanel">
+          <div class="admin-block">
+            <h4>Датасет LoRA / QLoRA</h4>
+            <p class="panel-hint">Сырые ходы сохраняются всегда, но в JSONL попадут только партия и ходы со статусом «Одобрено». Перед одобрением проверьте качество, персональные данные и fallback.</p>
+            <form id="adminDatasetPartyForm" class="admin-form">
+              <div class="split-row">
+                <label class="management-field">
+                  <span>Статус партии</span>
+                  <select id="adminDatasetPartyStatus">
+                    <option value="review">На проверке</option>
+                    <option value="approved">Одобрено</option>
+                    <option value="excluded">Исключено</option>
+                  </select>
+                </label>
+                <label class="management-field">
+                  <span>Теги через запятую</span>
+                  <input id="adminDatasetPartyTags" maxlength="2000" placeholder="например: noir, dialogue, pilot" />
+                </label>
+              </div>
+              <button class="tool-button wide-button" type="submit">Сохранить разметку партии</button>
+            </form>
+            <div class="row-actions">
+              <button id="adminDatasetExportButton" class="text-button" type="button">Скачать одобренный JSONL</button>
+            </div>
+            <div id="adminDatasetTurnsList" class="admin-list"></div>
+          </div>
           <div class="section-label">Админка</div>
           <div class="admin-block">
             <h4>Автотест · LLM против LLM</h4>
@@ -459,6 +484,6 @@
     <div id="toast" class="toast"></div>
     <script src="/structured-content.js?v=20260729-messenger-boundary"></script>
     <script src="/message-time.js?v=20260729-message-time"></script>
-    <script src="/app.js?v=20260729-world-dropdown"></script>
+    <script src="/app.js?v=20260730-turn-like"></script>
   </body>
 </html>

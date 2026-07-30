@@ -406,6 +406,44 @@ tbody tr:hover {
   color: var(--muted);
 }
 
+.message-feedback {
+  display: flex;
+  margin-top: 10px;
+}
+
+.turn-like-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--pt-frost);
+  border-radius: 8px;
+  background: var(--pt-white);
+  color: var(--pt-black);
+  font: 600 0.78rem/1.2 "TT Positive", Arial, "Helvetica Neue", sans-serif;
+}
+
+.turn-like-button:hover,
+.turn-like-button[aria-pressed="true"] {
+  border-color: var(--pt-red);
+  background: rgba(216, 224, 235, 0.55);
+}
+
+.turn-like-button[aria-pressed="true"] span:first-child {
+  color: var(--pt-red);
+}
+
+.turn-like-button:focus-visible {
+  outline: 2px solid var(--pt-red);
+  outline-offset: 2px;
+}
+
+.turn-like-button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
 .corporate-portal {
   top: 106px;
   max-height: calc(100vh - 126px);
