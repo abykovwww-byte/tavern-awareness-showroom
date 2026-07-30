@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RP Light GUI</title>
-    <link rel="stylesheet" href="/styles.css?v=20260730-turn-rating" />
+    <link rel="stylesheet" href="/styles.css?v=20260730-dataset-review" />
   </head>
   <body>
     <section class="login-screen hidden" id="loginScreen">
@@ -468,10 +468,58 @@
       </form>
     </dialog>
 
+    <dialog id="datasetTurnDialog" class="party-dialog dataset-turn-dialog" aria-labelledby="datasetTurnDialogTitle">
+      <div class="dataset-review-shell">
+        <div class="dialog-head">
+          <div>
+            <div class="section-label">Проверка датасета</div>
+            <h3 id="datasetTurnDialogTitle">Связка реплик</h3>
+          </div>
+          <button class="icon-button" id="closeDatasetTurnDialog" type="button" title="Закрыть" aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+
+        <div id="datasetTurnDialogMeta" class="dataset-review-meta"></div>
+
+        <div class="dataset-conversation" aria-label="Реплики хода">
+          <article class="dataset-message dataset-message-player">
+            <header><span>Игрок</span></header>
+            <p id="datasetTurnPlayerMessage"></p>
+          </article>
+          <article class="dataset-message dataset-message-assistant">
+            <header><span>Ответ LLM</span></header>
+            <p id="datasetTurnAssistantMessage"></p>
+          </article>
+        </div>
+
+        <div class="dataset-review-fields">
+          <div>
+            <span class="dataset-field-label">Автоматические теги</span>
+            <div id="datasetTurnAutoTags" class="dataset-tag-list"></div>
+          </div>
+          <label>
+            <span>Теги разметчика через запятую</span>
+            <input id="datasetTurnTags" maxlength="2000" placeholder="например: strong-dialogue, in-character" />
+          </label>
+          <label>
+            <span>Заметка разметчика</span>
+            <textarea id="datasetTurnNotes" rows="3" maxlength="4000" placeholder="Почему связку стоит включить или исключить"></textarea>
+          </label>
+        </div>
+
+        <div class="dialog-actions dataset-review-actions" role="group" aria-label="Статус хода">
+          <button class="text-button" type="button" data-dataset-dialog-status="review">Оставить на проверке</button>
+          <button class="primary-action" type="button" data-dataset-dialog-status="approved">Одобрить связку</button>
+          <button class="text-button danger-text" type="button" data-dataset-dialog-status="excluded">Исключить</button>
+        </div>
+      </div>
+    </dialog>
+
     <div id="operationStatus" class="operation-status hidden" role="status" aria-live="polite"></div>
     <div id="toast" class="toast"></div>
     <script src="/structured-content.js?v=20260729-messenger-boundary"></script>
     <script src="/message-time.js?v=20260729-message-time"></script>
-    <script src="/app.js?v=20260730-turn-rating"></script>
+    <script src="/app.js?v=20260730-dataset-review"></script>
   </body>
 </html>

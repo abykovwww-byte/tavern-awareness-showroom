@@ -28,6 +28,7 @@ const appState = {
   adminAutotestProfiles: [],
   adminAutotestRuns: [],
   adminDatasetTurns: [],
+  adminDatasetReviewTurnId: null,
 };
 
 const els = {
@@ -141,6 +142,15 @@ const els = {
   adminDatasetPartyTags: document.querySelector("#adminDatasetPartyTags"),
   adminDatasetExportButton: document.querySelector("#adminDatasetExportButton"),
   adminDatasetTurnsList: document.querySelector("#adminDatasetTurnsList"),
+  datasetTurnDialog: document.querySelector("#datasetTurnDialog"),
+  datasetTurnDialogTitle: document.querySelector("#datasetTurnDialogTitle"),
+  datasetTurnDialogMeta: document.querySelector("#datasetTurnDialogMeta"),
+  datasetTurnPlayerMessage: document.querySelector("#datasetTurnPlayerMessage"),
+  datasetTurnAssistantMessage: document.querySelector("#datasetTurnAssistantMessage"),
+  datasetTurnAutoTags: document.querySelector("#datasetTurnAutoTags"),
+  datasetTurnTags: document.querySelector("#datasetTurnTags"),
+  datasetTurnNotes: document.querySelector("#datasetTurnNotes"),
+  closeDatasetTurnDialog: document.querySelector("#closeDatasetTurnDialog"),
 };
 
 const checkLabels = {
@@ -246,6 +256,9 @@ function bindEvents() {
   els.adminDatasetPartyForm.addEventListener("submit", saveAdminDatasetParty);
   els.adminDatasetExportButton.addEventListener("click", downloadAdminDataset);
   els.adminDatasetTurnsList.addEventListener("click", handleAdminDatasetTurnAction);
+  els.closeDatasetTurnDialog.addEventListener("click", closeAdminDatasetTurnDialog);
+  els.datasetTurnDialog.addEventListener("click", handleAdminDatasetDialogAction);
+  els.datasetTurnDialog.addEventListener("close", () => { appState.adminDatasetReviewTurnId = null; });
   els.chatLog.addEventListener("click", handleTurnFeedbackClick);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
@@ -1448,8 +1461,8 @@ function adminDatasetTurnRow(turn) {
       <span>${escapeHtml(tags)}</span>
     </div>
     <div class="row-actions">
+      <button class="text-button dataset-review-open" type="button" data-dataset-open data-turn-id="${escapeHtml(turn.turn_id)}">Проверить</button>
       <button class="text-button" type="button" data-dataset-status="approved" data-turn-id="${escapeHtml(turn.turn_id)}">Одобрить</button>
-      <button class="text-button" type="button" data-dataset-status="review" data-turn-id="${escapeHtml(turn.turn_id)}">Проверить</button>
       <button class="text-button danger-text" type="button" data-dataset-status="excluded" data-turn-id="${escapeHtml(turn.turn_id)}">Исключить</button>
     </div>
   </div>`;
@@ -1479,6 +1492,12 @@ async function saveAdminDatasetParty(event) {
 }
 
 async function handleAdminDatasetTurnAction(event) {
+  const openButton = event.target.closest("[data-dataset-open]");
+  if (openButton) {
+    const turn = appState.adminDatasetTurns.find((item) => String(item.turn_id) === openButton.dataset.turnId);
+    if (turn) openAdminDatasetTurnDialog(turn);
+    return;
+  }
   const button = event.target.closest("[data-dataset-status]");
   const party = appState.activeParty;
   if (!button || !party) return;
@@ -1499,6 +1518,68 @@ async function handleAdminDatasetTurnAction(event) {
     showToast("Статус хода сохранён.");
   } catch (error) {
     showToast(error.message);
+  }
+}
+
+function openAdminDatasetTurnDialog(turn) {
+  appState.adminDatasetReviewTurnId = Number(turn.turn_id);
+  fillAdminDatasetTurnDialog(turn);
+  if (!els.datasetTurnDialog.open) els.datasetTurnDialog.showModal();
+}
+
+function closeAdminDatasetTurnDialog() {
+  if (els.datasetTurnDialog.open) els.datasetTurnDialog.close();
+}
+
+function fillAdminDatasetTurnDialog(turn) {
+  const statusLabels = { review: "На проверке", approved: "Одобрено", excluded: "Исключено" };
+  const ratingLabels = { positive: "Игроку понравилось", negative: "Игроку не понравилось", none: "Без оценки игрока" };
+  const feedback = turn.player_feedback || {};
+  const createdAt = globalThis.MessageTime?.formatMessageTime(turn.created_at) || "";
+  const branchLabel = turn.branch_id ? "Ветка" : "Основная линия";
+  els.datasetTurnDialogTitle.textContent = `Ход #${turn.turn_id}`;
+  els.datasetTurnDialogMeta.innerHTML = [
+    `<span class="dataset-status dataset-status-${escapeHtml(turn.review_status || "review")}">${escapeHtml(statusLabels[turn.review_status] || turn.review_status)}</span>`,
+    `<span>${escapeHtml(branchLabel)}</span>`,
+    createdAt ? `<span title="${escapeHtml(createdAt.title)}">${escapeHtml(createdAt.text)}</span>` : "",
+    `<span>${escapeHtml(ratingLabels[feedback.rating] || ratingLabels.none)}</span>`,
+  ].filter(Boolean).join("");
+  els.datasetTurnPlayerMessage.textContent = turn.player_message || "Реплика игрока отсутствует.";
+  els.datasetTurnAssistantMessage.textContent = turn.assistant_response || "Ответ LLM отсутствует.";
+  els.datasetTurnAutoTags.innerHTML = (turn.auto_tags || []).length
+    ? turn.auto_tags.map((tag) => `<span class="dataset-tag">${escapeHtml(tag)}</span>`).join("")
+    : `<span class="dataset-tag dataset-tag-muted">Нет</span>`;
+  els.datasetTurnTags.value = (turn.tags || []).join(", ");
+  els.datasetTurnNotes.value = turn.notes || "";
+}
+
+async function handleAdminDatasetDialogAction(event) {
+  const button = event.target.closest("[data-dataset-dialog-status]");
+  const party = appState.activeParty;
+  const turnId = appState.adminDatasetReviewTurnId;
+  if (!button || !party || !turnId) return;
+  const buttons = [...els.datasetTurnDialog.querySelectorAll("[data-dataset-dialog-status]")];
+  buttons.forEach((item) => { item.disabled = true; });
+  const branchQuery = appState.activeBranch?.id
+    ? `?branch_id=${encodeURIComponent(appState.activeBranch.id)}`
+    : "";
+  try {
+    await apiPut(
+      `/api/admin/datasets/parties/${encodeURIComponent(party.id)}/turns/${encodeURIComponent(turnId)}${branchQuery}`,
+      {
+        review_status: button.dataset.datasetDialogStatus,
+        tags: datasetTagsFromInput(els.datasetTurnTags.value),
+        notes: els.datasetTurnNotes.value.trim(),
+      },
+    );
+    await reloadAdminDatasetTurns(party.id, appState.activeBranch?.id);
+    const updatedTurn = appState.adminDatasetTurns.find((item) => Number(item.turn_id) === turnId);
+    if (updatedTurn) fillAdminDatasetTurnDialog(updatedTurn);
+    showToast("Разметка связки сохранена.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    buttons.forEach((item) => { item.disabled = false; });
   }
 }
 

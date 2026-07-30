@@ -1169,6 +1169,137 @@ button:disabled {
   padding: 18px;
 }
 
+.dataset-turn-dialog {
+  width: min(900px, calc(100vw - 30px));
+}
+
+.dataset-review-shell {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.dataset-review-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.dataset-review-meta > span,
+.dataset-tag {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(17, 20, 23, 0.58);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.dataset-review-meta .dataset-status-approved {
+  border-color: rgba(100, 177, 112, 0.5);
+  color: #a8d9ad;
+}
+
+.dataset-review-meta .dataset-status-excluded {
+  border-color: rgba(220, 111, 102, 0.5);
+  color: #ffb4ad;
+}
+
+.dataset-conversation {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dataset-message {
+  max-width: min(88%, 720px);
+  padding: 13px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(17, 20, 23, 0.72);
+}
+
+.dataset-message-player {
+  margin-left: auto;
+  border-color: rgba(195, 161, 90, 0.42);
+  background: rgba(195, 161, 90, 0.09);
+}
+
+.dataset-message-assistant {
+  margin-right: auto;
+  border-color: rgba(119, 167, 200, 0.34);
+  background: rgba(119, 167, 200, 0.08);
+}
+
+.dataset-message header {
+  margin-bottom: 7px;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dataset-message p {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.dataset-review-fields {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.dataset-review-fields label,
+.dataset-review-fields > div {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.dataset-review-fields input,
+.dataset-review-fields textarea {
+  width: 100%;
+}
+
+.dataset-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dataset-tag-muted {
+  opacity: 0.64;
+}
+
+.dataset-review-actions {
+  flex-wrap: wrap;
+}
+
+.dataset-review-open {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .dataset-message {
+    max-width: 96%;
+  }
+
+  .dataset-review-actions > button {
+    width: 100%;
+  }
+}
+
 .wizard-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
