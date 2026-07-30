@@ -201,6 +201,11 @@ label small {
   box-shadow: none;
 }
 
+.resume-player {
+  color: var(--pt-black);
+  font-weight: 600;
+}
+
 .scenario-card {
   overflow: hidden;
   transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;

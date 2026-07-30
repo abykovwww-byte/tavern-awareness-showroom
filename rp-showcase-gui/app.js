@@ -203,10 +203,13 @@ function renderRuns() {
     row.className = "resume-item";
     const copy = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = `${run.scenario.title} · ${run.display_name}`;
+    title.textContent = run.scenario?.title || "Сценарий";
+    const player = document.createElement("p");
+    player.className = "resume-player";
+    player.textContent = `Игрок: ${run.display_name || "Имя не указано"}`;
     const detail = document.createElement("p");
     detail.textContent = `Последняя активность: ${formatDate(run.updated_at)}`;
-    copy.append(title, detail);
+    copy.append(title, player, detail);
     const continueButton = button("Продолжить", "button");
     continueButton.addEventListener("click", () => openRun(run));
     row.append(copy, continueButton);
