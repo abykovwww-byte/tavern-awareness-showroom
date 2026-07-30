@@ -35,7 +35,7 @@ Dataset review is a separate overlay:
   `review`, or `approved`, with tags and curator notes;
 - automatic tags expose scenario type, main/branch origin, opening scenes,
   auto-test turns, repairs, validator failures, safe fallbacks, and the
-  `player-liked` positive signal;
+  `player-liked` positive or `player-disliked` negative signal;
 - an export contains a turn only when both its party and its turn are explicitly
   `approved`.
 
@@ -46,22 +46,28 @@ behaviour.
 
 ## Player feedback
 
-Light GUI and Showroom attach one reversible like to the complete pair
+Light GUI and Showroom attach one reversible three-state rating to the complete pair
 `player_message -> assistant_response`. The button is shown on the assistant
 message, but the stored key is the Gateway turn ID, so the player cannot
 accidentally rate only half of the exchange.
 
-Current feedback is stored separately from raw turns. Every toggle also creates
-a `turn_feedback_updated` audit event with the turn ID, boolean state, and the
-trusted server-side UI source (`light-gui` or `showroom`). Showroom accepts the
-change only from the anonymous browser session that owns the run.
+The rating is mutually exclusive: `positive`, `negative`, or `none`. Selecting
+the active icon again clears it; selecting the opposite icon switches it in one
+update. Existing boolean likes migrate to `positive`, and the compatibility
+`liked` field remains available while clients move to `rating`.
 
-A current positive value adds the automatic tag `player-liked` and the
-structured `metadata.player_feedback` field to dataset candidates and exports.
-It does not change party or turn review status. This makes likes useful for SFT
-filtering and later preference-data experiments without bypassing human privacy
-and quality review. Removing the like removes the automatic tag while preserving
-the audit trail.
+Current feedback is stored separately from raw turns. Every update also creates
+a `turn_feedback_updated` audit event with the turn ID, rating, derived boolean
+flags, and the trusted server-side UI source (`light-gui` or `showroom`). Showroom
+accepts the change only from the anonymous browser session that owns the run.
+
+A positive value adds `player-liked`; a negative value adds `player-disliked`.
+Both expose a structured `metadata.player_feedback` field in dataset candidates
+and exports. Neither changes party or turn review status. Positive signals can
+help filter SFT candidates. Negative signals are useful for exclusion, review,
+and later preference-data construction, but are not by themselves a DPO pair
+because no preferred replacement answer has been captured. Clearing the rating
+removes either automatic tag while preserving the audit trail.
 
 Legacy turns and world-command turns without a captured prompt are tagged
 `missing-prompt` and omitted from SFT JSONL. The export reports their count in

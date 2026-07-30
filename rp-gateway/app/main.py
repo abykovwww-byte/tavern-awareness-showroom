@@ -719,7 +719,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
             feedback = party_state_store.set_turn_feedback(
                 turn_id,
-                liked=payload.liked,
+                rating=payload.rating or ("positive" if payload.liked else "none"),
                 source_ui="light-gui",
             )
         except ValueError as exc:
@@ -1468,7 +1468,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
             feedback = party_state_store.set_turn_feedback(
                 turn_id,
-                liked=payload.liked,
+                rating=payload.rating or ("positive" if payload.liked else "none"),
                 source_ui="showroom",
             )
         except ValueError as exc:

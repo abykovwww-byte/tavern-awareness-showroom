@@ -245,7 +245,7 @@ function bindEvents() {
   els.adminDatasetPartyForm.addEventListener("submit", saveAdminDatasetParty);
   els.adminDatasetExportButton.addEventListener("click", downloadAdminDataset);
   els.adminDatasetTurnsList.addEventListener("click", handleAdminDatasetTurnAction);
-  els.chatLog.addEventListener("click", handleTurnLikeClick);
+  els.chatLog.addEventListener("click", handleTurnFeedbackClick);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
@@ -1196,7 +1196,10 @@ function renderChat({ scrollMode = "bottom" } = {}) {
       "GM",
       turn.narrative_response,
       turn.created_at,
-      autoStart ? null : { turnId: turn.id, liked: Boolean(turn.player_liked) },
+      autoStart ? null : {
+        turnId: turn.id,
+        rating: turn.player_rating || (turn.player_liked ? "positive" : "none"),
+      },
     ));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
@@ -1244,34 +1247,76 @@ function isAutoStartTurn(turn) {
   return String(turn?.player_message || "").startsWith(AUTO_START_HISTORY_MESSAGE);
 }
 
-async function handleTurnLikeClick(event) {
-  const button = event.target.closest("[data-turn-like]");
+async function handleTurnFeedbackClick(event) {
+  const button = event.target.closest("[data-turn-feedback]");
   if (!button || !appState.activeParty) return;
-  const turnId = Number(button.dataset.turnLike);
+  const turnId = Number(button.dataset.turnFeedback);
   if (!Number.isInteger(turnId) || turnId <= 0) return;
-  const liked = button.getAttribute("aria-pressed") !== "true";
-  button.disabled = true;
+  const selectedRating = button.dataset.rating;
+  const rating = button.getAttribute("aria-pressed") === "true" ? "none" : selectedRating;
+  const controls = button.closest(".message-feedback");
+  const buttons = [...controls.querySelectorAll("[data-turn-feedback]")];
+  buttons.forEach((item) => { item.disabled = true; });
   try {
     const result = await apiPut(
       `/api/parties/${encodeURIComponent(appState.activeParty.id)}/turns/${turnId}/feedback`,
-      { liked },
+      { rating },
     );
-    const saved = Boolean(result.feedback?.liked);
+    const saved = normalizeTurnFeedbackRating(result.feedback);
     const turn = (appState.history?.turns || []).find((item) => Number(item.id) === turnId);
-    if (turn) turn.player_liked = saved;
-    updateTurnLikeButton(button, saved);
-    showToast(saved ? "Связка отмечена как удачная." : "Отметка убрана.");
+    if (turn) {
+      turn.player_rating = saved;
+      turn.player_liked = saved === "positive";
+      turn.player_disliked = saved === "negative";
+    }
+    updateTurnFeedbackControls(controls, saved);
+    showToast({
+      positive: "Связка отмечена как удачная.",
+      negative: "Связка отмечена как неудачная.",
+      none: "Оценка убрана.",
+    }[saved]);
   } catch (error) {
     showToast(error.message);
   } finally {
-    button.disabled = false;
+    buttons.forEach((item) => { item.disabled = false; });
   }
 }
 
-function updateTurnLikeButton(button, liked) {
-  button.setAttribute("aria-pressed", String(liked));
-  button.title = liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную";
-  button.innerHTML = `<span aria-hidden="true">${liked ? "♥" : "♡"}</span><span>${liked ? "Связка понравилась" : "Нравится связка"}</span>`;
+function normalizeTurnFeedbackRating(feedback) {
+  if (["positive", "negative", "none"].includes(feedback?.rating)) return feedback.rating;
+  if (feedback?.disliked) return "negative";
+  return feedback?.liked ? "positive" : "none";
+}
+
+function turnFeedbackIconHtml(rating) {
+  const transform = rating === "negative" ? ' transform="rotate(180 12 12)"' : "";
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g${transform}><path d="M7 10v12"></path><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"></path></g></svg>`;
+}
+
+function turnFeedbackControlsHtml(feedback) {
+  const currentRating = normalizeTurnFeedbackRating(feedback);
+  const buttons = [
+    ["positive", "Хорошая связка реплик", "Убрать положительную оценку"],
+    ["negative", "Неудачная связка реплик", "Убрать отрицательную оценку"],
+  ].map(([rating, label, activeLabel]) => {
+    const active = currentRating === rating;
+    const accessibleLabel = active ? activeLabel : label;
+    return `<button class="turn-feedback-button turn-feedback-${rating}" type="button" data-turn-feedback="${escapeHtml(feedback.turnId)}" data-rating="${rating}" aria-label="${accessibleLabel}" aria-pressed="${active}" title="${accessibleLabel}">${turnFeedbackIconHtml(rating)}</button>`;
+  }).join("");
+  return `<div class="message-feedback" role="group" aria-label="Оценка связки реплик">${buttons}</div>`;
+}
+
+function updateTurnFeedbackControls(controls, rating) {
+  controls.querySelectorAll("[data-turn-feedback]").forEach((button) => {
+    const active = button.dataset.rating === rating;
+    const positive = button.dataset.rating === "positive";
+    const label = active
+      ? `Убрать ${positive ? "положительную" : "отрицательную"} оценку`
+      : `${positive ? "Хорошая" : "Неудачная"} связка реплик`;
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  });
 }
 
 function renderProposals() {
@@ -3086,9 +3131,8 @@ function messageHtml(kind, role, content, timestamp = Date.now(), feedback = nul
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
     : { html: escapeHtml(content || ""), hasArtifacts: false };
-  const liked = Boolean(feedback?.liked);
   const feedbackHtml = feedback?.turnId
-    ? `<div class="message-feedback"><button class="turn-like-button" type="button" data-turn-like="${escapeHtml(feedback.turnId)}" aria-pressed="${liked}" title="${liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную"}"><span aria-hidden="true">${liked ? "♥" : "♡"}</span><span>${liked ? "Связка понравилась" : "Нравится связка"}</span></button></div>`
+    ? turnFeedbackControlsHtml(feedback)
     : "";
   const html = `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>

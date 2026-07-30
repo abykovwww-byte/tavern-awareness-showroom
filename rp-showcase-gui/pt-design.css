@@ -408,40 +408,64 @@ tbody tr:hover {
 
 .message-feedback {
   display: flex;
-  margin-top: 10px;
+  gap: 2px;
+  margin-top: 6px;
 }
 
-.turn-like-button {
+.turn-feedback-button {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 6px 10px;
-  border: 1px solid var(--pt-frost);
-  border-radius: 8px;
-  background: var(--pt-white);
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.72;
+}
+
+.turn-feedback-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.turn-feedback-button:hover {
+  border-color: var(--pt-frost);
+  background: rgba(216, 224, 235, 0.38);
   color: var(--pt-black);
-  font: 600 0.78rem/1.2 "TT Positive", Arial, "Helvetica Neue", sans-serif;
+  opacity: 1;
 }
 
-.turn-like-button:hover,
-.turn-like-button[aria-pressed="true"] {
-  border-color: var(--pt-red);
-  background: rgba(216, 224, 235, 0.55);
+.turn-feedback-positive[aria-pressed="true"] {
+  border-color: var(--pt-sky);
+  background: rgba(216, 224, 235, 0.52);
+  color: var(--pt-black);
+  opacity: 1;
 }
 
-.turn-like-button[aria-pressed="true"] span:first-child {
+.turn-feedback-negative[aria-pressed="true"] {
+  border-color: rgba(255, 0, 0, 0.34);
+  background: rgba(255, 0, 0, 0.06);
   color: var(--pt-red);
+  opacity: 1;
 }
 
-.turn-like-button:focus-visible {
+.turn-feedback-button:focus-visible {
   outline: 2px solid var(--pt-red);
   outline-offset: 2px;
+  opacity: 1;
 }
 
-.turn-like-button:disabled {
+.turn-feedback-button:disabled {
   cursor: wait;
-  opacity: 0.58;
+  opacity: 0.42;
 }
 
 .corporate-portal {

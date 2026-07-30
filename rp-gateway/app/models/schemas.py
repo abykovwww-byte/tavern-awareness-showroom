@@ -221,7 +221,8 @@ class PartyTurnDatasetUpdate(BaseModel):
 
 
 class TurnFeedbackUpdate(BaseModel):
-    liked: bool
+    rating: Literal["positive", "negative", "none"] | None = None
+    liked: bool | None = None
 
 
 class PartyMemorySummarizeRequest(BaseModel):

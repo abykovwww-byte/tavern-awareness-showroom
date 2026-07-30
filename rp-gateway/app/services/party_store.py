@@ -177,6 +177,7 @@ class PartyStore:
                     campaign_id TEXT NOT NULL,
                     turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
                     liked INTEGER NOT NULL DEFAULT 0,
+                    rating INTEGER NOT NULL DEFAULT 0 CHECK(rating IN (-1, 0, 1)),
                     source_ui TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -197,6 +198,7 @@ class PartyStore:
             self.migrate_scenario_type(connection)
             self.migrate_autotest_branches(connection)
             self.migrate_dataset_columns(connection)
+            self.migrate_turn_feedback_columns(connection)
 
     def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
         worldpack_columns = {row["name"] for row in connection.execute("PRAGMA table_info(worldpacks)").fetchall()}
@@ -248,6 +250,19 @@ class PartyStore:
         connection.execute(
             "UPDATE parties SET dataset_review_status = 'review' "
             "WHERE dataset_review_status NOT IN ('excluded', 'review', 'approved')"
+        )
+
+    def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
+        if "rating" not in columns:
+            connection.execute(
+                "ALTER TABLE turn_feedback ADD COLUMN rating INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(rating IN (-1, 0, 1))"
+            )
+            connection.execute("UPDATE turn_feedback SET rating = 1 WHERE liked = 1")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_turn_feedback_rating "
+            "ON turn_feedback(rating, campaign_id, turn_id)"
         )
 
     def seed_model_profiles(self) -> None:
@@ -1071,6 +1086,7 @@ class PartyStore:
             rows = connection.execute(
                 f"""
                 SELECT t.*, l.review_status, l.tags_json, l.notes, l.updated_at AS label_updated_at,
+                       COALESCE(f.rating, 0) AS player_rating_value,
                        COALESCE(f.liked, 0) AS player_liked, f.source_ui AS feedback_source
                 FROM turns t
                 LEFT JOIN dataset_turn_labels l
@@ -1160,6 +1176,9 @@ class PartyStore:
             auto_tags.append("missing-prompt")
         if bool(row["player_liked"]):
             auto_tags.append("player-liked")
+        if int(row["player_rating_value"]) == -1:
+            auto_tags.append("player-disliked")
+        player_rating = {1: "positive", -1: "negative"}.get(int(row["player_rating_value"]), "none")
         return {
             "schema_version": "rp-gateway.dataset-candidate.v1",
             "party_id": party.id,
@@ -1178,7 +1197,9 @@ class PartyStore:
             "prompt_messages": prompt_messages,
             "assistant_response": row["narrative_response"],
             "player_feedback": {
+                "rating": player_rating,
                 "liked": bool(row["player_liked"]),
+                "disliked": player_rating == "negative",
                 "source_ui": row["feedback_source"],
             },
             "metadata": metadata,

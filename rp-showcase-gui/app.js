@@ -102,7 +102,7 @@ function bindEvents() {
   els.chatLeaderboardButton.addEventListener("click", () => openLeaderboard(appState.currentRun?.scenario));
   els.startForm.addEventListener("submit", createRun);
   els.messageForm.addEventListener("submit", sendMessage);
-  els.chatThread.addEventListener("click", handleTurnLikeClick);
+  els.chatThread.addEventListener("click", handleTurnFeedbackClick);
   els.adminLoginForm.addEventListener("submit", loginAdmin);
   els.adminLogoutButton.addEventListener("click", logoutAdmin);
   els.newScenarioButton.addEventListener("click", newScenario);
@@ -440,7 +440,10 @@ function renderHistory(turns, fallbackOpening = "") {
         turn.narrative_response,
         false,
         turn.created_at,
-        autoStart ? null : { turnId: turn.id, liked: Boolean(turn.player_liked) },
+        autoStart ? null : {
+          turnId: turn.id,
+          rating: turn.player_rating || (turn.player_liked ? "positive" : "none"),
+        },
       );
     }
   }
@@ -633,55 +636,85 @@ function appendMessage(kind, author, content, pending = false, timestamp = Date.
   const time = messageTimeElement(timestamp);
   article.append(heading, body);
   if (time) article.append(time);
-  if (feedback?.turnId) article.append(turnLikeControl(feedback));
+  if (feedback?.turnId) article.append(turnFeedbackControl(feedback));
   els.chatThread.append(article);
   article.scrollIntoView({ behavior: "smooth", block: "end" });
   return article;
 }
 
-function turnLikeControl(feedback) {
+function turnFeedbackControl(feedback) {
   const row = document.createElement("div");
   row.className = "message-feedback";
-  const button = document.createElement("button");
-  button.className = "turn-like-button";
-  button.type = "button";
-  button.dataset.turnLike = String(feedback.turnId);
-  updateTurnLikeButton(button, Boolean(feedback.liked));
-  row.append(button);
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Оценка связки реплик");
+  for (const [rating, label] of [
+    ["positive", "Хорошая связка реплик"],
+    ["negative", "Неудачная связка реплик"],
+  ]) {
+    const button = document.createElement("button");
+    button.className = `turn-feedback-button turn-feedback-${rating}`;
+    button.type = "button";
+    button.dataset.turnFeedback = String(feedback.turnId);
+    button.dataset.rating = rating;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.innerHTML = turnFeedbackIconHtml(rating);
+    row.append(button);
+  }
+  updateTurnFeedbackControls(row, normalizeTurnFeedbackRating(feedback));
   return row;
 }
 
-function updateTurnLikeButton(button, liked) {
-  button.setAttribute("aria-pressed", String(liked));
-  button.title = liked ? "Убрать отметку с этой связки" : "Отметить связку реплик как удачную";
-  button.replaceChildren();
-  const icon = document.createElement("span");
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = liked ? "♥" : "♡";
-  const label = document.createElement("span");
-  label.textContent = liked ? "Связка понравилась" : "Нравится связка";
-  button.append(icon, label);
+function normalizeTurnFeedbackRating(feedback) {
+  if (["positive", "negative", "none"].includes(feedback?.rating)) return feedback.rating;
+  if (feedback?.disliked) return "negative";
+  return feedback?.liked ? "positive" : "none";
 }
 
-async function handleTurnLikeClick(event) {
-  const button = event.target.closest("[data-turn-like]");
+function turnFeedbackIconHtml(rating) {
+  const transform = rating === "negative" ? ' transform="rotate(180 12 12)"' : "";
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><g${transform}><path d="M7 10v12"></path><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"></path></g></svg>`;
+}
+
+function updateTurnFeedbackControls(controls, rating) {
+  controls.querySelectorAll("[data-turn-feedback]").forEach((button) => {
+    const active = button.dataset.rating === rating;
+    const positive = button.dataset.rating === "positive";
+    const label = active
+      ? `Убрать ${positive ? "положительную" : "отрицательную"} оценку`
+      : `${positive ? "Хорошая" : "Неудачная"} связка реплик`;
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", label);
+    button.title = label;
+  });
+}
+
+async function handleTurnFeedbackClick(event) {
+  const button = event.target.closest("[data-turn-feedback]");
   if (!button || !appState.currentRun) return;
-  const turnId = Number(button.dataset.turnLike);
+  const turnId = Number(button.dataset.turnFeedback);
   if (!Number.isInteger(turnId) || turnId <= 0) return;
-  const liked = button.getAttribute("aria-pressed") !== "true";
-  button.disabled = true;
+  const selectedRating = button.dataset.rating;
+  const rating = button.getAttribute("aria-pressed") === "true" ? "none" : selectedRating;
+  const controls = button.closest(".message-feedback");
+  const buttons = [...controls.querySelectorAll("[data-turn-feedback]")];
+  buttons.forEach((item) => { item.disabled = true; });
   try {
     const result = await apiPut(
       `/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/turns/${turnId}/feedback`,
-      { liked },
+      { rating },
     );
-    const saved = Boolean(result.feedback?.liked);
-    updateTurnLikeButton(button, saved);
-    showToast(saved ? "Связка отмечена как удачная." : "Отметка убрана.");
+    const saved = normalizeTurnFeedbackRating(result.feedback);
+    updateTurnFeedbackControls(controls, saved);
+    showToast({
+      positive: "Связка отмечена как удачная.",
+      negative: "Связка отмечена как неудачная.",
+      none: "Оценка убрана.",
+    }[saved]);
   } catch (error) {
     showToast(error.message, true);
   } finally {
-    button.disabled = false;
+    buttons.forEach((item) => { item.disabled = false; });
   }
 }
 

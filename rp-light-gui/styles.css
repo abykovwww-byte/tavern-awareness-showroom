@@ -544,39 +544,65 @@ h3 {
 
 .message-feedback {
   display: flex;
-  margin-top: 9px;
+  gap: 2px;
+  margin-top: 5px;
   white-space: normal;
 }
 
-.turn-like-button {
+.turn-feedback-button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 5px 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: rgba(24, 29, 32, 0.72);
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 760;
+  opacity: 0.68;
 }
 
-.turn-like-button:hover,
-.turn-like-button[aria-pressed="true"] {
-  border-color: rgba(127, 182, 133, 0.72);
-  background: rgba(42, 58, 46, 0.82);
+.turn-feedback-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.turn-feedback-button:hover {
+  border-color: rgba(169, 176, 170, 0.28);
+  background: rgba(238, 240, 231, 0.06);
+  color: var(--text);
+  opacity: 1;
+}
+
+.turn-feedback-positive[aria-pressed="true"] {
+  border-color: rgba(127, 182, 133, 0.38);
+  background: rgba(42, 58, 46, 0.48);
   color: var(--green-strong);
+  opacity: 1;
 }
 
-.turn-like-button:focus-visible {
+.turn-feedback-negative[aria-pressed="true"] {
+  border-color: rgba(211, 106, 98, 0.38);
+  background: rgba(76, 38, 35, 0.48);
+  color: var(--red);
+  opacity: 1;
+}
+
+.turn-feedback-button:focus-visible {
   outline: 2px solid var(--green-strong);
   outline-offset: 2px;
+  opacity: 1;
 }
 
-.turn-like-button:disabled {
+.turn-feedback-button:disabled {
   cursor: wait;
-  opacity: 0.62;
+  opacity: 0.42;
 }
 
 .message-content {

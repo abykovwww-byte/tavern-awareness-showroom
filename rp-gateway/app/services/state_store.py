@@ -111,6 +111,7 @@ class StateStore:
                     campaign_id TEXT NOT NULL,
                     turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
                     liked INTEGER NOT NULL DEFAULT 0,
+                    rating INTEGER NOT NULL DEFAULT 0 CHECK(rating IN (-1, 0, 1)),
                     source_ui TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -269,6 +270,7 @@ class StateStore:
                 """
             )
             self.migrate_turn_columns(connection)
+            self.migrate_turn_feedback_columns(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
@@ -280,6 +282,19 @@ class StateStore:
             connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
         if "metadata_json" not in columns:
             connection.execute("ALTER TABLE turns ADD COLUMN metadata_json TEXT")
+
+    def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
+        if "rating" not in columns:
+            connection.execute(
+                "ALTER TABLE turn_feedback ADD COLUMN rating INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(rating IN (-1, 0, 1))"
+            )
+            connection.execute("UPDATE turn_feedback SET rating = 1 WHERE liked = 1")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_turn_feedback_rating "
+            "ON turn_feedback(rating, campaign_id, turn_id)"
+        )
 
     def recover_interrupted_work(self) -> dict[str, int]:
         """Reconcile work that could only remain running after a process restart."""
@@ -964,7 +979,9 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT t.id, t.request_id, t.player_message, t.narrative_response,
-                       t.state_version, t.created_at, COALESCE(f.liked, 0) AS player_liked
+                       t.state_version, t.created_at,
+                       COALESCE(f.rating, 0) AS player_rating_value,
+                       COALESCE(f.liked, 0) AS player_liked
                 FROM turns t
                 LEFT JOIN turn_feedback f
                   ON f.campaign_id = t.campaign_id AND f.turn_id = t.id
@@ -976,12 +993,19 @@ class StateStore:
             ).fetchall()
         turns = [dict(row) for row in reversed(rows)]
         for turn in turns:
+            rating_value = int(turn.pop("player_rating_value"))
+            turn["player_rating"] = {1: "positive", -1: "negative"}.get(rating_value, "none")
             turn["player_liked"] = bool(turn["player_liked"])
+            turn["player_disliked"] = rating_value == -1
         return turns
 
-    def set_turn_feedback(self, turn_id: int, *, liked: bool, source_ui: str) -> dict[str, Any]:
+    def set_turn_feedback(self, turn_id: int, *, rating: str, source_ui: str) -> dict[str, Any]:
         if source_ui not in {"light-gui", "showroom"}:
             raise ValueError("unsupported turn feedback source")
+        rating_values = {"none": 0, "positive": 1, "negative": -1}
+        if rating not in rating_values:
+            raise ValueError("unsupported turn feedback rating")
+        rating_value = rating_values[rating]
         timestamp = now_ts()
         with self.connect() as connection:
             turn = connection.execute(
@@ -991,18 +1015,27 @@ class StateStore:
             if turn is None:
                 raise ValueError(f"turn not found: {turn_id}")
             if str(turn["player_message"]).startswith("[AUTO_START]"):
-                raise ValueError("opening scene has no player and assistant pair to like")
+                raise ValueError("opening scene has no player and assistant pair to rate")
             connection.execute(
                 """
                 INSERT INTO turn_feedback(
-                    campaign_id, turn_id, liked, source_ui, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?)
+                    campaign_id, turn_id, liked, rating, source_ui, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(campaign_id, turn_id) DO UPDATE SET
                     liked = excluded.liked,
+                    rating = excluded.rating,
                     source_ui = excluded.source_ui,
                     updated_at = excluded.updated_at
                 """,
-                (self.campaign_id, int(turn_id), int(liked), source_ui, timestamp, timestamp),
+                (
+                    self.campaign_id,
+                    int(turn_id),
+                    int(rating_value == 1),
+                    rating_value,
+                    source_ui,
+                    timestamp,
+                    timestamp,
+                ),
             )
             connection.execute(
                 """
@@ -1012,7 +1045,13 @@ class StateStore:
                 (
                     self.campaign_id,
                     json.dumps(
-                        {"turn_id": int(turn_id), "liked": bool(liked), "source_ui": source_ui},
+                        {
+                            "turn_id": int(turn_id),
+                            "rating": rating,
+                            "liked": rating_value == 1,
+                            "disliked": rating_value == -1,
+                            "source_ui": source_ui,
+                        },
                         ensure_ascii=False,
                     ),
                     timestamp,
@@ -1020,13 +1059,16 @@ class StateStore:
             )
             row = connection.execute(
                 """
-                SELECT campaign_id, turn_id, liked, source_ui, created_at, updated_at
+                SELECT campaign_id, turn_id, liked, rating, source_ui, created_at, updated_at
                 FROM turn_feedback WHERE campaign_id = ? AND turn_id = ?
                 """,
                 (self.campaign_id, int(turn_id)),
             ).fetchone()
         feedback = dict(row)
+        rating_value = int(feedback.pop("rating"))
+        feedback["rating"] = {1: "positive", -1: "negative"}.get(rating_value, "none")
         feedback["liked"] = bool(feedback["liked"])
+        feedback["disliked"] = rating_value == -1
         return feedback
 
     def has_running_turn_request(self) -> bool:
