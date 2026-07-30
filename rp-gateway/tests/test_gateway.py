@@ -122,6 +122,9 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "nvidia_api_key": api_key,
         "service_nvidia_api_base": f"mock://{mode}",
         "service_nvidia_api_key": api_key,
+        # Never inherit the production container's local-runner switch. Tests
+        # that exercise local Gemma enable it explicitly in settings_overrides.
+        "local_llm_enabled": False,
         "post_turn_helpers_inline": True,
         "auth_enabled": False,
     }
