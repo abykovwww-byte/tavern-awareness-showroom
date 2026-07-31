@@ -1204,7 +1204,17 @@ function mountTrainingArtifacts(turns) {
     if (!Array.isArray(turn.artifacts) || !turn.artifacts.length) continue;
     const host = els.chatLog.querySelector(`[data-training-artifact-turn="${Number(turn.id)}"]`);
     if (!host) continue;
-    renderer.mount(host, turn.artifacts, (payload) => apiPost(
+    let artifactsToMount = turn.artifacts;
+    const message = host.closest(".message");
+    const messengerLinks = message?.querySelectorAll(".messenger-card .artifact-chip-link") || [];
+    for (const linkChip of messengerLinks) {
+      const matchingArtifact = renderer.artifactForDisplayUrl?.(turn.artifacts, linkChip.textContent);
+      if (!matchingArtifact) continue;
+      linkChip.replaceWith(host);
+      artifactsToMount = [matchingArtifact];
+      break;
+    }
+    renderer.mount(host, artifactsToMount, (payload) => apiPost(
       `/api/parties/${encodeURIComponent(appState.activeParty.id)}/artifact-events`,
       payload,
     ));

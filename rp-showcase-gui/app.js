@@ -637,10 +637,22 @@ function appendMessage(kind, author, content, pending = false, timestamp = Date.
   const time = messageTimeElement(timestamp);
   article.append(heading, body);
   if (kind === "gm" && turnId && Array.isArray(artifacts) && artifacts.length) {
+    const renderer = globalThis.TrainingArtifacts;
     const host = document.createElement("div");
     host.className = "training-artifact-host";
-    article.append(host);
-    globalThis.TrainingArtifacts?.mount(host, artifacts, (payload) => apiPost(
+    let artifactsToMount = artifacts;
+    let mountedInline = false;
+    const messengerLinks = body.querySelectorAll(".messenger-card .artifact-chip-link");
+    for (const linkChip of messengerLinks) {
+      const matchingArtifact = renderer?.artifactForDisplayUrl?.(artifacts, linkChip.textContent);
+      if (!matchingArtifact) continue;
+      linkChip.replaceWith(host);
+      artifactsToMount = [matchingArtifact];
+      mountedInline = true;
+      break;
+    }
+    if (!mountedInline) article.append(host);
+    renderer?.mount(host, artifactsToMount, (payload) => apiPost(
       `/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/artifact-events`,
       payload,
     ));

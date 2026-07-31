@@ -28,6 +28,13 @@
     );
   }
 
+  function artifactForDisplayUrl(artifacts, visibleValue) {
+    const text = String(visibleValue || "");
+    return (Array.isArray(artifacts) ? artifacts : [])
+      .filter(validArtifact)
+      .find((artifact) => text.includes(artifact.display_url)) || null;
+  }
+
   function eventPayload(artifact, eventType, filledFieldIds = []) {
     return {
       event_id: eventId(),
@@ -193,5 +200,13 @@
     });
   }
 
-  global.TrainingArtifacts = { mount, flush, drain, eventPayload, validArtifact, supportedRenderers: [...renderers] };
+  global.TrainingArtifacts = {
+    mount,
+    flush,
+    drain,
+    eventPayload,
+    validArtifact,
+    artifactForDisplayUrl,
+    supportedRenderers: [...renderers],
+  };
 })(globalThis);

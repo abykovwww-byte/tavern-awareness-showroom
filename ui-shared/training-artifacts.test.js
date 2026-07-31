@@ -13,7 +13,7 @@ vm.runInNewContext(source, context);
 const api = context.globalThis.TrainingArtifacts;
 
 assert.equal(api.supportedRenderers.length, 9);
-assert.equal(api.validArtifact({
+const validArtifact = {
   schema_version: "rp-gateway.training-artifact.v1",
   renderer: "credential-form",
   theme: "office-blue",
@@ -21,7 +21,13 @@ assert.equal(api.validArtifact({
   display_url: "https://site.example.test",
   field_ids: ["login"],
   actions: ["submit"],
-}), true);
+};
+assert.equal(api.validArtifact(validArtifact), true);
+assert.equal(
+  api.artifactForDisplayUrl([validArtifact], "Ссылки: https://site.example.test"),
+  validArtifact,
+);
+assert.equal(api.artifactForDisplayUrl([validArtifact], "Ссылки: https://other.example.test"), null);
 const payload = api.eventPayload({ artifact_id: "artifact_test", artifact_revision: 1 }, "form_submitted", ["login", "login"]);
 assert.deepEqual([...payload.filled_field_ids], ["login"]);
 assert.equal(Object.hasOwn(payload, "values"), false);

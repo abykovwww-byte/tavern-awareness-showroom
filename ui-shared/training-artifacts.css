@@ -3,6 +3,9 @@
 .training-artifact-trigger:hover, .training-artifact-trigger:focus-visible { border-color: #315bd5; box-shadow: 0 0 0 3px rgba(49, 91, 213, .15); }
 .training-artifact-trigger-label { font-weight: 700; }
 .training-artifact-trigger-url { overflow-wrap: anywhere; font: .82rem ui-monospace, SFMono-Regular, Consolas, monospace; opacity: .78; }
+.messenger-card .training-artifact-host { flex: 1 1 100%; min-width: 0; }
+.messenger-card .training-artifact-trigger { margin-top: 0; border-color: rgba(119, 210, 255, .35); background: rgba(43, 82, 120, .92); color: #e8f6fd; }
+.messenger-card .training-artifact-trigger:hover, .messenger-card .training-artifact-trigger:focus-visible { border-color: #77d2ff; box-shadow: 0 0 0 3px rgba(119, 210, 255, .18); }
 .training-site-overlay { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1rem; background: rgba(9, 14, 28, .76); }
 .training-site-browser { width: min(720px, 100%); max-height: min(820px, calc(100vh - 2rem)); overflow: auto; border-radius: 1rem; background: #fff; color: #172033; box-shadow: 0 24px 80px rgba(0, 0, 0, .38); }
 .training-site-chrome { display: flex; align-items: center; gap: .8rem; padding: .7rem 1rem; border-bottom: 1px solid #dce2ef; background: #eef2f8; }
