@@ -222,7 +222,7 @@ function openStart(scenario) {
   els.selectedTitle.textContent = scenario.title;
   els.selectedDescription.textContent = scenario.description || "";
   els.selectedWorld.textContent = scenario.world?.title || "Внутренний prompt-мир";
-  els.selectedCover.style.backgroundImage = scenario.cover_url ? `url("${scenario.cover_url}")` : "";
+  renderCover(els.selectedCover, scenario.cover_url);
   els.selectedLeaderboardButton.disabled = !scenario.leaderboard_enabled;
   els.leaderboardOptInInput.checked = Boolean(scenario.leaderboard_enabled);
   const needsEmployeePosition = Boolean(scenario.portal?.requires_employee_position);
@@ -416,8 +416,7 @@ async function copyPortalValue(value) {
   } catch (_error) {
     const field = document.createElement("textarea");
     field.value = value;
-    field.style.position = "fixed";
-    field.style.opacity = "0";
+    field.className = "clipboard-proxy";
     document.body.append(field);
     field.select();
     document.execCommand("copy");
@@ -444,6 +443,8 @@ function renderHistory(turns, fallbackOpening = "") {
           turnId: turn.id,
           rating: turn.player_rating || (turn.player_liked ? "positive" : "none"),
         },
+        turn.artifacts || [],
+        turn.id,
       );
     }
   }
@@ -616,7 +617,7 @@ function messageTimeElement(timestamp) {
   return time;
 }
 
-function appendMessage(kind, author, content, pending = false, timestamp = Date.now(), feedback = null) {
+function appendMessage(kind, author, content, pending = false, timestamp = Date.now(), feedback = null, artifacts = [], turnId = null) {
   const article = document.createElement("article");
   article.className = `message message-${kind}${pending ? " message-pending" : ""}`;
   const heading = document.createElement("strong");
@@ -635,6 +636,15 @@ function appendMessage(kind, author, content, pending = false, timestamp = Date.
   if (hasArtifacts) article.classList.add("message-rich");
   const time = messageTimeElement(timestamp);
   article.append(heading, body);
+  if (kind === "gm" && turnId && Array.isArray(artifacts) && artifacts.length) {
+    const host = document.createElement("div");
+    host.className = "training-artifact-host";
+    article.append(host);
+    globalThis.TrainingArtifacts?.mount(host, artifacts, (payload) => apiPost(
+      `/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/artifact-events`,
+      payload,
+    ));
+  }
   if (time) article.append(time);
   if (feedback?.turnId) article.append(turnFeedbackControl(feedback));
   els.chatThread.append(article);
@@ -722,6 +732,12 @@ async function sendMessage(event) {
   event.preventDefault();
   const content = els.messageInput.value.trim();
   if (!content || !appState.currentRun) return;
+  try {
+    await globalThis.TrainingArtifacts?.flush();
+  } catch (error) {
+    showToast(error.message, true);
+    return;
+  }
   els.messageInput.value = "";
   appendMessage("player", appState.currentRun.display_name, content);
   const pending = appendMessage("gm", "Рассказчик", "Ответ формируется...", true);
@@ -855,7 +871,7 @@ function newScenario() {
   renderWorldSource();
   renderStatusPill();
   els.coverPreview.textContent = "Обложка не выбрана";
-  els.coverPreview.style.backgroundImage = "";
+  renderCover(els.coverPreview, "", els.coverPreview.textContent);
   els.deleteCoverButton.classList.add("hidden");
   renderAdminList();
   els.scenarioTitleInput.focus();
@@ -883,7 +899,7 @@ function editScenario(scenario) {
   renderStatusPill();
   els.coverInput.value = "";
   els.coverPreview.textContent = scenario.cover_url ? "Текущая обложка" : "Обложка не выбрана";
-  els.coverPreview.style.backgroundImage = scenario.cover_url ? `url("${scenario.cover_url}")` : "";
+  renderCover(els.coverPreview, scenario.cover_url, els.coverPreview.textContent);
   els.deleteCoverButton.classList.toggle("hidden", !scenario.cover_url);
   renderAdminList();
 }
@@ -942,7 +958,20 @@ function previewCover() {
   appState.coverFile = els.coverInput.files?.[0] || null;
   if (!appState.coverFile) return;
   els.coverPreview.textContent = "";
-  els.coverPreview.style.backgroundImage = `url("${URL.createObjectURL(appState.coverFile)}")`;
+  renderCover(els.coverPreview, URL.createObjectURL(appState.coverFile));
+}
+
+function renderCover(container, source, fallbackText = "") {
+  container.replaceChildren();
+  if (source) {
+    const image = document.createElement("img");
+    image.className = "cover-image";
+    image.src = source;
+    image.alt = "";
+    container.append(image);
+    return;
+  }
+  container.textContent = fallbackText;
 }
 
 async function saveScenario(event) {

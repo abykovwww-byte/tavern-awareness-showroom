@@ -1,0 +1,29 @@
+{
+  "id": "meeting-join",
+  "revision": 1,
+  "renderer": "meeting-join",
+  "theme": "office-blue",
+  "fixed": {
+    "display_url": "https://meeting-room.example.test/join",
+    "field_ids": ["display-name"],
+    "field_types": {"display-name": "text"},
+    "credential_field_ids": [],
+    "actions": ["submit", "close", "report"]
+  },
+  "llm_slots": {
+    "page_title": {"required": true, "max_length": 120},
+    "page_subtitle": {"required": true, "max_length": 240},
+    "organizer_label": {"required": true, "max_length": 120},
+    "display_name_label": {"required": true, "max_length": 80},
+    "submit_label": {"required": true, "max_length": 80},
+    "post_submit_message": {"required": true, "max_length": 240}
+  },
+  "fallback_content": {
+    "page_title": "Рабочая встреча",
+    "page_subtitle": "Подключение к учебной комнате",
+    "organizer_label": "Организатор встречи",
+    "display_name_label": "Отображаемое имя",
+    "submit_label": "Подключиться",
+    "post_submit_message": "Подключение завершено"
+  }
+}

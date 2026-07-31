@@ -967,30 +967,39 @@ button:disabled {
 }
 
 .context-bar {
+  display: block;
+  width: 100%;
   height: 8px;
+  border: 0;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(52, 60, 63, 0.8);
 }
 
-.context-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
+.context-bar::-webkit-progress-bar { background: rgba(52, 60, 63, 0.8); }
+.context-bar::-webkit-progress-value {
   background: var(--green);
 }
 
-.context-meter.watch .context-bar span {
+.context-bar::-moz-progress-bar { background: var(--green); }
+
+.context-meter.watch .context-bar::-webkit-progress-value {
   background: var(--blue);
 }
 
-.context-meter.warning .context-bar span {
+.context-meter.watch .context-bar::-moz-progress-bar { background: var(--blue); }
+
+.context-meter.warning .context-bar::-webkit-progress-value {
   background: var(--brass);
 }
 
-.context-meter.danger .context-bar span {
+.context-meter.warning .context-bar::-moz-progress-bar { background: var(--brass); }
+
+.context-meter.danger .context-bar::-webkit-progress-value {
   background: var(--red);
 }
+
+.context-meter.danger .context-bar::-moz-progress-bar { background: var(--red); }
 
 .context-notes {
   display: grid;
@@ -1231,6 +1240,12 @@ button:disabled {
   margin-right: auto;
   border-color: rgba(119, 167, 200, 0.34);
   background: rgba(119, 167, 200, 0.08);
+}
+
+.dataset-message-evidence {
+  margin-right: auto;
+  border-color: rgba(111, 196, 141, 0.34);
+  background: rgba(111, 196, 141, 0.08);
 }
 
 .dataset-message header {

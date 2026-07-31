@@ -120,6 +120,37 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_turn_feedback_liked
                     ON turn_feedback(liked, campaign_id, turn_id);
+                CREATE TABLE IF NOT EXISTS training_artifacts (
+                    id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+                    artifact_key TEXT NOT NULL,
+                    artifact_revision INTEGER NOT NULL,
+                    blueprint_id TEXT NOT NULL,
+                    public_json TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, artifact_key, artifact_revision),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_training_artifacts_campaign_turn
+                    ON training_artifacts(campaign_id, turn_id DESC);
+                CREATE TABLE IF NOT EXISTS training_artifact_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL REFERENCES training_artifacts(id) ON DELETE CASCADE,
+                    artifact_revision INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    filled_field_ids_json TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    consumed_turn_id INTEGER REFERENCES turns(id) ON DELETE SET NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, event_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_training_artifact_events_pending
+                    ON training_artifact_events(campaign_id, consumed_turn_id, id);
                 CREATE TABLE IF NOT EXISTS turn_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -997,6 +1028,8 @@ class StateStore:
             turn["player_rating"] = {1: "positive", -1: "negative"}.get(rating_value, "none")
             turn["player_liked"] = bool(turn["player_liked"])
             turn["player_disliked"] = rating_value == -1
+            turn["artifacts"] = self.training_artifacts_for_turn(int(turn["id"]))
+            turn["interaction_status"] = self.training_artifact_event_status_for_turn(int(turn["id"]))
         return turns
 
     def set_turn_feedback(self, turn_id: int, *, rating: str, source_ui: str) -> dict[str, Any]:
@@ -1897,6 +1930,8 @@ class StateStore:
         state_version: int,
         prompt_messages: list[dict[str, str]] | None = None,
         metadata: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        consumed_artifact_event_ids: list[int] | None = None,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -1921,7 +1956,197 @@ class StateStore:
                     now_ts(),
                 ),
             )
-            return int(cursor.lastrowid)
+            turn_id = int(cursor.lastrowid)
+            for artifact in artifacts or []:
+                public = artifact.get("public") if isinstance(artifact, dict) else None
+                policy = artifact.get("policy") if isinstance(artifact, dict) else None
+                if not isinstance(public, dict) or not isinstance(policy, dict):
+                    raise ValueError("invalid training artifact persistence record")
+                connection.execute(
+                    """
+                    INSERT INTO training_artifacts(
+                        id, campaign_id, turn_id, artifact_key, artifact_revision,
+                        blueprint_id, public_json, policy_json, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        public["artifact_id"],
+                        self.campaign_id,
+                        turn_id,
+                        public["artifact_key"],
+                        int(public["artifact_revision"]),
+                        public["blueprint_id"],
+                        json.dumps(public, ensure_ascii=False),
+                        json.dumps(policy, ensure_ascii=False),
+                        now_ts(),
+                    ),
+                )
+            event_ids = [int(value) for value in consumed_artifact_event_ids or []]
+            if event_ids:
+                placeholders = ",".join("?" for _ in event_ids)
+                connection.execute(
+                    f"""
+                    UPDATE training_artifact_events
+                    SET consumed_turn_id = ?
+                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                    """,
+                    (turn_id, self.campaign_id, *event_ids),
+                )
+            return turn_id
+
+    def training_artifact(self, artifact_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, turn_id, public_json, policy_json
+                FROM training_artifacts
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (artifact_id, self.campaign_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "turn_id": int(row["turn_id"]),
+            "public": json.loads(row["public_json"]),
+            "policy": json.loads(row["policy_json"]),
+        }
+
+    def training_artifacts_for_turn(self, turn_id: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT public_json FROM training_artifacts
+                WHERE campaign_id = ? AND turn_id = ?
+                ORDER BY artifact_key ASC
+                """,
+                (self.campaign_id, int(turn_id)),
+            ).fetchall()
+        return [json.loads(row["public_json"]) for row in rows]
+
+    def training_artifact_event_status_for_turn(self, turn_id: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.event_type, e.created_at, e.consumed_turn_id, e.artifact_id
+                FROM training_artifact_events e
+                JOIN training_artifacts a ON a.id = e.artifact_id
+                WHERE e.campaign_id = ? AND a.turn_id = ?
+                ORDER BY e.id ASC
+                """,
+                (self.campaign_id, int(turn_id)),
+            ).fetchall()
+        return [
+            {
+                "event_sequence": int(row["id"]),
+                "event_type": row["event_type"],
+                "artifact_id": row["artifact_id"],
+                "consumed": row["consumed_turn_id"] is not None,
+                "created_at": int(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def record_training_artifact_event(
+        self,
+        *,
+        event_id: str,
+        artifact_id: str,
+        artifact_revision: int,
+        event_type: str,
+        filled_field_ids: list[str],
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = now_ts()
+        payload_fields = json.dumps(list(filled_field_ids), ensure_ascii=False)
+        payload_evidence = json.dumps(evidence, ensure_ascii=False)
+        with self.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT id, artifact_id, artifact_revision, event_type, filled_field_ids_json
+                FROM training_artifact_events
+                WHERE campaign_id = ? AND event_id = ?
+                """,
+                (self.campaign_id, event_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["artifact_id"] != artifact_id
+                    or int(existing["artifact_revision"]) != int(artifact_revision)
+                    or existing["event_type"] != event_type
+                    or existing["filled_field_ids_json"] != payload_fields
+                ):
+                    raise ValueError("artifact event id was already used with a different payload")
+                return {"accepted": True, "event_sequence": int(existing["id"]), "duplicate": True}
+            cursor = connection.execute(
+                """
+                INSERT INTO training_artifact_events(
+                    campaign_id, event_id, artifact_id, artifact_revision, event_type,
+                    filled_field_ids_json, evidence_json, consumed_turn_id, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    self.campaign_id,
+                    event_id,
+                    artifact_id,
+                    int(artifact_revision),
+                    event_type,
+                    payload_fields,
+                    payload_evidence,
+                    timestamp,
+                ),
+            )
+        return {"accepted": True, "event_sequence": int(cursor.lastrowid), "duplicate": False}
+
+    def unconsumed_training_artifact_evidence(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.event_id, e.artifact_id, e.event_type, e.evidence_json,
+                       a.artifact_key, a.blueprint_id
+                FROM training_artifact_events e
+                JOIN training_artifacts a ON a.id = e.artifact_id
+                WHERE e.campaign_id = ? AND e.consumed_turn_id IS NULL
+                ORDER BY e.id ASC
+                """,
+                (self.campaign_id,),
+            ).fetchall()
+            consumed_rules = {
+                str(json.loads(row["evidence_json"] or "{}").get("score_rule_id") or "")
+                for row in connection.execute(
+                    """
+                    SELECT evidence_json FROM training_artifact_events
+                    WHERE campaign_id = ? AND consumed_turn_id IS NOT NULL
+                    """,
+                    (self.campaign_id,),
+                ).fetchall()
+            }
+        evidence_items: list[dict[str, Any]] = []
+        seen_pending_rules: set[str] = set()
+        for row in rows:
+            evidence = json.loads(row["evidence_json"] or "{}")
+            rule_id = str(evidence.get("score_rule_id") or "")
+            score_once = bool(evidence.get("score_once", True))
+            eligible = not score_once or not rule_id or (rule_id not in consumed_rules and rule_id not in seen_pending_rules)
+            if rule_id:
+                seen_pending_rules.add(rule_id)
+            evidence_items.append(
+                {
+                    "event_sequence": int(row["id"]),
+                    "event_id": row["event_id"],
+                    "artifact_id": row["artifact_id"],
+                    "artifact_key": row["artifact_key"],
+                    "blueprint_id": row["blueprint_id"],
+                    "event_type": row["event_type"],
+                    "evidence": str(evidence.get("evidence") or ""),
+                    "score_rule_id": rule_id,
+                    "score_once": score_once,
+                    "score_eligible": eligible,
+                    "decision_result": str(evidence.get("decision_result") or "neutral"),
+                }
+            )
+        return evidence_items
 
     def record_check(self, turn_id: int | None, outcome: Any) -> None:
         with self.connect() as connection:

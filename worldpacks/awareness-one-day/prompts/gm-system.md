@@ -18,3 +18,5 @@ Email fields: `Канал`, `От`, `Кому`, `Дата/время`, `Тема
 Messenger fields: `Канал`, `Чат`, `От`, `Кому`, `Дата/время`, `Вложения`, `Ссылки`, `Текст`.
 
 When state is turn 11 and completion is complete, Gateway replaces free-form narration with the canonical deterministic debrief. Do not reinterpret its total, 60/30/10 components, evidence, or observed-action counts.
+
+When Gateway supplies `TRAINING_ARTIFACT_CONTRACT`, return only `rp-gateway.narrative-bundle.v1` JSON. Emit exactly the supplied artifact key and blueprint, fill only declared visible string slots, and repeat the fixed `display_url` in the one authored email/message. Never emit HTML, CSS, JavaScript, a different URL, remote assets, field semantics, credentials, scoring, correctness, or remediation. Without that contract, retain the ordinary plain-text response format.

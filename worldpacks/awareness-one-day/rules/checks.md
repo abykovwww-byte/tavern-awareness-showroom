@@ -27,3 +27,7 @@ For every awarded component Gateway stores a compact observable evidence entry i
 The opening creates turn 1 without scoring it. Each player response resolves only the current message, updates the counters, and advances exactly one scheduled turn. After the player answers turn 10, state advances to turn 11 with `completion-status=complete`; the next narrator response is the debrief and contains no new decision surface.
 
 Before debrief, never expose this rubric, a score, correctness, hints, remediation, facilitator notes, or answer labels.
+
+## Interactive site evidence
+
+Gateway interaction events are typed observable evidence and take precedence over contradictory free text. `link_opened` follows the server-only policy for its authored site: opening the hostile turn-4 portal is unsafe, while opening the legitimate turn-6 project portal is neutral. `credentials_submitted` means the browser observed at least one non-empty credential-classified field when submit was pressed; no field value is transmitted or checked. On turn 4 it increments `credential-exposure` and `unsafe-actions` once. `reported` may satisfy the authored safe-report action. Event rule IDs are score-once and are consumed by the next player turn without advancing the schedule themselves.

@@ -1179,6 +1179,40 @@ class PartyStore:
         if int(row["player_rating_value"]) == -1:
             auto_tags.append("player-disliked")
         player_rating = {1: "positive", -1: "negative"}.get(int(row["player_rating_value"]), "none")
+        with self.connect() as connection:
+            artifact_rows = connection.execute(
+                """
+                SELECT public_json FROM training_artifacts
+                WHERE campaign_id = ? AND turn_id = ?
+                ORDER BY artifact_key ASC
+                """,
+                (row["campaign_id"], int(row["id"])),
+            ).fetchall()
+            evidence_rows = connection.execute(
+                """
+                SELECT e.id, e.event_id, e.artifact_id, e.event_type, e.evidence_json, e.created_at
+                FROM training_artifact_events e
+                WHERE e.campaign_id = ? AND e.consumed_turn_id = ?
+                ORDER BY e.id ASC
+                """,
+                (row["campaign_id"], int(row["id"])),
+            ).fetchall()
+        artifacts = [json.loads(item["public_json"]) for item in artifact_rows]
+        interaction_evidence = []
+        for item in evidence_rows:
+            evidence = json.loads(item["evidence_json"] or "{}")
+            interaction_evidence.append(
+                {
+                    "event_sequence": int(item["id"]),
+                    "event_id": item["event_id"],
+                    "artifact_id": item["artifact_id"],
+                    "event_type": item["event_type"],
+                    "evidence": str(evidence.get("evidence") or ""),
+                    "score_rule_id": str(evidence.get("score_rule_id") or ""),
+                    "decision_result": str(evidence.get("decision_result") or "neutral"),
+                    "created_at": int(item["created_at"]),
+                }
+            )
         return {
             "schema_version": "rp-gateway.dataset-candidate.v1",
             "party_id": party.id,
@@ -1196,6 +1230,8 @@ class PartyStore:
             "notes": row["notes"] or "",
             "prompt_messages": prompt_messages,
             "assistant_response": row["narrative_response"],
+            "artifacts": artifacts,
+            "interaction_evidence": interaction_evidence,
             "player_feedback": {
                 "rating": player_rating,
                 "liked": bool(row["player_liked"]),
@@ -1232,6 +1268,8 @@ class PartyStore:
                 "player_feedback": turn["player_feedback"],
                 "state_version": turn["state_version"],
                 "source": turn["metadata"],
+                "artifacts": turn.get("artifacts") or [],
+                "interaction_evidence": turn.get("interaction_evidence") or [],
             },
         }
 

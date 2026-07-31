@@ -16,6 +16,12 @@
     "metric": "state_path",
     "state_path": "player.resources.total-score"
   },
+  "training_artifacts": {
+    "schema_version": "rp-training-artifacts.v1",
+    "site_catalog": "artifacts/sites/index.json",
+    "interaction_policy": "rules/site-interactions.json",
+    "default_site_count": 10
+  },
   "assumptions": [
     "Компания, адреса, персонажи, документы и события являются учебной фикцией.",
     "Профессия игрока задаётся при создании персонажа; если описание расплывчато, используются обязанности обычного специалиста с ограниченными полномочиями.",

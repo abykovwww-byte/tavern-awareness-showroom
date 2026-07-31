@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RP Light GUI</title>
     <link rel="stylesheet" href="/styles.css?v=20260730-dataset-review" />
+    <link rel="stylesheet" href="/training-artifacts.css?v=20260731-v1" />
   </head>
   <body>
     <section class="login-screen hidden" id="loginScreen">
@@ -491,6 +492,10 @@
             <header><span>Ответ LLM</span></header>
             <p id="datasetTurnAssistantMessage"></p>
           </article>
+          <article class="dataset-message dataset-message-evidence">
+            <header><span>Действия в учебном сайте</span></header>
+            <p id="datasetTurnInteractionEvidence"></p>
+          </article>
         </div>
 
         <div class="dataset-review-fields">
@@ -520,6 +525,7 @@
     <div id="toast" class="toast"></div>
     <script src="/structured-content.js?v=20260729-messenger-boundary"></script>
     <script src="/message-time.js?v=20260729-message-time"></script>
+    <script src="/training-artifacts.js?v=20260731-v1"></script>
     <script src="/app.js?v=20260730-dataset-review"></script>
   </body>
 </html>

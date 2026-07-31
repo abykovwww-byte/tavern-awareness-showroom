@@ -1,0 +1,25 @@
+{
+  "schema_version": "rp-training-site-policy.v1",
+  "blueprints": {
+    "corporate-sso": {
+      "link_opened": {"evidence": "external-login-page-opened", "score_rule_id": "turn-4-link-open", "score_once": true, "decision_result": "fail"},
+      "credentials_submitted": {"evidence": "credentials-submitted", "score_rule_id": "turn-4-credential-failure", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "site-reported", "score_rule_id": "turn-4-safe-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "cloud-file-share": {
+      "link_opened": {"evidence": "approved-project-portal-opened", "score_rule_id": "turn-6-legitimate-link", "score_once": true, "decision_result": "neutral"},
+      "form_submitted": {"evidence": "approved-project-document-opened", "score_rule_id": "turn-6-legitimate-document", "score_once": true, "decision_result": "neutral"},
+      "reported": {"evidence": "legitimate-site-reported", "score_rule_id": "", "score_once": true, "decision_result": "neutral"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "password-reset": {},
+    "mfa-confirmation": {},
+    "document-signing": {},
+    "invoice-payment": {},
+    "delivery-tracking": {},
+    "meeting-join": {},
+    "hr-survey": {},
+    "support-download": {}
+  }
+}

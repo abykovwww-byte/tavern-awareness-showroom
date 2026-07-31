@@ -42,7 +42,9 @@ Transition: advance to turn 4. No security points are available.
 
 ### Turn 4 — 11:00-12:00
 
-Surface: external-lookalike portal email pressures the player to sign in through a link.
+Surface: external-lookalike portal email pressures the player to sign in through the fixed simulated link `https://pt-session.example.test/confirm`.
+
+Interactive artifact: `turn-4-session` uses blueprint `corporate-sso`. Gateway owns the URL, fields, credential classification and scoring policy; the narrator fills only visible copy slots.
 
 Observable safe action: do not use the link or enter credentials; verify independently or report.
 
@@ -60,7 +62,9 @@ Transition: advance to turn 6.
 
 ### Turn 6 — 13:00-14:15
 
-Surface: normal corporate email from project manager Roman Ivanov requesting a post-lunch status.
+Surface: normal corporate email from project manager Roman Ivanov requesting a post-lunch status and linking to the approved simulated project files at `https://projects.example.test/status-files`.
+
+Interactive artifact: `turn-6-project-files` uses blueprint `cloud-file-share`. It is a legitimate comparison surface rendered with the same controls as the hostile site, so interactivity is not an answer cue.
 
 Role adaptation: ask for the player's actual type of work product, remaining work and blocker owner.
 

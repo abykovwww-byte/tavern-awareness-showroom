@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 CheckType = Literal[
@@ -35,6 +35,7 @@ ScenarioType = Literal["rp", "novel", "training"]
 ShowroomScenarioStatus = Literal["draft", "published", "archived"]
 ShowroomWorldSource = Literal["preset", "prompt"]
 ShowroomLeaderboardMetric = Literal["state_path", "turn_count"]
+TrainingArtifactEventType = Literal["link_opened", "form_submitted", "site_closed", "reported"]
 
 
 class ChatMessage(BaseModel):
@@ -309,6 +310,87 @@ class PartyMessageRequest(BaseModel):
     idempotency_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+
+
+class NarrativeArtifactContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_key: str = Field(min_length=1, max_length=120, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    blueprint_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    slots: dict[str, str] = Field(default_factory=dict, max_length=40)
+
+    @field_validator("slots")
+    @classmethod
+    def validate_slot_values(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not isinstance(item, str) for item in value.values()):
+            raise ValueError("artifact slot values must be strings")
+        return value
+
+
+class NarrativeBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["rp-gateway.narrative-bundle.v1"]
+    narrative_text: str = Field(min_length=1, max_length=30000)
+    artifacts: list[NarrativeArtifactContent] = Field(default_factory=list, max_length=4)
+
+
+class TrainingArtifactSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["rp-gateway.training-artifact.v1"] = "rp-gateway.training-artifact.v1"
+    artifact_id: str = Field(min_length=1, max_length=160)
+    artifact_key: str = Field(min_length=1, max_length=120)
+    artifact_revision: int = Field(ge=1)
+    surface_turn: int = Field(ge=1)
+    blueprint_id: str = Field(min_length=1, max_length=120)
+    renderer: str = Field(min_length=1, max_length=80)
+    theme: str = Field(min_length=1, max_length=80)
+    display_url: str = Field(min_length=1, max_length=300)
+    field_ids: list[str] = Field(default_factory=list, max_length=20)
+    field_types: dict[str, Literal["text", "password", "otp", "email"]] = Field(default_factory=dict)
+    actions: list[Literal["submit", "close", "report"]] = Field(default_factory=list, max_length=8)
+    slots: dict[str, str] = Field(default_factory=dict, max_length=40)
+
+
+class TrainingArtifactEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=8, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")
+    artifact_id: str = Field(min_length=1, max_length=160)
+    artifact_revision: int = Field(ge=1)
+    event_type: TrainingArtifactEventType
+    filled_field_ids: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("filled_field_ids")
+    @classmethod
+    def unique_field_ids(cls, value: list[str]) -> list[str]:
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        if any(len(item) > 80 for item in normalized):
+            raise ValueError("artifact field id is too long")
+        return list(dict.fromkeys(normalized))
+
+
+class TrainingArtifactEventResponse(BaseModel):
+    accepted: bool = True
+    event_sequence: int = Field(ge=1)
+    duplicate: bool = False
+
+
+class InteractionEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_sequence: int = Field(ge=1)
+    event_id: str
+    artifact_id: str
+    artifact_key: str
+    blueprint_id: str
+    event_type: str
+    evidence: str = ""
+    score_rule_id: str = ""
+    score_once: bool = True
+    score_eligible: bool = True
+    decision_result: Literal["pass", "fail", "neutral"] = "neutral"
 
 
 class ShowroomScenarioCreate(BaseModel):

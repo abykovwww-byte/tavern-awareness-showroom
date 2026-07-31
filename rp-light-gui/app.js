@@ -147,6 +147,7 @@ const els = {
   datasetTurnDialogMeta: document.querySelector("#datasetTurnDialogMeta"),
   datasetTurnPlayerMessage: document.querySelector("#datasetTurnPlayerMessage"),
   datasetTurnAssistantMessage: document.querySelector("#datasetTurnAssistantMessage"),
+  datasetTurnInteractionEvidence: document.querySelector("#datasetTurnInteractionEvidence"),
   datasetTurnAutoTags: document.querySelector("#datasetTurnAutoTags"),
   datasetTurnTags: document.querySelector("#datasetTurnTags"),
   datasetTurnNotes: document.querySelector("#datasetTurnNotes"),
@@ -814,7 +815,7 @@ function renderContext() {
         <strong>~${formatTokens(estimate.estimated_total_tokens)} токенов</strong>
         <span>${escapeHtml(source)} · ${escapeHtml(percentLabel)}</span>
       </div>
-      <div class="context-bar"><span style="width: ${fill}%"></span></div>
+      <progress class="context-bar" max="100" value="${fill}" aria-label="Использование контекста: ${fill}%"></progress>
     </div>
     ${stateItem("Запрос", escapeHtml(estimate.last_request_id || "-"), "X-Request-ID последнего сохраненного turn.")}
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
@@ -1181,6 +1182,8 @@ function renderChat({ scrollMode = "bottom" } = {}) {
         turnId: turn.id,
         rating: turn.player_rating || (turn.player_liked ? "positive" : "none"),
       },
+      turn.artifacts || [],
+      turn.id,
     ));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
@@ -1190,7 +1193,22 @@ function renderChat({ scrollMode = "bottom" } = {}) {
     messages.push(pendingMessageHtml(pending.requestId, pending.status, pending.createdAt));
   }
   els.chatLog.innerHTML = messages.join("");
+  mountTrainingArtifacts(visibleTurns);
   els.chatLog.scrollTop = scrollMode === "top" ? 0 : els.chatLog.scrollHeight;
+}
+
+function mountTrainingArtifacts(turns) {
+  const renderer = globalThis.TrainingArtifacts;
+  if (!renderer || appState.activeBranch || !appState.activeParty) return;
+  for (const turn of turns) {
+    if (!Array.isArray(turn.artifacts) || !turn.artifacts.length) continue;
+    const host = els.chatLog.querySelector(`[data-training-artifact-turn="${Number(turn.id)}"]`);
+    if (!host) continue;
+    renderer.mount(host, turn.artifacts, (payload) => apiPost(
+      `/api/parties/${encodeURIComponent(appState.activeParty.id)}/artifact-events`,
+      payload,
+    ));
+  }
 }
 
 function renderHistoryControls(hiddenTurnCount, totalTurns) {
@@ -1546,6 +1564,22 @@ function fillAdminDatasetTurnDialog(turn) {
   ].filter(Boolean).join("");
   els.datasetTurnPlayerMessage.textContent = turn.player_message || "Реплика игрока отсутствует.";
   els.datasetTurnAssistantMessage.textContent = turn.assistant_response || "Ответ LLM отсутствует.";
+  const eventLabels = {
+    link_opened: "Перешёл по ссылке",
+    form_submitted: "Отправил форму",
+    credentials_submitted: "Ввёл и отправил учётные данные",
+    reported: "Сообщил о подозрительном сообщении",
+  };
+  const evidenceItems = Array.isArray(turn.interaction_evidence) ? turn.interaction_evidence : [];
+  els.datasetTurnInteractionEvidence.textContent = evidenceItems.length
+    ? evidenceItems.map((item) => {
+      const result = item.decision_result === "pass"
+        ? "успех"
+        : item.decision_result === "fail" ? "ошибка" : "без оценки";
+      const label = eventLabels[item.event_type] || item.event_type || "Действие";
+      return `${label} — ${result}${item.evidence ? ` (${item.evidence})` : ""}`;
+    }).join("\n")
+    : "За этот ход действий в учебном сайте не зафиксировано.";
   els.datasetTurnAutoTags.innerHTML = (turn.auto_tags || []).length
     ? turn.auto_tags.map((tag) => `<span class="dataset-tag">${escapeHtml(tag)}</span>`).join("")
     : `<span class="dataset-tag dataset-tag-muted">Нет</span>`;
@@ -1972,6 +2006,12 @@ async function sendMessage(event) {
   }
   const text = els.messageInput.value.trim();
   if (!text || !appState.activeParty) return;
+  try {
+    await globalThis.TrainingArtifacts?.flush();
+  } catch (error) {
+    showToast(error.message);
+    return;
+  }
   const partyId = appState.activeParty.id;
   const requestId = makeClientRequestId();
   els.messageInput.value = "";
@@ -3205,16 +3245,20 @@ function messageTimeHtml(timestamp) {
   return `<time class="message-time" datetime="${escapeHtml(formatted.iso)}" title="${escapeHtml(formatted.title)}">${escapeHtml(formatted.text)}</time>`;
 }
 
-function messageHtml(kind, role, content, timestamp = Date.now(), feedback = null) {
+function messageHtml(kind, role, content, timestamp = Date.now(), feedback = null, artifacts = [], turnId = null) {
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
     : { html: escapeHtml(content || ""), hasArtifacts: false };
   const feedbackHtml = feedback?.turnId
     ? turnFeedbackControlsHtml(feedback)
     : "";
+  const artifactHost = kind === "assistant" && turnId && Array.isArray(artifacts) && artifacts.length
+    ? `<div class="training-artifact-host" data-training-artifact-turn="${escapeHtml(Number(turnId))}"></div>`
+    : "";
   const html = `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>
     <div class="message-content">${rendered.html}</div>
+    ${artifactHost}
     ${messageTimeHtml(timestamp)}
     ${feedbackHtml}
   </article>`;

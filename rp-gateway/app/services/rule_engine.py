@@ -8,7 +8,7 @@ import random
 import re
 from typing import Any
 
-from app.models.schemas import Intent, Outcome, PatchOperation, StatePatch
+from app.models.schemas import InteractionEvidence, Intent, Outcome, PatchOperation, StatePatch
 
 
 TARGETED_CHECKS = {"persuasion", "intimidation", "deception", "trust", "conflict"}
@@ -197,11 +197,19 @@ class RuleEngine:
         roll: int | None = None,
         campaign_id: str | None = None,
         scenario_type: str = "rp",
+        interaction_evidence: list[InteractionEvidence] | None = None,
     ) -> tuple[Outcome, StatePatch]:
         if scenario_type == "novel":
             return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
         if scenario_type == "training":
-            return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
+            return self.resolve_nonmechanical(
+                state,
+                intent,
+                request_id,
+                campaign_id,
+                scenario_type,
+                interaction_evidence=interaction_evidence or [],
+            )
         if intent.action_type in TARGETED_CHECKS and not intent.target:
             intent.ambiguities.append(f"{intent.action_type} has no target; outcome is constrained.")
         check_id = self.check_id(intent, request_id)
@@ -243,16 +251,23 @@ class RuleEngine:
         request_id: str,
         campaign_id: str | None,
         scenario_type: str,
+        interaction_evidence: list[InteractionEvidence] | None = None,
     ) -> tuple[Outcome, StatePatch]:
         check_id = self.check_id(intent, request_id)
         training = scenario_type == "training"
         result = "deterministic_resolution" if training else "narrative_continuation"
         if training:
+            observed = [item for item in interaction_evidence or [] if item.score_eligible]
             consequences = [
                 "Apply only actions explicitly chosen by the player.",
                 "Advance the authored training scenario exactly one turn.",
                 "Do not add hints, assessment, or remediation unless the scenario schedules them now.",
             ]
+            if observed:
+                consequences.append(
+                    "Treat these typed browser interactions as factual observable actions that free text cannot erase: "
+                    + ", ".join(f"{item.event_type}:{item.evidence or item.artifact_key}" for item in observed)
+                )
             authoritative = (
                 "<AUTHORITATIVE_OUTCOME>\n"
                 "Mode: deterministic training\n"
@@ -291,7 +306,14 @@ class RuleEngine:
             ],
             authoritative_block=authoritative,
         )
-        return outcome, self.patch_for_nonmechanical(state, intent, outcome, campaign_id, scenario_type)
+        return outcome, self.patch_for_nonmechanical(
+            state,
+            intent,
+            outcome,
+            campaign_id,
+            scenario_type,
+            interaction_evidence=interaction_evidence or [],
+        )
 
     def patch_for_nonmechanical(
         self,
@@ -300,6 +322,7 @@ class RuleEngine:
         outcome: Outcome,
         campaign_id: str | None,
         scenario_type: str,
+        interaction_evidence: list[InteractionEvidence] | None = None,
     ) -> StatePatch:
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         participants = [intent.actor] + ([intent.target] if intent.target else [])
@@ -319,9 +342,25 @@ class RuleEngine:
         ]
         if scenario_type == "training":
             if is_awareness_one_day_campaign(state, campaign_id):
-                operations.extend(self.awareness_one_day_scoring_operations(state, intent, turn, campaign_id))
+                operations.extend(
+                    self.awareness_one_day_scoring_operations(
+                        state,
+                        intent,
+                        turn,
+                        campaign_id,
+                        interaction_evidence=interaction_evidence or [],
+                    )
+                )
             else:
-                operations.extend(self.awareness_security_operations(state, intent, turn, campaign_id))
+                operations.extend(
+                    self.awareness_security_operations(
+                        state,
+                        intent,
+                        turn,
+                        campaign_id,
+                        interaction_evidence=interaction_evidence or [],
+                    )
+                )
             operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
         return StatePatch(
             turn=turn,
@@ -553,6 +592,7 @@ class RuleEngine:
         intent: Intent,
         turn: int,
         campaign_id: str | None = None,
+        interaction_evidence: list[InteractionEvidence] | None = None,
     ) -> list[PatchOperation]:
         if not is_awareness_campaign(state, campaign_id):
             return []
@@ -566,7 +606,15 @@ class RuleEngine:
             add("suspicious-artifacts-opened", 1)
             add("unsafe-actions", 1)
             add("awareness-score", -3)
-        if self.explicit_action(SOC_REPORT_RE, text):
+        eligible_events = [item for item in interaction_evidence or [] if item.score_eligible]
+        reported_event = any(item.event_type == "reported" for item in eligible_events)
+        failed_link_event = any(
+            item.event_type == "link_opened" and item.decision_result == "fail" for item in eligible_events
+        )
+        credential_event = any(item.event_type == "credentials_submitted" for item in eligible_events)
+        if any(item.event_type == "link_opened" for item in eligible_events):
+            add("links-opened", 1)
+        if self.explicit_action(SOC_REPORT_RE, text) or reported_event:
             add("safe-escalations", 1)
             add("awareness-score", 2)
             if len(REPORT_DETAIL_RE.findall(text)) >= 2:
@@ -576,10 +624,14 @@ class RuleEngine:
             add("unnecessary-forwarding", 1)
             add("unsafe-actions", 1)
             add("awareness-score", -2)
-        if self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text):
+        if self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text) or credential_event:
             add("credential-exposure", 1)
             add("unsafe-actions", 1)
             add("awareness-score", -5)
+        if failed_link_event:
+            add("suspicious-artifacts-opened", 1)
+            add("unsafe-actions", 1)
+            add("awareness-score", -2)
         if self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text):
             add("confidential-disclosures", 1)
             add("unsafe-actions", 1)
@@ -643,6 +695,7 @@ class RuleEngine:
         intent: Intent,
         turn: int,
         campaign_id: str | None = None,
+        interaction_evidence: list[InteractionEvidence] | None = None,
     ) -> list[PatchOperation]:
         if not is_awareness_one_day_campaign(state, campaign_id):
             return []
@@ -655,10 +708,23 @@ class RuleEngine:
 
         dangerous_file = bool(DOUBLE_EXTENSION_RE.search(text)) and self.explicit_action(DANGEROUS_FILE_ACTION_RE, text)
         unsafe_forward = self.explicit_action(FORWARD_TO_OTHERS_RE, text) and bool(SUSPICIOUS_CONTENT_RE.search(text))
-        credential_exposure = self.explicit_action(CREDENTIAL_ACTION_RE, text) or self.explicit_action(EXTERNAL_LOGIN_RE, text)
+        eligible_events = [item for item in interaction_evidence or [] if item.score_eligible]
+        if any(item.event_type == "link_opened" for item in eligible_events):
+            add("links-opened", 1)
+        failed_link_event = any(
+            item.event_type == "link_opened" and item.decision_result == "fail" for item in eligible_events
+        )
+        credential_event = any(item.event_type == "credentials_submitted" for item in eligible_events)
+        credential_exposure = (
+            self.explicit_action(CREDENTIAL_ACTION_RE, text)
+            or self.explicit_action(EXTERNAL_LOGIN_RE, text)
+            or credential_event
+        )
         confidential_disclosure = self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text)
-        unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure
-        reported = self.explicit_action(SOC_REPORT_RE, text)
+        unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure or failed_link_event
+        reported = self.explicit_action(SOC_REPORT_RE, text) or any(
+            item.event_type == "reported" for item in eligible_events
+        )
         independently_verified = self.explicit_action(INDEPENDENT_VERIFY_RE, text)
         explicitly_refused = bool(EXPLICIT_REFUSAL_RE.search(text))
         safe_security_action = reported or independently_verified or explicitly_refused
@@ -690,12 +756,17 @@ class RuleEngine:
                 add("unsafe-actions", 1)
                 if dangerous_file:
                     add("suspicious-artifacts-opened", 1)
+                if failed_link_event:
+                    add("suspicious-artifacts-opened", 1)
                 if credential_exposure:
                     add("credential-exposure", 1)
                 if confidential_disclosure:
                     add("confidential-disclosures", 1)
                 if unsafe_forward:
                     add("unnecessary-forwarding", 1)
+                for item in eligible_events:
+                    if item.evidence:
+                        note("security-score-evidence", f"UI: {item.evidence}")
         if role_aligned:
             add("roleplay-score", 3)
             add("role-aligned-responses", 1)

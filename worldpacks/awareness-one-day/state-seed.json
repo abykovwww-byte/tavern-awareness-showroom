@@ -29,6 +29,7 @@
       "roleplay-score-evidence": "",
       "communication-score-evidence": "",
       "unsafe-actions": 0,
+      "links-opened": 0,
       "credential-exposure": 0,
       "suspicious-artifacts-opened": 0,
       "confidential-disclosures": 0,

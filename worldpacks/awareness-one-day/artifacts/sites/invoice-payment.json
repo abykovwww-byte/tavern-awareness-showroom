@@ -1,0 +1,31 @@
+{
+  "id": "invoice-payment",
+  "revision": 1,
+  "renderer": "payment-review",
+  "theme": "warning-amber",
+  "fixed": {
+    "display_url": "https://invoice-review.example.test/approve",
+    "field_ids": ["approver-comment"],
+    "field_types": {"approver-comment": "text"},
+    "credential_field_ids": [],
+    "actions": ["submit", "close", "report"]
+  },
+  "llm_slots": {
+    "page_title": {"required": true, "max_length": 120},
+    "page_subtitle": {"required": true, "max_length": 240},
+    "invoice_title": {"required": true, "max_length": 160},
+    "amount_label": {"required": true, "max_length": 80},
+    "approver_comment_label": {"required": true, "max_length": 80},
+    "submit_label": {"required": true, "max_length": 80},
+    "post_submit_message": {"required": true, "max_length": 240}
+  },
+  "fallback_content": {
+    "page_title": "Проверка счёта",
+    "page_subtitle": "Учебная карточка согласования",
+    "invoice_title": "Счёт на услуги",
+    "amount_label": "Сумма по документу",
+    "approver_comment_label": "Комментарий",
+    "submit_label": "Передать решение",
+    "post_submit_message": "Решение зарегистрировано"
+  }
+}

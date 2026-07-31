@@ -25,6 +25,19 @@ from app.services.provider_auth import outbound_headers
 logger = logging.getLogger(__name__)
 
 
+def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "TRAINING_ARTIFACT_CONTRACT",
+            "Return JSON only with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.",
+            "Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.",
+            "Repeat the exact fixed display_url in the email/message narrative.",
+            "Never emit HTML, CSS, JavaScript, remote assets, credentials, answer keys, scoring, correctness, or remediation.",
+            json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+        ]
+    )
+
+
 class ProviderRateLimitError(RuntimeError):
     def __init__(
         self,
@@ -71,13 +84,21 @@ class NarrativeClient:
         repair_instruction: str | None = None,
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
         request_id: str | None = None,
+        artifact_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(self.settings, inbound_authorization)
         if self.settings.nvidia_api_base.startswith("mock://"):
-            return self.mock_completion(outcome, repair_instruction)
+            return self.mock_completion(outcome, repair_instruction, artifact_contract)
 
         payload = request.model_dump(exclude_none=True)
-        payload["messages"] = self.narrative_messages(request, state, outcome, repair_instruction, memory_summary)
+        payload["messages"] = self.narrative_messages(
+            request,
+            state,
+            outcome,
+            repair_instruction,
+            memory_summary,
+            artifact_contract=artifact_contract,
+        )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
 
@@ -203,6 +224,7 @@ class NarrativeClient:
         outcome: Outcome,
         repair_instruction: str | None,
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
+        artifact_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         relevant_characters = retrieve_relevant_characters(
             state,
@@ -241,6 +263,8 @@ class NarrativeClient:
                     "content": f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}",
                 }
             )
+        if artifact_contract:
+            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
         if memory_summary:
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
         # Keep the immutable rules/world prefix followed by the growing transcript.
@@ -316,7 +340,12 @@ class NarrativeClient:
             "world rules explicitly require them. End with a playable opening for the next player action."
         )
 
-    def mock_completion(self, outcome: Outcome, repair_instruction: str | None) -> dict[str, Any]:
+    def mock_completion(
+        self,
+        outcome: Outcome,
+        repair_instruction: str | None,
+        artifact_contract: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         mode = self.settings.nvidia_api_base.removeprefix("mock://")
         if mode == "timeout":
             raise httpx.TimeoutException("mock timeout")
@@ -343,6 +372,25 @@ class NarrativeClient:
             content = "Despite the failure, the king still transfers command authority."
         else:
             content = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
+        if artifact_contract:
+            slot_values = {
+                slot_id: ("Продолжить" if slot_id.endswith("label") else "Учебная страница")
+                for slot_id in artifact_contract.get("slots", {})
+            }
+            content = json.dumps(
+                {
+                    "schema_version": "rp-gateway.narrative-bundle.v1",
+                    "narrative_text": f"{content}\n\nСсылка: {artifact_contract['display_url']}",
+                    "artifacts": [
+                        {
+                            "artifact_key": artifact_contract["artifact_key"],
+                            "blueprint_id": artifact_contract["blueprint_id"],
+                            "slots": slot_values,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
         return {
             "id": f"mock-{outcome.check_id}",
             "object": "chat.completion",

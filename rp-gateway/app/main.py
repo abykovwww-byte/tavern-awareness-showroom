@@ -42,6 +42,7 @@ from app.models.schemas import (
     PartyStartRequest,
     PartyTurnDatasetUpdate,
     TurnFeedbackUpdate,
+    TrainingArtifactEventRequest,
     PartyCheckpointCreate,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
@@ -89,6 +90,7 @@ from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
+from app.services.training_artifacts import TrainingArtifactService
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -782,6 +784,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "state_versions": party_state_store.history(limit=limit),
         }
 
+    @app.post("/api/parties/{party_id}/artifact-events")
+    def record_party_artifact_event(
+        http_request: Request,
+        party_id: str,
+        payload: TrainingArtifactEventRequest,
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            service = TrainingArtifactService(party.worldpack, party_state_store)
+            if not service.enabled or party.scenario_type != "training":
+                raise ValueError("interactive training artifacts are not enabled for this party")
+            result = service.record_event(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, **result.model_dump(mode="json")}
+
     @app.put("/api/parties/{party_id}/turns/{turn_id}/feedback")
     def update_party_turn_feedback(
         request: Request,
@@ -1206,12 +1225,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             start_outcome = party_start_outcome(party_id, party.scenario_type)
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             narrative = NarrativeClient(party_settings)
+            artifact_service = TrainingArtifactService(party.worldpack, party_state_store)
+            artifact_contract = artifact_service.contract_for_state(narrative_state)
             prompt_messages = narrative.narrative_messages(
                 chat_request,
                 narrative_state,
                 start_outcome,
                 repair_instruction=None,
                 memory_summary=memory_summary,
+                artifact_contract=artifact_contract,
             )
             repaired = False
             fallback_reason: str | None = None
@@ -1222,10 +1244,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 authorization,
                 memory_summary=memory_summary,
                 request_id=request_id,
+                artifact_contract=artifact_contract,
             )
             adjudicator = Adjudicator(party_settings, party_state_store)
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
+            artifact_result = artifact_service.materialize_response(response, artifact_contract)
+            if artifact_result.valid:
+                response = artifact_result.response
+                text = artifact_result.text
             validator = OutputValidator()
             validation = validator.validate(
                 text,
@@ -1234,19 +1261,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 campaign_id=party.worldpack_id,
                 scenario_type=party.scenario_type,
             )
-            if not validation.valid and party_settings.max_repair_attempts > 0:
+            if (not validation.valid or not artifact_result.valid) and party_settings.max_repair_attempts > 0:
                 repaired = True
+                repair_instruction = validation.repair_instruction
+                if not artifact_result.valid:
+                    repair_instruction = " ".join(
+                        [
+                            repair_instruction,
+                            "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                        ]
+                    ).strip()
                 raw = await narrative.complete(
                     chat_request,
                     narrative_state,
                     start_outcome,
                     authorization,
-                    validation.repair_instruction,
+                    repair_instruction,
                     memory_summary=memory_summary,
                     request_id=request_id,
+                    artifact_contract=artifact_contract,
                 )
                 response = adjudicator.normalize_response(raw, model_profile.model)
                 text = response_text(response)
+                artifact_result = artifact_service.materialize_response(response, artifact_contract)
+                if artifact_result.valid:
+                    response = artifact_result.response
+                    text = artifact_result.text
                 validation = validator.validate(
                     text,
                     start_outcome,
@@ -1254,11 +1294,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     campaign_id=party.worldpack_id,
                     scenario_type=party.scenario_type,
                 )
-            if not validation.valid:
+            if not validation.valid or not artifact_result.valid:
                 fallback_reason = "validation_failed"
                 party_state_store.audit(
                     "party_start_validation_failed",
-                    {"request_id": request_id, "model": model_profile.model, "violations": validation.violations},
+                    {
+                        "request_id": request_id,
+                        "model": model_profile.model,
+                        "violations": [*validation.violations, *artifact_result.violations],
+                    },
                     request_id,
                 )
                 allow_safe_fallback = getattr(http_request.state, "showroom_party_access", False) or (
@@ -1280,6 +1324,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "validation_failed",
                     request_id,
                 )
+                artifact_result = artifact_service.fallback_materialization(response, text, artifact_contract)
+                response = artifact_result.response
+                text = artifact_result.text
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -1307,6 +1354,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "llm_calls": 2 if repaired else 1,
                     "outcome": start_outcome.model_dump(mode="json"),
                 },
+                artifacts=artifact_result.persistence_records,
             )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
@@ -1360,7 +1408,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request,
                 party_settings,
             )
-            response = await Adjudicator(party_settings, party_state_store).handle_chat(
+            artifact_service = TrainingArtifactService(party.worldpack, party_state_store)
+            response = await Adjudicator(
+                party_settings,
+                party_state_store,
+                training_artifacts=artifact_service,
+            ).handle_chat(
                 chat_request,
                 authorization,
                 request.idempotency_key,
@@ -1491,6 +1544,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"run_id": run_id, "feedback": feedback}
+
+    @app.post("/api/showroom/runs/{run_id}/artifact-events")
+    def record_showroom_artifact_event(
+        http_request: Request,
+        run_id: str,
+        payload: TrainingArtifactEventRequest,
+    ) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            result = record_party_artifact_event(http_request, party_id, payload)
+            showroom_store.touch_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result.pop("party_id", None)
+        return {"run_id": run_id, **result}
 
     @app.post("/api/showroom/runs/{run_id}/start")
     async def start_showroom_run(

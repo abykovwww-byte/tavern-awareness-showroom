@@ -17,6 +17,7 @@ from app.services.memory import MemorySummarizer
 from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
+from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
 from app.services.validator import OutputValidator, awareness_final_summary, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -35,7 +36,12 @@ class Adjudicator:
     _post_turn_helper_campaigns: set[str] = set()
     _service_tasks: dict[str, asyncio.Task[None]] = {}
 
-    def __init__(self, settings: Settings, store: StateStore):
+    def __init__(
+        self,
+        settings: Settings,
+        store: StateStore,
+        training_artifacts: TrainingArtifactService | None = None,
+    ):
         self.settings = settings
         self.store = store
         self.intent_parser = IntentParser()
@@ -44,6 +50,7 @@ class Adjudicator:
         self.narrative = NarrativeClient(settings)
         self.memory = MemorySummarizer(settings, store)
         self.world = WorldInstructor(settings, store)
+        self.training_artifacts = training_artifacts
 
     async def handle_chat(
         self,
@@ -106,20 +113,28 @@ class Adjudicator:
                     self.has_auto_start_history(),
                 )
             intent = self.intent_parser.parse(latest)
+            interaction_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
             outcome, patch = self.rule_engine.resolve(
                 state,
                 intent,
                 request_id,
                 campaign_id=self.settings.campaign_id,
                 scenario_type=self.settings.scenario_type,
+                interaction_evidence=interaction_evidence,
             )
             narrative_state = self.preview_applied_state(patch)
+            artifact_contract = (
+                self.training_artifacts.contract_for_state(narrative_state)
+                if self.training_artifacts
+                else None
+            )
 
             llm_calls = 0
             repaired = False
             provider_fallback_reason: str | None = None
             gateway_fallback_reason: str | None = None
             prompt_messages: list[dict[str, str]] | None = None
+            artifact_result: ArtifactMaterialization | None = None
             try:
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
                 prompt_messages = self.narrative.narrative_messages(
@@ -128,6 +143,7 @@ class Adjudicator:
                     outcome,
                     repair_instruction=None,
                     memory_summary=memory_summary,
+                    artifact_contract=artifact_contract,
                 )
                 raw = await self.narrative.complete(
                     request,
@@ -136,6 +152,7 @@ class Adjudicator:
                     authorization,
                     memory_summary=memory_summary,
                     request_id=request_id,
+                    artifact_contract=artifact_contract,
                 )
                 llm_calls += 1
                 if awareness_final_summary(narrative_state):
@@ -151,6 +168,11 @@ class Adjudicator:
                     raw = with_text(raw, text)
                 else:
                     text = response_text(raw)
+                if self.training_artifacts:
+                    artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
+                    if artifact_result.valid:
+                        raw = artifact_result.response
+                        text = artifact_result.text
                 validation = self.validator.validate(
                     text,
                     outcome,
@@ -159,19 +181,34 @@ class Adjudicator:
                     latest_user_message=latest,
                     scenario_type=self.settings.scenario_type,
                 )
-                if not validation.valid and self.settings.max_repair_attempts > 0:
+                artifact_valid = artifact_result.valid if artifact_result else True
+                if (not validation.valid or not artifact_valid) and self.settings.max_repair_attempts > 0:
                     repaired = True
+                    repair_instruction = validation.repair_instruction
+                    if artifact_result and not artifact_result.valid:
+                        repair_instruction = " ".join(
+                            [
+                                repair_instruction,
+                                "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                            ]
+                        ).strip()
                     raw = await self.narrative.complete(
                         request,
                         narrative_state,
                         outcome,
                         authorization,
-                        validation.repair_instruction,
+                        repair_instruction,
                         memory_summary=memory_summary,
                         request_id=request_id,
+                        artifact_contract=artifact_contract,
                     )
                     llm_calls += 1
                     text = response_text(raw)
+                    if self.training_artifacts:
+                        artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
+                        if artifact_result.valid:
+                            raw = artifact_result.response
+                            text = artifact_result.text
                     validation = self.validator.validate(
                         text,
                         outcome,
@@ -180,11 +217,19 @@ class Adjudicator:
                         latest_user_message=latest,
                         scenario_type=self.settings.scenario_type,
                     )
-                if not validation.valid:
+                artifact_valid = artifact_result.valid if artifact_result else True
+                if not validation.valid or not artifact_valid:
                     gateway_fallback_reason = "validation_failed"
                     self.store.audit(
                         "llm_validation_failed",
-                        {"request_id": request_id, "model": self.settings.narrative_model, "violations": validation.violations},
+                        {
+                            "request_id": request_id,
+                            "model": self.settings.narrative_model,
+                            "violations": [
+                                *validation.violations,
+                                *(artifact_result.violations if artifact_result else []),
+                            ],
+                        },
                         request_id,
                     )
                     if not allow_gateway_fallback:
@@ -237,6 +282,17 @@ class Adjudicator:
                 text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
+            if self.training_artifacts and artifact_contract:
+                if (
+                    artifact_result is None
+                    or not artifact_result.valid
+                    or provider_fallback_reason is not None
+                    or gateway_fallback_reason is not None
+                ):
+                    artifact_result = self.training_artifacts.fallback_materialization(raw, text, artifact_contract)
+                raw = artifact_result.response
+                text = artifact_result.text
+
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
             text = response_text(response)
@@ -265,7 +321,10 @@ class Adjudicator:
                     fallback_reason=provider_fallback_reason or gateway_fallback_reason,
                     outcome=outcome.model_dump(mode="json"),
                     llm_calls=llm_calls,
+                    interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
                 ),
+                artifacts=artifact_result.persistence_records if artifact_result else [],
+                consumed_artifact_event_ids=[item.event_sequence for item in interaction_evidence],
             )
             self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp":
@@ -302,6 +361,7 @@ class Adjudicator:
         fallback_reason: str | None,
         outcome: dict[str, Any] | None = None,
         llm_calls: int = 0,
+        interaction_evidence: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return {
             "schema_version": "rp-gateway.turn.v1",
@@ -318,6 +378,7 @@ class Adjudicator:
             "fallback_reason": fallback_reason,
             "llm_calls": llm_calls,
             "outcome": outcome,
+            "interaction_evidence": interaction_evidence or [],
         }
 
     def preview_applied_state(self, patch: Any) -> dict[str, Any]:

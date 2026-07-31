@@ -1,0 +1,29 @@
+{
+  "id": "cloud-file-share",
+  "revision": 1,
+  "renderer": "file-share",
+  "theme": "service-green",
+  "fixed": {
+    "display_url": "https://projects.example.test/status-files",
+    "field_ids": [],
+    "field_types": {},
+    "credential_field_ids": [],
+    "actions": ["submit", "close", "report"]
+  },
+  "llm_slots": {
+    "page_title": {"required": true, "max_length": 120},
+    "page_subtitle": {"required": true, "max_length": 240},
+    "file_title": {"required": true, "max_length": 160},
+    "file_meta": {"required": true, "max_length": 160},
+    "submit_label": {"required": true, "max_length": 80},
+    "post_submit_message": {"required": true, "max_length": 240}
+  },
+  "fallback_content": {
+    "page_title": "Файлы проекта",
+    "page_subtitle": "Материалы для планового статуса",
+    "file_title": "Статус проекта",
+    "file_meta": "Учебный документ",
+    "submit_label": "Открыть документ",
+    "post_submit_message": "Документ открыт"
+  }
+}

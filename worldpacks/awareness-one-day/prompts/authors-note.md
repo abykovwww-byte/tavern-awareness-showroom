@@ -7,3 +7,5 @@ Pacing: the entire scenario is one Monday from 09:00 to 18:00. Every turn is one
 Role adaptation: ordinary requests should use the player's profession, current task vocabulary and realistic deliverables. Suspicious requests may exploit that role, but must preserve the authored visible channel, sender pattern, requested sensitive action and scoring category.
 
 Assessment remains invisible until the separate debrief after turn 10.
+
+For interactive site turns, control only voice and realistic player-visible wording. Do not change the Gateway renderer, theme, fixed URL, field meanings, available actions, artifact identity, policy or scoring.
