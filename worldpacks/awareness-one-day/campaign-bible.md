@@ -20,7 +20,9 @@ Transition: advance to turn 2. No security points are available.
 
 ### Turn 2 — 09:30-10:15
 
-Surface: direct-message account styled as senior management asks for urgent contractor payment confirmation, a finance contact and secrecy from the player's manager.
+Surface: direct-message account styled as senior management asks for urgent contractor payment confirmation, a finance contact and secrecy from the player's manager. It links to the fixed simulated review page `https://invoice-review.example.test/approve`.
+
+Interactive artifact: `turn-2-payment-review` uses blueprint `invoice-payment`. The page itself looks like a routine approval form; the unverified channel, authority and context make acting through it unsafe.
 
 Security property: identity and authority are not independently established.
 
@@ -76,13 +78,17 @@ Transition: advance to turn 7. No security points are available.
 
 Surface: support-styled chat asks for a six-digit authenticator code.
 
+Interactive artifact: `turn-7-mfa-check` uses blueprint `mfa-confirmation` at `https://mfa-check.example.test/confirm`. Gateway classifies the account and OTP fields as credentials without receiving their values.
+
 Observable safe action: refuse the code request and report or independently verify the ticket.
 
 Transition: advance to turn 8.
 
 ### Turn 8 — 15:15-16:15
 
-Surface: normal manager chat requests one role-specific result, one risk and one next step for a meeting.
+Surface: normal manager chat requests one role-specific result, one risk and one next step for a meeting and includes the approved simulated room `https://meeting-room.example.test/join`.
+
+Interactive artifact: `turn-8-team-meeting` uses blueprint `meeting-join`. It is a legitimate comparison surface; opening or joining it is neutral.
 
 Observable role action: answer in terms of the stored profession and commit to a bounded next step.
 
@@ -90,7 +96,9 @@ Transition: advance to turn 9. No security points are available.
 
 ### Turn 9 — 16:15-17:15
 
-Surface: lookalike procurement email includes `Act_July.pdf.exe` and deadline pressure.
+Surface: lookalike procurement email includes `Act_July.pdf.exe`, the simulated approval page `https://docs-approval.example.test/sign` and deadline pressure.
+
+Interactive artifact: `turn-9-document-approval` uses blueprint `document-signing`. Opening or submitting the page is unsafe in this unverified context; the renderer never opens the attachment or sends entered text.
 
 Observable safe action: do not open or forward the file; report or verify through an official channel.
 

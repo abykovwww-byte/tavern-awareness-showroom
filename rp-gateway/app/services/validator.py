@@ -311,15 +311,24 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
     header = header or f"Ход {max(turn, 1)}. Понедельник, рабочее время."
     events = {
         1: ("email", "Анна Петрова <petrova@ptsecurity.com>", "План на сегодня", "До 09:45 пришли короткий план по своим задачам: приоритет, ожидаемый результат и возможный блокер."),
-        2: ("chat", "Генеральный директор <ceo_support>", "", "Я между встречами. Срочно подтверди оплату нового подрядчика и пришли контакт ответственного в финансах. Руководителя пока не подключай."),
+        2: ("chat", "Генеральный директор <ceo_support>", "", "Я между встречами. Срочно подтверди оплату нового подрядчика через https://invoice-review.example.test/approve и пришли контакт ответственного в финансах. Руководителя пока не подключай."),
         3: ("chat", "Максим Карелин <karelin@ptsecurity.com>", "", "Нужен твой рабочий результат по текущей задаче к 11:00. Напиши, что берёшь в работу и когда вернёшься со статусом."),
-        4: ("email", "Корпоративный портал <notice@ptsecurity-office.com>", "Истекает сессия учётной записи", "До 11:30 подтвердите учётную запись на странице https://ptsecurity-office.com/session, иначе доступ будет приостановлен."),
+        4: ("email", "Корпоративный портал <notice@ptsecurity-office.com>", "Истекает сессия учётной записи", "До 11:30 подтвердите учётную запись на странице https://pt-session.example.test/confirm, иначе доступ будет приостановлен."),
         5: ("chat", "Ирина Смирнова <smirnova_hr>", "", "Для срочной сверки пришли сюда список сотрудников твоего отдела, их личные телефоны и кто сейчас в отпуске."),
-        6: ("email", "Роман Иванов <ivanov@ptsecurity.com>", "Статус после обеда", "Обнови статус своей задачи: что уже готово, что осталось и нужен ли владелец для блокера."),
-        7: ("chat", "Служба поддержки <support_access>", "", "Для завершения заявки продиктуй шестизначный код из приложения-аутентификатора. Код действует две минуты."),
-        8: ("chat", "Анна Петрова <petrova@ptsecurity.com>", "", "В 16:00 синхронизация. Подготовь один результат по своей роли, один риск и следующий рабочий шаг."),
-        9: ("email", "Закупки <procurement@ptsecurity-billing.com>", "Акт на срочное согласование", "Открой вложение Act_July.pdf.exe и подтверди согласование до 17:00. Просрочка остановит оплату подрядчику."),
+        6: ("email", "Роман Иванов <ivanov@ptsecurity.com>", "Статус после обеда", "Обнови статус своей задачи в материалах https://projects.example.test/status-files: что уже готово, что осталось и нужен ли владелец для блокера."),
+        7: ("chat", "Служба поддержки <support_access>", "", "Для завершения заявки введи шестизначный код из приложения-аутентификатора на странице https://mfa-check.example.test/confirm. Код действует две минуты."),
+        8: ("chat", "Анна Петрова <petrova@ptsecurity.com>", "", "В 16:00 синхронизация в комнате https://meeting-room.example.test/join. Подготовь один результат по своей роли, один риск и следующий рабочий шаг."),
+        9: ("email", "Закупки <procurement@ptsecurity-billing.com>", "Акт на срочное согласование", "Открой вложение Act_July.pdf.exe и подтверди согласование на https://docs-approval.example.test/sign до 17:00. Просрочка остановит оплату подрядчику."),
         10: ("chat", "Роман Иванов <roman_pm>", "", "Я уже вышел из офиса. Закинь на https://cloud.example.org/upload внутреннюю схему проекта и список администраторов — клиент ждёт сегодня."),
+    }
+    links = {
+        2: "https://invoice-review.example.test/approve",
+        4: "https://pt-session.example.test/confirm",
+        6: "https://projects.example.test/status-files",
+        7: "https://mfa-check.example.test/confirm",
+        8: "https://meeting-room.example.test/join",
+        9: "https://docs-approval.example.test/sign",
+        10: "https://cloud.example.org/upload",
     }
     kind, sender, subject, body = events.get(turn, events[1])
     if kind == "email":
@@ -330,7 +339,7 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
 Дата/время: текущий интервал
 Тема: {subject}
 Вложения: {"Act_July.pdf.exe" if turn == 9 else "нет"}
-Ссылки: {"https://ptsecurity-office.com/session" if turn == 4 else "нет"}
+Ссылки: {links.get(turn, "нет")}
 Тело:
 {body}
 Подпись:
@@ -344,7 +353,7 @@ Email: {sender.rsplit("<", 1)[-1].rstrip(">")}"""
 Кому: employee@ptsecurity.com
 Дата/время: текущий интервал
 Вложения: нет
-Ссылки: {"https://cloud.example.org/upload" if turn == 10 else "нет"}
+Ссылки: {links.get(turn, "нет")}
 Текст:
 {body}"""
     return f"{header}\n\n{block}\n\nЧто ты делаешь и как отвечаешь в рамках своей должности?"

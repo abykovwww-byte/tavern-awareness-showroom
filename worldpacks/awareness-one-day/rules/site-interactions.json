@@ -14,11 +14,31 @@
       "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
     },
     "password-reset": {},
-    "mfa-confirmation": {},
-    "document-signing": {},
-    "invoice-payment": {},
+    "mfa-confirmation": {
+      "link_opened": {"evidence": "unverified-mfa-page-opened", "score_rule_id": "turn-7-mfa-link", "score_once": true, "decision_result": "fail"},
+      "credentials_submitted": {"evidence": "mfa-code-submitted", "score_rule_id": "turn-7-mfa-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "mfa-page-reported", "score_rule_id": "turn-7-mfa-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "document-signing": {
+      "link_opened": {"evidence": "lookalike-approval-page-opened", "score_rule_id": "turn-9-approval-link", "score_once": true, "decision_result": "fail"},
+      "form_submitted": {"evidence": "lookalike-document-approved", "score_rule_id": "turn-9-approval-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "approval-page-reported", "score_rule_id": "turn-9-approval-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "invoice-payment": {
+      "link_opened": {"evidence": "unverified-payment-page-opened", "score_rule_id": "turn-2-payment-link", "score_once": true, "decision_result": "fail"},
+      "form_submitted": {"evidence": "unverified-payment-review-submitted", "score_rule_id": "turn-2-payment-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "payment-page-reported", "score_rule_id": "turn-2-payment-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
     "delivery-tracking": {},
-    "meeting-join": {},
+    "meeting-join": {
+      "link_opened": {"evidence": "approved-meeting-page-opened", "score_rule_id": "turn-8-legitimate-meeting-link", "score_once": true, "decision_result": "neutral"},
+      "form_submitted": {"evidence": "approved-meeting-joined", "score_rule_id": "turn-8-legitimate-meeting-join", "score_once": true, "decision_result": "neutral"},
+      "reported": {"evidence": "legitimate-meeting-reported", "score_rule_id": "", "score_once": true, "decision_result": "neutral"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
     "hr-survey": {},
     "support-download": {}
   }

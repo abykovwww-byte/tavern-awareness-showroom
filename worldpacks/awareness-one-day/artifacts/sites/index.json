@@ -13,7 +13,11 @@
     {"id": "support-download", "file": "artifacts/sites/support-download.json"}
   ],
   "surfaces": [
+    {"turn": 2, "artifact_key": "turn-2-payment-review", "blueprint_id": "invoice-payment"},
     {"turn": 4, "artifact_key": "turn-4-session", "blueprint_id": "corporate-sso"},
-    {"turn": 6, "artifact_key": "turn-6-project-files", "blueprint_id": "cloud-file-share"}
+    {"turn": 6, "artifact_key": "turn-6-project-files", "blueprint_id": "cloud-file-share"},
+    {"turn": 7, "artifact_key": "turn-7-mfa-check", "blueprint_id": "mfa-confirmation"},
+    {"turn": 8, "artifact_key": "turn-8-team-meeting", "blueprint_id": "meeting-join"},
+    {"turn": 9, "artifact_key": "turn-9-document-approval", "blueprint_id": "document-signing"}
   ]
 }

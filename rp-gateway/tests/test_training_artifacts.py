@@ -17,11 +17,11 @@ from app.services.training_artifacts import TrainingArtifactService
 WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / AWARENESS_ONE_DAY_ID
 
 
-def artifact_service(tmp_path: Path) -> tuple[StateStore, TrainingArtifactService, dict]:
+def artifact_service(tmp_path: Path, turn: int = 4) -> tuple[StateStore, TrainingArtifactService, dict]:
     manifest_path = WORLD_ROOT / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     state = json.loads((WORLD_ROOT / "state-seed.json").read_text(encoding="utf-8"))
-    state["meta"]["turn"] = 4
+    state["meta"]["turn"] = turn
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     store = StateStore(str(tmp_path / "state.db"), "party-training-test", str(state_path))
@@ -70,6 +70,52 @@ def test_materializes_only_allowlisted_public_artifact(tmp_path: Path):
     assert result.public_artifacts[0]["field_ids"] == ["login", "password"]
     assert "policy" not in result.public_artifacts[0]
     assert "credential_field_ids" not in json.dumps(result.response)
+
+
+@pytest.mark.parametrize(
+    ("turn", "blueprint_id", "link_result"),
+    [
+        (2, "invoice-payment", "fail"),
+        (4, "corporate-sso", "fail"),
+        (6, "cloud-file-share", "neutral"),
+        (7, "mfa-confirmation", "fail"),
+        (8, "meeting-join", "neutral"),
+        (9, "document-signing", "fail"),
+    ],
+)
+def test_one_day_has_balanced_authored_site_surfaces(
+    tmp_path: Path,
+    turn: int,
+    blueprint_id: str,
+    link_result: str,
+):
+    _, service, state = artifact_service(tmp_path, turn=turn)
+
+    contract = service.contract_for_state(state)
+
+    assert contract is not None
+    assert contract["blueprint_id"] == blueprint_id
+    assert service.catalog["policy"][blueprint_id]["link_opened"]["decision_result"] == link_result
+
+
+@pytest.mark.parametrize("turn", [1, 3, 5, 10])
+def test_one_day_keeps_non_site_decision_surfaces(tmp_path: Path, turn: int):
+    _, service, state = artifact_service(tmp_path, turn=turn)
+
+    assert service.contract_for_state(state) is None
+
+
+@pytest.mark.parametrize("turn", [2, 4, 6, 7, 8, 9])
+def test_scheduled_site_fallback_preserves_fixed_url(tmp_path: Path, turn: int):
+    _, service, state = artifact_service(tmp_path, turn=turn)
+    contract = service.contract_for_state(state)
+    response = {"choices": [{"message": {"role": "assistant", "content": "Fallback"}}]}
+
+    result = service.fallback_materialization(response, "Fallback", contract)
+
+    assert result.valid
+    assert contract["display_url"] in result.text
+    assert result.public_artifacts[0]["surface_turn"] == turn
 
 
 def test_rejects_markup_or_wrong_artifact_contract(tmp_path: Path):
