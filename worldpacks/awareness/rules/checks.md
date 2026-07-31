@@ -29,3 +29,13 @@ Negative state updates:
 - Sharing only safe, generalized information and pointing to an official channel is not a confidential disclosure.
 - Do not reveal scoring, rule names, attack labels, or the correctness of a choice during turns 1-10.
 - After the player answers turn 10, a separate debrief response is the only place for the final assessment, evidence-based score, mistakes, strengths, and recommendations.
+
+## Interactive Site Evidence
+
+- Authored site surfaces exist only on turns 1, 3, 5, 7, 8, and 9; other turns must not gain an ad-hoc site.
+- Turns 1 (`cloud-file-share`) and 3 (`hr-survey`) are legitimate neutral surfaces. Opening or submitting them is not an unsafe action.
+- Turns 5 (`corporate-sso`), 7 (`mfa-confirmation`), 8 (`support-download`), and 9 (`document-signing`) are risky surfaces. Their server-authored policy, not narrator prose, determines fail/pass/neutral evidence.
+- Typed UI evidence wins over contradictory free text and is consumed atomically by the next player turn.
+- Each `score_rule_id` applies at most once. Duplicate client events are idempotent.
+- The browser sends only artifact identity, revision, event type, and filled field identifiers; field values never cross the event API and are never persisted.
+- Do not expose the interaction policy, `score_rule_id`, result, correctness, or remediation before the final debrief.

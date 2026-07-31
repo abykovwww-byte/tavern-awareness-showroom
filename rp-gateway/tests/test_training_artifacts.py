@@ -8,30 +8,37 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.models.schemas import Intent, TrainingArtifactEventRequest, WorldPackSummary
+from app.models.schemas import InteractionEvidence, Intent, TrainingArtifactEventRequest, WorldPackSummary
 from app.services.rule_engine import AWARENESS_ONE_DAY_ID, RuleEngine
 from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
 
 
-WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / AWARENESS_ONE_DAY_ID
+WORLD_PACKS_ROOT = Path(__file__).resolve().parents[2] / "worldpacks"
+WORLD_ROOT = WORLD_PACKS_ROOT / AWARENESS_ONE_DAY_ID
+WEEKLY_AWARENESS_ID = "awareness"
 
 
-def artifact_service(tmp_path: Path, turn: int = 4) -> tuple[StateStore, TrainingArtifactService, dict]:
-    manifest_path = WORLD_ROOT / "manifest.json"
+def artifact_service(
+    tmp_path: Path,
+    turn: int = 4,
+    world_id: str = AWARENESS_ONE_DAY_ID,
+) -> tuple[StateStore, TrainingArtifactService, dict]:
+    world_root = WORLD_PACKS_ROOT / world_id
+    manifest_path = world_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    state = json.loads((WORLD_ROOT / "state-seed.json").read_text(encoding="utf-8"))
+    state = json.loads((world_root / "state-seed.json").read_text(encoding="utf-8"))
     state["meta"]["turn"] = turn
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-    store = StateStore(str(tmp_path / "state.db"), "party-training-test", str(state_path))
+    store = StateStore(str(tmp_path / "state.db"), f"party-{world_id}-test", str(state_path))
     worldpack = WorldPackSummary(
-        id=AWARENESS_ONE_DAY_ID,
+        id=world_id,
         title=str(manifest["title"]),
-        slug=AWARENESS_ONE_DAY_ID,
+        slug=world_id,
         status="playable",
         manifest_path=str(manifest_path),
-        state_seed_path=str(WORLD_ROOT / "state-seed.json"),
+        state_seed_path=str(world_root / "state-seed.json"),
         manifest=manifest,
     )
     return store, TrainingArtifactService(worldpack, store), state
@@ -105,6 +112,39 @@ def test_one_day_keeps_non_site_decision_surfaces(tmp_path: Path, turn: int):
     assert service.contract_for_state(state) is None
 
 
+@pytest.mark.parametrize(
+    ("turn", "blueprint_id", "link_result"),
+    [
+        (1, "cloud-file-share", "neutral"),
+        (3, "hr-survey", "neutral"),
+        (5, "corporate-sso", "fail"),
+        (7, "mfa-confirmation", "fail"),
+        (8, "support-download", "fail"),
+        (9, "document-signing", "fail"),
+    ],
+)
+def test_weekly_awareness_has_balanced_authored_site_surfaces(
+    tmp_path: Path,
+    turn: int,
+    blueprint_id: str,
+    link_result: str,
+):
+    _, service, state = artifact_service(tmp_path, turn=turn, world_id=WEEKLY_AWARENESS_ID)
+
+    contract = service.contract_for_state(state)
+
+    assert contract is not None
+    assert contract["blueprint_id"] == blueprint_id
+    assert service.catalog["policy"][blueprint_id]["link_opened"]["decision_result"] == link_result
+
+
+@pytest.mark.parametrize("turn", [2, 4, 6, 10])
+def test_weekly_awareness_keeps_non_site_decision_surfaces(tmp_path: Path, turn: int):
+    _, service, state = artifact_service(tmp_path, turn=turn, world_id=WEEKLY_AWARENESS_ID)
+
+    assert service.contract_for_state(state) is None
+
+
 @pytest.mark.parametrize("turn", [2, 4, 6, 7, 8, 9])
 def test_scheduled_site_fallback_preserves_fixed_url(tmp_path: Path, turn: int):
     _, service, state = artifact_service(tmp_path, turn=turn)
@@ -116,6 +156,111 @@ def test_scheduled_site_fallback_preserves_fixed_url(tmp_path: Path, turn: int):
     assert result.valid
     assert contract["display_url"] in result.text
     assert result.public_artifacts[0]["surface_turn"] == turn
+
+
+@pytest.mark.parametrize("turn", [1, 3, 5, 7, 8, 9])
+def test_weekly_scheduled_site_fallback_preserves_fixed_url(tmp_path: Path, turn: int):
+    _, service, state = artifact_service(tmp_path, turn=turn, world_id=WEEKLY_AWARENESS_ID)
+    contract = service.contract_for_state(state)
+    response = {"choices": [{"message": {"role": "assistant", "content": "Fallback"}}]}
+
+    result = service.fallback_materialization(response, "Fallback", contract)
+
+    assert result.valid
+    assert contract["display_url"] in result.text
+    assert result.public_artifacts[0]["surface_turn"] == turn
+
+
+def test_neutral_weekly_site_report_does_not_award_safe_escalation(tmp_path: Path):
+    _, _, state = artifact_service(tmp_path, turn=1, world_id=WEEKLY_AWARENESS_ID)
+    neutral_report = InteractionEvidence(
+        event_sequence=1,
+        event_id="evt-neutral-report",
+        artifact_id="artifact-neutral",
+        artifact_key="turn-1-project-files",
+        blueprint_id="cloud-file-share",
+        event_type="reported",
+        evidence="legitimate-site-reported",
+        score_rule_id="",
+        score_once=True,
+        score_eligible=True,
+        decision_result="neutral",
+    )
+
+    _, score_patch = RuleEngine().resolve(
+        state,
+        Intent(desired_outcome="Продолжаю рабочий день."),
+        "score-neutral-ui-event",
+        campaign_id=WEEKLY_AWARENESS_ID,
+        scenario_type="training",
+        interaction_evidence=[neutral_report],
+    )
+
+    values = patch_values(score_patch)
+    assert "/player/resources/safe-escalations" not in values
+    assert "/player/resources/awareness-score" not in values
+
+
+def test_neutral_one_day_site_report_does_not_award_security_score(tmp_path: Path):
+    _, _, state = artifact_service(tmp_path, turn=6)
+    neutral_report = InteractionEvidence(
+        event_sequence=1,
+        event_id="evt-neutral-one-day-report",
+        artifact_id="artifact-neutral-one-day",
+        artifact_key="turn-6-project-files",
+        blueprint_id="cloud-file-share",
+        event_type="reported",
+        evidence="legitimate-site-reported",
+        score_rule_id="",
+        score_once=True,
+        score_eligible=True,
+        decision_result="neutral",
+    )
+
+    _, score_patch = RuleEngine().resolve(
+        state,
+        Intent(desired_outcome="Продолжаю рабочий день."),
+        "score-neutral-one-day-ui-event",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+        interaction_evidence=[neutral_report],
+    )
+
+    values = patch_values(score_patch)
+    assert "/player/resources/security-score" not in values
+    assert "/player/resources/safe-security-responses" not in values
+
+
+def test_weekly_risky_link_is_consumed_by_awareness_scoring(tmp_path: Path):
+    _, _, state = artifact_service(tmp_path, turn=5, world_id=WEEKLY_AWARENESS_ID)
+    failed_link = InteractionEvidence(
+        event_sequence=1,
+        event_id="evt-weekly-failed-link",
+        artifact_id="artifact-weekly-failed-link",
+        artifact_key="turn-5-session",
+        blueprint_id="corporate-sso",
+        event_type="link_opened",
+        evidence="external-login-page-opened",
+        score_rule_id="week-turn-5-link-open",
+        score_once=True,
+        score_eligible=True,
+        decision_result="fail",
+    )
+
+    _, score_patch = RuleEngine().resolve(
+        state,
+        Intent(desired_outcome="Продолжаю рабочий день."),
+        "score-weekly-risky-link",
+        campaign_id=WEEKLY_AWARENESS_ID,
+        scenario_type="training",
+        interaction_evidence=[failed_link],
+    )
+
+    values = patch_values(score_patch)
+    assert values["/player/resources/links-opened"] == 1
+    assert values["/player/resources/suspicious-artifacts-opened"] == 1
+    assert values["/player/resources/unsafe-actions"] == 1
+    assert values["/player/resources/awareness-score"] == -2
 
 
 def test_rejects_markup_or_wrong_artifact_contract(tmp_path: Path):

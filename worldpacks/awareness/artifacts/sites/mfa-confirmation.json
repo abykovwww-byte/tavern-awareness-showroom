@@ -1,0 +1,60 @@
+{
+  "id": "mfa-confirmation",
+  "revision": 1,
+  "renderer": "otp-form",
+  "theme": "office-blue",
+  "fixed": {
+    "display_url": "https://mfa-check.example.test/confirm",
+    "field_ids": [
+      "account",
+      "otp"
+    ],
+    "field_types": {
+      "account": "email",
+      "otp": "otp"
+    },
+    "credential_field_ids": [
+      "account",
+      "otp"
+    ],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "account_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "otp_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Подтверждение входа",
+    "page_subtitle": "Введите одноразовый код",
+    "account_label": "Учётная запись",
+    "otp_label": "Код подтверждения",
+    "submit_label": "Подтвердить",
+    "post_submit_message": "Проверка завершена"
+  }
+}

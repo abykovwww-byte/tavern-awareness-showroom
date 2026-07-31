@@ -4,7 +4,7 @@
     "schema_version": "1.0.0",
     "state_version": 1,
     "turn": 0,
-    "last_updated": "2026-07-22T00:00:00Z"
+    "last_updated": "2026-07-31T00:00:00Z"
   },
   "player": {
     "location": "open-office-monday-morning",
@@ -27,6 +27,7 @@
       "unsafe-actions": 0,
       "credential-exposure": 0,
       "suspicious-artifacts-opened": 0,
+      "links-opened": 0,
       "confidential-disclosures": 0,
       "unnecessary-forwarding": 0,
       "reporting-quality": 0,

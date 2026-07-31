@@ -1,0 +1,55 @@
+{
+  "id": "document-signing",
+  "revision": 1,
+  "renderer": "document-approval",
+  "theme": "office-neutral",
+  "fixed": {
+    "display_url": "https://docs-approval.example.test/sign",
+    "field_ids": [
+      "full-name"
+    ],
+    "field_types": {
+      "full-name": "text"
+    },
+    "credential_field_ids": [],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "document_title": {
+      "required": true,
+      "max_length": 160
+    },
+    "full_name_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Согласование документа",
+    "page_subtitle": "Проверьте учебный документ",
+    "document_title": "Проект соглашения",
+    "full_name_label": "Имя согласующего",
+    "submit_label": "Согласовать",
+    "post_submit_message": "Решение сохранено"
+  }
+}

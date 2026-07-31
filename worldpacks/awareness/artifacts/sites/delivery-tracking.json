@@ -1,0 +1,57 @@
+{
+  "id": "delivery-tracking",
+  "revision": 1,
+  "renderer": "tracking-form",
+  "theme": "minimal-light",
+  "fixed": {
+    "display_url": "https://parcel-status.example.test/track",
+    "field_ids": [
+      "tracking-id",
+      "contact-email"
+    ],
+    "field_types": {
+      "tracking-id": "text",
+      "contact-email": "email"
+    },
+    "credential_field_ids": [],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "tracking_id_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "contact_email_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Статус доставки",
+    "page_subtitle": "Проверьте учебное отправление",
+    "tracking_id_label": "Номер отправления",
+    "contact_email_label": "Контактная почта",
+    "submit_label": "Проверить",
+    "post_submit_message": "Статус обновлён"
+  }
+}

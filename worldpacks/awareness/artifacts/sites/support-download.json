@@ -1,0 +1,55 @@
+{
+  "id": "support-download",
+  "revision": 1,
+  "renderer": "support-download",
+  "theme": "warning-amber",
+  "fixed": {
+    "display_url": "https://support-package.example.test/request",
+    "field_ids": [
+      "ticket-id"
+    ],
+    "field_types": {
+      "ticket-id": "text"
+    },
+    "credential_field_ids": [],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "package_title": {
+      "required": true,
+      "max_length": 160
+    },
+    "ticket_id_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Пакет поддержки",
+    "page_subtitle": "Учебный запрос без загрузки файлов",
+    "package_title": "Диагностический пакет",
+    "ticket_id_label": "Номер обращения",
+    "submit_label": "Продолжить",
+    "post_submit_message": "Запрос зарегистрирован"
+  }
+}

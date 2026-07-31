@@ -1,0 +1,60 @@
+{
+  "id": "corporate-sso",
+  "revision": 1,
+  "renderer": "credential-form",
+  "theme": "office-blue",
+  "fixed": {
+    "display_url": "https://pt-session.example.test/confirm",
+    "field_ids": [
+      "login",
+      "password"
+    ],
+    "field_types": {
+      "login": "email",
+      "password": "password"
+    },
+    "credential_field_ids": [
+      "login",
+      "password"
+    ],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "login_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "password_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Подтверждение рабочей сессии",
+    "page_subtitle": "Войдите, чтобы продолжить работу",
+    "login_label": "Корпоративная почта",
+    "password_label": "Пароль",
+    "submit_label": "Продолжить",
+    "post_submit_message": "Запрос обработан"
+  }
+}

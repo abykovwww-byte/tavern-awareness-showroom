@@ -1,0 +1,57 @@
+{
+  "id": "hr-survey",
+  "revision": 1,
+  "renderer": "survey-form",
+  "theme": "office-neutral",
+  "fixed": {
+    "display_url": "https://employee-survey.example.test/form",
+    "field_ids": [
+      "department",
+      "feedback"
+    ],
+    "field_types": {
+      "department": "text",
+      "feedback": "text"
+    },
+    "credential_field_ids": [],
+    "actions": [
+      "submit",
+      "close",
+      "report"
+    ]
+  },
+  "llm_slots": {
+    "page_title": {
+      "required": true,
+      "max_length": 120
+    },
+    "page_subtitle": {
+      "required": true,
+      "max_length": 240
+    },
+    "department_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "feedback_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "submit_label": {
+      "required": true,
+      "max_length": 80
+    },
+    "post_submit_message": {
+      "required": true,
+      "max_length": 240
+    }
+  },
+  "fallback_content": {
+    "page_title": "Опрос сотрудников",
+    "page_subtitle": "Учебная форма обратной связи",
+    "department_label": "Подразделение",
+    "feedback_label": "Комментарий",
+    "submit_label": "Отправить",
+    "post_submit_message": "Ответ сохранён"
+  }
+}

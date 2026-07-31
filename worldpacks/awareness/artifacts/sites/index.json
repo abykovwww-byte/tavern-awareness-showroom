@@ -1,0 +1,77 @@
+{
+  "schema_version": "rp-training-site-catalog.v1",
+  "blueprints": [
+    {
+      "id": "corporate-sso",
+      "file": "artifacts/sites/corporate-sso.json"
+    },
+    {
+      "id": "password-reset",
+      "file": "artifacts/sites/password-reset.json"
+    },
+    {
+      "id": "mfa-confirmation",
+      "file": "artifacts/sites/mfa-confirmation.json"
+    },
+    {
+      "id": "cloud-file-share",
+      "file": "artifacts/sites/cloud-file-share.json"
+    },
+    {
+      "id": "document-signing",
+      "file": "artifacts/sites/document-signing.json"
+    },
+    {
+      "id": "invoice-payment",
+      "file": "artifacts/sites/invoice-payment.json"
+    },
+    {
+      "id": "delivery-tracking",
+      "file": "artifacts/sites/delivery-tracking.json"
+    },
+    {
+      "id": "meeting-join",
+      "file": "artifacts/sites/meeting-join.json"
+    },
+    {
+      "id": "hr-survey",
+      "file": "artifacts/sites/hr-survey.json"
+    },
+    {
+      "id": "support-download",
+      "file": "artifacts/sites/support-download.json"
+    }
+  ],
+  "surfaces": [
+    {
+      "turn": 1,
+      "artifact_key": "turn-1-project-files",
+      "blueprint_id": "cloud-file-share"
+    },
+    {
+      "turn": 3,
+      "artifact_key": "turn-3-employee-survey",
+      "blueprint_id": "hr-survey"
+    },
+    {
+      "turn": 5,
+      "artifact_key": "turn-5-session",
+      "blueprint_id": "corporate-sso"
+    },
+    {
+      "turn": 7,
+      "artifact_key": "turn-7-mfa-check",
+      "blueprint_id": "mfa-confirmation"
+    },
+    {
+      "turn": 8,
+      "artifact_key": "turn-8-support-package",
+      "blueprint_id": "support-download"
+    },
+    {
+      "turn": 9,
+      "artifact_key": "turn-9-document-approval",
+      "blueprint_id": "document-signing"
+    }
+  ]
+}

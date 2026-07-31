@@ -607,7 +607,9 @@ class RuleEngine:
             add("unsafe-actions", 1)
             add("awareness-score", -3)
         eligible_events = [item for item in interaction_evidence or [] if item.score_eligible]
-        reported_event = any(item.event_type == "reported" for item in eligible_events)
+        reported_event = any(
+            item.event_type == "reported" and item.decision_result == "pass" for item in eligible_events
+        )
         failed_link_event = any(
             item.event_type == "link_opened" and item.decision_result == "fail" for item in eligible_events
         )
@@ -723,7 +725,7 @@ class RuleEngine:
         confidential_disclosure = self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text)
         unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure or failed_link_event
         reported = self.explicit_action(SOC_REPORT_RE, text) or any(
-            item.event_type == "reported" for item in eligible_events
+            item.event_type == "reported" and item.decision_result == "pass" for item in eligible_events
         )
         independently_verified = self.explicit_action(INDEPENDENT_VERIFY_RE, text)
         explicitly_refused = bool(EXPLICIT_REFUSAL_RE.search(text))

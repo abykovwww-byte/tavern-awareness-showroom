@@ -1,0 +1,45 @@
+{
+  "schema_version": "rp-training-site-policy.v1",
+  "blueprints": {
+    "corporate-sso": {
+      "link_opened": {"evidence": "external-login-page-opened", "score_rule_id": "week-turn-5-link-open", "score_once": true, "decision_result": "fail"},
+      "credentials_submitted": {"evidence": "credentials-submitted", "score_rule_id": "week-turn-5-credential-failure", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "site-reported", "score_rule_id": "week-turn-5-safe-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "cloud-file-share": {
+      "link_opened": {"evidence": "approved-project-portal-opened", "score_rule_id": "week-turn-1-legitimate-link", "score_once": true, "decision_result": "neutral"},
+      "form_submitted": {"evidence": "approved-project-document-opened", "score_rule_id": "week-turn-1-legitimate-document", "score_once": true, "decision_result": "neutral"},
+      "reported": {"evidence": "legitimate-site-reported", "score_rule_id": "", "score_once": true, "decision_result": "neutral"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "password-reset": {},
+    "mfa-confirmation": {
+      "link_opened": {"evidence": "unverified-mfa-page-opened", "score_rule_id": "week-turn-7-mfa-link", "score_once": true, "decision_result": "fail"},
+      "credentials_submitted": {"evidence": "mfa-code-submitted", "score_rule_id": "week-turn-7-mfa-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "mfa-page-reported", "score_rule_id": "week-turn-7-mfa-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "document-signing": {
+      "link_opened": {"evidence": "lookalike-approval-page-opened", "score_rule_id": "week-turn-9-approval-link", "score_once": true, "decision_result": "fail"},
+      "form_submitted": {"evidence": "lookalike-document-approved", "score_rule_id": "week-turn-9-approval-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "approval-page-reported", "score_rule_id": "week-turn-9-approval-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "invoice-payment": {},
+    "delivery-tracking": {},
+    "meeting-join": {},
+    "hr-survey": {
+      "link_opened": {"evidence": "approved-hr-survey-opened", "score_rule_id": "week-turn-3-legitimate-link", "score_once": true, "decision_result": "neutral"},
+      "form_submitted": {"evidence": "approved-hr-survey-submitted", "score_rule_id": "week-turn-3-legitimate-submit", "score_once": true, "decision_result": "neutral"},
+      "reported": {"evidence": "legitimate-site-reported", "score_rule_id": "", "score_once": true, "decision_result": "neutral"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "support-download": {
+      "link_opened": {"evidence": "unverified-support-page-opened", "score_rule_id": "week-turn-8-support-link", "score_once": true, "decision_result": "fail"},
+      "form_submitted": {"evidence": "unverified-support-package-requested", "score_rule_id": "week-turn-8-support-submit", "score_once": true, "decision_result": "fail"},
+      "reported": {"evidence": "support-page-reported", "score_rule_id": "week-turn-8-support-report", "score_once": true, "decision_result": "pass"},
+      "site_closed": {"evidence": "site-closed", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    }
+  }
+}
