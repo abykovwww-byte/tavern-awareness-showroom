@@ -176,10 +176,19 @@ def test_one_day_credential_disclosure_is_recorded_without_security_points():
 
 def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
     validator = OutputValidator()
+    expected_email_signatures = {
+        1: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
+        4: "Служба уведомлений\nКорпоративный портал\nEmail: notice@ptsecurity-office.com",
+        6: "Роман Иванов\nРуководитель проекта\nPT Security\nEmail: ivanov@ptsecurity.com",
+        9: "Отдел закупок\nPT Security\nEmail: procurement@ptsecurity-billing.com",
+    }
     for turn in range(1, 11):
         state = state_for(turn)
         text = awareness_one_day_safe_fallback(state)
         assert text.count("\nПИСЬМО\n") + int(text.startswith("ПИСЬМО\n")) + text.count("\nСООБЩЕНИЕ\n") == 1
+        assert "Отправитель указан в поле «От»" not in text
+        if turn in expected_email_signatures:
+            assert f"Подпись:\n{expected_email_signatures[turn]}" in text
         result = validator.validate(
             text,
             outcome(),

@@ -330,8 +330,15 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
         9: "https://docs-approval.example.test/sign",
         10: "https://cloud.example.org/upload",
     }
+    email_signatures = {
+        1: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
+        4: "Служба уведомлений\nКорпоративный портал\nEmail: notice@ptsecurity-office.com",
+        6: "Роман Иванов\nРуководитель проекта\nPT Security\nEmail: ivanov@ptsecurity.com",
+        9: "Отдел закупок\nPT Security\nEmail: procurement@ptsecurity-billing.com",
+    }
     kind, sender, subject, body = events.get(turn, events[1])
     if kind == "email":
+        signature = email_signatures.get(turn, email_signatures[1])
         block = f"""ПИСЬМО
 Канал: корпоративная почта
 От: {sender}
@@ -343,8 +350,7 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
 Тело:
 {body}
 Подпись:
-Отправитель указан в поле «От»
-Email: {sender.rsplit("<", 1)[-1].rstrip(">")}"""
+{signature}"""
     else:
         block = f"""СООБЩЕНИЕ
 Канал: {"личный мессенджер" if turn == 10 else "рабочий мессенджер"}
