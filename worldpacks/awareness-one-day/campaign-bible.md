@@ -2,27 +2,39 @@
 
 ## Fixed loop
 
-One Monday, 09:00-18:00. Ten turns. Each turn contains exactly one complete email or one complete chat message, followed by one neutral question. The player answers in free text. Gateway applies only explicit actions, updates deterministic counters and advances exactly one turn.
+One Monday, 09:00-18:00. Ten turns. Each turn contains exactly one complete email or one complete chat message, followed by one neutral question. The player answers in free text. Gateway applies only explicit actions, updates deterministic counters and advances exactly one turn. Only turns 4, 6 and 9 contain a link and an interactive simulated site; every other turn must show `Ссылки: нет` and contain no URL.
 
 Ordinary messages are not traps. They test whether the player can continue doing their job while maintaining clear ownership, deadlines and authority boundaries. Security events test a safe response without narrator hints.
+
+Every incoming item must be visibly grounded in `state.player.description`: use the player's actual professional vocabulary, deliverable or responsibility. The stored character profile is mandatory input, not optional flavor. Never replace it with an invented department, profession or generic corporate backlog.
 
 ## Authored turn map
 
 ### Turn 1 — 09:00-09:30
 
-Surface: corporate email from manager Anna Petrova requesting a plan for the day.
+Surface: corporate email from manager Anna Petrova assigning a concrete first work item that is plausible for the stored player profession. The message provides enough context, a bounded first deliverable and a deadline so the player can act without inventing a previous week, backlog or unseen work history.
 
-Role adaptation: ask for a plausible priority, result and blocker from the player's profession.
+Role adaptation: derive the task and deliverable from `state.player.description` and visibly use profession-specific vocabulary.
 
-Observable role action: reply with a bounded plan, ownership and next update.
+Observable role action: accept or clarify the task and state the first professional step.
 
 Transition: advance to turn 2. No security points are available.
 
 ### Turn 2 — 09:30-10:15
 
-Surface: direct-message account styled as senior management asks for urgent contractor payment confirmation, a finance contact and secrecy from the player's manager. It links to the fixed simulated review page `https://invoice-review.example.test/approve`.
+Surface: corporate email from Anna Petrova requesting a short plan for the concrete task established on turn 1: next priority, expected result and possible blocker.
 
-Interactive artifact: `turn-2-payment-review` uses blueprint `invoice-payment`. The page itself looks like a routine approval form; the unverified channel, authority and context make acting through it unsafe.
+Role adaptation: the plan request must continue the profession-specific task already introduced on turn 1; it must not ask the player to invent a whole week or unrelated backlog.
+
+Observable role action: reply with a bounded plan, ownership and next update.
+
+Transition: advance to turn 3. No security points are available.
+
+### Turn 3 — 10:15-11:00
+
+Surface: direct-message account styled as senior management asks for urgent contractor payment confirmation, a finance contact and secrecy from the player's manager. There is no link; the requested confirmation must be sent directly in chat.
+
+Role adaptation: the purported need for approval or expertise must be tied to the stored profession without granting the player new financial authority.
 
 Security property: identity and authority are not independently established.
 
@@ -30,17 +42,7 @@ Observable safe action: refuse or pause the request, verify through an official 
 
 Role action: do not assume financial authority; route to the responsible owner.
 
-Transition: advance to turn 3.
-
-### Turn 3 — 10:15-11:00
-
-Surface: normal chat from teammate Maksim Karelin asking for a profession-specific result and expected status time.
-
-Role adaptation: use a deliverable appropriate to the stored player role.
-
-Observable role action: accept, clarify or negotiate the task and state the next step.
-
-Transition: advance to turn 4. No security points are available.
+Transition: advance to turn 4.
 
 ### Turn 4 — 11:00-12:00
 
@@ -76,9 +78,7 @@ Transition: advance to turn 7. No security points are available.
 
 ### Turn 7 — 14:15-15:15
 
-Surface: support-styled chat asks for a six-digit authenticator code.
-
-Interactive artifact: `turn-7-mfa-check` uses blueprint `mfa-confirmation` at `https://mfa-check.example.test/confirm`. Gateway classifies the account and OTP fields as credentials without receiving their values.
+Surface: support-styled chat asks the player to send a six-digit authenticator code directly in the chat to restore access to profession-specific work materials. There is no link.
 
 Observable safe action: refuse the code request and report or independently verify the ticket.
 
@@ -86,9 +86,7 @@ Transition: advance to turn 8.
 
 ### Turn 8 — 15:15-16:15
 
-Surface: normal manager chat requests one role-specific result, one risk and one next step for a meeting and includes the approved simulated room `https://meeting-room.example.test/join`.
-
-Interactive artifact: `turn-8-team-meeting` uses blueprint `meeting-join`. It is a legitimate comparison surface; opening or joining it is neutral.
+Surface: normal manager chat requests one role-specific result, one risk and one next step for a scheduled sync. The answer is sent in chat and there is no link.
 
 Observable role action: answer in terms of the stored profession and commit to a bounded next step.
 
@@ -106,7 +104,7 @@ Transition: advance to turn 10.
 
 ### Turn 10 — 17:15-18:00
 
-Surface: personal-messenger account styled as project manager asks for an internal scheme and administrator list through an external upload link.
+Surface: personal-messenger account styled as project manager asks the player to send an internal scheme and administrator list directly in the personal chat or to a personal mailbox. There is no link.
 
 Observable safe action: refuse the external transfer and confidential disclosure; verify or report.
 

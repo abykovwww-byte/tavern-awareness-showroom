@@ -8,13 +8,21 @@ from app.services.rule_engine import (
     awareness_turn_window,
     is_awareness_one_day_campaign,
 )
-from app.services.validator import OutputValidator, awareness_debrief_fallback, awareness_one_day_safe_fallback, safe_fallback
+from app.services.validator import (
+    AWARENESS_ONE_DAY_SITE_TURNS,
+    OutputValidator,
+    awareness_debrief_fallback,
+    awareness_one_day_safe_fallback,
+    safe_fallback,
+)
 
 
 def state_for(turn: int) -> dict:
     return {
         "meta": {"campaign_id": AWARENESS_ONE_DAY_ID, "turn": turn},
         "player": {
+            "name": "Алексей",
+            "description": "Инженер по анализу вредоносного кода и подготовке сигнатур.",
             "resources": {
                 "current-turn-window": AWARENESS_ONE_DAY_TURN_WINDOWS.get(
                     turn, "итоговый разбор после хода 10"
@@ -73,7 +81,7 @@ def test_one_day_party_start_uses_one_day_first_window():
 
 
 def test_one_day_safe_security_response_scores_all_three_components():
-    state = state_for(2)
+    state = state_for(3)
     intent = Intent(
         desired_outcome=(
             "Отвечаю, что не подтверждаю оплату без владельца задачи, "
@@ -96,7 +104,7 @@ def test_one_day_safe_security_response_scores_all_three_components():
 
 
 def test_one_day_scores_noun_form_refusal_and_service_desk_role_boundary():
-    state = state_for(2)
+    state = state_for(3)
     state["player"]["description"] = "Специалист первой линии технической поддержки."
     intent = Intent(
         desired_outcome=(
@@ -121,7 +129,7 @@ def test_one_day_scores_noun_form_refusal_and_service_desk_role_boundary():
 
 
 def test_one_day_roleplay_uses_terms_from_stored_position_description():
-    state = state_for(3)
+    state = state_for(1)
     state["player"]["description"] = "Инженер по анализу вредоносного кода и подготовке сигнатур."
     intent = Intent(desired_outcome="Готовлю сигнатуру для обнаруженного образца и вернусь с итогом к 11:00.")
 
@@ -178,6 +186,7 @@ def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
     validator = OutputValidator()
     expected_email_signatures = {
         1: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
+        2: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
         4: "Служба уведомлений\nКорпоративный портал\nEmail: notice@ptsecurity-office.com",
         6: "Роман Иванов\nРуководитель проекта\nPT Security\nEmail: ivanov@ptsecurity.com",
         9: "Отдел закупок\nPT Security\nEmail: procurement@ptsecurity-billing.com",
@@ -187,6 +196,10 @@ def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
         text = awareness_one_day_safe_fallback(state)
         assert text.count("\nПИСЬМО\n") + int(text.startswith("ПИСЬМО\n")) + text.count("\nСООБЩЕНИЕ\n") == 1
         assert "Отправитель указан в поле «От»" not in text
+        assert ("https://" in text) == (turn in AWARENESS_ONE_DAY_SITE_TURNS)
+        if turn not in AWARENESS_ONE_DAY_SITE_TURNS:
+            assert "Ссылки: нет" in text
+        assert "анализу вредоносного кода" in text
         if turn in expected_email_signatures:
             assert f"Подпись:\n{expected_email_signatures[turn]}" in text
         result = validator.validate(
@@ -198,6 +211,84 @@ def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
             scenario_type="training",
         )
         assert result.valid, result.violations
+
+
+def test_one_day_fallback_orients_before_requesting_a_plan_and_uses_player_profile():
+    first = awareness_one_day_safe_fallback(state_for(1))
+    second = awareness_one_day_safe_fallback(state_for(2))
+
+    assert "Алексей" in first
+    assert "разобрать назначенный образец" in first
+    assert "План на сегодня" not in first
+    assert "план по этой задаче" in second
+
+
+def test_one_day_fallback_changes_the_work_item_for_different_professions():
+    analyst = state_for(1)
+    analyst["player"]["description"] = "Аналитик данных и продуктовых метрик."
+    tester = state_for(1)
+    tester["player"]["description"] = "QA-тестировщик веб-приложений."
+
+    analyst_text = awareness_one_day_safe_fallback(analyst)
+    tester_text = awareness_one_day_safe_fallback(tester)
+
+    assert "аналитическому блоку" in analyst_text
+    assert "воспроизвести назначенный дефект" in tester_text
+    assert analyst_text != tester_text
+
+
+def test_one_day_validator_rejects_link_on_unscheduled_turn():
+    state = state_for(1)
+    text = awareness_one_day_safe_fallback(state).replace(
+        "Ссылки: нет", "Ссылки: https://unexpected.example.test/open"
+    )
+
+    result = OutputValidator().validate(
+        text,
+        outcome(),
+        state,
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        latest_user_message="Приступаю к задаче.",
+        scenario_type="training",
+    )
+
+    assert not result.valid
+    assert "unscheduled turn must not contain a link" in " ".join(result.violations)
+
+
+def test_one_day_validator_rejects_generic_message_that_ignores_player_role():
+    state = state_for(1)
+    text = """Ход 1. Понедельник, 09:00-09:30.
+
+ПИСЬМО
+Канал: корпоративная почта
+От: Анна Петрова <petrova@ptsecurity.com>
+Кому: Алексей
+Дата/время: понедельник, 09:08
+Тема: Общая задача
+Вложения: нет
+Ссылки: нет
+Тело:
+Доброе утро. Возьми любую текущую корпоративную задачу и вернись со статусом к 09:35.
+Подпись:
+Анна Петрова
+Руководитель команды
+PT Security
+Email: petrova@ptsecurity.com
+
+Что ты делаешь и как отвечаешь в рамках своей должности?"""
+
+    result = OutputValidator().validate(
+        text,
+        outcome(),
+        state,
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        latest_user_message="Приступаю к задаче.",
+        scenario_type="training",
+    )
+
+    assert not result.valid
+    assert "stored player profession" in " ".join(result.violations)
 
 
 def test_public_fallback_uses_explicit_one_day_worldpack_for_party_scoped_state():

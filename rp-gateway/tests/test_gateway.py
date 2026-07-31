@@ -2713,6 +2713,9 @@ def test_awareness_one_day_light_gui_start_and_message_use_valid_safe_fallback(t
     )
     assert started.status_code == 200, started.text
     assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    started_text = started.json()["choices"][0]["message"]["content"]
+    assert "Investigator" in started_text
+    assert "https://" not in started_text
 
     message = c.post(
         f"/api/parties/{party['id']}/messages",
@@ -2721,6 +2724,10 @@ def test_awareness_one_day_light_gui_start_and_message_use_valid_safe_fallback(t
     )
     assert message.status_code == 200, message.text
     assert message.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    message_text = message.json()["choices"][0]["message"]["content"]
+    assert "Investigator" in message_text
+    assert "план по этой задаче" in message_text
+    assert "https://" not in message_text
     assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 2
 
 

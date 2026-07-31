@@ -108,7 +108,7 @@ AWARENESS_ONE_DAY_TURN_WINDOWS = {
     9: "ход 9, понедельник, 16:15-17:15",
     10: "ход 10, понедельник, 17:15-18:00",
 }
-AWARENESS_ONE_DAY_SECURITY_TURNS = {2, 4, 5, 7, 9, 10}
+AWARENESS_ONE_DAY_SECURITY_TURNS = {3, 4, 5, 7, 9, 10}
 
 
 def clamp(value: int, low: int, high: int) -> int:

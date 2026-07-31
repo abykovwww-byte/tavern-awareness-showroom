@@ -82,11 +82,8 @@ def test_materializes_only_allowlisted_public_artifact(tmp_path: Path):
 @pytest.mark.parametrize(
     ("turn", "blueprint_id", "link_result"),
     [
-        (2, "invoice-payment", "fail"),
         (4, "corporate-sso", "fail"),
         (6, "cloud-file-share", "neutral"),
-        (7, "mfa-confirmation", "fail"),
-        (8, "meeting-join", "neutral"),
         (9, "document-signing", "fail"),
     ],
 )
@@ -105,7 +102,7 @@ def test_one_day_has_balanced_authored_site_surfaces(
     assert service.catalog["policy"][blueprint_id]["link_opened"]["decision_result"] == link_result
 
 
-@pytest.mark.parametrize("turn", [1, 3, 5, 10])
+@pytest.mark.parametrize("turn", [1, 2, 3, 5, 7, 8, 10])
 def test_one_day_keeps_non_site_decision_surfaces(tmp_path: Path, turn: int):
     _, service, state = artifact_service(tmp_path, turn=turn)
 

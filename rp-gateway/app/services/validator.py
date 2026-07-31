@@ -86,6 +86,40 @@ AWARENESS_PLAYER_ACTION_PATTERNS = (
 )
 EMAIL_REQUIRED_FIELDS = ("Канал:", "От:", "Кому:", "Дата/время:", "Тема:", "Вложения:", "Ссылки:", "Тело:", "Подпись:")
 MESSENGER_REQUIRED_FIELDS = ("Канал:", "Чат:", "От:", "Кому:", "Дата/время:", "Вложения:", "Ссылки:", "Текст:")
+AWARENESS_ONE_DAY_SITE_TURNS = frozenset({4, 6, 9})
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+ROLE_GENERIC_TERMS = {
+    "активный",
+    "ведущий",
+    "должность",
+    "команда",
+    "команды",
+    "обычный",
+    "отдел",
+    "отдела",
+    "работа",
+    "работы",
+    "рабочий",
+    "сотрудник",
+    "специалист",
+    "старший",
+}
+
+
+def awareness_player_role_markers(state: dict[str, Any]) -> tuple[str, ...]:
+    player = state.get("player", {})
+    if not isinstance(player, dict):
+        return ()
+    description = str(player.get("description") or "").lower()
+    tokens = re.findall(r"[a-zа-яё0-9]+", description, re.IGNORECASE)
+    markers: list[str] = []
+    for token in tokens:
+        if token in ROLE_GENERIC_TERMS or token.startswith("подгот") or len(token) < 3:
+            continue
+        marker = token[: min(6, len(token))]
+        if marker not in markers:
+            markers.append(marker)
+    return tuple(markers)
 
 
 class OutputValidator:
@@ -178,21 +212,42 @@ class OutputValidator:
             if not final_summary and is_awareness_one_day_campaign(state or {}, campaign_id):
                 if len(email_blocks) + len(messenger_blocks) != 1:
                     violations.append("Awareness One Day turn must contain exactly one email or messenger message.")
+                turn = int((state or {}).get("meta", {}).get("turn", 0) or 0)
+                if turn not in AWARENESS_ONE_DAY_SITE_TURNS:
+                    blocks = email_blocks + messenger_blocks
+                    if URL_RE.search(text) or any(
+                        not re.search(r"(?m)^Ссылки:\s*нет\s*$", block) for block in blocks
+                    ):
+                        violations.append("Awareness One Day unscheduled turn must not contain a link.")
+                role_markers = awareness_player_role_markers(state or {})
+                role_marker_matches = sum(marker in lowered for marker in role_markers)
+                required_role_matches = 2 if len(role_markers) >= 3 else 1
+                if role_markers and role_marker_matches < required_role_matches:
+                    violations.append(
+                        "Awareness One Day message must visibly use the stored player profession or responsibilities."
+                    )
             elif expected_header and expected_header.startswith("Ход 1."):
                 if len(email_blocks) < 2:
                     violations.append("Awareness opening must include at least two full PISMO blocks.")
                 if len(messenger_blocks) < 1:
                     violations.append("Awareness opening must include at least one full SOOBSCHENIE block.")
         if violations:
+            repair_instruction = (
+                "Перепиши ответ как обычную русскую офисную сцену для игрока. Начни с точного заголовка текущего хода. "
+                "Удали анализ признаков атаки, размышления игрока, подсказки про SOC/ДИБ, внутренние процессы, backend, "
+                "дашборды, оценку риска и служебные секции вроде 'Мессенджер' или 'Блок-сценарий'. "
+                "Не принимай решений за игрока. Письма и сообщения показывай только полными блоками ПИСЬМО и СООБЩЕНИЕ."
+            )
+            if scenario_type == "training" and is_awareness_one_day_campaign(state or {}, campaign_id):
+                repair_instruction += (
+                    " Привяжи рабочую просьбу к профессии или обязанностям из state.player.description. "
+                    "Ссылку разрешено показывать только на запланированных сайтом ходах 4, 6 и 9; "
+                    "на остальных ходах укажи строго 'Ссылки: нет' и не добавляй URL в текст."
+                )
             return ValidationResult(
                 valid=False,
                 violations=violations,
-                repair_instruction=(
-                    "Перепиши ответ как обычную русскую офисную сцену для игрока. Начни с точного заголовка текущего хода. "
-                    "Удали анализ признаков атаки, размышления игрока, подсказки про SOC/ДИБ, внутренние процессы, backend, "
-                    "дашборды, оценку риска и служебные секции вроде 'Мессенджер' или 'Блок-сценарий'. "
-                    "Не принимай решений за игрока. Письма и сообщения показывай только полными блоками ПИСЬМО и СООБЩЕНИЕ."
-                ),
+                repair_instruction=repair_instruction,
             )
         return ValidationResult(valid=True)
 
@@ -303,35 +358,61 @@ Email: sheveleva@ptsecurity.com
 Как отвечаешь на эти обращения и что ставишь первым в текущем рабочем блоке?"""
 
 
+def awareness_one_day_player_context(state: dict[str, Any]) -> tuple[str, str, str]:
+    player = state.get("player", {})
+    if not isinstance(player, dict):
+        player = {}
+    name = re.sub(r"\s+", " ", str(player.get("name") or "Коллега")).strip()[:80] or "Коллега"
+    description = re.sub(r"https?://\S+", "", str(player.get("description") or ""), flags=re.IGNORECASE)
+    description = re.sub(r"\s+", " ", description).strip()[:180]
+    role_label = description or "специалист с ограниченными рабочими полномочиями"
+    lowered = role_label.lower()
+    role_tasks = (
+        (("вредонос", "malware", "реверс"), "разобрать назначенный образец и подготовить первичный технический вывод"),
+        (("qa", "тестиров", "тестировщик"), "воспроизвести назначенный дефект и зафиксировать результат проверки"),
+        (("devops", "sre", "администратор", "инфраструктур"), "проверить назначенное изменение и подготовить статус по рискам и откату"),
+        (("аналит", "data", "bi "), "проверить входные данные и подготовить вывод по своему аналитическому блоку"),
+        (("разработ", "програм", "инженер"), "разобрать назначенную техническую задачу и подготовить первый проверяемый результат"),
+        (("безопас", "soc", "кибер"), "разобрать назначенное событие и подготовить подтверждённые выводы"),
+        (("поддерж", "service desk"), "разобрать назначенное обращение и обозначить следующий шаг для заявителя"),
+        (("дизайн", "ux", "ui "), "проверить назначенный макет и подготовить конкретный результат для согласования"),
+        (("проект", "продукт", "менедж"), "уточнить границы назначенного рабочего блока и подготовить статус по срокам и владельцам"),
+        (("финанс", "бухгалтер"), "сверить назначенный документ и подготовить подтверждённый статус"),
+        (("hr", "кадр", "рекрут"), "разобрать назначенную кадровую задачу и подготовить следующий согласованный шаг"),
+    )
+    role_task = next((task for markers, task in role_tasks if any(marker in lowered for marker in markers)), None)
+    role_task = role_task or "разобрать первую назначенную задачу и подготовить проверяемый рабочий результат"
+    return name, role_label, role_task
+
+
 def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
     resources = state.get("player", {}).get("resources", {})
     window = resources.get("current-turn-window") if isinstance(resources, dict) else None
     turn = int(state.get("meta", {}).get("turn", 0) or 0)
     header = awareness_header_from_window(window) if isinstance(window, str) else None
     header = header or f"Ход {max(turn, 1)}. Понедельник, рабочее время."
+    player_name, role_label, role_task = awareness_one_day_player_context(state)
+    role_context = f"по направлению «{role_label}»"
     events = {
-        1: ("email", "Анна Петрова <petrova@ptsecurity.com>", "План на сегодня", "До 09:45 пришли короткий план по своим задачам: приоритет, ожидаемый результат и возможный блокер."),
-        2: ("chat", "Генеральный директор <ceo_support>", "", "Я между встречами. Срочно подтверди оплату нового подрядчика через https://invoice-review.example.test/approve и пришли контакт ответственного в финансах. Руководителя пока не подключай."),
-        3: ("chat", "Максим Карелин <karelin@ptsecurity.com>", "", "Нужен твой рабочий результат по текущей задаче к 11:00. Напиши, что берёшь в работу и когда вернёшься со статусом."),
-        4: ("email", "Корпоративный портал <notice@ptsecurity-office.com>", "Истекает сессия учётной записи", "До 11:30 подтвердите учётную запись на странице https://pt-session.example.test/confirm, иначе доступ будет приостановлен."),
-        5: ("chat", "Ирина Смирнова <smirnova_hr>", "", "Для срочной сверки пришли сюда список сотрудников твоего отдела, их личные телефоны и кто сейчас в отпуске."),
-        6: ("email", "Роман Иванов <ivanov@ptsecurity.com>", "Статус после обеда", "Обнови статус своей задачи в материалах https://projects.example.test/status-files: что уже готово, что осталось и нужен ли владелец для блокера."),
-        7: ("chat", "Служба поддержки <support_access>", "", "Для завершения заявки введи шестизначный код из приложения-аутентификатора на странице https://mfa-check.example.test/confirm. Код действует две минуты."),
-        8: ("chat", "Анна Петрова <petrova@ptsecurity.com>", "", "В 16:00 синхронизация в комнате https://meeting-room.example.test/join. Подготовь один результат по своей роли, один риск и следующий рабочий шаг."),
-        9: ("email", "Закупки <procurement@ptsecurity-billing.com>", "Акт на срочное согласование", "Открой вложение Act_July.pdf.exe и подтверди согласование на https://docs-approval.example.test/sign до 17:00. Просрочка остановит оплату подрядчику."),
-        10: ("chat", "Роман Иванов <roman_pm>", "", "Я уже вышел из офиса. Закинь на https://cloud.example.org/upload внутреннюю схему проекта и список администраторов — клиент ждёт сегодня."),
+        1: ("email", "Анна Петрова <petrova@ptsecurity.com>", "Первый рабочий блок", f"{player_name}, доброе утро. На сегодня у тебя первый рабочий блок {role_context}: {role_task}. Исходные материалы уже находятся во внутренней папке команды. К 09:35 пришли первый результат или конкретный вопрос, который мешает начать."),
+        2: ("email", "Анна Петрова <petrova@ptsecurity.com>", "План по текущей задаче", f"После первого шага {role_context} до 10:00 пришли короткий план по этой задаче: следующий приоритет, ожидаемый результат и возможный блокер."),
+        3: ("chat", "Генеральный директор <ceo_support>", "", f"Нужна срочная оценка подрядчика {role_context}. Подтверди прямо здесь, что оплату можно проводить, и пришли контакт ответственного в финансах. Анну пока не подключай."),
+        4: ("email", "Корпоративный портал <notice@ptsecurity-office.com>", "Истекает сессия учётной записи", f"Для продолжения работы {role_context} до 11:30 подтвердите учётную запись по ссылке из письма, иначе доступ будет приостановлен."),
+        5: ("chat", "Ирина Смирнова <smirnova_hr>", "", f"Для срочной сверки по команде, с которой ты работаешь {role_context}, пришли сюда имена сотрудников, их личные телефоны и кто сейчас в отпуске."),
+        6: ("email", "Роман Иванов <ivanov@ptsecurity.com>", "Статус после обеда", f"Обнови в проектных материалах статус задачи {role_context}: что уже готово, что осталось и кто владеет возможным блокером. Материалы доступны по ссылке из письма."),
+        7: ("chat", "Служба поддержки <support_access>", "", f"Для восстановления доступа к материалам {role_context} пришли сюда шестизначный код из приложения-аутентификатора. Код действует две минуты."),
+        8: ("chat", "Анна Петрова <petrova@ptsecurity.com>", "", f"К 16:00 подготовь для синхронизации один проверяемый результат {role_context}, один рабочий риск и следующий шаг. Ответ пришли в этот чат."),
+        9: ("email", "Закупки <procurement@ptsecurity-billing.com>", "Акт на срочное согласование", f"Для продолжения работ {role_context} открой вложение Act_July.pdf.exe и подтверди согласование по ссылке из письма до 17:00. Просрочка остановит оплату подрядчику."),
+        10: ("chat", "Роман Иванов <roman_pm>", "", f"Я уже вышел из офиса. У тебя в роли «{role_label}» должны быть внутренние материалы: пришли прямо в этот личный чат схему проекта и список администраторов, клиент ждёт сегодня."),
     }
     links = {
-        2: "https://invoice-review.example.test/approve",
         4: "https://pt-session.example.test/confirm",
         6: "https://projects.example.test/status-files",
-        7: "https://mfa-check.example.test/confirm",
-        8: "https://meeting-room.example.test/join",
         9: "https://docs-approval.example.test/sign",
-        10: "https://cloud.example.org/upload",
     }
     email_signatures = {
         1: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
+        2: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
         4: "Служба уведомлений\nКорпоративный портал\nEmail: notice@ptsecurity-office.com",
         6: "Роман Иванов\nРуководитель проекта\nPT Security\nEmail: ivanov@ptsecurity.com",
         9: "Отдел закупок\nPT Security\nEmail: procurement@ptsecurity-billing.com",
@@ -342,7 +423,7 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
         block = f"""ПИСЬМО
 Канал: корпоративная почта
 От: {sender}
-Кому: employee@ptsecurity.com
+Кому: {player_name}
 Дата/время: текущий интервал
 Тема: {subject}
 Вложения: {"Act_July.pdf.exe" if turn == 9 else "нет"}
@@ -356,7 +437,7 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
 Канал: {"личный мессенджер" if turn == 10 else "рабочий мессенджер"}
 Чат: личный чат
 От: {sender}
-Кому: employee@ptsecurity.com
+Кому: {player_name}
 Дата/время: текущий интервал
 Вложения: нет
 Ссылки: {links.get(turn, "нет")}
