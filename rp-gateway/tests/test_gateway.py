@@ -2594,6 +2594,150 @@ def test_validator_repairs_meta_output_labels(tmp_path: Path):
     assert "мост" in content.lower()
 
 
+def test_openrouter_deepseek_flash_uses_minimal_reasoning_and_throughput_routing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured: dict[str, object] = {}
+
+    class CapturingAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "CapturingAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            captured.update(kwargs["json"])  # type: ignore[arg-type]
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": "Scene."}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    settings = Settings(
+        llm_provider="openrouter",
+        nvidia_api_base="https://openrouter.ai/api/v1",
+        nvidia_api_key="test-key",
+        narrative_model="deepseek/deepseek-v4-flash",
+        nvidia_fallback_models=(),
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    outcome = Outcome(
+        check_id="deepseek-flash-policy",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: success.",
+    )
+
+    asyncio.run(NarrativeClient(settings).complete(request, base_state(), outcome, None))
+
+    assert captured["reasoning"] == {"effort": "minimal"}
+    assert captured["provider"] == {"sort": "throughput", "require_parameters": True}
+    assert "max_tokens" not in captured
+
+
+def test_repair_prompt_is_compact_and_does_not_replay_party_history():
+    settings = Settings(
+        llm_provider="openrouter",
+        narrative_model="deepseek/deepseek-v4-flash",
+        scenario_type="training",
+    )
+    state = base_state()
+    state["meta"]["turn"] = 4  # type: ignore[index]
+    state["player"]["resources"]["current-turn-window"] = "turn 4, 10:00-12:00"  # type: ignore[index]
+    outcome = Outcome(
+        check_id="compact-repair",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: keep the scheduled scene.",
+    )
+
+    messages = NarrativeClient(settings).repair_messages(
+        state,
+        outcome,
+        "Remove the leaked assessment label.",
+        "Analysis: unsafe label. Correct scene text.",
+    )
+    encoded = json.dumps(messages, ensure_ascii=False)
+
+    assert len(messages) == 2
+    assert "Remove the leaked assessment label" in encoded
+    assert "AUTHORITATIVE_OUTCOME: keep the scheduled scene" in encoded
+    assert "Correct scene text" in encoded
+    assert "The old tower burned" not in encoded
+    assert "LONG_TERM_PARTY_MEMORY" not in encoded
+
+
+def test_narrative_wall_clock_deadline_covers_the_complete_response(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class SlowAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "SlowAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            await asyncio.sleep(0.05)
+            request = httpx.Request("POST", url)
+            return httpx.Response(200, request=request, json={"choices": []})
+
+    monkeypatch.setattr(httpx, "AsyncClient", SlowAsyncClient)
+    settings = Settings(
+        nvidia_api_base="https://provider.example/v1",
+        nvidia_api_key="test-key",
+        narrative_model="test/model",
+        nvidia_fallback_models=(),
+        model_attempt_timeout_seconds=0.01,
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    outcome = Outcome(
+        check_id="wall-clock-deadline",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: success.",
+    )
+
+    with pytest.raises(httpx.TimeoutException, match="wall-clock deadline"):
+        asyncio.run(NarrativeClient(settings).complete(request, base_state(), outcome, None))
+
+
 def test_timeout_and_rate_limit(tmp_path: Path):
     c_timeout = client(tmp_path / "timeout", mode="timeout")
     response = c_timeout.post(

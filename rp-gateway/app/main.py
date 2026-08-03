@@ -1301,6 +1301,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     start_outcome,
                     authorization,
                     repair_instruction,
+                    failed_response_text=text,
                     memory_summary=memory_summary,
                     rp_story_memory=rp_story_memory,
                     request_id=request_id,

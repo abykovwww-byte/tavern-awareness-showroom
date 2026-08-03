@@ -83,6 +83,7 @@ class NarrativeClient:
         outcome: Outcome,
         inbound_authorization: str | None,
         repair_instruction: str | None = None,
+        failed_response_text: str | None = None,
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
         rp_story_memory: dict[str, Any] | None = None,
         request_id: str | None = None,
@@ -93,15 +94,24 @@ class NarrativeClient:
             return self.mock_completion(outcome, repair_instruction, artifact_contract)
 
         payload = request.model_dump(exclude_none=True)
-        payload["messages"] = self.narrative_messages(
-            request,
-            state,
-            outcome,
-            repair_instruction,
-            memory_summary,
-            rp_story_memory,
-            artifact_contract=artifact_contract,
-        )
+        if repair_instruction:
+            payload["messages"] = self.repair_messages(
+                state,
+                outcome,
+                repair_instruction,
+                failed_response_text or "",
+                artifact_contract=artifact_contract,
+            )
+        else:
+            payload["messages"] = self.narrative_messages(
+                request,
+                state,
+                outcome,
+                repair_instruction=None,
+                memory_summary=memory_summary,
+                rp_story_memory=rp_story_memory,
+                artifact_contract=artifact_contract,
+            )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
 
@@ -114,6 +124,7 @@ class NarrativeClient:
             for index, model in enumerate(attempts):
                 while True:
                     payload["model"] = model
+                    self.apply_model_policy(payload, model)
                     started = time.perf_counter()
                     logger.info(
                         "llm_attempt_start request_id=%s check_id=%s model=%s attempt=%s/%s timeout_seconds=%s repair=%s",
@@ -126,13 +137,23 @@ class NarrativeClient:
                         bool(repair_instruction),
                     )
                     try:
-                        response = await client.post(
-                            f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                            json=payload,
-                            headers=headers,
-                        )
-                    except httpx.TimeoutException as exc:
-                        last_timeout = exc
+                        async with asyncio.timeout(self.settings.model_attempt_timeout_seconds):
+                            response = await client.post(
+                                f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                                json=payload,
+                                headers=headers,
+                            )
+                    except (httpx.TimeoutException, TimeoutError) as exc:
+                        timeout_error = exc
+                        if not isinstance(exc, httpx.TimeoutException):
+                            timeout_error = httpx.TimeoutException(
+                                "Narrative provider exceeded the wall-clock deadline",
+                                request=httpx.Request(
+                                    "POST",
+                                    f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                                ),
+                            )
+                        last_timeout = timeout_error
                         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
                         logger.warning(
                             "llm_attempt_timeout request_id=%s check_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
@@ -146,7 +167,7 @@ class NarrativeClient:
                         )
                         if index < len(attempts) - 1:
                             break
-                        raise
+                        raise timeout_error from exc
                     if response.status_code == 429:
                         error = provider_rate_limit_error(response, self.settings.llm_provider, model)
                         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -314,6 +335,60 @@ class NarrativeClient:
             payload["session_id"] = self.settings.prompt_cache_session_id
         if self.settings.openrouter_prompt_cache_enabled and str(payload.get("model") or "").startswith("anthropic/"):
             payload["cache_control"] = {"type": "ephemeral", "ttl": self.settings.openrouter_prompt_cache_ttl}
+
+    def apply_model_policy(self, payload: dict[str, Any], model: str) -> None:
+        """Apply model-specific runtime controls while preserving unrelated caller preferences."""
+        if normalize_provider(self.settings.llm_provider) != "openrouter":
+            return
+        if model.strip().lower() != "deepseek/deepseek-v4-flash":
+            return
+        payload["reasoning"] = {"effort": "minimal"}
+        provider_preferences = dict(payload.get("provider") or {})
+        provider_preferences.update(
+            {
+                "sort": "throughput",
+                "require_parameters": True,
+            }
+        )
+        payload["provider"] = provider_preferences
+
+    def repair_messages(
+        self,
+        state: dict[str, Any],
+        outcome: Outcome,
+        repair_instruction: str,
+        failed_response_text: str,
+        artifact_contract: dict[str, Any] | None = None,
+    ) -> list[dict[str, str]]:
+        """Build a compact correction request instead of replaying the full party prompt."""
+        player_resources = state.get("player", {}).get("resources", {})
+        repair_context = {
+            "campaign_id": state.get("meta", {}).get("campaign_id"),
+            "turn": state.get("meta", {}).get("turn"),
+            "current_turn_window": player_resources.get("current-turn-window"),
+            "authoritative_outcome": outcome.authoritative_block,
+            "repair_instruction": repair_instruction,
+            "failed_response": failed_response_text,
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    self.scenario_rules()
+                    + " Correct only the supplied failed response. Do not continue the story, redo the turn, "
+                    "or introduce new facts. Return only the corrected narration or required narrative bundle."
+                ),
+            }
+        ]
+        if artifact_contract:
+            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+        messages.append(
+            {
+                "role": "user",
+                "content": json.dumps(repair_context, ensure_ascii=False, separators=(",", ":")),
+            }
+        )
+        return messages
 
     def input_token_budget(self, request: ChatCompletionRequest) -> int:
         reserve = max(
