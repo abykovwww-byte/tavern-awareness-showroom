@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted and implemented locally. Not deployed or live-verified.
+Accepted, implemented and deployed. The live verification snapshot for revision
+`8b8a8fe` is recorded in `docs/wiki/09-operations-and-repository.md`.
 
 ## Decision
 

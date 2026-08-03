@@ -2,8 +2,8 @@
 
 Date: 2026-07-31
 
-Status: Implemented locally on 2026-07-31. Deployment and live verification on
-`abykovserv` remain separate, explicitly authorized steps.
+Status: Implemented and deployed on 2026-07-31. The applied revision and live
+verification snapshot are recorded in `docs/wiki/09-operations-and-repository.md`.
 
 ## Goal
 
