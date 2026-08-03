@@ -20,6 +20,7 @@ from app.services.character_retrieval import (
 from app.services.context_budget import estimate_tokens
 from app.services.nvidia_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
+from app.services.rp_story_memory import story_memory_prompt_text
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class NarrativeClient:
         inbound_authorization: str | None,
         repair_instruction: str | None = None,
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
+        rp_story_memory: dict[str, Any] | None = None,
         request_id: str | None = None,
         artifact_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -97,6 +99,7 @@ class NarrativeClient:
             outcome,
             repair_instruction,
             memory_summary,
+            rp_story_memory,
             artifact_contract=artifact_contract,
         )
         self.apply_prompt_cache_policy(payload)
@@ -224,6 +227,7 @@ class NarrativeClient:
         outcome: Outcome,
         repair_instruction: str | None,
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
+        rp_story_memory: dict[str, Any] | None = None,
         artifact_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         relevant_characters = retrieve_relevant_characters(
@@ -261,6 +265,16 @@ class NarrativeClient:
                 {
                     "role": "system",
                     "content": f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}",
+                }
+            )
+        if self.settings.scenario_type == "rp" and rp_story_memory:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": rp_story_memory_block(
+                        rp_story_memory,
+                        self.settings.rp_story_memory_prompt_max_chars,
+                    ),
                 }
             )
         if artifact_contract:
@@ -445,11 +459,26 @@ def fit_messages_to_context(messages: list[dict[str, str]], token_budget: int) -
         if oldest_history is not None:
             fitted.pop(oldest_history)
             continue
+        has_rp_story_memory = any(
+            message.get("content", "").startswith("RP_STORY_MEMORY") for message in fitted
+        )
+        trim_prefixes = (
+            (
+                "RETRIEVED_ARCHIVE_SCENES",
+                "UNCOMPACTED_ARCHIVE_FALLBACK",
+                "LONG_TERM_PARTY_MEMORY",
+                "PARTY_LORE_CARDS",
+                "RP_STORY_MEMORY",
+            )
+            if has_rp_story_memory
+            else ("LONG_TERM_PARTY_MEMORY",)
+        )
         trim_index = next(
             (
                 index
+                for prefix in trim_prefixes
                 for index, message in enumerate(fitted)
-                if "LONG_TERM_PARTY_MEMORY" in message.get("content", "")
+                if message.get("content", "").startswith(prefix)
             ),
             None,
         )
@@ -502,6 +531,17 @@ def long_term_memory_block(memory_summary: dict[str, Any] | list[dict[str, Any]]
         "Use their actions, dialogue, discoveries, tone, and unresolved leads for continuity. Current authoritative state "
         "and AUTHORITATIVE_OUTCOME override it. Do not promote unresolved or player-claimed events into facts.\n"
         f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def rp_story_memory_block(snapshot: dict[str, Any], max_chars: int) -> str:
+    return (
+        "RP_STORY_MEMORY\n"
+        "This is the bounded living continuity ledger for this RP party. It may summarize confirmed facts, character "
+        "arcs, possessions, projects, active and resolved threads, unresolved hooks, and chronology. Use it to preserve "
+        "long-range continuity, but treat current canonical state and AUTHORITATIVE_OUTCOME as higher authority. Do not "
+        "turn uncertainty into fact and do not assume omitted detail was erased.\n"
+        f"{story_memory_prompt_text(snapshot, max_chars)}"
     )
 
 

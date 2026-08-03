@@ -104,6 +104,12 @@ class Settings:
     party_memory_retrieval_limit: int = env_int("PARTY_MEMORY_RETRIEVAL_LIMIT", 3)
     party_memory_retrieval_max_chars: int = env_int("PARTY_MEMORY_RETRIEVAL_MAX_CHARS", 9_000)
     party_memory_fallback_max_chars: int = env_int("PARTY_MEMORY_FALLBACK_MAX_CHARS", 24_000)
+    rp_story_memory_update_turns: int = env_int("RP_STORY_MEMORY_UPDATE_TURNS", 4)
+    rp_story_memory_batch_tokens: int = env_int("RP_STORY_MEMORY_BATCH_TOKENS", 6_000)
+    rp_story_memory_max_tokens: int = env_int("RP_STORY_MEMORY_MAX_TOKENS", 6_000)
+    rp_story_memory_max_chars: int = env_int("RP_STORY_MEMORY_MAX_CHARS", 24_000)
+    rp_story_memory_prompt_max_chars: int = env_int("RP_STORY_MEMORY_PROMPT_MAX_CHARS", 24_000)
+    rp_story_memory_reserve_tokens: int = env_int("RP_STORY_MEMORY_RESERVE_TOKENS", 10_000)
     party_lore_card_prompt_limit: int = env_int("PARTY_LORE_CARD_PROMPT_LIMIT", 8)
     party_lore_card_prompt_max_chars: int = env_int("PARTY_LORE_CARD_PROMPT_MAX_CHARS", 12_000)
     service_job_max_attempts: int = env_int("SERVICE_JOB_MAX_ATTEMPTS", 5)
@@ -137,10 +143,12 @@ class Settings:
 
     @property
     def effective_party_history_token_budget(self) -> int:
+        story_memory_reserve = self.rp_story_memory_reserve_tokens if self.scenario_type == "rp" else 0
         available = (
             self.effective_party_context_limit_tokens
             - self.party_context_completion_reserve_tokens
             - self.party_context_system_reserve_tokens
+            - story_memory_reserve
         )
         return max(available, self.party_context_min_history_tokens)
 

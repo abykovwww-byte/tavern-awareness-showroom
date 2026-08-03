@@ -57,6 +57,7 @@ const els = {
   stateSummary: document.querySelector("#stateSummary"),
   contextSummary: document.querySelector("#contextSummary"),
   memorySummary: document.querySelector("#memorySummary"),
+  memoryPanelHint: document.querySelector("#memoryPanelHint"),
   memorySummarizeButton: document.querySelector("#memorySummarizeButton"),
   memoryClearButton: document.querySelector("#memoryClearButton"),
   loreCardForm: document.querySelector("#loreCardForm"),
@@ -75,6 +76,7 @@ const els = {
   characterEditStatus: document.querySelector("#characterEditStatus"),
   characterEditLocation: document.querySelector("#characterEditLocation"),
   characterEditGoal: document.querySelector("#characterEditGoal"),
+  characterEditAdvancedFields: document.querySelector("#characterEditAdvancedFields"),
   characterEditAttitude: document.querySelector("#characterEditAttitude"),
   characterEditLoyalty: document.querySelector("#characterEditLoyalty"),
   characterEditTrust: document.querySelector("#characterEditTrust"),
@@ -803,6 +805,13 @@ function renderContext() {
   const historyTokens = estimate.direct_history_tokens ? formatTokens(estimate.direct_history_tokens) : "0";
   const memoryTokens = estimate.memory_summary_tokens ? formatTokens(estimate.memory_summary_tokens) : "0";
   const memoryCoverage = Array.isArray(estimate.memory_covered_turns) ? ` · память ${estimate.memory_covered_turns.join("-")}` : "";
+  const storyMemoryTokens = estimate.rp_story_memory_tokens ? formatTokens(estimate.rp_story_memory_tokens) : "0";
+  const storyMemoryCoverage = Array.isArray(estimate.rp_story_memory_covered_turns)
+    ? ` · story ${estimate.rp_story_memory_covered_turns.join("-")}`
+    : "";
+  const storyMemoryBreakdown = appState.activeParty?.scenario_type === "rp"
+    ? ` · RP story ~${storyMemoryTokens}${storyMemoryCoverage}`
+    : "";
   const cache = estimate.prompt_cache || {};
   const cacheValue = cache.available
     ? (Number(cache.cached_tokens || 0) > 0
@@ -820,7 +829,7 @@ function renderContext() {
     ${stateItem("Запрос", escapeHtml(estimate.last_request_id || "-"), "X-Request-ID последнего сохраненного turn.")}
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
     ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
-    ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · память ~${escapeHtml(memoryTokens)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
+    ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · главы ~${escapeHtml(memoryTokens)}${escapeHtml(storyMemoryBreakdown)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
     ${stateItem("Prompt cache", escapeHtml(cacheValue), "Фактическая метрика последнего ответа: hit — токены, прочитанные из кэша; запись — создание нового кэш-префикса. Для NVIDIA и локальной модели метрика может отсутствовать.")}
     ${stateItem("NPC", `~${escapeHtml(characterTokens)}`, "Выбранные карточки персонажей в фактическом prompt.")}
     ${notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : ""}
@@ -832,6 +841,14 @@ function renderMemory() {
   const payload = appState.memory || {};
   const memory = payload.memory || null;
   const stats = payload.stats || {};
+  const isRp = appState.activeParty?.scenario_type === "rp";
+  const storyMemory = isRp ? payload.story_memory || null : null;
+  const storyStats = isRp ? payload.story_memory_stats || {} : {};
+  if (els.memoryPanelHint) {
+    els.memoryPanelHint.textContent = isRp
+      ? "RP story memory хранит живой реестр канона, персонажей, проектов и сюжетных линий; эпизодические главы сохраняют подробности старых сцен. Оба слоя не меняют canonical state."
+      : "Долгая память для модели: сжатые старые ходы, подтвержденные факты, открытые нити и изменения отношений. State напрямую не меняет.";
+  }
   if (els.memorySummarizeButton) {
     els.memorySummarizeButton.disabled = !appState.activeParty;
   }
@@ -842,11 +859,13 @@ function renderMemory() {
     els.memorySummary.innerHTML = `<div class="state-item">Партия не выбрана.</div>`;
     return;
   }
+  const storyHtml = isRp ? rpStoryMemoryHtml(storyMemory, storyStats) : "";
   if (!memory) {
     const oldTurns = stats.eligible_old_turns ?? 0;
     const overflowTokens = formatTokens(stats.unsummarized_old_tokens || 0);
     const budget = formatTokens(stats.history_token_budget || 0);
     els.memorySummary.innerHTML = [
+      storyHtml,
       stateItem("Сводка", oldTurns ? "готовится в фоне" : "пока не нужна", "Gateway начинает сводку, только когда реальная история перестает помещаться в токеновый бюджет."),
       stateItem(
         "Покрытие",
@@ -860,12 +879,35 @@ function renderMemory() {
   const stateVersion = memory.state_version ? `v${memory.state_version}` : "v-";
   const summary = escapeHtml(clipText(memory.summary_text || "", 900));
   els.memorySummary.innerHTML = `
+    ${storyHtml}
     ${stateItem("Покрытие", `ходы ${escapeHtml(covered)} · state ${escapeHtml(stateVersion)}`, "Диапазон turns, сжатых в последнюю сводку.")}
     <div class="state-item memory-text"><strong>Сводка</strong>${summary || "пусто"}</div>
     ${memoryList("Факты", memory.key_facts)}
     ${memoryList("Нити", memory.open_threads)}
     ${memoryList("Отношения", memory.relationship_changes)}
     ${stateItem("Модель", escapeHtml(memory.model || "unknown"), "Модель, которая сгенерировала сводку.")}
+  `;
+}
+
+function rpStoryMemoryHtml(snapshot, stats) {
+  if (!snapshot) {
+    const pending = stats.pending_turns || 0;
+    const cadence = stats.update_every_turns || 4;
+    return stateItem(
+      "RP story memory",
+      pending ? `ожидает пакет: ${escapeHtml(pending)}/${escapeHtml(cadence)} ходов` : "пока не создана",
+      "Живой структурированный реестр обновляется служебной LLM только для RP-партий. До обновления новые сцены остаются в raw history.",
+    );
+  }
+  const data = snapshot.memory || {};
+  const covered = `${snapshot.from_turn_id ?? "-"}-${snapshot.to_turn_id ?? "-"}`;
+  return `
+    ${stateItem("RP story memory", `revision ${escapeHtml(snapshot.revision || 1)} · ходы ${escapeHtml(covered)}`, "Кумулятивный RP-only snapshot; canonical state имеет больший приоритет.")}
+    ${data.current_situation ? `<div class="state-item memory-text"><strong>Текущая ситуация</strong>${escapeHtml(clipText(data.current_situation, 900))}</div>` : ""}
+    ${memoryList("Канон", data.canon)}
+    ${memoryList("Персонажи", data.characters)}
+    ${memoryList("Активные линии", data.active_threads)}
+    ${memoryList("Нераскрытые зацепки", data.unresolved_hooks)}
   `;
 }
 
@@ -939,6 +981,8 @@ function renderCharacters() {
 
 function renderCharacterEditor() {
   if (!els.characterEditTarget) return;
+  const compactRpEditor = isCompactRpCharacterEditor(appState.activeParty?.scenario_type);
+  els.characterEditAdvancedFields?.classList.toggle("hidden", compactRpEditor);
   const editable = editableCharacters();
   const previous = els.characterEditTarget.value || "__new__";
   const values = new Set(["__new__", ...editable.map((character) => character.value)]);
@@ -970,6 +1014,10 @@ function renderCharacterEditor() {
     if (node) node.disabled = disabled;
   });
   fillCharacterEditorFromSelection();
+}
+
+function isCompactRpCharacterEditor(scenarioType) {
+  return scenarioType === "rp";
 }
 
 function editableCharacters() {
@@ -1084,6 +1132,7 @@ function promptInspectionHtml(inspection) {
   const raw = inspection.raw || {};
   const retrieval = Array.isArray(inspection.retrieval) ? inspection.retrieval : [];
   const fallback = inspection.fallback || {};
+  const storyMemory = inspection.story_memory || null;
   const chapterText = included.length
     ? included.map(memoryInspectionEntry).join("<br>")
     : "нет глав, вошедших в этот dry-run";
@@ -1101,8 +1150,14 @@ function promptInspectionHtml(inspection) {
         .map((job) => `${escapeHtml(job.job_type)}: ${escapeHtml(job.status)} (${escapeHtml(job.attempts)}/${escapeHtml(job.max_attempts)})`)
         .join(" · ") || "service job pending"}`
     : "не активен";
+  const storyMemoryText = storyMemory?.enabled
+    ? (storyMemory.revision
+      ? `revision ${escapeHtml(storyMemory.revision)} · ${escapeHtml(coveredTurnRangeLabel(storyMemory.covered_turn_ids))} · резерв ~${escapeHtml(formatTokens(storyMemory.reserved_tokens || 0))}`
+      : `ещё не создана · резерв ~${escapeHtml(formatTokens(storyMemory.reserved_tokens || 0))}`)
+    : "";
   return `<div class="state-item prompt-inspection">
     <strong>Почему это в prompt</strong>
+    ${storyMemoryText ? `<div><span class="muted-label">RP story memory:</span><br>${storyMemoryText}</div>` : ""}
     <div><span class="muted-label">Главы:</span><br>${chapterText}</div>
     <div><span class="muted-label">Raw:</span> ${escapeHtml(rawIncluded)}${rawExcluded ? `<br><span class="warning-text">вне raw-бюджета: ${escapeHtml(rawExcluded)}</span>` : ""}</div>
     <div><span class="muted-label">Archive retrieval:</span><br>${retrievalText}</div>
@@ -1195,6 +1250,12 @@ function renderChat({ scrollMode = "bottom" } = {}) {
   els.chatLog.innerHTML = messages.join("");
   mountTrainingArtifacts(visibleTurns);
   els.chatLog.scrollTop = scrollMode === "top" ? 0 : els.chatLog.scrollHeight;
+}
+
+function coveredTurnRangeLabel(turnIds) {
+  if (!Array.isArray(turnIds) || turnIds.length < 2) return "покрытие неизвестно";
+  const [first, last] = turnIds;
+  return first === last ? `ход ${first}` : `ходы ${first}–${last}`;
 }
 
 function mountTrainingArtifacts(turns) {
@@ -2128,15 +2189,22 @@ function characterEditorPayload() {
   const selection = els.characterEditTarget.value;
   const isPlayer = selection === "player";
   const selectedNpc = selection.startsWith("npc:") ? selection.slice(4) : "";
-  const trust = els.characterEditTrust.value === "" ? null : Number(els.characterEditTrust.value);
-  const fear = els.characterEditFear.value === "" ? null : Number(els.characterEditFear.value);
-  return {
+  const payload = {
     target: isPlayer ? "player" : "npc",
     character_id: isPlayer ? null : (selectedNpc || els.characterEditId.value.trim()),
     name: els.characterEditName.value.trim() || null,
     status: els.characterEditStatus.value.trim() || null,
     location: els.characterEditLocation.value.trim() || null,
     current_goal: els.characterEditGoal.value.trim() || null,
+    confirm: false,
+  };
+  if (isCompactRpCharacterEditor(appState.activeParty?.scenario_type)) {
+    return payload;
+  }
+  const trust = els.characterEditTrust.value === "" ? null : Number(els.characterEditTrust.value);
+  const fear = els.characterEditFear.value === "" ? null : Number(els.characterEditFear.value);
+  return {
+    ...payload,
     attitude_to_player: els.characterEditAttitude.value.trim() || null,
     loyalty: els.characterEditLoyalty.value.trim() || null,
     trust,
@@ -2145,7 +2213,6 @@ function characterEditorPayload() {
     obligations: els.characterEditObligations.value.trim() ? els.characterEditObligations.value : null,
     hard_constraints: els.characterEditHardConstraints.value.trim() ? els.characterEditHardConstraints.value : null,
     secrets: els.characterEditSecrets.value.trim() ? els.characterEditSecrets.value : null,
-    confirm: false,
   };
 }
 
@@ -2166,7 +2233,7 @@ function validateCharacterPayload(payload) {
     payload.obligations,
     payload.hard_constraints,
     payload.secrets,
-  ].some((value) => value !== null && value !== "");
+  ].some((value) => value !== null && value !== undefined && value !== "");
   return hasContent ? "" : "Заполни хотя бы одно поле персонажа.";
 }
 
@@ -2180,8 +2247,8 @@ function characterEditorInstruction(payload = characterEditorPayload()) {
     payload.current_goal ? `Цель/роль: ${payload.current_goal}` : "",
     payload.attitude_to_player ? `Отношение к игроку: ${payload.attitude_to_player}` : "",
     payload.loyalty ? `Лояльность/фракция: ${payload.loyalty}` : "",
-    payload.trust !== null ? `Доверие к игроку: ${payload.trust}` : "",
-    payload.fear !== null ? `Страх: ${payload.fear}` : "",
+    payload.trust !== null && payload.trust !== undefined ? `Доверие к игроку: ${payload.trust}` : "",
+    payload.fear !== null && payload.fear !== undefined ? `Страх: ${payload.fear}` : "",
     payload.knowledge ? `Знания:\n${payload.knowledge}` : "",
     payload.obligations ? `Обязательства/ограничения:\n${payload.obligations}` : "",
     payload.hard_constraints ? `Жесткие ограничения:\n${payload.hard_constraints}` : "",

@@ -74,12 +74,14 @@ class PromptInspector:
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
+        rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             candidate_state,
             outcome,
             repair_instruction=None,
             memory_summary=memory_summary,
+            rp_story_memory=rp_story_memory,
         )
         blocks = self.blocks(messages)
         payload = self.payload(
@@ -115,12 +117,14 @@ class PromptInspector:
         )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
+        rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             state,
             outcome,
             repair_instruction=None,
             memory_summary=memory_summary,
+            rp_story_memory=rp_story_memory,
         )
         blocks = self.blocks(messages)
         payload = self.payload(latest, messages, blocks, source="reconstructed_last_turn", dry_run=True, turn=latest_turn)
@@ -231,6 +235,8 @@ class PromptInspector:
     def system_block_label(self, content: str, index: int) -> tuple[str, str]:
         if content.startswith("LONG_TERM_PARTY_MEMORY"):
             return "long_term_memory", "LONG_TERM_PARTY_MEMORY"
+        if content.startswith("RP_STORY_MEMORY"):
+            return "rp_story_memory", "RP_STORY_MEMORY"
         if content.startswith("WORLD_SYSTEM_PROMPT"):
             return "world_system_prompt", "World system prompt"
         if content.startswith("WORLD_AUTHORS_NOTE"):
@@ -263,6 +269,7 @@ class PromptInspector:
 
     def memory_inspection(self, latest: str) -> dict[str, Any]:
         coverage = self.store.latest_memory_coverage()
+        story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
         covered_through = int(coverage["to_turn_id"]) if coverage else 0
         selected = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         selected_keys = {(item.get("memory_type"), item.get("id")) for item in selected}
@@ -287,7 +294,7 @@ class PromptInspector:
             through_turn_id=covered_through,
             limit=self.settings.party_memory_retrieval_limit,
         )
-        return {
+        inspection = {
             "memory_coverage_through_turn_id": covered_through or None,
             "chapters": {"included": included, "excluded": excluded},
             "raw": {
@@ -324,6 +331,19 @@ class PromptInspector:
                 for item in retrieval
             ],
         }
+        if self.settings.scenario_type == "rp":
+            inspection["story_memory"] = {
+                "enabled": True,
+                "revision": story_memory.get("revision") if story_memory else None,
+                "covered_turn_ids": (
+                    [story_memory.get("from_turn_id"), story_memory.get("to_turn_id")]
+                    if story_memory
+                    else None
+                ),
+                "prompt_max_chars": self.settings.rp_story_memory_prompt_max_chars,
+                "reserved_tokens": self.settings.rp_story_memory_reserve_tokens,
+            }
+        return inspection
 
     def memory_entry_view(self, item: dict[str, Any], status: str) -> dict[str, Any]:
         return {

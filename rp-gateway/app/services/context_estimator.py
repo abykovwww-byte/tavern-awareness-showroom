@@ -41,9 +41,11 @@ def estimate_party_context(
     omitted_history_turns_estimate = max(prior_turns_total - retained_history_turns_estimate, 0)
     state_summary_text = first_system_content(prompt_messages, "Relevant state summary:")
     memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
+    story_memory_text = first_system_content(prompt_messages, "RP_STORY_MEMORY")
     relevant_characters_text = first_system_content(prompt_messages, "RELEVANT_CHARACTERS")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
     memory_summary = store.latest_memory_coverage()
+    story_memory = store.latest_rp_story_memory() if settings.scenario_type == "rp" else None
     cache_usage = cache_usage_from_response(latest_turn.get("response_json"))
     context_limit_tokens = settings.effective_party_context_limit_tokens
     prompt_tokens = estimate_tokens(prompt_text)
@@ -51,7 +53,7 @@ def estimate_party_context(
     total_with_reserved = prompt_tokens + completion_reserved_tokens
     usage_ratio = total_with_reserved / context_limit_tokens if context_limit_tokens else None
 
-    return {
+    estimate = {
         "model": model_profile.model if model_profile else settings.narrative_model,
         "model_title": model_profile.title if model_profile else settings.narrative_model,
         "context_window": model_profile.context_window if model_profile else "",
@@ -82,6 +84,12 @@ def estimate_party_context(
         "last_request_id": latest_turn.get("request_id") if latest_turn else None,
         "notes": notes_for_context(context_limit_tokens, omitted_history_turns_estimate, retained_history_messages),
     }
+    if settings.scenario_type == "rp":
+        estimate["rp_story_memory_tokens"] = estimate_tokens(story_memory_text) if story_memory_text else 0
+        estimate["rp_story_memory_covered_turns"] = (
+            [story_memory.get("from_turn_id"), story_memory.get("to_turn_id")] if story_memory else None
+        )
+    return estimate
 
 
 def empty_recorded_context(
@@ -100,7 +108,7 @@ def empty_recorded_context(
             if latest_turn
             else "Ходов еще нет: фактический предыдущий prompt отсутствует."
         )
-    return {
+    estimate = {
         "model": model_profile.model if model_profile else settings.narrative_model,
         "model_title": model_profile.title if model_profile else settings.narrative_model,
         "context_window": model_profile.context_window if model_profile else "",
@@ -131,6 +139,10 @@ def empty_recorded_context(
         "last_request_id": latest_turn.get("request_id") if latest_turn else None,
         "notes": [note],
     }
+    if settings.scenario_type == "rp":
+        estimate["rp_story_memory_tokens"] = 0
+        estimate["rp_story_memory_covered_turns"] = None
+    return estimate
 
 
 def first_system_content(messages: list[dict[str, Any]], prefix: str) -> str:

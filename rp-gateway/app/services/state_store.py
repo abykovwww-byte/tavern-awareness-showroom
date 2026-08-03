@@ -237,6 +237,22 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_chapters_campaign_to
                     ON memory_chapters(campaign_id, to_turn_id DESC);
+                CREATE TABLE IF NOT EXISTS rp_story_memory_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    from_turn_id INTEGER NOT NULL,
+                    to_turn_id INTEGER NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    memory_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
+                    UNIQUE(campaign_id, revision),
+                    UNIQUE(campaign_id, to_turn_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_rp_story_memory_campaign_to
+                    ON rp_story_memory_snapshots(campaign_id, to_turn_id DESC, revision DESC);
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -377,7 +393,7 @@ class StateStore:
         }
 
     def enqueue_service_job(self, job_type: str, request_id: str | None, max_attempts: int = 5) -> dict[str, Any]:
-        if job_type not in {"memory", "journal"}:
+        if job_type not in {"memory", "rp_story_memory", "journal"}:
             raise ValueError(f"unsupported service job type: {job_type}")
         timestamp = now_ts()
         with self.connect() as connection:
@@ -820,6 +836,36 @@ class StateStore:
                                 ),
                             )
 
+                    story_row = connection.execute(
+                        """
+                        SELECT * FROM rp_story_memory_snapshots
+                        WHERE campaign_id = ? AND to_turn_id <= ?
+                        ORDER BY to_turn_id DESC, revision DESC LIMIT 1
+                        """,
+                        (self.campaign_id, int(through_turn_id)),
+                    ).fetchone()
+                    if story_row is not None:
+                        mapped_from = turn_map.get(int(story_row["from_turn_id"]))
+                        mapped_to = turn_map.get(int(story_row["to_turn_id"]))
+                        if mapped_from is not None and mapped_to is not None:
+                            connection.execute(
+                                """
+                                INSERT INTO rp_story_memory_snapshots(
+                                    campaign_id, revision, from_turn_id, to_turn_id,
+                                    state_version, memory_json, created_at, model
+                                ) VALUES(?, 1, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    target_campaign_id,
+                                    mapped_from,
+                                    mapped_to,
+                                    story_row["state_version"],
+                                    story_row["memory_json"],
+                                    story_row["created_at"],
+                                    story_row["model"],
+                                ),
+                            )
+
                     journals = connection.execute(
                         """
                         SELECT * FROM journal_entries
@@ -913,7 +959,7 @@ class StateStore:
             with self.connect() as connection:
                 for table in (
                     "turns", "turn_requests", "checks", "state_patches", "state_versions",
-                    "audit_events", "memory_summaries", "memory_chapters", "journal_entries",
+                    "audit_events", "memory_summaries", "memory_chapters", "rp_story_memory_snapshots", "journal_entries",
                     "lore_cards", "memory_checkpoints", "service_jobs",
                 ):
                     connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (target_campaign_id,))
@@ -1268,6 +1314,92 @@ class StateStore:
                 (self.campaign_id, limit),
             ).fetchall()
         return [self.memory_summary_from_row(row) | {"memory_type": "chapter"} for row in rows]
+
+    def latest_rp_story_memory(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM rp_story_memory_snapshots
+                WHERE campaign_id = ?
+                ORDER BY to_turn_id DESC, revision DESC LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        return self.rp_story_memory_from_row(row) if row else None
+
+    def rp_story_memories(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM rp_story_memory_snapshots
+                WHERE campaign_id = ?
+                ORDER BY revision DESC LIMIT ?
+                """,
+                (self.campaign_id, max(limit, 1)),
+            ).fetchall()
+        return [self.rp_story_memory_from_row(row) for row in rows]
+
+    def record_rp_story_memory(
+        self,
+        *,
+        from_turn_id: int,
+        to_turn_id: int,
+        state_version: int,
+        memory: dict[str, Any],
+        model: str,
+    ) -> dict[str, Any]:
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM rp_story_memory_snapshots WHERE campaign_id = ? AND to_turn_id = ?",
+                (self.campaign_id, int(to_turn_id)),
+            ).fetchone()
+            if existing is not None:
+                return self.rp_story_memory_from_row(existing)
+            row = connection.execute(
+                "SELECT COALESCE(MAX(revision), 0) AS revision FROM rp_story_memory_snapshots WHERE campaign_id = ?",
+                (self.campaign_id,),
+            ).fetchone()
+            revision = int(row["revision"] or 0) + 1
+            cursor = connection.execute(
+                """
+                INSERT INTO rp_story_memory_snapshots(
+                    campaign_id, revision, from_turn_id, to_turn_id,
+                    state_version, memory_json, created_at, model
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    revision,
+                    int(from_turn_id),
+                    int(to_turn_id),
+                    int(state_version),
+                    json.dumps(memory, ensure_ascii=False),
+                    now_ts(),
+                    model,
+                ),
+            )
+            created = connection.execute(
+                "SELECT * FROM rp_story_memory_snapshots WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
+        return self.rp_story_memory_from_row(created)
+
+    def rp_story_memory_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            memory = json.loads(row["memory_json"])
+        except (TypeError, json.JSONDecodeError):
+            memory = {}
+        return {
+            "id": row["id"],
+            "campaign_id": row["campaign_id"],
+            "revision": row["revision"],
+            "from_turn_id": row["from_turn_id"],
+            "to_turn_id": row["to_turn_id"],
+            "state_version": row["state_version"],
+            "memory": memory if isinstance(memory, dict) else {},
+            "created_at": row["created_at"],
+            "model": row["model"],
+        }
 
     def latest_memory_coverage(self) -> dict[str, Any] | None:
         legacy = self.latest_memory_summary()

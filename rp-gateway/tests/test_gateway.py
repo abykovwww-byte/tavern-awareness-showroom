@@ -1165,6 +1165,12 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
         "PARTY_MEMORY_RETRIEVAL_ENABLED",
         "PARTY_MEMORY_RETRIEVAL_LIMIT",
         "PARTY_MEMORY_RETRIEVAL_MAX_CHARS",
+        "RP_STORY_MEMORY_UPDATE_TURNS",
+        "RP_STORY_MEMORY_BATCH_TOKENS",
+        "RP_STORY_MEMORY_MAX_TOKENS",
+        "RP_STORY_MEMORY_MAX_CHARS",
+        "RP_STORY_MEMORY_PROMPT_MAX_CHARS",
+        "RP_STORY_MEMORY_RESERVE_TOKENS",
         "POST_TURN_HELPERS_INLINE",
     ]:
         monkeypatch.delenv(name, raising=False)
@@ -1172,12 +1178,42 @@ def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.Mon
     assert settings.post_turn_helpers_inline is False
     assert settings.party_context_max_tokens == 131_072
     assert settings.effective_party_context_limit_tokens == 131_072
-    assert settings.effective_party_history_token_budget == 81_920
+    assert settings.effective_party_history_token_budget == 71_920
     assert settings.memory_summary_batch_tokens == 10_000
     assert settings.party_memory_chapter_max_tokens == 6_000
     assert settings.party_memory_chapter_max_chars == 24_000
     assert settings.party_memory_prompt_max_chars == 60_000
     assert settings.party_memory_retrieval_enabled is True
+    assert settings.rp_story_memory_update_turns == 4
+    assert settings.rp_story_memory_batch_tokens == 6_000
+    assert settings.rp_story_memory_max_tokens == 6_000
+    assert settings.rp_story_memory_prompt_max_chars == 24_000
+    assert settings.rp_story_memory_reserve_tokens == 10_000
+
+
+def test_rp_story_memory_api_fields_are_absent_from_training(tmp_path: Path):
+    write_worldpack(tmp_path, supported_modes=["rp", "training"])
+    c = client(tmp_path)
+    rp_party = create_demo_party(c, title="RP memory", scenario_type="rp")
+    training_party = create_demo_party(
+        c,
+        title="Training without RP memory",
+        character_name="Trainee",
+        scenario_type="training",
+    )
+
+    rp_memory = c.get(f"/api/parties/{rp_party['id']}/memory").json()
+    training_memory = c.get(f"/api/parties/{training_party['id']}/memory").json()
+    rp_context = c.get(f"/api/parties/{rp_party['id']}/context").json()["context"]
+    training_context = c.get(f"/api/parties/{training_party['id']}/context").json()["context"]
+
+    assert "story_memory" in rp_memory
+    assert rp_memory["story_memory_stats"]["enabled"] is True
+    assert "rp_story_memory_tokens" in rp_context
+    assert "story_memory" not in training_memory
+    assert "story_memory_stats" not in training_memory
+    assert "rp_story_memory_tokens" not in training_context
+    assert training_context["history_token_budget"] == 81_920
 
 
 def test_context_overflow_is_omitted_until_episodic_chapter_catches_up(tmp_path: Path):

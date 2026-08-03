@@ -15,6 +15,7 @@ from app.models.schemas import ChatCompletionRequest, Outcome
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
+from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
@@ -49,6 +50,7 @@ class Adjudicator:
         self.validator = OutputValidator()
         self.narrative = NarrativeClient(settings)
         self.memory = MemorySummarizer(settings, store)
+        self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
         self.world = WorldInstructor(settings, store)
         self.training_artifacts = training_artifacts
 
@@ -137,12 +139,14 @@ class Adjudicator:
             artifact_result: ArtifactMaterialization | None = None
             try:
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
+                rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
                 prompt_messages = self.narrative.narrative_messages(
                     request,
                     narrative_state,
                     outcome,
                     repair_instruction=None,
                     memory_summary=memory_summary,
+                    rp_story_memory=rp_story_memory,
                     artifact_contract=artifact_contract,
                 )
                 raw = await self.narrative.complete(
@@ -151,6 +155,7 @@ class Adjudicator:
                     outcome,
                     authorization,
                     memory_summary=memory_summary,
+                    rp_story_memory=rp_story_memory,
                     request_id=request_id,
                     artifact_contract=artifact_contract,
                 )
@@ -199,6 +204,7 @@ class Adjudicator:
                         authorization,
                         repair_instruction,
                         memory_summary=memory_summary,
+                        rp_story_memory=rp_story_memory,
                         request_id=request_id,
                         artifact_contract=artifact_contract,
                     )
@@ -426,7 +432,10 @@ class Adjudicator:
         }
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
-        for job_type in ("memory",):
+        job_types = ["memory"]
+        if self.settings.scenario_type == "rp":
+            job_types.append("rp_story_memory")
+        for job_type in job_types:
             self.store.enqueue_service_job(job_type, request_id, self.settings.service_job_max_attempts)
         if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
             await self.drain_service_jobs(authorization, wait_for_retries=False)
@@ -478,6 +487,12 @@ class Adjudicator:
         for _ in range(64):
             if job["job_type"] == "memory":
                 result = await self.memory.summarize(
+                    authorization,
+                    fail_open=True,
+                    request_id=job.get("request_id"),
+                )
+            elif job["job_type"] == "rp_story_memory" and self.rp_story_memory is not None:
+                result = await self.rp_story_memory.update(
                     authorization,
                     fail_open=True,
                     request_id=job.get("request_id"),

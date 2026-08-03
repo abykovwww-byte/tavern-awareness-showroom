@@ -88,6 +88,7 @@ from app.services.service_models import (
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
+from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
@@ -864,7 +865,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         summarizer = MemorySummarizer(party_settings, party_state_store)
         chapters = party_state_store.memory_chapters(limit=limit)
         legacy_summaries = party_state_store.memory_summaries(limit=limit)
-        return {
+        payload = {
             "party_id": party_id,
             "memory": party_state_store.latest_memory_coverage(),
             "summaries": chapters or legacy_summaries,
@@ -872,6 +873,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "chapters": chapters,
             "stats": summarizer.stats(),
         }
+        if party.scenario_type == "rp":
+            story_updater = RPStoryMemoryUpdater(party_settings, party_state_store)
+            payload["story_memory"] = party_state_store.latest_rp_story_memory()
+            payload["story_memory_stats"] = story_updater.stats()
+        return payload
 
     @app.get("/api/parties/{party_id}/service-jobs")
     def get_party_service_jobs(request: Request, party_id: str, limit: int = 20) -> dict[str, Any]:
@@ -1001,6 +1007,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
+            story_result = None
+            if party.scenario_type == "rp":
+                story_result = await RPStoryMemoryUpdater(party_settings, party_state_store).update(
+                    authorization,
+                    force=request.force,
+                    fail_open=False,
+                )
             result = await MemorySummarizer(party_settings, party_state_store).summarize(
                 authorization,
                 force=request.force,
@@ -1015,7 +1028,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"party_id": party_id, **result}
+        payload = {"party_id": party_id, **result}
+        if story_result is not None:
+            payload["story_generated"] = story_result["generated"]
+            payload["story_memory"] = story_result["story_memory"]
+            payload["story_memory_stats"] = story_result["stats"]
+            payload["generated"] = bool(result.get("generated") or story_result.get("generated"))
+            if story_result.get("generated"):
+                payload["reason"] = "generated"
+        return payload
 
     @app.delete("/api/parties/{party_id}/memory/latest")
     def delete_party_memory_latest(request: Request, party_id: str) -> dict[str, Any]:
@@ -1224,6 +1245,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             start_outcome = party_start_outcome(party_id, party.scenario_type)
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
+            rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
             narrative = NarrativeClient(party_settings)
             artifact_service = TrainingArtifactService(party.worldpack, party_state_store)
             artifact_contract = artifact_service.contract_for_state(narrative_state)
@@ -1233,6 +1255,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 start_outcome,
                 repair_instruction=None,
                 memory_summary=memory_summary,
+                rp_story_memory=rp_story_memory,
                 artifact_contract=artifact_contract,
             )
             repaired = False
@@ -1243,6 +1266,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 start_outcome,
                 authorization,
                 memory_summary=memory_summary,
+                rp_story_memory=rp_story_memory,
                 request_id=request_id,
                 artifact_contract=artifact_contract,
             )
@@ -1278,6 +1302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     authorization,
                     repair_instruction,
                     memory_summary=memory_summary,
+                    rp_story_memory=rp_story_memory,
                     request_id=request_id,
                     artifact_contract=artifact_contract,
                 )

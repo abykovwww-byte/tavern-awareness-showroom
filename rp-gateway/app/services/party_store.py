@@ -1290,6 +1290,7 @@ class PartyStore:
                     "audit_events",
                     "memory_summaries",
                     "memory_chapters",
+                    "rp_story_memory_snapshots",
                     "journal_entries",
                     "lore_cards",
                     "memory_checkpoints",

@@ -1,0 +1,60 @@
+# Decision 016: RP-only living story memory
+
+Date: 2026-08-03
+
+## Status
+
+Accepted.
+
+## Context
+
+Raw turns preserve full evidence and immutable episodic chapters preserve old
+scenes, but neither provides the narrator with one bounded, current registry of
+a very long campaign. A manually maintained campaign summary demonstrated the
+useful shape: canon, rules and abilities, inventory, characters, active and
+resolved threads, unresolved hooks, current situation, and chronology.
+
+The new mechanism must not change deterministic training behavior, replace
+canonical state, delete raw history, or require the service model to read the
+full 132k narrator prompt.
+
+## Decision
+
+Add a cumulative `rp_story_memory_snapshots` ledger and update it only when
+`scenario_type == "rp"`.
+
+- A global service model receives the previous bounded snapshot, the oldest
+  new turn batch, and a compact canonical-state excerpt without NPC secrets.
+- It returns a complete replacement document using the fixed v1 schema.
+- Default cadence is four new turns; a manual update may force a smaller batch.
+- Each successful replacement is append-only, party-scoped, revisioned, and
+  records turn coverage, state version, time, and model.
+- A checkpoint fork copies only the newest snapshot fully covered by that
+  checkpoint and resets its branch-local revision to one.
+- The narrator receives `RP_STORY_MEMORY` after world instructions and before
+  episodic chapters. State and `AUTHORITATIVE_OUTCOME` remain higher authority.
+- Background failures are fail-open and use durable service-job retry.
+
+Training and novel parties do not enqueue the job, load the snapshot, inject
+the prompt block, expose the RP UI/API fields, or reserve context for it.
+
+## Context budgets
+
+The narrator stack keeps its 131072-token cap. RP reserves 10000 tokens for the
+new dynamic layer, reducing default raw-history protection from 81920 to 71920
+tokens. Other modes retain 81920.
+
+The service-model request is separately bounded: previous snapshot up to 24000
+characters, state excerpt up to 8000 characters, new turns up to about 6000
+input tokens, and output up to 6000 tokens. This fits the configured 32768-token
+local Gemma window without sending the complete campaign transcript.
+
+## Consequences
+
+- Very long RP campaigns gain a stable living continuity ledger similar to a
+  maintained campaign-summary file.
+- Immutable chapters and raw turns remain available for detail and audit.
+- A service-model hallucination cannot directly mutate state.
+- RP retains fewer verbatim recent turns inside the 132k prompt, by an explicit
+  and observable 10k reserve.
+- Training behavior and context budget remain unchanged.
