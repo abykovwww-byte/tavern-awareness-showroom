@@ -3142,6 +3142,48 @@ def test_party_start_provider_http_error_returns_502(tmp_path: Path):
     assert response.json()["detail"] == "Narrative provider HTTP 503"
 
 
+def test_training_runtime_party_start_provider_error_uses_world_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_complete = NarrativeClient.complete
+    llm_calls = 0
+
+    async def counted_complete(*args: object, **kwargs: object) -> dict:
+        nonlocal llm_calls
+        llm_calls += 1
+        return await original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(NarrativeClient, "complete", counted_complete)
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+    shutil.copytree(source, tmp_path / "worldpacks" / "awareness-one-day")
+    c = client(tmp_path, mode="http-503")
+    party = create_demo_party(
+        c,
+        title="Runtime provider fallback",
+        character_name="Эллина",
+        scenario_type="training",
+        worldpack_id="awareness-one-day",
+    )
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "runtime-start-provider-http-503"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_runtime_start_http_503"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["choices"][0]["finish_reason"] == "provider_fallback"
+    assert response.json()["choices"][0]["message"]["content"].startswith(
+        "Ход 1. Понедельник, 09:00-09:30."
+    )
+    history = c.get(f"/api/parties/{party['id']}/history").json()["turns"]
+    assert len(history) == 1
+    assert llm_calls == 1
+    deleted = c.delete(f"/api/parties/{party['id']}")
+    assert deleted.status_code == 200, deleted.text
+
+
 def test_default_nvidia_attempt_order_keeps_user_models():
     from app.core.config import Settings
     from app.services.narrative import NarrativeClient

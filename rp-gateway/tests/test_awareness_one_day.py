@@ -339,6 +339,33 @@ def test_one_day_debrief_reports_60_30_10_components():
     assert "8 из 10" in text
 
 
+def test_one_day_party_scoped_debrief_uses_explicit_worldpack_id():
+    state = state_for(11)
+    state["meta"]["campaign_id"] = "party_ellina"
+    state["player"]["resources"].update(
+        {
+            "completion-status": "complete",
+            "security-score": 50,
+            "roleplay-score": 24,
+            "communication-score": 8,
+            "total-score": 82,
+        }
+    )
+
+    text = safe_fallback(
+        outcome(),
+        state,
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+    )
+
+    assert "82 из 100" in text
+    assert "50 из 60" in text
+    assert "24 из 30" in text
+    assert "8 из 10" in text
+    assert "корректных эскалаций" not in text
+
+
 def test_one_day_validator_rejects_debrief_scores_that_disagree_with_state():
     state = state_for(11)
     state["player"]["resources"].update(

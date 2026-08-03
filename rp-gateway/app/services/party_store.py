@@ -1352,6 +1352,7 @@ class PartyStore:
                     "lore_cards",
                     "memory_checkpoints",
                     "service_jobs",
+                    "training_runtime_snapshots",
                 ):
                     connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (campaign_id,))
                 connection.execute("DELETE FROM campaigns WHERE id = ?", (campaign_id,))

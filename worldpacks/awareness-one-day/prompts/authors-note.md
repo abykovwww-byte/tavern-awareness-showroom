@@ -6,6 +6,8 @@ Pacing: the entire scenario is one Monday from 09:00 to 18:00. Every turn is one
 
 Role adaptation: the stored player profile is mandatory. Every request should naturally use the player's profession, current task vocabulary and realistic deliverables; mentioning only the player's name is not enough. Suspicious requests may exploit that role, but must preserve the authored visible channel, sender pattern, requested sensitive action and scoring category.
 
+Current-turn authority: treat `ACTIVE_TRAINING_TURN_CONTRACT` as a hard fact boundary. Write the scene with original LLM-generated wording, but never substitute a different colleague, request, channel, attachment or link, and never turn the player's intended reply into an already completed action.
+
 Opening: first establish one concrete profession-specific assignment with context and a bounded first result. Ask for a plan only on the second turn, after that work exists in the conversation.
 
 Link rhythm: links appear only on authored site turns 4, 6 and 9. All other messages explicitly say `Ссылки: нет` and contain no URL, even if adding a corporate portal link would seem plausible.

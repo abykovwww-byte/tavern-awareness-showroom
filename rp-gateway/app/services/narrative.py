@@ -26,6 +26,18 @@ from app.services.rp_story_memory import story_memory_prompt_text
 logger = logging.getLogger(__name__)
 
 
+def training_turn_prompt_block(contract: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "ACTIVE_TRAINING_TURN_CONTRACT",
+            "This machine-readable WorldPack contract is authoritative for the current visible turn only.",
+            "Generate fresh natural wording with the LLM, but do not change its turn, sender, channel, required facts, attachment, URL policy, or player-role boundary.",
+            "Do not infer a different event from prior history and never expose hidden assessment rules.",
+            json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+        ]
+    )
+
+
 def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
     site = contract.get("site") if "site" in contract or "workspace" in contract else contract
     workspace = contract.get("workspace") if "site" in contract or "workspace" in contract else None
@@ -104,6 +116,7 @@ class NarrativeClient:
         rp_story_memory: dict[str, Any] | None = None,
         request_id: str | None = None,
         artifact_contract: dict[str, Any] | None = None,
+        training_turn_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(self.settings, inbound_authorization)
         if self.settings.nvidia_api_base.startswith("mock://"):
@@ -117,6 +130,7 @@ class NarrativeClient:
                 repair_instruction,
                 failed_response_text or "",
                 artifact_contract=artifact_contract,
+                training_turn_contract=training_turn_contract,
             )
         else:
             payload["messages"] = self.narrative_messages(
@@ -127,6 +141,7 @@ class NarrativeClient:
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
                 artifact_contract=artifact_contract,
+                training_turn_contract=training_turn_contract,
             )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
@@ -266,17 +281,24 @@ class NarrativeClient:
         memory_summary: dict[str, Any] | list[dict[str, Any]] | None = None,
         rp_story_memory: dict[str, Any] | None = None,
         artifact_contract: dict[str, Any] | None = None,
+        training_turn_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         relevant_characters = retrieve_relevant_characters(
             state,
             latest_player_action(request.messages),
             outcome_target=outcome.target,
         )
+        player_state = state.get("player", {})
+        if training_turn_contract and isinstance(player_state, dict):
+            player_state = {
+                "name": player_state.get("name"),
+                "description": player_state.get("description"),
+            }
         state_summary = {
             "campaign_id": state.get("meta", {}).get("campaign_id"),
             "worldpack_id": self.settings.campaign_id,
             "turn": state.get("meta", {}).get("turn"),
-            "player": state.get("player", {}),
+            "player": player_state,
             "relationships": selected_character_relationships(state, relevant_characters),
             "constraints": state.get("world_constraints", []),
         }
@@ -304,6 +326,8 @@ class NarrativeClient:
                     "content": f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}",
                 }
             )
+        if training_turn_contract:
+            messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if self.settings.scenario_type == "rp" and rp_story_memory:
             messages.append(
                 {
@@ -375,6 +399,7 @@ class NarrativeClient:
         repair_instruction: str,
         failed_response_text: str,
         artifact_contract: dict[str, Any] | None = None,
+        training_turn_contract: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         """Build a compact correction request instead of replaying the full party prompt."""
         player_resources = state.get("player", {}).get("resources", {})
@@ -396,6 +421,8 @@ class NarrativeClient:
                 ),
             }
         ]
+        if training_turn_contract:
+            messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
         messages.append(

@@ -6,9 +6,12 @@ import copy
 import hashlib
 import random
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.models.schemas import InteractionEvidence, Intent, Outcome, PatchOperation, StatePatch
+
+if TYPE_CHECKING:
+    from app.services.training_runtime import TrainingRuntimeService
 
 
 TARGETED_CHECKS = {"persuasion", "intimidation", "deception", "trust", "conflict"}
@@ -198,6 +201,7 @@ class RuleEngine:
         campaign_id: str | None = None,
         scenario_type: str = "rp",
         interaction_evidence: list[InteractionEvidence] | None = None,
+        training_runtime: "TrainingRuntimeService | None" = None,
     ) -> tuple[Outcome, StatePatch]:
         if scenario_type == "novel":
             return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
@@ -209,6 +213,7 @@ class RuleEngine:
                 campaign_id,
                 scenario_type,
                 interaction_evidence=interaction_evidence or [],
+                training_runtime=training_runtime,
             )
         if intent.action_type in TARGETED_CHECKS and not intent.target:
             intent.ambiguities.append(f"{intent.action_type} has no target; outcome is constrained.")
@@ -252,6 +257,7 @@ class RuleEngine:
         campaign_id: str | None,
         scenario_type: str,
         interaction_evidence: list[InteractionEvidence] | None = None,
+        training_runtime: "TrainingRuntimeService | None" = None,
     ) -> tuple[Outcome, StatePatch]:
         check_id = self.check_id(intent, request_id)
         training = scenario_type == "training"
@@ -313,6 +319,7 @@ class RuleEngine:
             campaign_id,
             scenario_type,
             interaction_evidence=interaction_evidence or [],
+            training_runtime=training_runtime,
         )
 
     def patch_for_nonmechanical(
@@ -323,6 +330,7 @@ class RuleEngine:
         campaign_id: str | None,
         scenario_type: str,
         interaction_evidence: list[InteractionEvidence] | None = None,
+        training_runtime: "TrainingRuntimeService | None" = None,
     ) -> StatePatch:
         turn = int(state.get("meta", {}).get("turn", 0)) + 1
         participants = [intent.actor] + ([intent.target] if intent.target else [])
@@ -341,7 +349,16 @@ class RuleEngine:
             )
         ]
         if scenario_type == "training":
-            if is_awareness_one_day_campaign(state, campaign_id):
+            if training_runtime and training_runtime.enabled:
+                operations.extend(
+                    training_runtime.resolution_operations(
+                        state,
+                        intent.desired_outcome,
+                        turn,
+                        interaction_evidence or [],
+                    )
+                )
+            elif is_awareness_one_day_campaign(state, campaign_id):
                 operations.extend(
                     self.awareness_one_day_scoring_operations(
                         state,
@@ -351,7 +368,8 @@ class RuleEngine:
                         interaction_evidence=interaction_evidence or [],
                     )
                 )
-            else:
+                operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
+            elif is_awareness_campaign(state, campaign_id):
                 operations.extend(
                     self.awareness_security_operations(
                         state,
@@ -361,7 +379,7 @@ class RuleEngine:
                         interaction_evidence=interaction_evidence or [],
                     )
                 )
-            operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
+                operations.extend(self.awareness_turn_operations(state, turn, campaign_id))
         return StatePatch(
             turn=turn,
             check_id=outcome.check_id,

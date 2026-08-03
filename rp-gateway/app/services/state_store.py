@@ -82,6 +82,13 @@ class StateStore:
                     id TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS training_runtime_snapshots (
+                    campaign_id TEXT PRIMARY KEY,
+                    contract_hash TEXT NOT NULL,
+                    contract_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
                 CREATE TABLE IF NOT EXISTS state_versions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -756,6 +763,23 @@ class StateStore:
                 if exists:
                     raise ValueError(f"branch campaign already exists: {target_campaign_id}")
                 connection.execute("INSERT INTO campaigns(id, created_at) VALUES(?, ?)", (target_campaign_id, now_ts()))
+                runtime_snapshot = connection.execute(
+                    "SELECT contract_hash, contract_json, created_at FROM training_runtime_snapshots WHERE campaign_id = ?",
+                    (self.campaign_id,),
+                ).fetchone()
+                if runtime_snapshot is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO training_runtime_snapshots(campaign_id, contract_hash, contract_json, created_at)
+                        VALUES(?, ?, ?, ?)
+                        """,
+                        (
+                            target_campaign_id,
+                            runtime_snapshot["contract_hash"],
+                            runtime_snapshot["contract_json"],
+                            runtime_snapshot["created_at"],
+                        ),
+                    )
                 connection.execute(
                     """
                     INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
@@ -994,7 +1018,7 @@ class StateStore:
                 for table in (
                     "turns", "turn_requests", "checks", "state_patches", "state_versions",
                     "audit_events", "memory_summaries", "memory_chapters", "rp_story_memory_snapshots", "journal_entries",
-                    "lore_cards", "memory_checkpoints", "service_jobs",
+                    "lore_cards", "memory_checkpoints", "service_jobs", "training_runtime_snapshots",
                 ):
                     connection.execute(f"DELETE FROM {table} WHERE campaign_id = ?", (target_campaign_id,))
                 connection.execute("DELETE FROM campaigns WHERE id = ?", (target_campaign_id,))
@@ -1071,6 +1095,42 @@ class StateStore:
             if row is None:
                 return self.empty_state()
             return json.loads(row["state_json"])
+
+    def training_runtime_snapshot(self, candidate: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Return the immutable party/branch training contract, creating it once when needed."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT contract_json FROM training_runtime_snapshots WHERE campaign_id = ?",
+                (self.campaign_id,),
+            ).fetchone()
+            if row is not None:
+                return json.loads(row["contract_json"])
+            if candidate is None:
+                return None
+            contract_hash = str(candidate.get("contract_hash") or "")
+            if not contract_hash:
+                raise ValueError("training runtime snapshot requires contract_hash")
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO training_runtime_snapshots(
+                    campaign_id, contract_hash, contract_json, created_at
+                )
+                VALUES(?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    contract_hash,
+                    json.dumps(candidate, ensure_ascii=False),
+                    now_ts(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT contract_json FROM training_runtime_snapshots WHERE campaign_id = ?",
+                (self.campaign_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("failed to create training runtime snapshot")
+        return json.loads(row["contract_json"])
 
     def history(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as connection:

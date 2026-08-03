@@ -4,6 +4,7 @@
 
 ```bash
 python3 scripts/validate-state.py
+python3 scripts/validate-training-runtime.py --worldpacks worldpacks
 python3 scripts/test-state-workflow.py
 python3 scripts/test-check-workflow.py
 ```
@@ -20,8 +21,21 @@ docker compose run --rm rp-gateway pytest
 ```
 
 The suite covers world-pack discovery, party isolation, state versioning,
-deterministic checks, training progression, memory chapters, provider errors,
+deterministic checks, WorldPack training runtime portability/snapshots,
+training progression, memory chapters, provider errors,
 authentication, and Light GUI APIs.
+
+Focused training checks:
+
+```bash
+docker compose run --rm rp-gateway pytest \
+  tests/test_training_runtime.py \
+  tests/test_training_capabilities.py \
+  tests/test_training_artifacts.py
+```
+
+The runtime test includes a non-awareness ОБЖ fixture to prove that turns and
+scoring come from the WorldPack rather than campaign-specific Gateway code.
 
 ## Runtime acceptance
 

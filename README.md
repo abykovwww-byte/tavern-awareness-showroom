@@ -13,7 +13,10 @@ Browser
 
 Gateway owns authentication, world packs, player characters, model profiles,
 party state, history, memory chapters, deterministic checks, and training
-progression. The browser stores only its active session and party preference.
+runtime execution. Training subject logic, schedule, assessment and fallback
+belong to the versioned WorldPack contract; Gateway interprets and snapshots it
+without campaign-specific branches. The browser stores only its active session
+and party preference.
 
 **Service model / Служебная модель** is the single administrator-selected LLM
 for the whole RP Stack. It serves long-term memory, world-state change drafts,

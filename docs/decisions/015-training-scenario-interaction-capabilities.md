@@ -65,7 +65,7 @@ scenario type and WorldPack support, snapshots them into the run, and gates:
 - narrator artifact contracts and fallback selection;
 - public artifact and workspace responses;
 - event endpoints;
-- RuleEngine evidence consumption;
+- normalized evidence consumption by the active training runtime (or the legacy compatibility resolver);
 - dataset, audit, debrief and leaderboard metadata.
 
 An off capability cannot be re-enabled by narrator output, browser state, a
@@ -156,3 +156,4 @@ capability combinations are not silently merged.
 - [Decision 010: Party Scenario Types](010-party-scenario-types.md)
 - [Decision 012: Public Showroom Scenarios](012-public-showroom-scenarios.md)
 - [Decision 014: Interactive Training Site Artifacts](014-interactive-training-site-artifacts.md)
+- [Decision 017: WorldPack-owned Training Runtime](017-worldpack-owned-training-runtime.md)

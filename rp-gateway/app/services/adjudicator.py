@@ -19,6 +19,7 @@ from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
+from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService, WorkspaceMaterialization
 from app.services.validator import OutputValidator, awareness_final_summary, safe_fallback
 from app.services.world_instructor import WorldInstructor
@@ -44,6 +45,7 @@ class Adjudicator:
         store: StateStore,
         training_artifacts: TrainingArtifactService | None = None,
         training_workspace: TrainingWorkspaceService | None = None,
+        training_runtime: TrainingRuntimeService | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -56,6 +58,7 @@ class Adjudicator:
         self.world = WorldInstructor(settings, store)
         self.training_artifacts = training_artifacts
         self.training_workspace = training_workspace
+        self.training_runtime = training_runtime
 
     async def handle_chat(
         self,
@@ -111,7 +114,9 @@ class Adjudicator:
                 return response
 
             state = self.store.get_state()
-            if self.settings.scenario_type == "training":
+            if self.settings.scenario_type == "training" and not (
+                self.training_runtime and self.training_runtime.enabled
+            ):
                 state = awareness_state_after_auto_start(
                     state,
                     self.settings.campaign_id,
@@ -128,6 +133,7 @@ class Adjudicator:
                 campaign_id=self.settings.campaign_id,
                 scenario_type=self.settings.scenario_type,
                 interaction_evidence=interaction_evidence,
+                training_runtime=self.training_runtime,
             )
             narrative_state = self.preview_applied_state(patch)
             artifact_contract = (
@@ -143,6 +149,11 @@ class Adjudicator:
             interaction_contract = (
                 {"site": artifact_contract, "workspace": workspace_contract}
                 if artifact_contract or workspace_contract
+                else None
+            )
+            training_turn_contract = (
+                self.training_runtime.prompt_contract(narrative_state, interaction_contract)
+                if self.training_runtime and self.training_runtime.enabled
                 else None
             )
 
@@ -164,7 +175,9 @@ class Adjudicator:
                     memory_summary=memory_summary,
                     rp_story_memory=rp_story_memory,
                     artifact_contract=interaction_contract,
+                    training_turn_contract=training_turn_contract,
                 )
+                llm_calls += 1
                 raw = await self.narrative.complete(
                     request,
                     narrative_state,
@@ -174,9 +187,11 @@ class Adjudicator:
                     rp_story_memory=rp_story_memory,
                     request_id=request_id,
                     artifact_contract=interaction_contract,
+                    training_turn_contract=training_turn_contract,
                 )
-                llm_calls += 1
-                if awareness_final_summary(narrative_state):
+                if awareness_final_summary(narrative_state) and not (
+                    self.training_runtime and self.training_runtime.enabled
+                ):
                     # Scores and their evidence are canonical Gateway state.
                     # Never let a free-form narrator reinterpret the debrief.
                     text = safe_fallback(
@@ -206,11 +221,17 @@ class Adjudicator:
                     campaign_id=self.settings.campaign_id,
                     latest_user_message=latest,
                     scenario_type=self.settings.scenario_type,
+                    training_runtime=self.training_runtime,
+                    interaction_contract=interaction_contract,
                 )
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
-                if (not validation.valid or not interaction_valid) and self.settings.max_repair_attempts > 0:
+                if (
+                    (not validation.valid or not interaction_valid)
+                    and self.settings.max_repair_attempts > 0
+                    and not (self.training_runtime and self.training_runtime.enabled)
+                ):
                     repaired = True
                     repair_instruction = validation.repair_instruction
                     if artifact_result and not artifact_result.valid:
@@ -227,6 +248,7 @@ class Adjudicator:
                                 "Return valid workspace_files: " + "; ".join(workspace_result.violations),
                             ]
                         ).strip()
+                    llm_calls += 1
                     raw = await self.narrative.complete(
                         request,
                         narrative_state,
@@ -238,8 +260,8 @@ class Adjudicator:
                         rp_story_memory=rp_story_memory,
                         request_id=request_id,
                         artifact_contract=interaction_contract,
+                        training_turn_contract=training_turn_contract,
                     )
-                    llm_calls += 1
                     text = response_text(raw)
                     if self.training_artifacts:
                         artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
@@ -258,6 +280,8 @@ class Adjudicator:
                         campaign_id=self.settings.campaign_id,
                         latest_user_message=latest,
                         scenario_type=self.settings.scenario_type,
+                        training_runtime=self.training_runtime,
+                        interaction_contract=interaction_contract,
                     )
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
@@ -279,13 +303,7 @@ class Adjudicator:
                     )
                     if not allow_gateway_fallback:
                         raise RuntimeError("LLM response failed narrative validation")
-                    text = safe_fallback(
-                        outcome,
-                        narrative_state,
-                        latest,
-                        self.settings.campaign_id,
-                        self.settings.scenario_type,
-                    )
+                    text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                     raw = self.provider_fallback_response(
                         outcome,
                         text,
@@ -304,21 +322,21 @@ class Adjudicator:
                 if not allow_gateway_fallback:
                     raise RuntimeError(f"Narrative provider HTTP {status}") from exc
                 provider_fallback_reason = f"http_{status}"
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
+                text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
                 if not allow_gateway_fallback:
                     raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
+                text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except ProviderRateLimitError as exc:
                 self.store.audit("llm_rate_limited", {"request_id": request_id, **exc.details}, request_id)
                 if not allow_gateway_fallback:
                     raise
                 provider_fallback_reason = "rate_limited"
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
+                text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
                 if not allow_gateway_fallback:
@@ -329,7 +347,7 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
                     request_id,
                 )
-                text = safe_fallback(outcome, narrative_state, latest, self.settings.campaign_id, self.settings.scenario_type)
+                text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
 
             if self.training_artifacts and artifact_contract:
@@ -364,6 +382,8 @@ class Adjudicator:
                 campaign_id=self.settings.campaign_id,
                 latest_user_message=latest,
                 scenario_type=self.settings.scenario_type,
+                training_runtime=self.training_runtime,
+                interaction_contract=interaction_contract,
             )
             turn_id = self.store.record_turn(
                 idempotency_key,
@@ -440,6 +460,11 @@ class Adjudicator:
             "llm_calls": llm_calls,
             "outcome": outcome,
             "interaction_evidence": interaction_evidence or [],
+            "training_runtime_contract_hash": (
+                self.training_runtime.contract_hash
+                if self.training_runtime and self.training_runtime.enabled
+                else None
+            ),
             "training_capabilities": {
                 "interactive_links_enabled": bool(self.training_artifacts and self.training_artifacts.enabled),
                 "interactive_workspace_enabled": bool(self.training_workspace and self.training_workspace.enabled),
@@ -463,6 +488,23 @@ class Adjudicator:
         if not turns:
             return False
         return str(turns[-1].get("player_message") or "").startswith("[AUTO_START]")
+
+    def safe_text(
+        self,
+        outcome: Outcome,
+        state: dict[str, Any],
+        latest_user_message: str,
+        interaction_contract: dict[str, Any] | None,
+    ) -> str:
+        if self.training_runtime and self.training_runtime.enabled:
+            return self.training_runtime.fallback_text(state, interaction_contract)
+        return safe_fallback(
+            outcome,
+            state,
+            latest_user_message,
+            self.settings.campaign_id,
+            self.settings.scenario_type,
+        )
 
     def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
         self.store.audit(

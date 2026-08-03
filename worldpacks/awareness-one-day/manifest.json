@@ -16,6 +16,12 @@
     "metric": "state_path",
     "state_path": "player.resources.total-score"
   },
+  "training_runtime": {
+    "schema_version": "rp-training-runtime.v1",
+    "program": "training/program.json",
+    "assessment": "training/assessment.json",
+    "fallbacks": "training/fallbacks.json"
+  },
   "training_artifacts": {
     "schema_version": "rp-training-artifacts.v1",
     "site_catalog": "artifacts/sites/index.json",

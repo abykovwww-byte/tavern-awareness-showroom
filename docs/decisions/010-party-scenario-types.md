@@ -36,7 +36,9 @@ silently choose or change it.
 - Do not roll dice or allow `/check` to alter correctness.
 - Resolve only explicit player actions and advance exactly one authored turn.
 - Treat schedule, templates, scoring fields, completion conditions, and output
-  validators as hard runtime constraints.
+  validators from a WorldPack `training_runtime` as hard runtime constraints.
+- Keep Gateway domain-neutral: it interprets the generic runtime schema and
+  snapshots it per party; subject logic stays in program/assessment files.
 - Do not expose hints, correctness, hidden scoring, or remediation before the
   authored debrief point.
 
@@ -44,9 +46,10 @@ silently choose or change it.
 
 1. Gateway scenario contract.
 2. Worldpack `gm_system` and `authors_note`.
-3. Long-term party memory.
-4. Current authoritative state and outcome.
-5. Recent raw turns.
+3. Sanitized active WorldPack training-turn contract when present.
+4. Long-term party memory.
+5. Current authoritative state and outcome.
+6. Recent raw turns.
 
 State and authoritative outcome remain factual authority regardless of prompt
 order. Worldpack prompts supplement the selected scenario type and cannot
@@ -70,3 +73,6 @@ metadata support all three types.
 Existing SQLite databases add `parties.scenario_type` through an additive
 migration. Existing Awareness parties migrate to `training`; other existing
 parties migrate to `rp`. New parties always provide the field explicitly.
+
+The executable training contract and compatibility policy are defined by
+[Decision 017](017-worldpack-owned-training-runtime.md).

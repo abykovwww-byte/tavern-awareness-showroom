@@ -1,0 +1,220 @@
+{
+  "schema_version": "rp-training-assessment.v1",
+  "revision": 1,
+  "detectors": {
+    "report_text": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:сообщаю|сообщу|сообщить|пишу|напишу|написать|отправляю|отправлю|отправить|пересылаю|перешлю|переслать|направляю|направлю|направить|эскалирую|эскалировать|регистрирую|зарегистрирую|зарегистрировать|report|forward)\\b.{0,200}\\b(?:soc|soc@|диб|специалист(?:у|а)? (?:диб|информационной безопасности)|серге(?:й|ю|я) литвинов(?:у|а)?)\\b"
+      ],
+      "exclude_patterns": [
+        "\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|сообщу|писать|пишу|напишу|отправлять|отправляю|отправлю|пересылать|пересылаю|перешлю|направлять|направляю|направлю|эскалировать|эскалирую|регистрировать|регистрирую|зарегистрирую)\\b"
+      ]
+    },
+    "report_event": {
+      "type": "interaction_event",
+      "event_types": ["reported", "file_reported"],
+      "decision_result": "pass"
+    },
+    "reported": {
+      "type": "expression",
+      "value": {"any": ["report_text", "report_event"]}
+    },
+    "independent_verified": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:проверяю|проверю|проверить|уточняю|уточню|уточнить|сверяю|сверю|сверить|перезваниваю|перезвоню|перезвонить|связываюсь|свяжусь|связаться|спрашиваю|спрошу|спросить|подтверждаю|подтвержу|подтвердить|verify|check|call back)\\b.{0,220}\\b(?:по (?:корпоративн|официальн|известн)\\w* канал|в каталог|у (?:руководител|отправител|владельц)|через (?:корпоративн\\w* )?(?:портал|service desk|службу поддержки|менеджер)|корпоративн\\w* (?:почт|адрес|каталог))\\w*"
+      ],
+      "exclude_patterns": [
+        "\\bне\\s+(?:буду\\s+)?(?:проверять|проверяю|проверю|уточнять|уточняю|уточню|сверять|сверяю|сверю|перезванивать|перезваниваю|перезвоню|связываться|связываюсь|свяжусь|спрашивать|спрашиваю|спрошу|подтверждать|подтверждаю|подтвержу)\\b"
+      ]
+    },
+    "explicit_refusal": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:не (?:открываю|открою|скачиваю|скачаю|запускаю|запущу|перехожу|перейду|ввожу|введу|сообщаю|сообщу|передаю|передам|отправляю|отправлю|пересылаю|перешлю|выдаю|выдам|использую|буду использовать|выполняю|выполню)|отказываюсь|отказ\\w*|отклоняю|блокирую|игнорирую|проигнорирую|игнорировать|проигнорировать|не буду|refuse|decline|do not)\\b"
+      ]
+    },
+    "safe_security_action": {
+      "type": "expression",
+      "value": {"any": ["reported", "independent_verified", "explicit_refusal"]}
+    },
+    "double_extension": {
+      "type": "text_regex",
+      "patterns": ["\\b[\\w.-]+\\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\\.exe\\b"]
+    },
+    "dangerous_file_action": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:открываю|открою|открыть|скачиваю|скачаю|скачать|запускаю|запущу|запустить|open|run|download)\\b"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:открывать|открываю|открою|скачивать|скачиваю|скачаю|запускать|запускаю|запущу)\\b"]
+    },
+    "dangerous_file": {
+      "type": "expression",
+      "value": {"all": ["double_extension", "dangerous_file_action"]}
+    },
+    "forward_action": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:пересылаю|перешлю|переслать|отправляю|отправлю|отправить|скидываю|скину|скинуть|forward)\\b.{0,180}\\b(?:коллег|общ(?:ий|ему) чат|групп|личн(?:ый|ому) чат|друг|знаком)\\w*"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:пересылать|пересылаю|перешлю|отправлять|отправляю|отправлю|скидывать|скидываю|скину)\\b"]
+    },
+    "suspicious_content": {
+      "type": "text_regex",
+      "patterns": ["(?:подозр|неизвестн|странн|вложени|полученн\\w* письм|двойн\\w* расширени|\\.exe\\b)"]
+    },
+    "unsafe_forward": {
+      "type": "expression",
+      "value": {"all": ["forward_action", "suspicious_content"]}
+    },
+    "credential_text": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:сообщаю|сообщу|передаю|передам|отправляю|отправлю|скидываю|скину|ввожу|введу|называю|назову|диктую|send|enter|share)\\b.{0,140}\\b(?:парол|проверочн\\w* код|одноразов\\w* код|уч[её]тн\\w* (?:запис|данн)|логин|mfa|otp|token|токен)\\w*"
+      ],
+      "exclude_patterns": [
+        "\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|сообщу|передавать|передаю|передам|отправлять|отправляю|отправлю|скидывать|скидываю|скину|вводить|ввожу|введу|называть|называю|назову|диктовать|диктую)\\b.{0,140}\\b(?:парол|проверочн\\w* код|одноразов\\w* код|уч[её]тн\\w* (?:запис|данн)|логин|mfa|otp|token|токен)\\w*"
+      ]
+    },
+    "credential_event": {
+      "type": "interaction_event",
+      "event_types": ["credentials_submitted"]
+    },
+    "credential_exposure": {
+      "type": "expression",
+      "value": {"any": ["credential_text", "credential_event"]}
+    },
+    "confidential_disclosure": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:сообщаю|рассказываю|передаю|передам|отправляю|отправлю|описываю|раскрываю|send|share)\\b.{0,180}\\b(?:структур\\w* компан|внутренн\\w* (?:систем|сет|процедур)|администратор|схем\\w* сет|(?:данн|спис|контакт)\\w* клиент|клиент\\w* (?:данн|спис|контакт)|конфиденциальн\\w* (?:информац|данн))\\w*"
+      ],
+      "exclude_patterns": [
+        "\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|рассказывать|рассказываю|передавать|передаю|передам|отправлять|отправляю|отправлю|описывать|описываю|раскрывать|раскрываю)\\b.{0,180}\\b(?:структур\\w* компан|внутренн\\w* (?:систем|сет|процедур)|администратор|схем\\w* сет|(?:данн|спис|контакт)\\w* клиент|клиент\\w* (?:данн|спис|контакт)|конфиденциальн\\w* (?:информац|данн))\\w*"
+      ]
+    },
+    "failed_link_event": {
+      "type": "interaction_event",
+      "event_types": ["link_opened"],
+      "decision_result": "fail"
+    },
+    "failed_file_event": {
+      "type": "interaction_event",
+      "event_types": ["file_opened", "file_downloaded", "active_content_enabled"],
+      "decision_result": "fail"
+    },
+    "link_opened": {
+      "type": "interaction_event",
+      "event_types": ["link_opened"]
+    },
+    "unsafe": {
+      "type": "expression",
+      "value": {"any": ["dangerous_file", "unsafe_forward", "credential_exposure", "confidential_disclosure", "failed_link_event", "failed_file_event"]}
+    },
+    "professional_response": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:отвечаю|отвечу|ответить|пишу|напишу|написать|сообщаю|сообщу|сообщить|подтверждаю|подтвержу|подтвердить|уточняю|уточню|уточнить|проверяю|проверю|проверить|сверяю|сверю|сверить|спрашиваю|спрошу|спросить|фиксирую|зафиксирую|зафиксировать|обновляю|обновлю|обновить|готовлю|подготовлю|подготовить|направляю|направлю|направить|передаю|передам|передать|назначаю|назначу|назначить|создаю|создам|создать|регистрирую|зарегистрирую|зарегистрировать|отклоняю|отклоню|отклонить|эскалирую|эскалировать|отказываюсь|отказ\\w*|соблюдаю|не (?:открываю|открою|запускаю|запущу|перехожу|перейду|ввожу|введу|передаю|передам|отправляю|отправлю|пересылаю|перешлю|выдаю|выдам|использую|буду использовать|выполняю|выполню)|reply|respond|confirm|clarify|verify|update|assign|register|decline|escalate)\\b"
+      ]
+    },
+    "role_marker": {
+      "type": "text_regex",
+      "patterns": [
+        "\\b(?:статус|задач|тикет|заявк|проект|код|ревью|документ|встреч|календар|дедлайн|срок|блокер|результат|владелец|ответственн|руководитель|менеджер|компетенц|полномочи|зона ответственности|служебн\\w* обязанност|рабоч\\w* канал|согласован\\w*|регламент\\w*|доступ\\w*|выдач\\w*|оборудован\\w*|ремонт\\w*|service desk|удал[её]нн\\w*|накопител\\w*|status|task|ticket|project|review|document|meeting|deadline|owner|manager|responsibilit)\\w*"
+      ]
+    },
+    "profile_overlap": {
+      "type": "profile_overlap"
+    },
+    "role_aligned": {
+      "type": "expression",
+      "value": {"all": ["professional_response", {"any": ["role_marker", "safe_security_action", "profile_overlap"]}]}
+    }
+  },
+  "rules": [
+    {
+      "id": "count-link-open",
+      "turns": "*",
+      "when": "link_opened",
+      "effects": [
+        {"increment": {"resource": "links-opened", "value": 1}}
+      ]
+    },
+    {
+      "id": "safe-security-response",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": {"all": ["safe_security_action", {"not": "unsafe"}]},
+      "effects": [
+        {"increment": {"resource": "security-score", "value": 10}},
+        {"increment": {"resource": "safe-security-responses", "value": 1}},
+        {"append_evidence": {"resource": "security-score-evidence", "labels": {"reported": "сообщение в SOC/ДИБ", "independent_verified": "независимая проверка по официальному каналу", "explicit_refusal": "явный отказ от небезопасного действия"}}}
+      ]
+    },
+    {
+      "id": "unsafe-security-response",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": "unsafe",
+      "effects": [
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"append_evidence": {"resource": "security-score-evidence", "labels": {"dangerous_file": "опасное действие с двойным расширением", "unsafe_forward": "лишняя пересылка подозрительного содержимого", "credential_exposure": "раскрытие учётных данных", "confidential_disclosure": "раскрытие конфиденциальной информации", "failed_link_event": "опасная UI-ссылка открыта", "failed_file_event": "опасный UI-файл открыт"}}}
+      ]
+    },
+    {
+      "id": "count-suspicious-artifact",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": {"any": ["dangerous_file", "failed_link_event", "failed_file_event"]},
+      "effects": [
+        {"increment": {"resource": "suspicious-artifacts-opened", "value": 1}}
+      ]
+    },
+    {
+      "id": "count-credential-exposure",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": "credential_exposure",
+      "effects": [
+        {"increment": {"resource": "credential-exposure", "value": 1}}
+      ]
+    },
+    {
+      "id": "count-confidential-disclosure",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": "confidential_disclosure",
+      "effects": [
+        {"increment": {"resource": "confidential-disclosures", "value": 1}}
+      ]
+    },
+    {
+      "id": "count-unnecessary-forwarding",
+      "turns": [3, 4, 5, 7, 9, 10],
+      "when": "unsafe_forward",
+      "effects": [
+        {"increment": {"resource": "unnecessary-forwarding", "value": 1}}
+      ]
+    },
+    {
+      "id": "role-aligned-response",
+      "turns": "*",
+      "when": "role_aligned",
+      "effects": [
+        {"increment": {"resource": "roleplay-score", "value": 3}},
+        {"increment": {"resource": "role-aligned-responses", "value": 1}},
+        {"append_evidence": {"resource": "roleplay-score-evidence", "labels": {"profile_overlap": "действие связано с описанием должности", "safe_security_action": "соблюдены границы роли и безопасная маршрутизация", "role_marker": "явное рабочее действие в рамках полномочий"}, "fallback": "наблюдаемое действие в рамках роли"}}
+      ]
+    },
+    {
+      "id": "professional-response",
+      "turns": "*",
+      "when": "professional_response",
+      "effects": [
+        {"increment": {"resource": "communication-score", "value": 1}},
+        {"increment": {"resource": "professional-responses", "value": 1}},
+        {"append_evidence": {"resource": "communication-score-evidence", "fallback": "сформулирован явный профессиональный ответ"}}
+      ]
+    }
+  ],
+  "aggregates": {
+    "total-score": {
+      "bounded_sum": ["security-score", "roleplay-score", "communication-score"],
+      "min": 0,
+      "max": 100
+    }
+  }
+}

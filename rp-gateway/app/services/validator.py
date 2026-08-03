@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.models.schemas import Outcome, ValidationResult
 from app.services.rule_engine import is_awareness_campaign, is_awareness_one_day_campaign
+
+if TYPE_CHECKING:
+    from app.services.training_runtime import TrainingRuntimeService
 
 
 SERVICE_LINE_RE = re.compile(
@@ -131,6 +134,8 @@ class OutputValidator:
         campaign_id: str | None = None,
         latest_user_message: str = "",
         scenario_type: str = "rp",
+        training_runtime: "TrainingRuntimeService | None" = None,
+        interaction_contract: dict[str, Any] | None = None,
     ) -> ValidationResult:
         lowered = text.lower()
         violations: list[str] = []
@@ -158,7 +163,11 @@ class OutputValidator:
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
-        if scenario_type == "training" and is_awareness_campaign(state or {}, campaign_id):
+        if scenario_type == "training" and training_runtime and training_runtime.enabled:
+            violations.extend(
+                training_runtime.validate_narrative(text, state or {}, interaction_contract)
+            )
+        elif scenario_type == "training" and is_awareness_campaign(state or {}, campaign_id):
             expected_header = awareness_expected_header(state) if state else None
             final_summary = awareness_final_summary(state)
             if expected_header and not text.lstrip().startswith(expected_header):
@@ -286,7 +295,7 @@ def awareness_safe_fallback(
     campaign_id: str | None = None,
 ) -> str:
     if awareness_final_summary(state):
-        return awareness_debrief_fallback(state)
+        return awareness_debrief_fallback(state, campaign_id)
     if is_awareness_one_day_campaign(state, campaign_id):
         return awareness_one_day_safe_fallback(state)
     resources = state.get("player", {}).get("resources", {})
@@ -446,11 +455,11 @@ def awareness_one_day_safe_fallback(state: dict[str, Any]) -> str:
     return f"{header}\n\n{block}\n\nЧто ты делаешь и как отвечаешь в рамках своей должности?"
 
 
-def awareness_debrief_fallback(state: dict[str, Any]) -> str:
+def awareness_debrief_fallback(state: dict[str, Any], campaign_id: str | None = None) -> str:
     resources = state.get("player", {}).get("resources", {})
     if not isinstance(resources, dict):
         resources = {}
-    if is_awareness_one_day_campaign(state):
+    if is_awareness_one_day_campaign(state, campaign_id):
         total_score = max(0, min(100, int(resources.get("total-score", 0) or 0)))
         security_score = max(0, min(60, int(resources.get("security-score", 0) or 0)))
         roleplay_score = max(0, min(30, int(resources.get("roleplay-score", 0) or 0)))

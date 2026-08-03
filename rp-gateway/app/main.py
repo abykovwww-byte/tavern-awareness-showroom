@@ -88,11 +88,16 @@ from app.services.service_models import (
 )
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
-from app.services.rule_engine import awareness_turn_window, awareness_turns_remaining, is_awareness_campaign
+from app.services.rule_engine import (
+    awareness_turn_window,
+    awareness_turns_remaining,
+    is_awareness_campaign,
+)
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
+from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
@@ -150,11 +155,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party), party)
 
-    def training_services_for_party(party: Any, party_state_store: StateStore) -> tuple[TrainingArtifactService, TrainingWorkspaceService]:
+    def training_services_for_party(
+        party: Any,
+        party_state_store: StateStore,
+    ) -> tuple[TrainingRuntimeService, TrainingArtifactService, TrainingWorkspaceService]:
         run_capabilities = showroom_store.capabilities_for_party(party.id)
         links_enabled = run_capabilities is None or run_capabilities["interactive_links_enabled"]
         workspace_enabled = run_capabilities is None or run_capabilities["interactive_workspace_enabled"]
         return (
+            TrainingRuntimeService(party.worldpack, party_state_store),
             TrainingArtifactService(party.worldpack, party_state_store, enabled=links_enabled),
             TrainingWorkspaceService(party.worldpack, party_state_store, enabled=workspace_enabled),
         )
@@ -236,7 +245,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ),
                     party_settings,
                 )
-                narrator_response = await Adjudicator(party_settings, party_state_store).handle_chat(
+                runtime_service, artifact_service, workspace_service = training_services_for_party(
+                    party,
+                    party_state_store,
+                )
+                narrator_response = await Adjudicator(
+                    party_settings,
+                    party_state_store,
+                    training_artifacts=artifact_service,
+                    training_workspace=workspace_service,
+                    training_runtime=runtime_service,
+                ).handle_chat(
                     chat_request,
                     authorization=None,
                     idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
@@ -805,7 +824,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            service, _ = training_services_for_party(party, party_state_store)
+            _, service, _ = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
                 raise ValueError("interactive training artifacts are not enabled for this party")
             result = service.record_event(payload)
@@ -818,7 +837,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            _, service = training_services_for_party(party, party_state_store)
+            _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
                 raise ValueError("interactive training workspace is not enabled for this party")
             return {"party_id": party_id, "workspace": service.snapshot(party_state_store.get_state())}
@@ -834,7 +853,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            _, service = training_services_for_party(party, party_state_store)
+            _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
                 raise ValueError("interactive training workspace is not enabled for this party")
             result = service.record_event(payload, party_state_store.get_state())
@@ -847,7 +866,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            _, service = training_services_for_party(party, party_state_store)
+            _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
                 raise ValueError("interactive training workspace is not enabled for this party")
             path, mime_type, filename = service.resource_for_file(
@@ -1290,7 +1309,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             state = party_state_store.get_state()
-            start_patch = party_start_state_patch(state, party_id, party.worldpack_id, party.scenario_type)
+            runtime_service, artifact_service, workspace_service = training_services_for_party(party, party_state_store)
+            start_patch = (
+                runtime_service.start_patch(state, party_id)
+                if party.scenario_type == "training" and runtime_service.enabled
+                else party_start_state_patch(state, party_id, party.worldpack_id, party.scenario_type)
+            )
             narrative_state = party_start_narrative_state(state, start_patch)
             prompt = party_start_prompt(party_store, party)
             chat_request = ChatCompletionRequest(
@@ -1304,12 +1328,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
             narrative = NarrativeClient(party_settings)
-            artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             artifact_contract = artifact_service.contract_for_state(narrative_state)
             workspace_contract = workspace_service.contract_for_state(narrative_state, party_start=True)
             interaction_contract = (
                 {"site": artifact_contract, "workspace": workspace_contract}
                 if artifact_contract or workspace_contract
+                else None
+            )
+            training_turn_contract = (
+                runtime_service.prompt_contract(narrative_state, interaction_contract)
+                if runtime_service.enabled
                 else None
             )
             prompt_messages = narrative.narrative_messages(
@@ -1320,30 +1348,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
                 artifact_contract=interaction_contract,
+                training_turn_contract=training_turn_contract,
             )
             repaired = False
             fallback_reason: str | None = None
-            raw = await narrative.complete(
-                chat_request,
-                narrative_state,
-                start_outcome,
-                authorization,
-                memory_summary=memory_summary,
-                rp_story_memory=rp_story_memory,
-                request_id=request_id,
-                artifact_contract=interaction_contract,
-            )
             adjudicator = Adjudicator(party_settings, party_state_store)
+            try:
+                raw = await narrative.complete(
+                    chat_request,
+                    narrative_state,
+                    start_outcome,
+                    authorization,
+                    memory_summary=memory_summary,
+                    rp_story_memory=rp_story_memory,
+                    request_id=request_id,
+                    artifact_contract=interaction_contract,
+                    training_turn_contract=training_turn_contract,
+                )
+            except (httpx.HTTPStatusError, httpx.TimeoutException, ProviderRateLimitError, RuntimeError) as exc:
+                if party.scenario_type != "training" or not runtime_service.enabled:
+                    raise
+                if isinstance(exc, httpx.HTTPStatusError):
+                    status = exc.response.status_code if exc.response is not None else "unknown"
+                    fallback_reason = f"http_{status}"
+                elif isinstance(exc, httpx.TimeoutException):
+                    fallback_reason = "timeout"
+                elif isinstance(exc, ProviderRateLimitError):
+                    fallback_reason = "rate_limited"
+                else:
+                    fallback_reason = "runtime_error"
+                text = runtime_service.fallback_text(narrative_state, interaction_contract)
+                raw = adjudicator.provider_fallback_response(
+                    start_outcome,
+                    text,
+                    fallback_reason,
+                    request_id,
+                )
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
-            artifact_result = artifact_service.materialize_response(response, artifact_contract)
-            workspace_result = workspace_service.materialize_response(response, workspace_contract)
-            if artifact_result.valid:
+            if fallback_reason is None:
+                artifact_result = artifact_service.materialize_response(response, artifact_contract)
+                workspace_result = workspace_service.materialize_response(response, workspace_contract)
+                if artifact_result.valid:
+                    text = artifact_result.text
+                if workspace_result.valid:
+                    text = workspace_result.text
+                if artifact_result.valid and workspace_result.valid:
+                    response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
+            else:
+                artifact_result = artifact_service.fallback_materialization(response, text, artifact_contract)
                 text = artifact_result.text
-            if workspace_result.valid:
-                text = workspace_result.text
-            if artifact_result.valid and workspace_result.valid:
-                response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
+                workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             validator = OutputValidator()
             validation = validator.validate(
                 text,
@@ -1351,10 +1406,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 narrative_state,
                 campaign_id=party.worldpack_id,
                 scenario_type=party.scenario_type,
+                training_runtime=runtime_service,
+                interaction_contract=interaction_contract,
             )
             if (
                 not validation.valid or not artifact_result.valid or not workspace_result.valid
-            ) and party_settings.max_repair_attempts > 0:
+            ) and party_settings.max_repair_attempts > 0 and not runtime_service.enabled:
                 repaired = True
                 repair_instruction = validation.repair_instruction
                 if not artifact_result.valid:
@@ -1382,6 +1439,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     rp_story_memory=rp_story_memory,
                     request_id=request_id,
                     artifact_contract=interaction_contract,
+                    training_turn_contract=training_turn_contract,
                 )
                 response = adjudicator.normalize_response(raw, model_profile.model)
                 text = response_text(response)
@@ -1399,9 +1457,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     narrative_state,
                     campaign_id=party.worldpack_id,
                     scenario_type=party.scenario_type,
+                    training_runtime=runtime_service,
+                    interaction_contract=interaction_contract,
                 )
             if not validation.valid or not artifact_result.valid or not workspace_result.valid:
-                fallback_reason = "validation_failed"
+                fallback_reason = fallback_reason or "validation_failed"
                 party_state_store.audit(
                     "party_start_validation_failed",
                     {
@@ -1417,21 +1477,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 allow_safe_fallback = getattr(http_request.state, "showroom_party_access", False) or (
                     party.scenario_type == "training"
-                    and is_awareness_campaign(narrative_state, party.worldpack_id)
+                    and (
+                        runtime_service.enabled
+                        or is_awareness_campaign(narrative_state, party.worldpack_id)
+                    )
                 )
                 if not allow_safe_fallback:
                     raise RuntimeError("LLM response failed narrative validation")
-                text = safe_fallback(
-                    start_outcome,
-                    narrative_state,
-                    "",
-                    party.worldpack_id,
-                    party.scenario_type,
+                text = (
+                    runtime_service.fallback_text(narrative_state, interaction_contract)
+                    if runtime_service.enabled
+                    else safe_fallback(
+                        start_outcome,
+                        narrative_state,
+                        "",
+                        party.worldpack_id,
+                        party.scenario_type,
+                    )
                 )
                 response = adjudicator.provider_fallback_response(
                     start_outcome,
                     text,
-                    "validation_failed",
+                    fallback_reason,
                     request_id,
                 )
                 artifact_result = artifact_service.fallback_materialization(response, text, artifact_contract)
@@ -1463,6 +1530,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "fallback": fallback_reason is not None,
                     "fallback_reason": fallback_reason,
                     "llm_calls": 2 if repaired else 1,
+                    "training_runtime_contract_hash": runtime_service.contract_hash,
                     "outcome": start_outcome.model_dump(mode="json"),
                     "training_capabilities": {
                         "interactive_links_enabled": artifact_service.enabled,
@@ -1525,12 +1593,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request,
                 party_settings,
             )
-            artifact_service, workspace_service = training_services_for_party(party, party_state_store)
+            runtime_service, artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             response = await Adjudicator(
                 party_settings,
                 party_state_store,
                 training_artifacts=artifact_service,
                 training_workspace=workspace_service,
+                training_runtime=runtime_service,
             ).handle_chat(
                 chat_request,
                 authorization,
@@ -1538,7 +1607,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 x_request_id,
                 allow_gateway_fallback=(
                     party.scenario_type == "training"
-                    and is_awareness_campaign(party_state_store.get_state(), party.worldpack_id)
+                    and (
+                        runtime_service.enabled
+                        or is_awareness_campaign(party_state_store.get_state(), party.worldpack_id)
+                    )
                 ),
             )
         except RequestAlreadyRunning as exc:
