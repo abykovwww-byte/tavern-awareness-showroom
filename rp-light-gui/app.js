@@ -29,6 +29,7 @@ const appState = {
   adminAutotestRuns: [],
   adminDatasetTurns: [],
   adminDatasetReviewTurnId: null,
+  worldMarkdownImport: null,
 };
 
 const els = {
@@ -97,8 +98,12 @@ const els = {
   worldSelect: document.querySelector("#worldSelect"),
   worldReadyFields: document.querySelector("#worldReadyFields"),
   worldPromptFields: document.querySelector("#worldPromptFields"),
+  worldPromptTextFields: document.querySelector("#worldPromptTextFields"),
+  worldMarkdownFields: document.querySelector("#worldMarkdownFields"),
   worldPromptTitleInput: document.querySelector("#worldPromptTitleInput"),
   worldPromptInput: document.querySelector("#worldPromptInput"),
+  worldMarkdownInput: document.querySelector("#worldMarkdownInput"),
+  worldMarkdownStatus: document.querySelector("#worldMarkdownStatus"),
   characterNameInput: document.querySelector("#characterNameInput"),
   characterDescriptionInput: document.querySelector("#characterDescriptionInput"),
   characterDescriptionLabel: document.querySelector("#characterDescriptionLabel"),
@@ -197,6 +202,11 @@ const PENDING_STORAGE_KEY = "rp-light-gui-pending-messages";
 const PENDING_MAX_AGE_MS = 60 * 60 * 1000;
 const PENDING_RECOVERY_ATTEMPTS = 180;
 const PENDING_RECOVERY_INTERVAL_MS = 5000;
+const WORLD_PROMPT_MAX_CHARS = 6000;
+const WORLD_MARKDOWN_MAX_CHARS = 200000;
+const WORLD_MARKDOWN_MAX_BYTES = 1024 * 1024;
+const WORLD_MARKDOWN_PREVIEW_CHARS = 1200;
+const WORLD_MARKDOWN_HELP = "Выбери произвольный UTF-8 `.md` до 1 МиБ и 200 000 символов. Markdown используется как текстовый world system prompt и не исполняется.";
 const pendingRecoveryTasks = {};
 let partyReloadGeneration = 0;
 const autotestPollingTasks = {};
@@ -240,6 +250,7 @@ function bindEvents() {
   });
   els.worldPromptTitleInput.addEventListener("input", renderWorldPreview);
   els.worldPromptInput.addEventListener("input", renderWorldPreview);
+  els.worldMarkdownInput.addEventListener("change", loadWorldMarkdownFile);
   els.modelProviderSelect.addEventListener("change", renderDialogModelOptions);
   els.modelSelect.addEventListener("change", renderModelPreview);
   els.partyModelProviderSelect.addEventListener("change", renderPartyModelOptions);
@@ -1857,6 +1868,9 @@ function renderDialogOptions() {
   els.partyTitleInput.dataset.autoValue = els.partyTitleInput.value;
   els.worldPromptTitleInput.value = "";
   els.worldPromptInput.value = "";
+  els.worldMarkdownInput.value = "";
+  els.worldMarkdownStatus.textContent = WORLD_MARKDOWN_HELP;
+  appState.worldMarkdownImport = null;
   els.characterNameInput.value = "Игрок";
   els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
   renderWorldPreview();
@@ -1903,17 +1917,23 @@ function syncAutoPartyTitle() {
 }
 
 function renderCreationModes() {
-  const worldPrompt = selectedRadioValue("worldSource") === "prompt";
+  const worldSource = selectedRadioValue("worldSource");
+  const worldPrompt = worldSource === "prompt";
+  const worldMarkdown = worldSource === "markdown_file";
+  const generatedWorld = worldPrompt || worldMarkdown;
   const characterPrompt = selectedRadioValue("characterSource") === "prompt";
-  els.worldReadyFields.classList.toggle("hidden", worldPrompt);
-  els.worldPromptFields.classList.toggle("hidden", !worldPrompt);
-  els.worldSelect.toggleAttribute("required", !worldPrompt);
+  els.worldReadyFields.classList.toggle("hidden", generatedWorld);
+  els.worldPromptFields.classList.toggle("hidden", !generatedWorld);
+  els.worldPromptTextFields.classList.toggle("hidden", !worldPrompt);
+  els.worldMarkdownFields.classList.toggle("hidden", !worldMarkdown);
+  els.worldSelect.toggleAttribute("required", !generatedWorld);
   els.worldPromptInput.toggleAttribute("required", worldPrompt);
+  els.worldMarkdownInput.toggleAttribute("required", worldMarkdown);
   els.characterDescriptionLabel.textContent = characterPrompt ? "Prompt персонажа" : "Описание готового персонажа";
   els.characterDescriptionHint.textContent = characterPrompt
     ? "Опиши роль, характер, ограничения и стартовые ресурсы. Gateway сохранит это в profile персонажа."
-    : worldPrompt
-      ? "Для prompt-мира используется стандартная роль игрока; можно заменить ее своим описанием."
+    : generatedWorld
+      ? "Для созданного мира используется стандартная роль игрока; можно заменить ее своим описанием."
       : "Берется роль игрока из worldpack; можно слегка поправить перед стартом.";
   if (!characterPrompt) {
     syncReadyCharacterDescription();
@@ -1923,13 +1943,26 @@ function renderCreationModes() {
 }
 
 function renderWorldPreview() {
-  if (selectedRadioValue("worldSource") === "prompt") {
+  const worldSource = selectedRadioValue("worldSource");
+  if (worldSource === "prompt") {
     const title = els.worldPromptTitleInput.value.trim() || "Свой мир";
     const prompt = els.worldPromptInput.value.trim() || "Опиши мир, стартовую ситуацию, тон и ограничения.";
     els.worldPreview.innerHTML = `<strong>${escapeHtml(title)}</strong><br>${escapeHtml(prompt)}`;
-    if (!els.partyTitleInput.value || els.partyTitleInput.value === "Новая партия") {
-      els.partyTitleInput.value = `${title}: партия`;
+    syncGeneratedWorldPartyTitle(title);
+    return;
+  }
+  if (worldSource === "markdown_file") {
+    const imported = appState.worldMarkdownImport;
+    const title = els.worldPromptTitleInput.value.trim() || imported?.title || "Мир из Markdown";
+    if (!imported) {
+      els.worldPreview.innerHTML = `<strong>${escapeHtml(title)}</strong><br>Выбери файл .md, чтобы проверить размер и содержимое.`;
+      syncGeneratedWorldPartyTitle(title);
+      return;
     }
+    const preview = imported.content.slice(0, WORLD_MARKDOWN_PREVIEW_CHARS);
+    const suffix = imported.content.length > preview.length ? "\n…" : "";
+    els.worldPreview.innerHTML = `<strong>${escapeHtml(title)}</strong><br><span>${escapeHtml(imported.name)} · ${imported.content.length.toLocaleString("ru-RU")} символов · ${formatFileSize(imported.size)}</span><div class="world-markdown-preview">${escapeHtml(preview + suffix)}</div>`;
+    syncGeneratedWorldPartyTitle(title);
     return;
   }
 
@@ -1942,6 +1975,63 @@ function renderWorldPreview() {
   if (!els.partyTitleInput.value) {
     els.partyTitleInput.value = `${pack.title}: партия`;
   }
+}
+
+function syncGeneratedWorldPartyTitle(title) {
+  const previousAuto = els.partyTitleInput.dataset.autoValue || "";
+  if (els.partyTitleInput.value && els.partyTitleInput.value !== previousAuto && els.partyTitleInput.value !== "Новая партия") return;
+  const nextAuto = `${title}: партия`;
+  els.partyTitleInput.value = nextAuto;
+  els.partyTitleInput.dataset.autoValue = nextAuto;
+}
+
+async function loadWorldMarkdownFile() {
+  appState.worldMarkdownImport = null;
+  const file = els.worldMarkdownInput.files?.[0];
+  if (!file) {
+    els.worldMarkdownStatus.textContent = WORLD_MARKDOWN_HELP;
+    renderWorldPreview();
+    return;
+  }
+  try {
+    const imported = await readWorldMarkdownFile(file);
+    appState.worldMarkdownImport = imported;
+    els.worldMarkdownStatus.textContent = `${imported.name} · ${imported.content.length.toLocaleString("ru-RU")} символов · ${formatFileSize(imported.size)}`;
+    if (!els.worldPromptTitleInput.value.trim()) {
+      els.worldPromptTitleInput.value = imported.title;
+    }
+  } catch (error) {
+    els.worldMarkdownInput.value = "";
+    els.worldMarkdownStatus.textContent = error.message;
+    showToast(error.message);
+  }
+  renderWorldPreview();
+}
+
+async function readWorldMarkdownFile(file) {
+  if (!/\.md$/i.test(file.name || "")) {
+    throw new Error("Можно загрузить только файл с расширением .md.");
+  }
+  if (file.size > WORLD_MARKDOWN_MAX_BYTES) {
+    throw new Error("Markdown-файл больше 1 МиБ.");
+  }
+  const content = (await file.text()).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+  if (!content) {
+    throw new Error("Markdown-файл пуст.");
+  }
+  if (content.includes("\u0000")) {
+    throw new Error("Markdown-файл должен быть обычным текстом без NUL-байтов.");
+  }
+  if (content.length > WORLD_MARKDOWN_MAX_CHARS) {
+    throw new Error(`Markdown-файл содержит больше ${WORLD_MARKDOWN_MAX_CHARS.toLocaleString("ru-RU")} символов.`);
+  }
+  const title = file.name.replace(/\.md$/i, "").replace(/[_-]+/g, " ").trim().slice(0, 160) || "Мир из Markdown";
+  return { name: file.name, size: file.size, content, title };
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} Б`;
+  return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} КиБ`;
 }
 
 function renderModelPreview() {
@@ -2014,16 +2104,30 @@ async function createParty(event) {
 }
 
 async function resolveWorldpack() {
-  if (selectedRadioValue("worldSource") !== "prompt") {
+  const worldSource = selectedRadioValue("worldSource");
+  if (worldSource === "ready") {
     if (!els.worldSelect.value) throw new Error("Выбери готовый мир.");
     const pack = selectedWorldpack();
     if (!pack) throw new Error("Готовый мир не найден.");
     return pack;
   }
-  const prompt = els.worldPromptInput.value.trim();
-  if (!prompt) throw new Error("Заполни prompt мира.");
   const title = els.worldPromptTitleInput.value.trim() || els.partyTitleInput.value.trim() || "Свой мир";
-  const result = await apiPost("/api/worldpacks/prompt", { title, prompt });
+  let payload;
+  if (worldSource === "prompt") {
+    const prompt = els.worldPromptInput.value.trim();
+    if (!prompt) throw new Error("Заполни prompt мира.");
+    if (prompt.length > WORLD_PROMPT_MAX_CHARS) throw new Error(`Ручной prompt не должен превышать ${WORLD_PROMPT_MAX_CHARS} символов.`);
+    payload = { title, prompt, source: "text" };
+  } else if (worldSource === "markdown_file") {
+    const file = els.worldMarkdownInput.files?.[0];
+    if (!file) throw new Error("Выбери Markdown-файл мира.");
+    const imported = appState.worldMarkdownImport || (await readWorldMarkdownFile(file));
+    appState.worldMarkdownImport = imported;
+    payload = { title, prompt: imported.content, source: "markdown_file", source_filename: imported.name };
+  } else {
+    throw new Error("Выбери источник мира.");
+  }
+  const result = await apiPost("/api/worldpacks/prompt", payload);
   appState.worldpacks.push(result.worldpack);
   return result.worldpack;
 }
@@ -3049,6 +3153,16 @@ async function api(path, options = {}) {
 }
 
 function apiErrorMessage(detail, status) {
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        const location = Array.isArray(item?.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
+        const message = typeof item?.msg === "string" ? item.msg.replace(/^Value error,\s*/i, "") : "";
+        return [location, message].filter(Boolean).join(": ");
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join("; ");
+  }
   if (detail && typeof detail === "object" && detail.code === "provider_rate_limited") {
     const retryAfter = Number(detail.retry_after_seconds);
     const retryHint = Number.isFinite(retryAfter) && retryAfter > 0

@@ -417,11 +417,12 @@
 
           <fieldset class="choice-block wide">
             <legend>Мир</legend>
-            <div class="segmented">
+            <div class="segmented world-source-segmented">
               <label><input type="radio" name="worldSource" value="ready" checked /> Готовый worldpack</label>
-              <label><input type="radio" name="worldSource" value="prompt" /> Задать prompt</label>
+              <label><input type="radio" name="worldSource" value="prompt" /> Ввести prompt</label>
+              <label><input type="radio" name="worldSource" value="markdown_file" /> Загрузить .md</label>
             </div>
-            <p class="field-hint">Готовый мир берется из `/worldpacks`; prompt-мир сохраняется как generated worldpack в state volume.</p>
+            <p class="field-hint">Готовый мир берется из `/worldpacks`; ручной prompt ограничен 6000 символами, а Markdown-файл — 200 000 символов и 1 МиБ.</p>
           </fieldset>
 
           <label class="wide" id="worldReadyFields">
@@ -432,11 +433,17 @@
           <div class="prompt-fields wide hidden" id="worldPromptFields">
             <label>
               <span>Название prompt-мира</span>
-              <input id="worldPromptTitleInput" title="Короткое название мира для списка партий и worldpack registry" />
+              <input id="worldPromptTitleInput" maxlength="160" title="Короткое название мира для списка партий и worldpack registry" />
             </label>
-            <label>
+            <label id="worldPromptTextFields">
               <span>Prompt мира</span>
-              <textarea id="worldPromptInput" rows="5" placeholder="Опиши жанр, стартовую сцену, важные ограничения, фракции и тон." title="Gateway сохранит prompt как world constraint стартового state"></textarea>
+              <textarea id="worldPromptInput" rows="5" maxlength="6000" placeholder="Опиши жанр, стартовую сцену, важные ограничения, фракции и тон." title="Gateway сохранит prompt как world constraint стартового state"></textarea>
+              <small class="field-hint">До 6000 символов.</small>
+            </label>
+            <label class="hidden" id="worldMarkdownFields">
+              <span>Markdown-файл мира</span>
+              <input id="worldMarkdownInput" type="file" accept=".md,text/markdown,text/plain" />
+              <small id="worldMarkdownStatus" class="field-hint" aria-live="polite">Выбери произвольный UTF-8 `.md` до 1 МиБ и 200 000 символов. Markdown используется как текстовый world system prompt и не исполняется.</small>
             </label>
           </div>
 

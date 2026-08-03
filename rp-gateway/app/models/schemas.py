@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+WORLD_PROMPT_MAX_CHARS = 6_000
+WORLD_MARKDOWN_MAX_CHARS = 200_000
+WORLD_MARKDOWN_FILENAME_MAX_CHARS = 255
 
 
 CheckType = Literal[
@@ -141,7 +146,28 @@ class WorldPackVisibilityUpdate(BaseModel):
 
 class WorldPromptCreate(BaseModel):
     title: str = Field(default="Свой мир", min_length=1, max_length=160)
-    prompt: str = Field(min_length=1, max_length=6000)
+    prompt: str = Field(min_length=1, max_length=WORLD_MARKDOWN_MAX_CHARS)
+    source: Literal["text", "markdown_file"] = "text"
+    source_filename: str | None = Field(default=None, max_length=WORLD_MARKDOWN_FILENAME_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def validate_world_source(self) -> "WorldPromptCreate":
+        if "\x00" in self.prompt:
+            raise ValueError("world prompt must be plain text without NUL bytes")
+        if not self.prompt.strip():
+            raise ValueError("world prompt must contain non-whitespace text")
+        if self.source == "text":
+            if len(self.prompt) > WORLD_PROMPT_MAX_CHARS:
+                raise ValueError(f"manual world prompt must not exceed {WORLD_PROMPT_MAX_CHARS} characters")
+            if self.source_filename is not None:
+                raise ValueError("source_filename is only allowed for markdown_file")
+            return self
+
+        filename = (self.source_filename or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+        if not filename or not filename.lower().endswith(".md"):
+            raise ValueError("markdown_file requires a .md source_filename")
+        self.source_filename = filename
+        return self
 
 
 class PlayerTemplate(BaseModel):

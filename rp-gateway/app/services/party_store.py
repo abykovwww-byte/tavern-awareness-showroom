@@ -22,6 +22,7 @@ from app.models.schemas import (
     PlayerCharacterCreate,
     PlayerCharacterSummary,
     PlayerTemplate,
+    WORLD_PROMPT_MAX_CHARS,
     WorldPromptCreate,
     WorldPackSummary,
 )
@@ -481,11 +482,21 @@ class PartyStore:
 
     def create_prompt_worldpack(self, request: WorldPromptCreate, owner_user_id: str | None = None) -> WorldPackSummary:
         title = " ".join(request.title.split())[:160] or "Свой мир"
-        prompt = " ".join(request.prompt.split())[:6000]
+        is_markdown = request.source == "markdown_file"
+        if is_markdown:
+            prompt = request.prompt.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff").strip()
+            state_prompt = prompt[:WORLD_PROMPT_MAX_CHARS].rstrip()
+        else:
+            prompt = " ".join(request.prompt.split())
+            state_prompt = prompt
         pack_id = f"prompt-{slug(title)[:42]}-{uuid.uuid4().hex[:8]}"
         generated_root = Path(self.settings.party_state_root) / "_generated_worldpacks" / pack_id
         generated_root.mkdir(parents=True, exist_ok=True)
-        state = self.prompt_world_state(pack_id, title, prompt)
+        files = {"state_seed": "state-seed.json"}
+        if is_markdown:
+            (generated_root / "world.md").write_text(prompt + "\n", encoding="utf-8")
+            files["gm_system"] = "world.md"
+        state = self.prompt_world_state(pack_id, title, state_prompt)
         manifest = {
             "id": pack_id,
             "title": title,
@@ -495,8 +506,12 @@ class PartyStore:
             "premise": prompt[:600],
             "player_role": "Персонаж, заданный игроком для этой партии.",
             "generated_by": "rp-light-gui",
-            "prompt": prompt,
-            "files": {"state_seed": "state-seed.json"},
+            "prompt": state_prompt,
+            "prompt_source": request.source,
+            "prompt_source_filename": request.source_filename if is_markdown else None,
+            "prompt_source_characters": len(prompt),
+            "prompt_truncated_in_state": is_markdown and len(prompt) > len(state_prompt),
+            "files": files,
         }
         manifest_path = generated_root / "manifest.json"
         state_seed_path = generated_root / "state-seed.json"

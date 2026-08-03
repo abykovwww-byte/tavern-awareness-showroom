@@ -15,7 +15,15 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app, party_chat_request, party_start_narrative_state, party_start_state_patch, settings_for_party
-from app.models.schemas import ChatCompletionRequest, ChatMessage, Intent, Outcome, PartyMessageRequest
+from app.models.schemas import (
+    ChatCompletionRequest,
+    ChatMessage,
+    Intent,
+    Outcome,
+    PartyMessageRequest,
+    WORLD_MARKDOWN_MAX_CHARS,
+    WORLD_PROMPT_MAX_CHARS,
+)
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
@@ -2139,6 +2147,8 @@ def test_prompt_world_party_and_delete(tmp_path: Path):
     pack = world.json()["worldpack"]
     assert pack["id"].startswith("prompt-")
     assert pack["status"] == "playable"
+    assert pack["manifest"]["prompt_source"] == "text"
+    assert "gm_system" not in pack["manifest"]["files"]
 
     model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
     character = c.post(
@@ -2176,6 +2186,98 @@ def test_prompt_world_party_and_delete(tmp_path: Path):
     assert deleted.json()["deleted"] is True
     assert c.get(f"/api/parties/{party['id']}").status_code == 404
     assert not (tmp_path / "state" / "parties" / party["id"]).exists()
+
+
+def test_markdown_file_creates_large_prompt_world_without_duplicating_full_file_in_state(tmp_path: Path):
+    c = client(tmp_path)
+    markdown = "# Архипелаг\n\n" + ("- Остров хранит отдельную тайну.\n" * 600)
+    assert len(markdown) > WORLD_PROMPT_MAX_CHARS
+
+    response = c.post(
+        "/api/worldpacks/prompt",
+        json={
+            "title": "Архипелаг памяти",
+            "prompt": markdown,
+            "source": "markdown_file",
+            "source_filename": r"C:\fakepath\ARCHIPELAGO.MD",
+        },
+    )
+
+    assert response.status_code == 200
+    pack = response.json()["worldpack"]
+    manifest = pack["manifest"]
+    assert manifest["prompt_source"] == "markdown_file"
+    assert manifest["prompt_source_filename"] == "ARCHIPELAGO.MD"
+    assert manifest["prompt_source_characters"] == len(markdown.strip())
+    assert manifest["prompt_truncated_in_state"] is True
+    assert manifest["files"]["gm_system"] == "world.md"
+    assert len(manifest["prompt"]) == WORLD_PROMPT_MAX_CHARS
+
+    generated_root = Path(pack["manifest_path"]).parent
+    assert (generated_root / "world.md").read_text(encoding="utf-8") == markdown.strip() + "\n"
+    worldpack = c.app.state.party_store.get_worldpack(pack["id"])
+    party_stub = SimpleNamespace(
+        id="party-markdown",
+        state_campaign_id="party-markdown",
+        scenario_type="rp",
+        worldpack_id=pack["id"],
+        worldpack=worldpack,
+        model_profile=None,
+    )
+    assert settings_for_party(c.app.state.settings, party_stub).world_system_prompt == markdown.strip()
+    state = json.loads(Path(pack["state_seed_path"]).read_text(encoding="utf-8"))
+    state_prompt = next(item["text"] for item in state["world_constraints"] if item["id"] == "world_prompt")
+    assert len(state_prompt) == WORLD_PROMPT_MAX_CHARS
+    assert markdown.strip() not in json.dumps(state, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_message"),
+    [
+        (
+            {"title": "Too long", "prompt": "x" * (WORLD_PROMPT_MAX_CHARS + 1)},
+            "manual world prompt",
+        ),
+        (
+            {
+                "title": "Too large",
+                "prompt": "x" * (WORLD_MARKDOWN_MAX_CHARS + 1),
+                "source": "markdown_file",
+                "source_filename": "world.md",
+            },
+            "String should have at most",
+        ),
+        (
+            {
+                "title": "Wrong extension",
+                "prompt": "world text",
+                "source": "markdown_file",
+                "source_filename": "world.txt",
+            },
+            ".md source_filename",
+        ),
+    ],
+)
+def test_prompt_world_source_limits_are_enforced(tmp_path: Path, payload: dict[str, object], expected_message: str):
+    response = client(tmp_path).post("/api/worldpacks/prompt", json=payload)
+
+    assert response.status_code == 422
+    assert expected_message in response.text
+
+
+def test_light_gui_markdown_world_import_contract_is_present():
+    rp_stack_root = Path(__file__).resolve().parents[2]
+    html = (rp_stack_root / "rp-light-gui" / "index.html").read_text(encoding="utf-8")
+    javascript = (rp_stack_root / "rp-light-gui" / "app.js").read_text(encoding="utf-8")
+    nginx = (rp_stack_root / "rp-light-gui" / "nginx.conf").read_text(encoding="utf-8")
+
+    assert 'name="worldSource" value="markdown_file"' in html
+    assert 'id="worldMarkdownInput" type="file" accept=".md,text/markdown,text/plain"' in html
+    assert 'id="worldPromptInput" rows="5" maxlength="6000"' in html
+    assert "const WORLD_MARKDOWN_MAX_CHARS = 200000;" in javascript
+    assert 'source: "markdown_file", source_filename: imported.name' in javascript
+    assert "Array.isArray(detail)" in javascript
+    assert "client_max_body_size 4m;" in nginx
 
 
 def test_party_world_proposals_are_isolated(tmp_path: Path):

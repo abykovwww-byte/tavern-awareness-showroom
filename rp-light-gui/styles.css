@@ -1361,6 +1361,10 @@ button:disabled {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.world-source-segmented {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .segmented label {
   display: flex;
   min-height: 38px;
@@ -1383,6 +1387,18 @@ button:disabled {
 .prompt-fields {
   display: grid;
   gap: 12px;
+}
+
+.world-markdown-preview {
+  max-height: 180px;
+  margin-top: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .login-screen {
