@@ -1509,6 +1509,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = artifact_result.text
                 workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
+            final_validation = validator.validate(
+                text,
+                start_outcome,
+                narrative_state,
+                campaign_id=party.worldpack_id,
+                scenario_type=party.scenario_type,
+                training_runtime=runtime_service,
+                interaction_contract=interaction_contract,
+            )
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -1529,7 +1538,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "narrative_provider": party_settings.llm_provider,
                     "narrative_model": model_profile.model,
                     "generated_by": "human",
-                    "validator_valid": validation.valid,
+                    "validator_valid": final_validation.valid,
                     "repaired": repaired,
                     "fallback": fallback_reason is not None,
                     "fallback_reason": fallback_reason,
@@ -1547,7 +1556,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
                 "party_start_complete",
-                {"request_id": request_id, "turn_id": turn_id, "model": model_profile.model},
+                {
+                    "request_id": request_id,
+                    "turn_id": turn_id,
+                    "model": model_profile.model,
+                    "validator_valid": final_validation.valid,
+                    "fallback_reason": fallback_reason,
+                },
                 request_id,
             )
         except PermissionError as exc:

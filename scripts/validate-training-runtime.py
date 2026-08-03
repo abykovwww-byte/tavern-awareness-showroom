@@ -156,6 +156,10 @@ def validate_worldpack(root: Path) -> bool:
         surface = turn.get("surface")
         if not isinstance(surface, dict) or surface.get("type") not in {"email", "messenger"}:
             raise ContractError(f"{root.name}: turn {turn.get('turn')} requires email or messenger surface")
+        if surface.get("require_question") and (
+            not isinstance(turn.get("question"), str) or not turn["question"].strip()
+        ):
+            raise ContractError(f"{root.name}: turn {turn.get('turn')} requires a question")
         if surface.get("links", "none") not in {"none", "artifact"}:
             raise ContractError(f"{root.name}: turn {turn.get('turn')} has unsupported links policy")
         if int(surface.get("count", 1)) < 1:

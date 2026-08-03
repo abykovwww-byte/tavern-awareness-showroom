@@ -239,7 +239,9 @@ class TrainingRuntimeService:
                 "kind": "turn",
                 "turn": turn,
                 "window": active["window"],
+                "header": active["header"],
                 "instruction": active["instruction"],
+                "question": active.get("question", ""),
                 "surface": surface,
                 "player": {
                     "name": str(player.get("name") or "Коллега"),
@@ -338,8 +340,12 @@ class TrainingRuntimeService:
             markers = self.profile_markers(str(contract["player"].get("description") or ""))
             if markers and not any(marker in text.casefold() for marker in markers):
                 violations.append("Training surface must use the stored player profession or responsibilities.")
-        if surface.get("require_question") and "?" not in text[-300:]:
-            violations.append("Training turn must end with a neutral player question.")
+        if surface.get("require_question"):
+            expected_question = str(turn.get("question") or "").strip()
+            if expected_question and not text.rstrip().endswith(expected_question):
+                violations.append("Training turn must end with the exact authored player question.")
+            elif not expected_question and "?" not in text[-300:]:
+                violations.append("Training turn must end with a neutral player question.")
         return violations
 
     def fallback_text(
@@ -630,6 +636,10 @@ class TrainingRuntimeService:
             surface = item.get("surface")
             if not isinstance(surface, dict) or surface.get("type") not in {"email", "messenger"}:
                 raise ValueError(f"training turn {item.get('turn')} requires an email or messenger surface")
+            if surface.get("require_question") and (
+                not isinstance(item.get("question"), str) or not item["question"].strip()
+            ):
+                raise ValueError(f"training turn {item.get('turn')} requires a question")
             if surface.get("links", "none") not in {"none", "artifact"}:
                 raise ValueError(f"training turn {item.get('turn')} has an unsupported links policy")
             if not isinstance(surface.get("count", 1), int) or int(surface.get("count", 1)) < 1:

@@ -79,6 +79,22 @@ def test_materializes_only_allowlisted_public_artifact(tmp_path: Path):
     assert "credential_field_ids" not in json.dumps(result.response)
 
 
+def test_materializes_single_fenced_bundle_after_provider_preamble(tmp_path: Path):
+    _, service, state = artifact_service(tmp_path)
+    contract = service.contract_for_state(state)
+    response = response_with_bundle(contract)
+    bundle = response["choices"][0]["message"]["content"]
+    response["choices"][0]["message"]["content"] = f"provider preamble:\n```json\n{bundle}\n```"
+
+    result = service.materialize_response(response, contract)
+
+    assert result.valid, result.violations
+    assert result.public_artifacts[0]["blueprint_id"] == contract["blueprint_id"]
+
+    response["choices"][0]["message"]["content"] += f"\n```json\n{bundle}\n```"
+    assert service.materialize_response(response, contract).valid is False
+
+
 @pytest.mark.parametrize(
     ("turn", "blueprint_id", "link_result"),
     [

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from app.models.schemas import Intent, WorldPackSummary
+from app.services.narrative import training_turn_prompt_block
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 from app.services.training_runtime import TrainingRuntimeService
@@ -49,10 +50,18 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
 
     assert prompt_contract["kind"] == "turn"
     assert prompt_contract["turn"] == 1
+    assert prompt_contract["header"] == runtime.program["turns"][0]["header"]
+    assert prompt_contract["question"] == runtime.program["turns"][0]["question"]
+    prompt_block = training_turn_prompt_block(prompt_contract)
+    assert f"must start with this exact authored header: {prompt_contract['header']}" in prompt_block
+    assert f"must end with this exact authored question: {prompt_contract['question']}" in prompt_block
     assert "комплектность требований" in runtime.fallback_text(state)
     serialized = json.dumps(prompt_contract, ensure_ascii=False)
     assert "security-score" not in serialized
     assert "assessment" not in serialized
+
+    invalid_question = runtime.fallback_text(state).replace(prompt_contract["question"], "Что вы делаете?")
+    assert "exact authored player question" in " ".join(runtime.validate_narrative(invalid_question, state))
 
     state["meta"]["turn"] = 3
     _, patch = RuleEngine().resolve(

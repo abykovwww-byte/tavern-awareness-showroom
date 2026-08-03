@@ -21,7 +21,7 @@ from app.models.schemas import (
     TrainingArtifactSnapshot,
     WorldPackSummary,
 )
-from app.services.narrative import response_text, with_text
+from app.services.narrative import json_object_content, response_text, with_text
 from app.services.state_store import StateStore
 
 
@@ -263,11 +263,7 @@ class TrainingArtifactService:
 
     @staticmethod
     def _json_content(value: str) -> str:
-        text = value.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-            text = re.sub(r"\s*```$", "", text)
-        return text.strip()
+        return json_object_content(value)
 
     @classmethod
     def _load_catalog(cls, worldpack: WorldPackSummary) -> dict[str, Any] | None:

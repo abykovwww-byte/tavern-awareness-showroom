@@ -73,7 +73,7 @@ including after the source pack is changed or removed.
 For an active turn Gateway supplies `ACTIVE_TRAINING_TURN_CONTRACT` containing
 only:
 
-- contract hash, current turn/window and current instruction;
+- contract hash, current turn/window, exact authored header/question and current instruction;
 - current output surface and enabled link contract;
 - learner name and stored role description;
 - state paths explicitly allowlisted by that turn.
@@ -84,10 +84,20 @@ keeps universal mode rules and WorldPack prompts separate. At debrief the active
 contract includes only canonical score/evidence bindings required for the
 authored explanation.
 
+For plain turns the model returns only final narration bounded by the exact
+authored header and question. For interactive turns it returns one bare JSON
+bundle with that complete narration in `narrative_text`. Gateway may unwrap one
+provider-added Markdown JSON fence as transport normalization, but bundle
+schema, visible slots and WorldPack narrative validation remain strict and
+domain-neutral.
+
 Runtime turns make at most one narrator request. A generic runtime validation
 failure goes directly to the authored fallback; it does not spend a second
 repair completion. Provider failures on party start follow the same path, so a
 training run remains playable without turning provider health into fake success.
+Turn metadata records validation of the response actually delivered to the
+learner and separately preserves whether the original failure came from the
+provider or Gateway validation.
 
 ### Scoring contract
 

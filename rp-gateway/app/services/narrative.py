@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import re
 import time
 from typing import Any
 
@@ -27,12 +28,22 @@ logger = logging.getLogger(__name__)
 
 
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
+    header = str(contract.get("header") or "")
+    question = str(contract.get("question") or "")
+    output_rules = [
+        "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences.",
+    ]
+    if header:
+        output_rules.append(f"The narration must start with this exact authored header: {header}")
+    if question:
+        output_rules.append(f"The narration must end with this exact authored question: {question}")
     return "\n".join(
         [
             "ACTIVE_TRAINING_TURN_CONTRACT",
             "This machine-readable WorldPack contract is authoritative for the current visible turn only.",
             "Generate fresh natural wording with the LLM, but do not change its turn, sender, channel, required facts, attachment, URL policy, or player-role boundary.",
             "Do not infer a different event from prior history and never expose hidden assessment rules.",
+            *output_rules,
             json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
         ]
     )
@@ -45,12 +56,12 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
     if workspace:
         lines.extend(
             [
-                "Return JSON only with schema_version rp-gateway.narrative-bundle.v2, narrative_text, artifacts, and workspace_files.",
+                "Return exactly one JSON object with schema_version rp-gateway.narrative-bundle.v2, narrative_text, artifacts, and workspace_files.",
                 "For workspace_files emit exactly supplied file_key and blueprint_id values and fill only declared string slots.",
             ]
         )
     else:
-        lines.append("Return JSON only with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.")
+        lines.append("Return exactly one JSON object with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.")
     if site:
         lines.extend(
             [
@@ -60,6 +71,8 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
         )
     lines.extend(
         [
+            "Put the complete final visible turn, including its exact authored header and question, inside narrative_text.",
+            "Do not put any text before or after the JSON object. Do not wrap it in a Markdown code fence.",
             "Never emit HTML, CSS, JavaScript, remote assets, credentials, paths, MIME types, file classification, answer keys, scoring, correctness, or remediation.",
             json.dumps({"site": site, "workspace": workspace}, ensure_ascii=False, separators=(",", ":")),
         ]
@@ -552,6 +565,15 @@ class NarrativeClient:
 
 def response_text(response: dict[str, Any]) -> str:
     return str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+
+
+def json_object_content(value: str) -> str:
+    """Extract one provider-wrapped JSON object without accepting mixed JSON payloads."""
+    text = value.strip()
+    fenced = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+    if len(fenced) == 1:
+        return fenced[0].strip()
+    return text
 
 
 def provider_rate_limit_error(response: httpx.Response, provider: str, model: str) -> ProviderRateLimitError:

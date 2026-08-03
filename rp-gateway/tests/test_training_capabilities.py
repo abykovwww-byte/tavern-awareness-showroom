@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -129,6 +130,10 @@ def test_workspace_materializes_files_and_records_scored_evidence(tmp_path: Path
     }
     materialized = service.materialize_response(response, contract)
     assert materialized.valid is True
+    fenced_response = copy.deepcopy(response)
+    bundle_text = fenced_response["choices"][0]["message"]["content"]
+    fenced_response["choices"][0]["message"]["content"] = f"```json\n{bundle_text}\n```"
+    assert service.materialize_response(fenced_response, contract).valid is True
     store.record_turn(
         "start",
         "request-start",

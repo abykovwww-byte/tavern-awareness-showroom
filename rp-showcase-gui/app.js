@@ -1309,7 +1309,7 @@ async function apiRaw(path, method, body, headers = {}) {
 }
 
 async function apiRequest(path, options) {
-  const response = await fetch(path, { credentials: "same-origin", ...options });
+  const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options });
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
