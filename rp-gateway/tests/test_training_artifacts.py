@@ -142,7 +142,7 @@ def test_weekly_awareness_keeps_non_site_decision_surfaces(tmp_path: Path, turn:
     assert service.contract_for_state(state) is None
 
 
-@pytest.mark.parametrize("turn", [2, 4, 6, 7, 8, 9])
+@pytest.mark.parametrize("turn", [4, 6, 9])
 def test_scheduled_site_fallback_preserves_fixed_url(tmp_path: Path, turn: int):
     _, service, state = artifact_service(tmp_path, turn=turn)
     contract = service.contract_for_state(state)

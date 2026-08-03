@@ -10,6 +10,7 @@ const appState = {
   editingScenario: null,
   scenarioEditorMode: "create",
   coverFile: null,
+  workspace: null,
 };
 
 const views = {
@@ -53,9 +54,13 @@ const els = {
   chatLayout: document.querySelector("#chatLayout"),
   chatThread: document.querySelector("#chatThread"),
   corporatePortal: document.querySelector("#corporatePortal"),
+  chatSidebars: document.querySelector("#chatSidebars"),
   portalTitle: document.querySelector("#portalTitle"),
   portalContext: document.querySelector("#portalContext"),
   portalCharacterList: document.querySelector("#portalCharacterList"),
+  trainingWorkspace: document.querySelector("#trainingWorkspace"),
+  workspaceTree: document.querySelector("#workspaceTree"),
+  workspacePreview: document.querySelector("#workspacePreview"),
   messageForm: document.querySelector("#messageForm"),
   messageInput: document.querySelector("#messageInput"),
   adminLoginForm: document.querySelector("#adminLoginForm"),
@@ -78,6 +83,11 @@ const els = {
   promptWorldField: document.querySelector("#promptWorldField"),
   worldpackSelect: document.querySelector("#worldpackSelect"),
   worldPromptInput: document.querySelector("#worldPromptInput"),
+  trainingCapabilitiesField: document.querySelector("#trainingCapabilitiesField"),
+  interactiveLinksEnabledInput: document.querySelector("#interactiveLinksEnabledInput"),
+  interactiveWorkspaceEnabledInput: document.querySelector("#interactiveWorkspaceEnabledInput"),
+  interactiveLinksHint: document.querySelector("#interactiveLinksHint"),
+  interactiveWorkspaceHint: document.querySelector("#interactiveWorkspaceHint"),
   leaderboardEnabledInput: document.querySelector("#leaderboardEnabledInput"),
   leaderboardLabelInput: document.querySelector("#leaderboardLabelInput"),
   coverInput: document.querySelector("#coverInput"),
@@ -108,6 +118,8 @@ function bindEvents() {
   els.newScenarioButton.addEventListener("click", newScenario);
   els.scenarioForm.addEventListener("submit", saveScenario);
   els.providerSelect.addEventListener("change", () => renderModelOptions());
+  els.scenarioTypeSelect.addEventListener("change", renderTrainingCapabilities);
+  els.worldpackSelect.addEventListener("change", renderTrainingCapabilities);
   els.scenarioStatusSelect.addEventListener("change", renderStatusPill);
   document.querySelectorAll('input[name="worldSource"]').forEach((radio) => {
     radio.addEventListener("change", renderWorldSource);
@@ -328,6 +340,12 @@ async function openRun(run, fallbackOpening = "") {
     els.chatCharacter.textContent = details.run.display_name;
     els.chatLeaderboardButton.disabled = !details.run.scenario.leaderboard_enabled;
     renderCorporatePortal(details.run.portal, details.run.employee_position);
+    if (details.run.interactive_workspace_enabled) {
+      await refreshWorkspace();
+    } else {
+      appState.workspace = null;
+      renderWorkspace(null);
+    }
     renderHistory(history.turns || [], fallbackOpening);
     showView("chat");
   } catch (error) {
@@ -341,7 +359,7 @@ function renderCorporatePortal(portal, employeePosition = "") {
   const characters = Array.isArray(portal?.characters) ? portal.characters.slice(0, 5) : [];
   const visible = characters.length > 0;
   els.corporatePortal.classList.toggle("hidden", !visible);
-  els.chatLayout.classList.toggle("without-portal", !visible);
+  updateChatSidebars();
   els.portalCharacterList.replaceChildren();
   if (!visible) return;
 
@@ -351,6 +369,130 @@ function renderCorporatePortal(portal, employeePosition = "") {
     : "Контакты участников сценария";
   for (const character of characters) {
     els.portalCharacterList.append(portalCharacterCard(character));
+  }
+}
+
+function updateChatSidebars() {
+  const visible = !els.corporatePortal.classList.contains("hidden") || !els.trainingWorkspace.classList.contains("hidden");
+  els.chatSidebars.classList.toggle("hidden", !visible);
+  els.chatLayout.classList.toggle("without-portal", !visible);
+}
+
+async function refreshWorkspace() {
+  if (!appState.currentRun?.interactive_workspace_enabled) return;
+  const result = await apiGet(`/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/workspace`);
+  appState.workspace = result.workspace;
+  renderWorkspace(result.workspace);
+}
+
+function renderWorkspace(workspace) {
+  const folders = Array.isArray(workspace?.folders) ? workspace.folders : [];
+  const files = Array.isArray(workspace?.files) ? workspace.files : [];
+  const visible = Boolean(appState.currentRun?.interactive_workspace_enabled);
+  els.trainingWorkspace.classList.toggle("hidden", !visible);
+  els.workspaceTree.replaceChildren();
+  els.workspacePreview.replaceChildren();
+  els.workspacePreview.classList.add("hidden");
+  if (visible) {
+    for (const folder of folders) {
+      const section = document.createElement("section");
+      section.className = "workspace-folder";
+      const heading = document.createElement("h3");
+      heading.textContent = `📁 ${folder.label}`;
+      section.append(heading);
+      for (const file of files.filter((item) => item.folder_id === folder.id)) {
+        const open = button(`${workspaceFileIcon(file)} ${file.display_name}${file.extension || ""}`, "workspace-file");
+        open.type = "button";
+        open.addEventListener("click", () => openWorkspaceFile(file));
+        section.append(open);
+      }
+      els.workspaceTree.append(section);
+    }
+    if (!files.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "В этой партии пока нет доступных файлов.";
+      els.workspaceTree.append(empty);
+    }
+  }
+  updateChatSidebars();
+}
+
+function workspaceFileIcon(file) {
+  return { spreadsheet: "▦", pdf: "▤", image: "▧", document: "▥", text: "≡" }[file.media_family] || "▥";
+}
+
+async function workspaceEvent(file, eventType) {
+  return apiPost(`/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/workspace-events`, {
+    event_id: makeRequestId(`workspace-${eventType}`),
+    file_id: file.file_id,
+    file_revision: file.file_revision,
+    event_type: eventType,
+  });
+}
+
+async function openWorkspaceFile(file) {
+  try {
+    if ((file.actions || []).includes("file_opened")) await workspaceEvent(file, "file_opened");
+    els.workspacePreview.replaceChildren();
+    els.workspacePreview.classList.remove("hidden");
+    const title = document.createElement("h3");
+    title.textContent = `${file.display_name}${file.extension || ""}`;
+    const body = document.createElement("div");
+    body.className = "workspace-file-body";
+    for (const [label, value] of Object.entries(file.slots || {})) {
+      const block = document.createElement("section");
+      const heading = document.createElement("strong");
+      heading.textContent = label.replaceAll("_", " ");
+      const text = document.createElement("p");
+      text.textContent = value;
+      block.append(heading, text);
+      body.append(block);
+    }
+    const actions = document.createElement("div");
+    actions.className = "workspace-actions";
+    if ((file.actions || []).includes("file_downloaded")) {
+      const download = button("Скачать", "button button-quiet");
+      download.type = "button";
+      download.addEventListener("click", async () => {
+        await workspaceEvent(file, "file_downloaded");
+        if (file.resource_sha256) {
+          const link = document.createElement("a");
+          link.href = `/api/showroom/runs/${encodeURIComponent(appState.currentRun.id)}/workspace/files/${encodeURIComponent(file.file_id)}/content`;
+          link.download = `${file.display_name}${file.extension || ""}`;
+          link.click();
+          return;
+        }
+        const blob = new Blob([Object.values(file.slots || {}).join("\n\n")], { type: "text/plain;charset=utf-8" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${file.display_name}${file.extension || ".txt"}`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      });
+      actions.append(download);
+    }
+    if ((file.actions || []).includes("file_reported")) {
+      const report = button("Сообщить в ИБ", "button");
+      report.type = "button";
+      report.addEventListener("click", async () => {
+        await workspaceEvent(file, "file_reported");
+        showToast("Файл передан специалистам ИБ.");
+      });
+      actions.append(report);
+    }
+    if ((file.actions || []).includes("active_content_enabled")) {
+      const activate = button("Включить содержимое", "button button-danger");
+      activate.type = "button";
+      activate.addEventListener("click", async () => {
+        await workspaceEvent(file, "active_content_enabled");
+        showToast("Активное содержимое отмечено как включённое.", true);
+      });
+      actions.append(activate);
+    }
+    els.workspacePreview.append(title, body, actions);
+  } catch (error) {
+    showToast(error.message, true);
   }
 }
 
@@ -762,6 +904,7 @@ async function sendMessage(event) {
     pending.remove();
     try {
       await refreshCurrentRunHistory();
+      await refreshWorkspace();
     } catch (_historyError) {
       appendMessage("gm", "Рассказчик", result.message?.content || "Ответ получен без текста.");
     }
@@ -856,7 +999,10 @@ function renderAdminList() {
     const title = document.createElement("strong");
     title.textContent = scenario.title;
     const detail = document.createElement("small");
-    detail.textContent = `${scenarioTypeLabels[scenario.scenario_type]} · ${statusLabels[scenario.status]} · ${scenario.world.title}`;
+    const capabilities = scenario.scenario_type === "training"
+      ? ` · ссылки ${scenario.interactive_links_enabled ? "вкл" : "выкл"} · диск ${scenario.interactive_workspace_enabled ? "вкл" : "выкл"}`
+      : "";
+    detail.textContent = `${scenarioTypeLabels[scenario.scenario_type]} · ${statusLabels[scenario.status]} · ${scenario.world.title}${capabilities}`;
     item.append(title, detail);
     item.addEventListener("click", () => editScenario(scenario));
     els.adminScenarioList.append(item);
@@ -875,12 +1021,15 @@ function newScenario() {
   els.scenarioTypeSelect.value = "rp";
   els.scenarioStatusSelect.value = "draft";
   els.leaderboardEnabledInput.checked = true;
+  els.interactiveLinksEnabledInput.checked = false;
+  els.interactiveWorkspaceEnabledInput.checked = false;
   els.leaderboardLabelInput.value = "Очки";
   const preset = document.querySelector('input[name="worldSource"][value="preset"]');
   preset.checked = true;
   renderProviderOptions();
   renderModelOptions();
   renderWorldSource();
+  renderTrainingCapabilities();
   renderStatusPill();
   els.coverPreview.textContent = "Обложка не выбрана";
   renderCover(els.coverPreview, "", els.coverPreview.textContent);
@@ -900,6 +1049,8 @@ function editScenario(scenario) {
   els.scenarioTypeSelect.value = scenario.scenario_type;
   els.scenarioStatusSelect.value = scenario.status;
   els.leaderboardEnabledInput.checked = scenario.leaderboard_enabled;
+  els.interactiveLinksEnabledInput.checked = Boolean(scenario.interactive_links_enabled);
+  els.interactiveWorkspaceEnabledInput.checked = Boolean(scenario.interactive_workspace_enabled);
   els.leaderboardLabelInput.value = scenario.leaderboard_label || "Очки";
   const worldSource = document.querySelector(`input[name="worldSource"][value="${scenario.world_source}"]`);
   if (worldSource) worldSource.checked = true;
@@ -908,6 +1059,7 @@ function editScenario(scenario) {
   els.providerSelect.value = scenario.model_profile?.provider || "";
   renderModelOptions(scenario.model_profile_id);
   renderWorldSource();
+  renderTrainingCapabilities();
   renderStatusPill();
   els.coverInput.value = "";
   els.coverPreview.textContent = scenario.cover_url ? "Текущая обложка" : "Обложка не выбрана";
@@ -960,6 +1112,35 @@ function renderWorldSource() {
   els.promptWorldField.classList.toggle("hidden", source !== "prompt");
   els.worldpackSelect.required = source === "preset";
   els.worldPromptInput.required = source === "prompt";
+  renderTrainingCapabilities();
+}
+
+function selectedWorldpack() {
+  return appState.worldpacks.find((pack) => pack.id === els.worldpackSelect.value) || null;
+}
+
+function renderTrainingCapabilities() {
+  const training = els.scenarioTypeSelect.value === "training";
+  const preset = selectedWorldSource() === "preset";
+  const pack = preset ? selectedWorldpack() : null;
+  const linksSupported = Boolean(pack?.manifest?.training_artifacts?.schema_version === "rp-training-artifacts.v1");
+  const workspaceSupported = Boolean(pack?.manifest?.training_workspace?.schema_version === "rp-training-workspace.v1");
+  els.trainingCapabilitiesField.classList.toggle("hidden", !training);
+  els.interactiveLinksEnabledInput.disabled = !training || !linksSupported;
+  els.interactiveWorkspaceEnabledInput.disabled = !training || !workspaceSupported;
+  if (!training) {
+    els.interactiveLinksEnabledInput.checked = false;
+    els.interactiveWorkspaceEnabledInput.checked = false;
+  } else {
+    if (!linksSupported) els.interactiveLinksEnabledInput.checked = false;
+    if (!workspaceSupported) els.interactiveWorkspaceEnabledInput.checked = false;
+  }
+  els.interactiveLinksHint.textContent = linksSupported
+    ? "WorldPack поддерживает учебные сайты. Выбор будет зафиксирован в каждом запуске."
+    : "Выбранный WorldPack не содержит валидный каталог учебных сайтов.";
+  els.interactiveWorkspaceHint.textContent = workspaceSupported
+    ? "WorldPack поддерживает рабочую папку. Выбор будет зафиксирован в каждом запуске."
+    : "Выбранный WorldPack не содержит валидный контракт рабочей папки отдела.";
 }
 
 function renderStatusPill() {
@@ -1005,6 +1186,8 @@ async function saveScenario(event) {
     worldpack_id: source === "preset" ? els.worldpackSelect.value : null,
     world_prompt: source === "prompt" ? els.worldPromptInput.value.trim() : null,
     leaderboard_enabled: els.leaderboardEnabledInput.checked,
+    interactive_links_enabled: els.scenarioTypeSelect.value === "training" && els.interactiveLinksEnabledInput.checked,
+    interactive_workspace_enabled: els.scenarioTypeSelect.value === "training" && els.interactiveWorkspaceEnabledInput.checked,
     leaderboard_label: els.leaderboardLabelInput.value.trim() || "Очки",
     sort_order: editorMode === "edit" ? appState.editingScenario?.sort_order ?? 100 : 100,
   };

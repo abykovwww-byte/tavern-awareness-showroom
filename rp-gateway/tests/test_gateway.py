@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -177,6 +178,8 @@ def write_worldpack(root: Path, pack_id: str = "demo-world", supported_modes: li
     }
     if supported_modes:
         manifest["scenario_types"] = {"recommended": supported_modes[0], "supported": supported_modes}
+        if supported_modes == ["training"]:
+            manifest["showroom_result"] = {"metric": "state_path", "state_path": "meta.turn"}
     seed = base_state()
     seed["meta"]["campaign_id"] = pack_id
     (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -386,6 +389,113 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
 
     intruder = TestClient(admin.app)
     assert intruder.get(f"/api/showroom/runs/{run['id']}").status_code == 404
+
+
+def test_showroom_training_capabilities_are_validated_and_snapshotted(tmp_path: Path):
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+    shutil.copytree(source, tmp_path / "worldpacks" / "awareness-one-day")
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    response = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Training with both interaction surfaces",
+            "status": "published",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "awareness-one-day",
+            "interactive_links_enabled": True,
+            "interactive_workspace_enabled": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    scenario = response.json()["scenario"]
+    assert scenario["interactive_links_enabled"] is True
+    assert scenario["interactive_workspace_enabled"] is True
+    assert scenario["training_capabilities"] == {
+        "interactive_links_supported": True,
+        "interactive_workspace_supported": True,
+    }
+
+    public = TestClient(admin.app)
+    run_response = public.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={
+            "character_name": "Employee",
+            "character_prompt": "Security-aware employee",
+            "employee_position": "Security analyst",
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run = run_response.json()["run"]
+    assert run["interactive_links_enabled"] is True
+    assert run["interactive_workspace_enabled"] is True
+
+    changed = admin.patch(
+        f"/api/admin/showroom/scenarios/{scenario['id']}",
+        json={"interactive_links_enabled": False, "interactive_workspace_enabled": False},
+    )
+    assert changed.status_code == 200, changed.text
+    unchanged_run = public.get(f"/api/showroom/runs/{run['id']}").json()["run"]
+    assert unchanged_run["interactive_links_enabled"] is True
+    assert unchanged_run["interactive_workspace_enabled"] is True
+    leaderboard = public.get(f"/api/showroom/scenarios/{scenario['id']}/leaderboard").json()
+    assert leaderboard["dimensions"] == {
+        "interactive_links_enabled": False,
+        "interactive_workspace_enabled": False,
+    }
+    assert leaderboard["entries"] == []
+
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": f"showroom-start:{run['id']}"},
+    )
+    assert started.status_code == 200, started.text
+    workspace = public.get(f"/api/showroom/runs/{run['id']}/workspace")
+    assert workspace.status_code == 200, workspace.text
+    assert {item["file_key"] for item in workspace.json()["workspace"]["files"]} == {"security-policy"}
+    assert "resource_classification" not in workspace.text
+    with admin.app.state.showroom_store.connect() as connection:
+        party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?",
+            (run["id"],),
+        ).fetchone()["party_id"]
+    dataset_turn = admin.app.state.party_store.list_dataset_turns(party_id, limit=None)[0]
+    assert dataset_turn["metadata"]["training_capabilities"] == {
+        "interactive_links_enabled": True,
+        "interactive_workspace_enabled": True,
+    }
+    assert [item["file_key"] for item in dataset_turn["workspace_files"]] == ["security-policy"]
+    sft = admin.app.state.party_store.dataset_sft_record(dataset_turn)
+    assert sft["metadata"]["training_capabilities"]["interactive_workspace_enabled"] is True
+    assert [item["file_key"] for item in sft["metadata"]["workspace_files"]] == ["security-policy"]
+
+    unsupported_dir = write_worldpack(tmp_path, pack_id="unsupported-training", supported_modes=["training"])
+    unsupported_manifest_path = unsupported_dir / "manifest.json"
+    unsupported_manifest = json.loads(unsupported_manifest_path.read_text(encoding="utf-8"))
+    unsupported_manifest["showroom_result"] = {"metric": "state_path", "state_path": "meta.turn"}
+    unsupported_manifest_path.write_text(json.dumps(unsupported_manifest), encoding="utf-8")
+    unsupported = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Unsupported links",
+            "status": "draft",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "unsupported-training",
+            "interactive_links_enabled": True,
+        },
+    )
+    assert unsupported.status_code == 400
+    assert "does not support interactive links" in unsupported.text
 
 
 def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1487,7 +1597,7 @@ def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path)
     assert estimate["history_turns_total"] == 7
     assert estimate["history_source_turn_limit"] is None
     assert estimate["message_prompt_limit"] is None
-    assert estimate["history_token_budget"] == 81_920
+    assert estimate["history_token_budget"] == 71_920
     assert estimate["prompt_source"] == "recorded_last_turn"
     assert estimate["direct_history_messages"] == 12
     assert estimate["history_limited"] is False
@@ -1894,7 +2004,7 @@ def test_party_memory_manual_summarize_and_clear_latest(tmp_path: Path):
 
     before = c.get(f"/api/parties/{party['id']}/memory").json()
     assert before["memory"] is not None
-    assert before["stats"]["history_token_budget"] == 128
+    assert before["stats"]["history_token_budget"] == 64
 
     generated = c.post(
         f"/api/parties/{party['id']}/memory/summarize",

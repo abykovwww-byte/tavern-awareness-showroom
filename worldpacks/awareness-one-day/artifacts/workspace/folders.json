@@ -1,0 +1,7 @@
+{
+  "schema_version": "rp-training-workspace-folders.v1",
+  "folders": [
+    {"id": "department", "parent_id": null, "label": "Общие документы отдела", "sort_order": 10},
+    {"id": "incoming", "parent_id": null, "label": "Входящие файлы", "sort_order": 20}
+  ]
+}

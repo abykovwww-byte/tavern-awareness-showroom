@@ -19,6 +19,12 @@
     "interaction_policy": "rules/site-interactions.json",
     "default_site_count": 10
   },
+  "training_workspace": {
+    "schema_version": "rp-training-workspace.v1",
+    "folder_catalog": "artifacts/workspace/folders.json",
+    "file_catalog": "artifacts/workspace/files/index.json",
+    "interaction_policy": "rules/workspace-interactions.json"
+  },
   "assumptions": [
     "Сценарий использует компанию PT Security и корпоративный домен ptsecurity.com по запросу пользователя; персонажи, проекты, письма, документы, телефонные номера и атаки учебные.",
     "Профессия игрока задается стартовым промптом; world pack должен адаптировать рабочие задачи, доступы и правдоподобные поводы атак под эту профессию.",

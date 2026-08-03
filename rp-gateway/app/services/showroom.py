@@ -20,6 +20,7 @@ from app.models.schemas import (
     WorldPromptCreate,
 )
 from app.services.party_store import PartyStore, now_iso, slug
+from app.services.training_capabilities import TrainingCapabilityPolicy
 
 
 SHOWROOM_WORLD_OWNER = "__showroom__"
@@ -72,6 +73,8 @@ class ShowroomStore:
                     leaderboard_metric TEXT NOT NULL DEFAULT 'state_path',
                     leaderboard_state_path TEXT NOT NULL DEFAULT 'meta.turn',
                     leaderboard_label TEXT NOT NULL DEFAULT 'Очки',
+                    interactive_links_enabled INTEGER NOT NULL DEFAULT 0,
+                    interactive_workspace_enabled INTEGER NOT NULL DEFAULT 0,
                     sort_order INTEGER NOT NULL DEFAULT 100,
                     revision INTEGER NOT NULL DEFAULT 1,
                     created_by TEXT,
@@ -100,6 +103,8 @@ class ShowroomStore:
                     display_name TEXT NOT NULL,
                     employee_position TEXT NOT NULL DEFAULT '',
                     portal_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    interactive_links_enabled INTEGER NOT NULL DEFAULT 0,
+                    interactive_workspace_enabled INTEGER NOT NULL DEFAULT 0,
                     leaderboard_opt_in INTEGER NOT NULL DEFAULT 1,
                     client_request_id TEXT,
                     created_at TEXT NOT NULL,
@@ -112,6 +117,16 @@ class ShowroomStore:
                     ON showroom_runs(scenario_id, updated_at DESC);
                 """
             )
+            scenario_columns = {row["name"] for row in connection.execute("PRAGMA table_info(showroom_scenarios)")}
+            added_links_column = "interactive_links_enabled" not in scenario_columns
+            if added_links_column:
+                connection.execute(
+                    "ALTER TABLE showroom_scenarios ADD COLUMN interactive_links_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            if "interactive_workspace_enabled" not in scenario_columns:
+                connection.execute(
+                    "ALTER TABLE showroom_scenarios ADD COLUMN interactive_workspace_enabled INTEGER NOT NULL DEFAULT 0"
+                )
             run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(showroom_runs)")}
             if "scenario_title_snapshot" not in run_columns:
                 connection.execute("ALTER TABLE showroom_runs ADD COLUMN scenario_title_snapshot TEXT")
@@ -122,6 +137,14 @@ class ShowroomStore:
             if "portal_snapshot_json" not in run_columns:
                 connection.execute(
                     "ALTER TABLE showroom_runs ADD COLUMN portal_snapshot_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "interactive_links_enabled" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE showroom_runs ADD COLUMN interactive_links_enabled INTEGER NOT NULL DEFAULT 0"
+                )
+            if "interactive_workspace_enabled" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE showroom_runs ADD COLUMN interactive_workspace_enabled INTEGER NOT NULL DEFAULT 0"
                 )
             connection.execute(
                 """
@@ -151,6 +174,32 @@ class ShowroomStore:
                 WHERE scenario_title_snapshot IS NULL OR scenario_type_snapshot IS NULL
                 """
             )
+            if added_links_column:
+                rows = connection.execute(
+                    """
+                    SELECT ss.id, wp.manifest_json
+                    FROM showroom_scenarios ss
+                    JOIN worldpacks wp ON wp.id = ss.worldpack_id
+                    WHERE ss.scenario_type = 'training'
+                    """
+                ).fetchall()
+                for row in rows:
+                    manifest = json.loads(row["manifest_json"] or "{}")
+                    config = manifest.get("training_artifacts") if isinstance(manifest, dict) else None
+                    if isinstance(config, dict) and config.get("schema_version") == "rp-training-artifacts.v1":
+                        connection.execute(
+                            "UPDATE showroom_scenarios SET interactive_links_enabled = 1 WHERE id = ?",
+                            (row["id"],),
+                        )
+                connection.execute(
+                    """
+                    UPDATE showroom_runs
+                    SET interactive_links_enabled = COALESCE(
+                        (SELECT interactive_links_enabled FROM showroom_scenarios WHERE id = showroom_runs.scenario_id),
+                        0
+                    )
+                    """
+                )
 
     def unique_slug(self, title: str, scenario_id: str | None = None) -> str:
         base = slug(title)[:80]
@@ -180,6 +229,12 @@ class ShowroomStore:
         self.ensure_public_worldpack(pack)
         self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, request.scenario_type)
+        capabilities = TrainingCapabilityPolicy.validate(
+            scenario_type=request.scenario_type,
+            worldpack=pack,
+            interactive_links_enabled=request.interactive_links_enabled,
+            interactive_workspace_enabled=request.interactive_workspace_enabled,
+        )
         leaderboard_result = self.result_from_manifest(
             pack.manifest,
             strict=True,
@@ -195,8 +250,9 @@ class ShowroomStore:
                     id, slug, title, description, status, scenario_type, model_profile_id,
                     world_source, worldpack_id, world_prompt, leaderboard_enabled,
                     leaderboard_metric, leaderboard_state_path, leaderboard_label,
+                    interactive_links_enabled, interactive_workspace_enabled,
                     sort_order, revision, created_by, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
                 """,
                 (
                     scenario_id,
@@ -213,6 +269,8 @@ class ShowroomStore:
                     leaderboard_result["metric"],
                     leaderboard_result["state_path"],
                     request.leaderboard_label.strip(),
+                    int(capabilities["interactive_links_enabled"]),
+                    int(capabilities["interactive_workspace_enabled"]),
                     request.sort_order,
                     created_by,
                     timestamp,
@@ -249,6 +307,12 @@ class ShowroomStore:
         self.ensure_public_worldpack(pack)
         self.portal_from_manifest(pack.manifest, strict=True)
         self.validate_scenario_type(pack.manifest, str(merged["scenario_type"]))
+        capabilities = TrainingCapabilityPolicy.validate(
+            scenario_type=str(merged["scenario_type"]),
+            worldpack=pack,
+            interactive_links_enabled=merged.get("interactive_links_enabled", False),
+            interactive_workspace_enabled=merged.get("interactive_workspace_enabled", False),
+        )
         leaderboard_result = self.result_from_manifest(
             pack.manifest,
             strict=True,
@@ -264,7 +328,8 @@ class ShowroomStore:
                     slug = ?, title = ?, description = ?, status = ?, scenario_type = ?,
                     model_profile_id = ?, world_source = ?, worldpack_id = ?, world_prompt = ?,
                     leaderboard_enabled = ?, leaderboard_metric = ?, leaderboard_state_path = ?,
-                    leaderboard_label = ?, sort_order = ?, revision = revision + 1, updated_at = ?
+                    leaderboard_label = ?, interactive_links_enabled = ?, interactive_workspace_enabled = ?,
+                    sort_order = ?, revision = revision + 1, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -281,6 +346,8 @@ class ShowroomStore:
                     leaderboard_result["metric"],
                     leaderboard_result["state_path"],
                     str(merged["leaderboard_label"]).strip(),
+                    int(capabilities["interactive_links_enabled"]),
+                    int(capabilities["interactive_workspace_enabled"]),
                     int(merged["sort_order"]),
                     timestamp,
                     scenario_id,
@@ -367,6 +434,7 @@ class ShowroomStore:
             fallback_metric=row["leaderboard_metric"],
             fallback_state_path=row["leaderboard_state_path"],
         )
+        capability_support = TrainingCapabilityPolicy.support(pack)
         result: dict[str, Any] = {
             "id": row["id"],
             "slug": row["slug"],
@@ -383,6 +451,9 @@ class ShowroomStore:
             "leaderboard_metric": leaderboard_result["metric"],
             "leaderboard_state_path": leaderboard_result["state_path"],
             "leaderboard_label": row["leaderboard_label"],
+            "interactive_links_enabled": bool(row["interactive_links_enabled"]),
+            "interactive_workspace_enabled": bool(row["interactive_workspace_enabled"]),
+            "training_capabilities": capability_support,
             "sort_order": row["sort_order"],
             "revision": row["revision"],
             "created_at": row["created_at"],
@@ -533,9 +604,10 @@ class ShowroomStore:
                         id, scenario_id, scenario_revision, scenario_title_snapshot, scenario_type_snapshot,
                         visitor_id, party_id,
                         player_character_id, display_name, employee_position, portal_snapshot_json,
+                        interactive_links_enabled, interactive_workspace_enabled,
                         leaderboard_opt_in,
                         client_request_id, created_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -549,6 +621,8 @@ class ShowroomStore:
                         character.name,
                         request.employee_position.strip(),
                         json.dumps(portal, ensure_ascii=False),
+                        int(bool(scenario["interactive_links_enabled"])),
+                        int(bool(scenario["interactive_workspace_enabled"])),
                         int(request.leaderboard_opt_in),
                         request.client_request_id,
                         timestamp,
@@ -603,6 +677,8 @@ class ShowroomStore:
             "employee_position": row["employee_position"],
             "portal": self.portal_snapshot(row["portal_snapshot_json"]),
             "leaderboard_opt_in": bool(row["leaderboard_opt_in"]),
+            "interactive_links_enabled": bool(row["interactive_links_enabled"]),
+            "interactive_workspace_enabled": bool(row["interactive_workspace_enabled"]),
             "party_status": party.status,
             "scenario": {
                 "id": scenario["id"],
@@ -610,6 +686,8 @@ class ShowroomStore:
                 "scenario_type": row["scenario_type_snapshot"] or scenario["scenario_type"],
                 "cover_url": scenario["cover_url"],
                 "leaderboard_enabled": scenario["leaderboard_enabled"],
+                "interactive_links_enabled": bool(row["interactive_links_enabled"]),
+                "interactive_workspace_enabled": bool(row["interactive_workspace_enabled"]),
             },
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -753,22 +831,54 @@ class ShowroomStore:
             raise ValueError(f"showroom run not found: {run_id}")
         return str(row["party_id"])
 
+    def capabilities_for_party(self, party_id: str) -> dict[str, bool] | None:
+        """Return immutable Showroom run permissions; None means an ordinary non-Showroom party."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT interactive_links_enabled, interactive_workspace_enabled
+                FROM showroom_runs WHERE party_id = ?
+                """,
+                (party_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "interactive_links_enabled": bool(row["interactive_links_enabled"]),
+            "interactive_workspace_enabled": bool(row["interactive_workspace_enabled"]),
+        }
+
     def touch_run(self, run_id: str) -> None:
         with self.connect() as connection:
             connection.execute("UPDATE showroom_runs SET updated_at = ? WHERE id = ?", (now_iso(), run_id))
 
     def leaderboard(self, scenario_id: str, limit: int = 50) -> dict[str, Any]:
         scenario = self.get_scenario(scenario_id, public_only=True, include_internal=True)
+        dimensions = {
+            "interactive_links_enabled": bool(scenario["interactive_links_enabled"]),
+            "interactive_workspace_enabled": bool(scenario["interactive_workspace_enabled"]),
+        }
         if not scenario["leaderboard_enabled"]:
-            return {"scenario_id": scenario_id, "label": scenario["leaderboard_label"], "entries": []}
+            return {
+                "scenario_id": scenario_id,
+                "label": scenario["leaderboard_label"],
+                "dimensions": dimensions,
+                "entries": [],
+            }
         with self.connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM showroom_runs
                 WHERE scenario_id = ? AND leaderboard_opt_in = 1
+                  AND interactive_links_enabled = ?
+                  AND interactive_workspace_enabled = ?
                 ORDER BY updated_at DESC
                 """,
-                (scenario_id,),
+                (
+                    scenario_id,
+                    int(dimensions["interactive_links_enabled"]),
+                    int(dimensions["interactive_workspace_enabled"]),
+                ),
             ).fetchall()
         entries: list[dict[str, Any]] = []
         for row in rows:
@@ -782,6 +892,7 @@ class ShowroomStore:
                     "display_name": row["display_name"],
                     "score": score,
                     "updated_at": row["updated_at"],
+                    **dimensions,
                 }
             )
         entries.sort(key=lambda item: (-float(item["score"]), item["updated_at"], item["run_id"]))
@@ -790,6 +901,7 @@ class ShowroomStore:
             "scenario_id": scenario_id,
             "scenario_title": scenario["title"],
             "label": scenario["leaderboard_label"],
+            "dimensions": dimensions,
             "entries": ranked,
         }
 

@@ -327,12 +327,28 @@ class NarrativeArtifactContent(BaseModel):
         return value
 
 
+class NarrativeWorkspaceFileContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_key: str = Field(min_length=1, max_length=120, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    blueprint_id: str = Field(min_length=1, max_length=120, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    slots: dict[str, str] = Field(default_factory=dict, max_length=40)
+
+    @field_validator("slots")
+    @classmethod
+    def validate_slot_values(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not isinstance(item, str) for item in value.values()):
+            raise ValueError("workspace file slot values must be strings")
+        return value
+
+
 class NarrativeBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["rp-gateway.narrative-bundle.v1"]
+    schema_version: Literal["rp-gateway.narrative-bundle.v1", "rp-gateway.narrative-bundle.v2"]
     narrative_text: str = Field(min_length=1, max_length=30000)
     artifacts: list[NarrativeArtifactContent] = Field(default_factory=list, max_length=4)
+    workspace_files: list[NarrativeWorkspaceFileContent] = Field(default_factory=list, max_length=8)
 
 
 class TrainingArtifactSnapshot(BaseModel):
@@ -377,6 +393,21 @@ class TrainingArtifactEventResponse(BaseModel):
     duplicate: bool = False
 
 
+class TrainingWorkspaceEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=8, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")
+    file_id: str = Field(min_length=1, max_length=160)
+    file_revision: int = Field(ge=1)
+    event_type: Literal["file_opened", "file_downloaded", "file_reported", "link_opened", "active_content_enabled"]
+
+
+class TrainingWorkspaceEventResponse(BaseModel):
+    accepted: bool = True
+    event_sequence: int = Field(ge=1)
+    duplicate: bool = False
+
+
 class InteractionEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -406,6 +437,8 @@ class ShowroomScenarioCreate(BaseModel):
     leaderboard_metric: ShowroomLeaderboardMetric = "state_path"
     leaderboard_state_path: str = Field(default="meta.turn", min_length=1, max_length=240)
     leaderboard_label: str = Field(default="Очки", min_length=1, max_length=80)
+    interactive_links_enabled: bool = False
+    interactive_workspace_enabled: bool = False
     sort_order: int = Field(default=100, ge=0, le=10000)
 
 
@@ -422,6 +455,8 @@ class ShowroomScenarioUpdate(BaseModel):
     leaderboard_metric: ShowroomLeaderboardMetric | None = None
     leaderboard_state_path: str | None = Field(default=None, min_length=1, max_length=240)
     leaderboard_label: str | None = Field(default=None, min_length=1, max_length=80)
+    interactive_links_enabled: bool | None = None
+    interactive_workspace_enabled: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=10000)
 
 

@@ -61,10 +61,14 @@ class TrainingArtifactService:
 
     _catalog_cache: dict[str, tuple[tuple[tuple[str, int], ...], dict[str, Any]]] = {}
 
-    def __init__(self, worldpack: WorldPackSummary | None, store: StateStore):
+    def __init__(self, worldpack: WorldPackSummary | None, store: StateStore, *, enabled: bool = True):
         self.worldpack = worldpack
         self.store = store
-        self.catalog = self._load_catalog(worldpack) if worldpack else None
+        self.catalog = self._load_catalog(worldpack) if worldpack and enabled else None
+
+    @classmethod
+    def supports(cls, worldpack: WorldPackSummary | None) -> bool:
+        return bool(worldpack and cls._load_catalog(worldpack) is not None)
 
     @property
     def enabled(self) -> bool:

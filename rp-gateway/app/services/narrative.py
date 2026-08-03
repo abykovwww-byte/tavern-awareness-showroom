@@ -27,16 +27,32 @@ logger = logging.getLogger(__name__)
 
 
 def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
-    return "\n".join(
+    site = contract.get("site") if "site" in contract or "workspace" in contract else contract
+    workspace = contract.get("workspace") if "site" in contract or "workspace" in contract else None
+    lines = ["TRAINING_INTERACTION_CONTRACT"]
+    if workspace:
+        lines.extend(
+            [
+                "Return JSON only with schema_version rp-gateway.narrative-bundle.v2, narrative_text, artifacts, and workspace_files.",
+                "For workspace_files emit exactly supplied file_key and blueprint_id values and fill only declared string slots.",
+            ]
+        )
+    else:
+        lines.append("Return JSON only with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.")
+    if site:
+        lines.extend(
+            [
+                "Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.",
+                "Repeat the exact fixed display_url in the email/message narrative.",
+            ]
+        )
+    lines.extend(
         [
-            "TRAINING_ARTIFACT_CONTRACT",
-            "Return JSON only with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.",
-            "Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.",
-            "Repeat the exact fixed display_url in the email/message narrative.",
-            "Never emit HTML, CSS, JavaScript, remote assets, credentials, answer keys, scoring, correctness, or remediation.",
-            json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+            "Never emit HTML, CSS, JavaScript, remote assets, credentials, paths, MIME types, file classification, answer keys, scoring, correctness, or remediation.",
+            json.dumps({"site": site, "workspace": workspace}, ensure_ascii=False, separators=(",", ":")),
         ]
     )
+    return "\n".join(lines)
 
 
 class ProviderRateLimitError(RuntimeError):
@@ -462,21 +478,38 @@ class NarrativeClient:
         else:
             content = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
         if artifact_contract:
+            site_contract = artifact_contract.get("site") if "site" in artifact_contract or "workspace" in artifact_contract else artifact_contract
+            workspace_contract = artifact_contract.get("workspace") if "site" in artifact_contract or "workspace" in artifact_contract else None
             slot_values = {
                 slot_id: ("Продолжить" if slot_id.endswith("label") else "Учебная страница")
-                for slot_id in artifact_contract.get("slots", {})
+                for slot_id in (site_contract or {}).get("slots", {})
             }
+            workspace_files = []
+            for file_contract in (workspace_contract or {}).get("files", []):
+                workspace_files.append(
+                    {
+                        "file_key": file_contract["file_key"],
+                        "blueprint_id": file_contract["blueprint_id"],
+                        "slots": {slot_id: "Учебный документ" for slot_id in file_contract.get("slots", {})},
+                    }
+                )
+            narrative_text = content
+            artifacts = []
+            if site_contract:
+                narrative_text = f"{content}\n\nСсылка: {site_contract['display_url']}"
+                artifacts = [
+                    {
+                        "artifact_key": site_contract["artifact_key"],
+                        "blueprint_id": site_contract["blueprint_id"],
+                        "slots": slot_values,
+                    }
+                ]
             content = json.dumps(
                 {
-                    "schema_version": "rp-gateway.narrative-bundle.v1",
-                    "narrative_text": f"{content}\n\nСсылка: {artifact_contract['display_url']}",
-                    "artifacts": [
-                        {
-                            "artifact_key": artifact_contract["artifact_key"],
-                            "blueprint_id": artifact_contract["blueprint_id"],
-                            "slots": slot_values,
-                        }
-                    ],
+                    "schema_version": "rp-gateway.narrative-bundle.v2" if workspace_contract else "rp-gateway.narrative-bundle.v1",
+                    "narrative_text": narrative_text,
+                    "artifacts": artifacts,
+                    **({"workspace_files": workspace_files} if workspace_contract else {}),
                 },
                 ensure_ascii=False,
             )

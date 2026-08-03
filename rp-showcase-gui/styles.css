@@ -217,6 +217,9 @@ input:focus, textarea:focus, select:focus { border-color: var(--primary); box-sh
 textarea { resize: vertical; }
 .switch-row { display: flex; align-items: flex-start; gap: 10px; }
 .switch-row input { width: auto; margin-top: 5px; }
+.switch-row input:disabled + span { opacity: .55; }
+.capability-panel { display: grid; gap: 9px; background: rgba(231,181,107,.05); }
+.capability-panel small { margin: -5px 0 8px 26px; color: var(--muted); }
 .privacy-note { margin: -10px 0 0; font-size: .88rem; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 fieldset { border: 1px solid var(--border); border-radius: 14px; padding: 15px; }
@@ -243,6 +246,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .chat-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; align-items: start; }
 .chat-layout.without-portal { grid-template-columns: minmax(0, 900px); justify-content: center; }
 .chat-main { min-width: 0; }
+.chat-sidebars { display: grid; gap: 18px; position: sticky; top: 18px; max-height: calc(100vh - 36px); overflow-y: auto; }
 .chat-thread { display: grid; gap: 14px; padding: 24px 0; }
 .message { max-width: 82%; padding: 16px 18px; border-radius: 18px; border: 1px solid var(--border); }
 .message-content { display: grid; gap: 14px; min-width: 0; }
@@ -256,10 +260,6 @@ tbody tr:last-child td { border-bottom: 0; }
 .message-rich .narrative-copy { width: fit-content; max-width: 82%; padding: 15px 18px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
 
 .corporate-portal {
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 36px);
-  overflow-y: auto;
   padding: 18px;
   border: 1px solid rgba(20, 37, 61, .14);
   border-radius: 24px;
@@ -267,6 +267,26 @@ tbody tr:last-child td { border-bottom: 0; }
   color: #18243a;
   box-shadow: 0 22px 70px rgba(0, 0, 0, .28);
 }
+.training-workspace {
+  padding: 18px;
+  border: 1px solid rgba(20, 37, 61, .14);
+  border-radius: 24px;
+  background: #f7f9fc;
+  color: #18243a;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .28);
+}
+.workspace-tree { display: grid; gap: 12px; padding-top: 14px; }
+.workspace-folder { display: grid; gap: 7px; }
+.workspace-folder h3 { margin: 0; color: #40516e; font-size: .82rem; }
+.workspace-file { width: 100%; padding: 10px 11px; border: 1px solid #e0e6ef; border-radius: 12px; background: #fff; color: #27344c; text-align: left; overflow-wrap: anywhere; }
+.workspace-file:hover { border-color: #1764d8; color: #1764d8; }
+.workspace-preview { display: grid; gap: 12px; margin-top: 14px; padding: 14px; border: 1px solid #dfe5ee; border-radius: 16px; background: #fff; }
+.workspace-preview h3 { margin: 0; color: #16223a; font-size: .95rem; }
+.workspace-file-body { display: grid; gap: 10px; max-height: 300px; overflow-y: auto; }
+.workspace-file-body strong { color: #657493; font-size: .72rem; text-transform: uppercase; }
+.workspace-file-body p { margin: 4px 0 0; color: #27344c; white-space: pre-wrap; font-size: .82rem; }
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.button-danger { border-color: #b42318; color: #b42318; }
 .portal-heading { padding: 4px 4px 14px; border-bottom: 1px solid #dfe5ee; }
 .portal-heading .eyebrow { color: #657493; }
 .portal-heading h2 { margin-bottom: 5px; color: #15213a; font-size: 1.45rem; }
@@ -382,7 +402,7 @@ tbody tr:last-child td { border-bottom: 0; }
   .start-layout, .admin-layout { grid-template-columns: 1fr; }
   .scenario-admin-list { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .chat-layout, .chat-layout.without-portal { grid-template-columns: 1fr; }
-  .corporate-portal { position: static; max-height: none; }
+  .chat-sidebars { position: static; max-height: none; }
 }
 
 @media (max-width: 620px) {

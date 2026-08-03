@@ -1,0 +1,20 @@
+{
+  "id": "access-update",
+  "file_key": "turn-4-access-update",
+  "revision": 1,
+  "folder_id": "incoming",
+  "display_name": "Обновление доступа к проекту",
+  "extension": ".docm",
+  "renderer": "text-document",
+  "media_family": "document",
+  "lifecycle": {"materialize": "turn", "turn": 4, "available_from_turn": 4, "available_until_turn": 10},
+  "llm_slots": {
+    "title": {"required": true, "max_length": 160},
+    "body": {"required": true, "max_length": 1200}
+  },
+  "fallback_content": {
+    "title": "Срочное обновление прав проекта",
+    "body": "Для продолжения работы откройте документ и включите активное содержимое. Вопросы по процедуре предлагается отложить до завершения обновления."
+  },
+  "actions": ["file_opened", "file_reported", "active_content_enabled"]
+}

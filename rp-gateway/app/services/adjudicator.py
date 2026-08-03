@@ -19,6 +19,7 @@ from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
+from app.services.training_workspace import TrainingWorkspaceService, WorkspaceMaterialization
 from app.services.validator import OutputValidator, awareness_final_summary, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -42,6 +43,7 @@ class Adjudicator:
         settings: Settings,
         store: StateStore,
         training_artifacts: TrainingArtifactService | None = None,
+        training_workspace: TrainingWorkspaceService | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -53,6 +55,7 @@ class Adjudicator:
         self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
         self.world = WorldInstructor(settings, store)
         self.training_artifacts = training_artifacts
+        self.training_workspace = training_workspace
 
     async def handle_chat(
         self,
@@ -115,7 +118,9 @@ class Adjudicator:
                     self.has_auto_start_history(),
                 )
             intent = self.intent_parser.parse(latest)
-            interaction_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
+            artifact_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
+            workspace_evidence = self.training_workspace.pending_evidence() if self.training_workspace else []
+            interaction_evidence = [*artifact_evidence, *workspace_evidence]
             outcome, patch = self.rule_engine.resolve(
                 state,
                 intent,
@@ -130,6 +135,16 @@ class Adjudicator:
                 if self.training_artifacts
                 else None
             )
+            workspace_contract = (
+                self.training_workspace.contract_for_state(narrative_state)
+                if self.training_workspace
+                else None
+            )
+            interaction_contract = (
+                {"site": artifact_contract, "workspace": workspace_contract}
+                if artifact_contract or workspace_contract
+                else None
+            )
 
             llm_calls = 0
             repaired = False
@@ -137,6 +152,7 @@ class Adjudicator:
             gateway_fallback_reason: str | None = None
             prompt_messages: list[dict[str, str]] | None = None
             artifact_result: ArtifactMaterialization | None = None
+            workspace_result: WorkspaceMaterialization | None = None
             try:
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
                 rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
@@ -147,7 +163,7 @@ class Adjudicator:
                     repair_instruction=None,
                     memory_summary=memory_summary,
                     rp_story_memory=rp_story_memory,
-                    artifact_contract=artifact_contract,
+                    artifact_contract=interaction_contract,
                 )
                 raw = await self.narrative.complete(
                     request,
@@ -157,7 +173,7 @@ class Adjudicator:
                     memory_summary=memory_summary,
                     rp_story_memory=rp_story_memory,
                     request_id=request_id,
-                    artifact_contract=artifact_contract,
+                    artifact_contract=interaction_contract,
                 )
                 llm_calls += 1
                 if awareness_final_summary(narrative_state):
@@ -176,8 +192,13 @@ class Adjudicator:
                 if self.training_artifacts:
                     artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                     if artifact_result.valid:
-                        raw = artifact_result.response
                         text = artifact_result.text
+                if self.training_workspace:
+                    workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
+                    if workspace_result.valid:
+                        text = workspace_result.text
+                if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
+                    raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                 validation = self.validator.validate(
                     text,
                     outcome,
@@ -186,8 +207,10 @@ class Adjudicator:
                     latest_user_message=latest,
                     scenario_type=self.settings.scenario_type,
                 )
-                artifact_valid = artifact_result.valid if artifact_result else True
-                if (not validation.valid or not artifact_valid) and self.settings.max_repair_attempts > 0:
+                interaction_valid = (artifact_result.valid if artifact_result else True) and (
+                    workspace_result.valid if workspace_result else True
+                )
+                if (not validation.valid or not interaction_valid) and self.settings.max_repair_attempts > 0:
                     repaired = True
                     repair_instruction = validation.repair_instruction
                     if artifact_result and not artifact_result.valid:
@@ -195,6 +218,13 @@ class Adjudicator:
                             [
                                 repair_instruction,
                                 "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                            ]
+                        ).strip()
+                    if workspace_result and not workspace_result.valid:
+                        repair_instruction = " ".join(
+                            [
+                                repair_instruction,
+                                "Return valid workspace_files: " + "; ".join(workspace_result.violations),
                             ]
                         ).strip()
                     raw = await self.narrative.complete(
@@ -207,15 +237,20 @@ class Adjudicator:
                         memory_summary=memory_summary,
                         rp_story_memory=rp_story_memory,
                         request_id=request_id,
-                        artifact_contract=artifact_contract,
+                        artifact_contract=interaction_contract,
                     )
                     llm_calls += 1
                     text = response_text(raw)
                     if self.training_artifacts:
                         artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                         if artifact_result.valid:
-                            raw = artifact_result.response
                             text = artifact_result.text
+                    if self.training_workspace:
+                        workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
+                        if workspace_result.valid:
+                            text = workspace_result.text
+                    if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
+                        raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                     validation = self.validator.validate(
                         text,
                         outcome,
@@ -224,8 +259,10 @@ class Adjudicator:
                         latest_user_message=latest,
                         scenario_type=self.settings.scenario_type,
                     )
-                artifact_valid = artifact_result.valid if artifact_result else True
-                if not validation.valid or not artifact_valid:
+                interaction_valid = (artifact_result.valid if artifact_result else True) and (
+                    workspace_result.valid if workspace_result else True
+                )
+                if not validation.valid or not interaction_valid:
                     gateway_fallback_reason = "validation_failed"
                     self.store.audit(
                         "llm_validation_failed",
@@ -235,6 +272,7 @@ class Adjudicator:
                             "violations": [
                                 *validation.violations,
                                 *(artifact_result.violations if artifact_result else []),
+                                *(workspace_result.violations if workspace_result else []),
                             ],
                         },
                         request_id,
@@ -248,7 +286,12 @@ class Adjudicator:
                         self.settings.campaign_id,
                         self.settings.scenario_type,
                     )
-                    raw = with_text(raw, text)
+                    raw = self.provider_fallback_response(
+                        outcome,
+                        text,
+                        gateway_fallback_reason,
+                        request_id,
+                    )
             except PermissionError:
                 raise
             except httpx.HTTPStatusError as exc:
@@ -297,8 +340,17 @@ class Adjudicator:
                     or gateway_fallback_reason is not None
                 ):
                     artifact_result = self.training_artifacts.fallback_materialization(raw, text, artifact_contract)
-                raw = artifact_result.response
                 text = artifact_result.text
+            if self.training_workspace and workspace_contract:
+                if (
+                    workspace_result is None
+                    or not workspace_result.valid
+                    or provider_fallback_reason is not None
+                    or gateway_fallback_reason is not None
+                ):
+                    workspace_result = self.training_workspace.fallback_materialization(workspace_contract, text)
+                text = workspace_result.text
+            raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
@@ -331,7 +383,9 @@ class Adjudicator:
                     interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
                 ),
                 artifacts=artifact_result.persistence_records if artifact_result else [],
-                consumed_artifact_event_ids=[item.event_sequence for item in interaction_evidence],
+                consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
+                workspace_files=workspace_result.persistence_records if workspace_result else [],
+                consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
             )
             self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp":
@@ -386,6 +440,10 @@ class Adjudicator:
             "llm_calls": llm_calls,
             "outcome": outcome,
             "interaction_evidence": interaction_evidence or [],
+            "training_capabilities": {
+                "interactive_links_enabled": bool(self.training_artifacts and self.training_artifacts.enabled),
+                "interactive_workspace_enabled": bool(self.training_workspace and self.training_workspace.enabled),
+            },
         }
 
     def preview_applied_state(self, patch: Any) -> dict[str, Any]:
@@ -526,6 +584,25 @@ class Adjudicator:
             if message.role == "user" and isinstance(message.content, str):
                 return message.content
         return ""
+
+    @staticmethod
+    def merge_interaction_response(
+        raw: dict[str, Any],
+        text: str,
+        artifact_result: ArtifactMaterialization | None,
+        workspace_result: WorkspaceMaterialization | None,
+    ) -> dict[str, Any]:
+        response = with_text(raw, text)
+        message = response.setdefault("choices", [{}])[0].setdefault("message", {})
+        if artifact_result and artifact_result.public_artifacts:
+            message["artifacts"] = artifact_result.public_artifacts
+        else:
+            message.pop("artifacts", None)
+        if workspace_result and workspace_result.public_files:
+            message["workspace_files"] = workspace_result.public_files
+        else:
+            message.pop("workspace_files", None)
+        return response
 
     def normalize_response(self, raw: dict[str, Any], requested_model: str) -> dict[str, Any]:
         response = dict(raw)

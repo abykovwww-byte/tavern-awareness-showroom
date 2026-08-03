@@ -608,10 +608,16 @@ class RuleEngine:
             add("awareness-score", -3)
         eligible_events = [item for item in interaction_evidence or [] if item.score_eligible]
         reported_event = any(
-            item.event_type == "reported" and item.decision_result == "pass" for item in eligible_events
+            item.event_type in {"reported", "file_reported"} and item.decision_result == "pass"
+            for item in eligible_events
         )
         failed_link_event = any(
             item.event_type == "link_opened" and item.decision_result == "fail" for item in eligible_events
+        )
+        failed_file_event = any(
+            item.event_type in {"file_opened", "file_downloaded", "active_content_enabled"}
+            and item.decision_result == "fail"
+            for item in eligible_events
         )
         credential_event = any(item.event_type == "credentials_submitted" for item in eligible_events)
         if any(item.event_type == "link_opened" for item in eligible_events):
@@ -630,7 +636,7 @@ class RuleEngine:
             add("credential-exposure", 1)
             add("unsafe-actions", 1)
             add("awareness-score", -5)
-        if failed_link_event:
+        if failed_link_event or failed_file_event:
             add("suspicious-artifacts-opened", 1)
             add("unsafe-actions", 1)
             add("awareness-score", -2)
@@ -716,6 +722,11 @@ class RuleEngine:
         failed_link_event = any(
             item.event_type == "link_opened" and item.decision_result == "fail" for item in eligible_events
         )
+        failed_file_event = any(
+            item.event_type in {"file_opened", "file_downloaded", "active_content_enabled"}
+            and item.decision_result == "fail"
+            for item in eligible_events
+        )
         credential_event = any(item.event_type == "credentials_submitted" for item in eligible_events)
         credential_exposure = (
             self.explicit_action(CREDENTIAL_ACTION_RE, text)
@@ -723,9 +734,13 @@ class RuleEngine:
             or credential_event
         )
         confidential_disclosure = self.explicit_action(CONFIDENTIAL_DISCLOSURE_RE, text)
-        unsafe = dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure or failed_link_event
+        unsafe = (
+            dangerous_file or unsafe_forward or credential_exposure or confidential_disclosure
+            or failed_link_event or failed_file_event
+        )
         reported = self.explicit_action(SOC_REPORT_RE, text) or any(
-            item.event_type == "reported" and item.decision_result == "pass" for item in eligible_events
+            item.event_type in {"reported", "file_reported"} and item.decision_result == "pass"
+            for item in eligible_events
         )
         independently_verified = self.explicit_action(INDEPENDENT_VERIFY_RE, text)
         explicitly_refused = bool(EXPLICIT_REFUSAL_RE.search(text))

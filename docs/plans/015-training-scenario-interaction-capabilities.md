@@ -2,8 +2,8 @@
 
 Date: 2026-08-03
 
-Status: Architecture accepted. Runtime implementation, deployment and live
-verification remain pending.
+Status: Runtime implementation completed in the IaC repository. Deployment and
+live verification remain pending.
 
 ## Goal
 
@@ -189,9 +189,12 @@ Each file blueprint declares:
 - whether the visible/downloadable representation comes from authored JSON or
   a pinned resource revision.
 
-### Resource library
+### IaC resource library
 
-Add versioned admin storage:
+The implemented first version stores reviewed resources inside the WorldPack,
+binds them through stable blueprint IDs and records immutable revision plus
+content hash in the party snapshot. The following admin-upload tables are a
+future extension, needed only when course owners must upload outside Git/IaC:
 
 ```text
 training_resources
@@ -199,10 +202,10 @@ training_resource_revisions
 showroom_scenario_resource_bindings
 ```
 
-Store content hash, real MIME detected server-side, size, processing status,
-classification and immutable revision. Bind a resource revision to a stable
-WorldPack `folder_id` and display name. Pin bindings into the run workspace
-snapshot.
+That extension must store content hash, real MIME detected server-side, size,
+processing status, classification and immutable revision. It must bind a
+resource revision to a stable WorldPack `folder_id` and display name and pin
+bindings into the run workspace snapshot.
 
 Classifications:
 
@@ -257,8 +260,9 @@ GET  /api/showroom/runs/{run_id}/workspace/files/{file_id}
 POST /api/showroom/runs/{run_id}/workspace-events
 ```
 
-The authenticated party API receives equivalent party-scoped endpoints if the
-workspace is later exposed in Light GUI.
+The authenticated party API exposes equivalent party-scoped endpoints; the
+current workspace panel is implemented in Showroom, while Light GUI can adopt
+the same API without moving authority into the browser.
 
 Public requests send only:
 
@@ -358,7 +362,7 @@ Also prove:
 
 ## IaC and dependency map
 
-Runtime implementation will touch:
+Runtime implementation touches:
 
 - `rp-gateway/app/models/schemas.py`;
 - `rp-gateway/app/services/showroom.py` and its additive SQLite migration;

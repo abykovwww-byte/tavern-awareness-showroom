@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>RP Showroom</title>
-  <link rel="stylesheet" href="/styles.css?v=20260729-message-time-corporate-portal">
+  <link rel="stylesheet" href="/styles.css?v=20260803-training-workspace">
   <link rel="stylesheet" href="/pt-design.css?v=20260730-turn-rating">
   <link rel="stylesheet" href="/training-artifacts.css?v=20260731-messenger-links">
 </head>
@@ -146,14 +146,25 @@
             <button class="button button-primary" type="submit">Отправить</button>
           </form>
         </div>
-        <aside class="corporate-portal hidden" id="corporatePortal" aria-label="Корпоративный портал">
-          <div class="portal-heading">
-            <p class="eyebrow">Справочник</p>
-            <h2 id="portalTitle">Корпоративный портал</h2>
-            <p class="portal-context" id="portalContext"></p>
-          </div>
-          <div class="portal-character-list" id="portalCharacterList"></div>
-        </aside>
+        <div class="chat-sidebars hidden" id="chatSidebars">
+          <aside class="corporate-portal hidden" id="corporatePortal" aria-label="Корпоративный портал">
+            <div class="portal-heading">
+              <p class="eyebrow">Справочник</p>
+              <h2 id="portalTitle">Корпоративный портал</h2>
+              <p class="portal-context" id="portalContext"></p>
+            </div>
+            <div class="portal-character-list" id="portalCharacterList"></div>
+          </aside>
+          <aside class="training-workspace hidden" id="trainingWorkspace" aria-label="Рабочая папка отдела">
+            <div class="portal-heading">
+              <p class="eyebrow">Интерактивный диск</p>
+              <h2>Рабочая папка отдела</h2>
+              <p class="portal-context">Файлы доступны только в рамках этой партии.</p>
+            </div>
+            <div class="workspace-tree" id="workspaceTree"></div>
+            <div class="workspace-preview hidden" id="workspacePreview"></div>
+          </aside>
+        </div>
       </div>
     </section>
 
@@ -217,6 +228,14 @@
           <label id="presetWorldField"><span>Мир — не название сценария</span><select id="worldpackSelect"></select><small>Один WorldPack можно выбрать в нескольких сценариях витрины.</small></label>
           <label class="hidden" id="promptWorldField"><span>Стартовый prompt внутреннего мира</span><textarea id="worldPromptInput" maxlength="6000" rows="7"></textarea></label>
 
+          <fieldset class="capability-panel hidden" id="trainingCapabilitiesField">
+            <legend>Интерактивные функции Training</legend>
+            <label class="switch-row"><input id="interactiveLinksEnabledInput" type="checkbox"><span>Подключить интерактивные ссылки</span></label>
+            <small id="interactiveLinksHint">WorldPack должен содержать валидный каталог учебных сайтов.</small>
+            <label class="switch-row"><input id="interactiveWorkspaceEnabledInput" type="checkbox"><span>Подключить интерактивный диск</span></label>
+            <small id="interactiveWorkspaceHint">WorldPack должен содержать валидный контракт рабочей папки отдела.</small>
+          </fieldset>
+
           <div class="form-grid">
             <label class="switch-row"><input id="leaderboardEnabledInput" type="checkbox" checked><span>Таблица лидеров этого сценария</span></label>
             <label><span>Подпись результата</span><input id="leaderboardLabelInput" maxlength="80" value="Очки"></label>
@@ -240,6 +259,6 @@
   <script src="/structured-content.js?v=20260729-messenger-boundary" defer></script>
   <script src="/message-time.js?v=20260729-message-time" defer></script>
   <script src="/training-artifacts.js?v=20260731-messenger-links" defer></script>
-  <script src="/app.js?v=20260731-messenger-links" defer></script>
+  <script src="/app.js?v=20260803-training-workspace" defer></script>
 </body>
 </html>

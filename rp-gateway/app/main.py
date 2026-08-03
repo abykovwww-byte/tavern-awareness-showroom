@@ -43,6 +43,7 @@ from app.models.schemas import (
     PartyTurnDatasetUpdate,
     TurnFeedbackUpdate,
     TrainingArtifactEventRequest,
+    TrainingWorkspaceEventRequest,
     PartyCheckpointCreate,
     PlayerCharacterCreate,
     PlayerCharacterDraftRequest,
@@ -92,6 +93,7 @@ from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
+from app.services.training_workspace import TrainingWorkspaceService
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -147,6 +149,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party), party)
+
+    def training_services_for_party(party: Any, party_state_store: StateStore) -> tuple[TrainingArtifactService, TrainingWorkspaceService]:
+        run_capabilities = showroom_store.capabilities_for_party(party.id)
+        links_enabled = run_capabilities is None or run_capabilities["interactive_links_enabled"]
+        workspace_enabled = run_capabilities is None or run_capabilities["interactive_workspace_enabled"]
+        return (
+            TrainingArtifactService(party.worldpack, party_state_store, enabled=links_enabled),
+            TrainingWorkspaceService(party.worldpack, party_state_store, enabled=workspace_enabled),
+        )
 
     app.state.adjudicator = Adjudicator(settings_with_global_service_model(settings), store)
 
@@ -794,13 +805,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            service = TrainingArtifactService(party.worldpack, party_state_store)
+            service, _ = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
                 raise ValueError("interactive training artifacts are not enabled for this party")
             result = service.record_event(payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party_id": party_id, **result.model_dump(mode="json")}
+
+    @app.get("/api/parties/{party_id}/workspace")
+    def get_party_workspace(http_request: Request, party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            _, service = training_services_for_party(party, party_state_store)
+            if not service.enabled or party.scenario_type != "training":
+                raise ValueError("interactive training workspace is not enabled for this party")
+            return {"party_id": party_id, "workspace": service.snapshot(party_state_store.get_state())}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/parties/{party_id}/workspace-events")
+    def record_party_workspace_event(
+        http_request: Request,
+        party_id: str,
+        payload: TrainingWorkspaceEventRequest,
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            _, service = training_services_for_party(party, party_state_store)
+            if not service.enabled or party.scenario_type != "training":
+                raise ValueError("interactive training workspace is not enabled for this party")
+            result = service.record_event(payload, party_state_store.get_state())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, **result.model_dump(mode="json")}
+
+    @app.get("/api/parties/{party_id}/workspace/files/{file_id}/content")
+    def get_party_workspace_file_content(http_request: Request, party_id: str, file_id: str) -> FileResponse:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
+            _, service = training_services_for_party(party, party_state_store)
+            if not service.enabled or party.scenario_type != "training":
+                raise ValueError("interactive training workspace is not enabled for this party")
+            path, mime_type, filename = service.resource_for_file(
+                file_id,
+                party_state_store.get_state(),
+                public_only=bool(getattr(http_request.state, "showroom_party_access", False)),
+            )
+            return FileResponse(path, media_type=mime_type, filename=filename)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.put("/api/parties/{party_id}/turns/{turn_id}/feedback")
     def update_party_turn_feedback(
@@ -1247,8 +1304,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
             narrative = NarrativeClient(party_settings)
-            artifact_service = TrainingArtifactService(party.worldpack, party_state_store)
+            artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             artifact_contract = artifact_service.contract_for_state(narrative_state)
+            workspace_contract = workspace_service.contract_for_state(narrative_state, party_start=True)
+            interaction_contract = (
+                {"site": artifact_contract, "workspace": workspace_contract}
+                if artifact_contract or workspace_contract
+                else None
+            )
             prompt_messages = narrative.narrative_messages(
                 chat_request,
                 narrative_state,
@@ -1256,7 +1319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 repair_instruction=None,
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
-                artifact_contract=artifact_contract,
+                artifact_contract=interaction_contract,
             )
             repaired = False
             fallback_reason: str | None = None
@@ -1268,15 +1331,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
                 request_id=request_id,
-                artifact_contract=artifact_contract,
+                artifact_contract=interaction_contract,
             )
             adjudicator = Adjudicator(party_settings, party_state_store)
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
             artifact_result = artifact_service.materialize_response(response, artifact_contract)
+            workspace_result = workspace_service.materialize_response(response, workspace_contract)
             if artifact_result.valid:
-                response = artifact_result.response
                 text = artifact_result.text
+            if workspace_result.valid:
+                text = workspace_result.text
+            if artifact_result.valid and workspace_result.valid:
+                response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
             validator = OutputValidator()
             validation = validator.validate(
                 text,
@@ -1285,7 +1352,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 campaign_id=party.worldpack_id,
                 scenario_type=party.scenario_type,
             )
-            if (not validation.valid or not artifact_result.valid) and party_settings.max_repair_attempts > 0:
+            if (
+                not validation.valid or not artifact_result.valid or not workspace_result.valid
+            ) and party_settings.max_repair_attempts > 0:
                 repaired = True
                 repair_instruction = validation.repair_instruction
                 if not artifact_result.valid:
@@ -1293,6 +1362,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         [
                             repair_instruction,
                             "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                        ]
+                    ).strip()
+                if not workspace_result.valid:
+                    repair_instruction = " ".join(
+                        [
+                            repair_instruction,
+                            "Return valid workspace_files: " + "; ".join(workspace_result.violations),
                         ]
                     ).strip()
                 raw = await narrative.complete(
@@ -1305,14 +1381,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     memory_summary=memory_summary,
                     rp_story_memory=rp_story_memory,
                     request_id=request_id,
-                    artifact_contract=artifact_contract,
+                    artifact_contract=interaction_contract,
                 )
                 response = adjudicator.normalize_response(raw, model_profile.model)
                 text = response_text(response)
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
+                workspace_result = workspace_service.materialize_response(response, workspace_contract)
                 if artifact_result.valid:
-                    response = artifact_result.response
                     text = artifact_result.text
+                if workspace_result.valid:
+                    text = workspace_result.text
+                if artifact_result.valid and workspace_result.valid:
+                    response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
                 validation = validator.validate(
                     text,
                     start_outcome,
@@ -1320,14 +1400,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     campaign_id=party.worldpack_id,
                     scenario_type=party.scenario_type,
                 )
-            if not validation.valid or not artifact_result.valid:
+            if not validation.valid or not artifact_result.valid or not workspace_result.valid:
                 fallback_reason = "validation_failed"
                 party_state_store.audit(
                     "party_start_validation_failed",
                     {
                         "request_id": request_id,
                         "model": model_profile.model,
-                        "violations": [*validation.violations, *artifact_result.violations],
+                        "violations": [
+                            *validation.violations,
+                            *artifact_result.violations,
+                            *workspace_result.violations,
+                        ],
                     },
                     request_id,
                 )
@@ -1351,8 +1435,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     request_id,
                 )
                 artifact_result = artifact_service.fallback_materialization(response, text, artifact_contract)
-                response = artifact_result.response
                 text = artifact_result.text
+                workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
+            response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -1379,8 +1464,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "fallback_reason": fallback_reason,
                     "llm_calls": 2 if repaired else 1,
                     "outcome": start_outcome.model_dump(mode="json"),
+                    "training_capabilities": {
+                        "interactive_links_enabled": artifact_service.enabled,
+                        "interactive_workspace_enabled": workspace_service.enabled,
+                    },
                 },
                 artifacts=artifact_result.persistence_records,
+                workspace_files=workspace_result.persistence_records,
             )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
@@ -1407,6 +1497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return {
+            **response,
             "party_id": party_id,
             "started": True,
             "already_started": False,
@@ -1434,11 +1525,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request,
                 party_settings,
             )
-            artifact_service = TrainingArtifactService(party.worldpack, party_state_store)
+            artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             response = await Adjudicator(
                 party_settings,
                 party_state_store,
                 training_artifacts=artifact_service,
+                training_workspace=workspace_service,
             ).handle_chat(
                 chat_request,
                 authorization,
@@ -1469,6 +1561,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         message = response.get("choices", [{}])[0].get("message", {"role": "assistant", "content": ""})
         return {
+            **response,
             "party_id": party_id,
             "state_version": party_state_store.current_version(),
             "message": message,
@@ -1587,6 +1680,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         result.pop("party_id", None)
         return {"run_id": run_id, **result}
+
+    @app.get("/api/showroom/runs/{run_id}/workspace")
+    def get_showroom_workspace(http_request: Request, run_id: str) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            result = get_party_workspace(http_request, party_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"run_id": run_id, "workspace": result["workspace"]}
+
+    @app.post("/api/showroom/runs/{run_id}/workspace-events")
+    def record_showroom_workspace_event(
+        http_request: Request,
+        run_id: str,
+        payload: TrainingWorkspaceEventRequest,
+    ) -> dict[str, Any]:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            result = record_party_workspace_event(http_request, party_id, payload)
+            showroom_store.touch_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result.pop("party_id", None)
+        return {"run_id": run_id, **result}
+
+    @app.get("/api/showroom/runs/{run_id}/workspace/files/{file_id}/content")
+    def get_showroom_workspace_file_content(http_request: Request, run_id: str, file_id: str) -> FileResponse:
+        visitor_id = require_showroom_visitor(http_request)
+        try:
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            http_request.state.showroom_party_access = True
+            return get_party_workspace_file_content(http_request, party_id, file_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/showroom/runs/{run_id}/start")
     async def start_showroom_run(

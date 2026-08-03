@@ -1,0 +1,7 @@
+{
+  "schema_version": "rp-training-workspace-files.v1",
+  "files": [
+    {"id": "security-policy", "file": "artifacts/workspace/files/security-policy.json"},
+    {"id": "access-update", "file": "artifacts/workspace/files/access-update.json"}
+  ]
+}

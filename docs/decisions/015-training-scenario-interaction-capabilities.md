@@ -2,14 +2,14 @@
 
 ## Status
 
-Accepted architecture. Runtime implementation is planned and is not part of
-the currently deployed stack.
+Accepted and implemented in the IaC repository. Deployment and live browser
+verification are tracked separately from the source revision.
 
 ## Context
 
-Interactive training sites are currently enabled by the presence of
-`manifest.training_artifacts` in a WorldPack. A planned department workspace
-adds a second independent interaction surface: a party-scoped folder tree with
+Interactive training sites and the department workspace are independently
+enabled by immutable Showroom run flags. The workspace adds a second
+interaction surface: a party-scoped folder tree with
 static and dynamically materialized files.
 
 The Showroom scenario editor needs two independent switches:
@@ -97,11 +97,11 @@ The browser renders only allowlisted application components. Model-provided
 HTML, JavaScript, macros, executable files, paths, MIME types, hidden phishing
 classification and scoring rules are forbidden.
 
-Static resources such as an information-security policy are uploaded and
-versioned separately, then bound to stable WorldPack folder IDs. A run pins the
-exact resource revisions. Public/anonymous Showroom may expose only resources
-classified for public training; restricted real documents require participant
-authentication that the anonymous visitor-cookie model does not provide.
+Static resources such as an information-security policy are authored as
+versioned IaC WorldPack resources and bound to stable folder IDs. A run records
+the immutable file revision and content hash. Public/anonymous Showroom exposes
+only `public_training` resources; `restricted_internal` documents require a
+future authenticated participant and ingestion flow.
 
 Dynamic files are materialized at party start or on an authored turn. The main
 narrator completion fills only declared visible slots in the same response as
@@ -145,8 +145,8 @@ capability combinations are not silently merged.
 - One WorldPack can support multiple Showroom configurations without copying
   authored state, prompts or scoring rules.
 - Every optional capability needs a complete authored off-path and fallback.
-- Gateway schemas, Showroom persistence, run creation, both UIs, tests, Wiki and
-  the training builder contract must change together.
+- Gateway schemas, Showroom persistence, run creation, Showroom UI, party API,
+  tests, Wiki and the training builder contract must change together.
 - The existing site runtime remains compatible after a migration backfill.
 - The workspace can be implemented in Gateway without adding latency to small
   API requests or requiring another narrator completion.

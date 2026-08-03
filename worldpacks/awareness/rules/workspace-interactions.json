@@ -1,0 +1,14 @@
+{
+  "schema_version": "rp-training-workspace-policy.v1",
+  "files": {
+    "security-policy": {
+      "file_opened": {"evidence": "Открыт справочный документ политики ИБ.", "score_rule_id": "", "score_once": true, "decision_result": "neutral"},
+      "file_downloaded": {"evidence": "Скачан справочный документ политики ИБ.", "score_rule_id": "", "score_once": true, "decision_result": "neutral"}
+    },
+    "access-update": {
+      "file_opened": {"evidence": "Открыт подозрительный файл обновления доступа.", "score_rule_id": "workspace-access-update-open", "score_once": true, "decision_result": "fail"},
+      "file_reported": {"evidence": "Подозрительный файл передан специалистам ИБ.", "score_rule_id": "workspace-access-update-report", "score_once": true, "decision_result": "pass"},
+      "active_content_enabled": {"evidence": "В подозрительном документе включено активное содержимое.", "score_rule_id": "workspace-access-update-active-content", "score_once": true, "decision_result": "fail"}
+    }
+  }
+}

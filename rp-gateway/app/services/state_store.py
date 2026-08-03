@@ -151,6 +151,40 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_training_artifact_events_pending
                     ON training_artifact_events(campaign_id, consumed_turn_id, id);
+                CREATE TABLE IF NOT EXISTS training_workspace_files (
+                    id TEXT PRIMARY KEY,
+                    campaign_id TEXT NOT NULL,
+                    file_key TEXT NOT NULL,
+                    file_revision INTEGER NOT NULL,
+                    blueprint_id TEXT NOT NULL,
+                    folder_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+                    available_from_turn INTEGER NOT NULL,
+                    available_until_turn INTEGER,
+                    public_json TEXT NOT NULL,
+                    policy_json TEXT NOT NULL,
+                    materialized_turn INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, file_key, file_revision),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_training_workspace_files_available
+                    ON training_workspace_files(campaign_id, available_from_turn, available_until_turn);
+                CREATE TABLE IF NOT EXISTS training_workspace_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    file_id TEXT NOT NULL REFERENCES training_workspace_files(id) ON DELETE CASCADE,
+                    file_revision INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    consumed_turn_id INTEGER REFERENCES turns(id) ON DELETE SET NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, event_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_training_workspace_events_pending
+                    ON training_workspace_events(campaign_id, consumed_turn_id, id);
                 CREATE TABLE IF NOT EXISTS turn_requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -2064,6 +2098,8 @@ class StateStore:
         metadata: dict[str, Any] | None = None,
         artifacts: list[dict[str, Any]] | None = None,
         consumed_artifact_event_ids: list[int] | None = None,
+        workspace_files: list[dict[str, Any]] | None = None,
+        consumed_workspace_event_ids: list[int] | None = None,
     ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -2113,6 +2149,36 @@ class StateStore:
                         now_ts(),
                     ),
                 )
+            for workspace_file in workspace_files or []:
+                public = workspace_file.get("public") if isinstance(workspace_file, dict) else None
+                policy = workspace_file.get("policy") if isinstance(workspace_file, dict) else None
+                if not isinstance(public, dict) or not isinstance(policy, dict):
+                    raise ValueError("invalid training workspace persistence record")
+                connection.execute(
+                    """
+                    INSERT INTO training_workspace_files(
+                        id, campaign_id, file_key, file_revision, blueprint_id, folder_id,
+                        turn_id, available_from_turn, available_until_turn, public_json,
+                        policy_json, materialized_turn, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(campaign_id, file_key, file_revision) DO NOTHING
+                    """,
+                    (
+                        public["file_id"],
+                        self.campaign_id,
+                        public["file_key"],
+                        int(public["file_revision"]),
+                        public["blueprint_id"],
+                        public["folder_id"],
+                        turn_id,
+                        int(public["available_from_turn"]),
+                        public.get("available_until_turn"),
+                        json.dumps(public, ensure_ascii=False),
+                        json.dumps(policy, ensure_ascii=False),
+                        int(public["materialized_turn"]),
+                        now_ts(),
+                    ),
+                )
             event_ids = [int(value) for value in consumed_artifact_event_ids or []]
             if event_ids:
                 placeholders = ",".join("?" for _ in event_ids)
@@ -2123,6 +2189,17 @@ class StateStore:
                     WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
                     """,
                     (turn_id, self.campaign_id, *event_ids),
+                )
+            workspace_event_ids = [int(value) for value in consumed_workspace_event_ids or []]
+            if workspace_event_ids:
+                placeholders = ",".join("?" for _ in workspace_event_ids)
+                connection.execute(
+                    f"""
+                    UPDATE training_workspace_events
+                    SET consumed_turn_id = ?
+                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                    """,
+                    (turn_id, self.campaign_id, *workspace_event_ids),
                 )
             return turn_id
 
@@ -2279,6 +2356,143 @@ class StateStore:
                 }
             )
         return evidence_items
+
+    def training_workspace_file(self, file_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, public_json, policy_json
+                FROM training_workspace_files
+                WHERE id = ? AND campaign_id = ?
+                """,
+                (file_id, self.campaign_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "public": json.loads(row["public_json"]),
+            "policy": json.loads(row["policy_json"]),
+        }
+
+    def training_workspace_snapshot(self, current_turn: int) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT public_json
+                FROM training_workspace_files
+                WHERE campaign_id = ?
+                  AND available_from_turn <= ?
+                  AND (available_until_turn IS NULL OR available_until_turn >= ?)
+                ORDER BY folder_id, file_key, file_revision DESC
+                """,
+                (self.campaign_id, int(current_turn), int(current_turn)),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            public = json.loads(row["public_json"])
+            file_key = str(public.get("file_key") or "")
+            if file_key and file_key not in seen:
+                seen.add(file_key)
+                result.append(public)
+        return result
+
+    def record_training_workspace_event(
+        self,
+        *,
+        event_id: str,
+        file_id: str,
+        file_revision: int,
+        event_type: str,
+        evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = now_ts()
+        payload_evidence = json.dumps(evidence, ensure_ascii=False)
+        with self.connect() as connection:
+            existing = connection.execute(
+                """
+                SELECT id, file_id, file_revision, event_type
+                FROM training_workspace_events
+                WHERE campaign_id = ? AND event_id = ?
+                """,
+                (self.campaign_id, event_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["file_id"] != file_id
+                    or int(existing["file_revision"]) != int(file_revision)
+                    or existing["event_type"] != event_type
+                ):
+                    raise ValueError("workspace event id was already used with a different payload")
+                return {"accepted": True, "event_sequence": int(existing["id"]), "duplicate": True}
+            cursor = connection.execute(
+                """
+                INSERT INTO training_workspace_events(
+                    campaign_id, event_id, file_id, file_revision, event_type,
+                    evidence_json, consumed_turn_id, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                (
+                    self.campaign_id,
+                    event_id,
+                    file_id,
+                    int(file_revision),
+                    event_type,
+                    payload_evidence,
+                    timestamp,
+                ),
+            )
+        return {"accepted": True, "event_sequence": int(cursor.lastrowid), "duplicate": False}
+
+    def unconsumed_training_workspace_evidence(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.event_id, e.file_id, e.event_type, e.evidence_json,
+                       f.file_key, f.blueprint_id
+                FROM training_workspace_events e
+                JOIN training_workspace_files f ON f.id = e.file_id
+                WHERE e.campaign_id = ? AND e.consumed_turn_id IS NULL
+                ORDER BY e.id ASC
+                """,
+                (self.campaign_id,),
+            ).fetchall()
+            consumed_rules = {
+                str(json.loads(row["evidence_json"] or "{}").get("score_rule_id") or "")
+                for row in connection.execute(
+                    """
+                    SELECT evidence_json FROM training_workspace_events
+                    WHERE campaign_id = ? AND consumed_turn_id IS NOT NULL
+                    """,
+                    (self.campaign_id,),
+                ).fetchall()
+            }
+        result: list[dict[str, Any]] = []
+        pending_rules: set[str] = set()
+        for row in rows:
+            evidence = json.loads(row["evidence_json"] or "{}")
+            rule_id = str(evidence.get("score_rule_id") or "")
+            score_once = bool(evidence.get("score_once", True))
+            eligible = not score_once or not rule_id or (rule_id not in consumed_rules and rule_id not in pending_rules)
+            if rule_id:
+                pending_rules.add(rule_id)
+            result.append(
+                {
+                    "event_sequence": int(row["id"]),
+                    "event_id": row["event_id"],
+                    "artifact_id": row["file_id"],
+                    "artifact_key": row["file_key"],
+                    "blueprint_id": row["blueprint_id"],
+                    "event_type": row["event_type"],
+                    "evidence": str(evidence.get("evidence") or ""),
+                    "score_rule_id": rule_id,
+                    "score_once": score_once,
+                    "score_eligible": eligible,
+                    "decision_result": str(evidence.get("decision_result") or "neutral"),
+                }
+            )
+        return result
 
     def record_check(self, turn_id: int | None, outcome: Any) -> None:
         with self.connect() as connection:

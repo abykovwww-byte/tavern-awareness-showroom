@@ -1,0 +1,16 @@
+{
+  "id": "security-policy",
+  "file_key": "security-policy",
+  "revision": 1,
+  "folder_id": "department",
+  "display_name": "Политика информационной безопасности",
+  "extension": ".md",
+  "renderer": "policy-document",
+  "media_family": "document",
+  "resource_path": "artifacts/workspace/resources/security-policy.md",
+  "resource_classification": "public_training",
+  "lifecycle": {"materialize": "party_start", "available_from_turn": 1},
+  "llm_slots": {"summary": {"required": true, "max_length": 1200}},
+  "fallback_content": {"summary": "Используйте только корпоративные учётные данные на проверенных ресурсах. Подозрительные письма, ссылки и файлы передавайте специалистам ИБ через штатный канал. Не включайте активное содержимое и не пересылайте подозрительные материалы коллегам."},
+  "actions": ["file_opened", "file_downloaded"]
+}

@@ -1178,6 +1178,10 @@ class PartyStore:
             auto_tags.append("player-liked")
         if int(row["player_rating_value"]) == -1:
             auto_tags.append("player-disliked")
+        capabilities = metadata.get("training_capabilities") if isinstance(metadata, dict) else None
+        if isinstance(capabilities, dict):
+            auto_tags.append("interactive-links" if capabilities.get("interactive_links_enabled") else "noninteractive-links")
+            auto_tags.append("interactive-workspace" if capabilities.get("interactive_workspace_enabled") else "noninteractive-workspace")
         player_rating = {1: "positive", -1: "negative"}.get(int(row["player_rating_value"]), "none")
         with self.connect() as connection:
             artifact_rows = connection.execute(
@@ -1197,7 +1201,25 @@ class PartyStore:
                 """,
                 (row["campaign_id"], int(row["id"])),
             ).fetchall()
+            workspace_rows = connection.execute(
+                """
+                SELECT public_json FROM training_workspace_files
+                WHERE campaign_id = ? AND turn_id = ?
+                ORDER BY file_key ASC
+                """,
+                (row["campaign_id"], int(row["id"])),
+            ).fetchall()
+            workspace_evidence_rows = connection.execute(
+                """
+                SELECT e.id, e.event_id, e.file_id, e.event_type, e.evidence_json, e.created_at
+                FROM training_workspace_events e
+                WHERE e.campaign_id = ? AND e.consumed_turn_id = ?
+                ORDER BY e.id ASC
+                """,
+                (row["campaign_id"], int(row["id"])),
+            ).fetchall()
         artifacts = [json.loads(item["public_json"]) for item in artifact_rows]
+        workspace_files = [json.loads(item["public_json"]) for item in workspace_rows]
         interaction_evidence = []
         for item in evidence_rows:
             evidence = json.loads(item["evidence_json"] or "{}")
@@ -1206,6 +1228,21 @@ class PartyStore:
                     "event_sequence": int(item["id"]),
                     "event_id": item["event_id"],
                     "artifact_id": item["artifact_id"],
+                    "event_type": item["event_type"],
+                    "evidence": str(evidence.get("evidence") or ""),
+                    "score_rule_id": str(evidence.get("score_rule_id") or ""),
+                    "decision_result": str(evidence.get("decision_result") or "neutral"),
+                    "created_at": int(item["created_at"]),
+                }
+            )
+        workspace_interaction_evidence = []
+        for item in workspace_evidence_rows:
+            evidence = json.loads(item["evidence_json"] or "{}")
+            workspace_interaction_evidence.append(
+                {
+                    "event_sequence": int(item["id"]),
+                    "event_id": item["event_id"],
+                    "file_id": item["file_id"],
                     "event_type": item["event_type"],
                     "evidence": str(evidence.get("evidence") or ""),
                     "score_rule_id": str(evidence.get("score_rule_id") or ""),
@@ -1232,6 +1269,8 @@ class PartyStore:
             "assistant_response": row["narrative_response"],
             "artifacts": artifacts,
             "interaction_evidence": interaction_evidence,
+            "workspace_files": workspace_files,
+            "workspace_interaction_evidence": workspace_interaction_evidence,
             "player_feedback": {
                 "rating": player_rating,
                 "liked": bool(row["player_liked"]),
@@ -1270,6 +1309,9 @@ class PartyStore:
                 "source": turn["metadata"],
                 "artifacts": turn.get("artifacts") or [],
                 "interaction_evidence": turn.get("interaction_evidence") or [],
+                "training_capabilities": turn["metadata"].get("training_capabilities") or {},
+                "workspace_files": turn.get("workspace_files") or [],
+                "workspace_interaction_evidence": turn.get("workspace_interaction_evidence") or [],
             },
         }
 

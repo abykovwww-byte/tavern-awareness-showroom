@@ -22,6 +22,12 @@
     "interaction_policy": "rules/site-interactions.json",
     "default_site_count": 10
   },
+  "training_workspace": {
+    "schema_version": "rp-training-workspace.v1",
+    "folder_catalog": "artifacts/workspace/folders.json",
+    "file_catalog": "artifacts/workspace/files/index.json",
+    "interaction_policy": "rules/workspace-interactions.json"
+  },
   "assumptions": [
     "Компания, адреса, персонажи, документы и события являются учебной фикцией.",
     "Профессия игрока задаётся при создании персонажа; если описание расплывчато, используются обязанности обычного специалиста с ограниченными полномочиями.",
