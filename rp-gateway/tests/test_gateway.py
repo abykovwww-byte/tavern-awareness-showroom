@@ -2267,9 +2267,13 @@ def test_prompt_world_source_limits_are_enforced(tmp_path: Path, payload: dict[s
 
 def test_light_gui_markdown_world_import_contract_is_present():
     rp_stack_root = Path(__file__).resolve().parents[2]
-    html = (rp_stack_root / "rp-light-gui" / "index.html").read_text(encoding="utf-8")
-    javascript = (rp_stack_root / "rp-light-gui" / "app.js").read_text(encoding="utf-8")
-    nginx = (rp_stack_root / "rp-light-gui" / "nginx.conf").read_text(encoding="utf-8")
+    light_gui_root = rp_stack_root / "rp-light-gui"
+    if not light_gui_root.is_dir():
+        pytest.skip("Light GUI sources are not shipped in the isolated Gateway image")
+
+    html = (light_gui_root / "index.html").read_text(encoding="utf-8")
+    javascript = (light_gui_root / "app.js").read_text(encoding="utf-8")
+    nginx = (light_gui_root / "nginx.conf").read_text(encoding="utf-8")
 
     assert 'name="worldSource" value="markdown_file"' in html
     assert 'id="worldMarkdownInput" type="file" accept=".md,text/markdown,text/plain"' in html
