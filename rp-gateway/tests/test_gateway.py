@@ -1249,6 +1249,7 @@ def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks(
     settings = Settings(
         nvidia_fallback_models=("deepseek-ai/deepseek-v4-pro",),
         nvidia_disabled_models=("openai/gpt-oss-20b",),
+        model_attempt_timeout_seconds=75,
     )
     party = SimpleNamespace(
         scenario_type="rp",
@@ -1267,6 +1268,29 @@ def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks(
     assert selected.narrative_model == "gemini-3.6-flash"
     assert selected.nvidia_fallback_models == ()
     assert selected.nvidia_disabled_models == ()
+    assert selected.model_attempt_timeout_seconds == 75
+
+
+def test_party_narrator_deadline_overrides_local_service_deadline():
+    settings = Settings(
+        model_attempt_timeout_seconds=75,
+        local_llm_timeout_seconds=240,
+    )
+    party = SimpleNamespace(
+        scenario_type="rp",
+        worldpack_id="demo-world",
+        worldpack=None,
+        model_profile=SimpleNamespace(
+            provider="local",
+            base_url="http://rp-local-llm:8080/v1",
+            model="gemma-local",
+        ),
+    )
+
+    selected = settings_for_party(settings, party)
+
+    assert selected.llm_provider == "local"
+    assert selected.model_attempt_timeout_seconds == 75
 
 
 def test_default_memory_policy_is_tuned_for_long_context(monkeypatch: pytest.MonkeyPatch):
@@ -3140,6 +3164,79 @@ def test_party_start_provider_http_error_returns_502(tmp_path: Path):
 
     assert response.status_code == 502
     assert response.json()["detail"] == "Narrative provider HTTP 503"
+
+
+def test_party_start_and_messages_use_separate_attempt_deadlines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_complete = NarrativeClient.complete
+    observed_timeouts: list[float] = []
+
+    async def observed_complete(self: NarrativeClient, *args: object, **kwargs: object) -> dict:
+        observed_timeouts.append(self.settings.model_attempt_timeout_seconds)
+        return await original_complete(self, *args, **kwargs)
+
+    monkeypatch.setattr(NarrativeClient, "complete", observed_complete)
+    write_worldpack(tmp_path)
+    c = client(
+        tmp_path,
+        model_attempt_timeout_seconds=75,
+        party_start_model_attempt_timeout_seconds=300,
+    )
+    party = create_demo_party(c)
+
+    started = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "separate-timeout-start"},
+        headers={"Authorization": "Bearer test"},
+    )
+    message = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Continue.", "idempotency_key": "separate-timeout-message"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert started.status_code == 200, started.text
+    assert message.status_code == 200, message.text
+    assert observed_timeouts == [300, 75]
+
+
+def test_party_start_timeout_returns_504_and_marks_request_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed_timeouts: list[float] = []
+
+    async def timeout_complete(self: NarrativeClient, *args: object, **kwargs: object) -> dict:
+        observed_timeouts.append(self.settings.model_attempt_timeout_seconds)
+        raise httpx.ReadTimeout(
+            "Narrative provider exceeded the wall-clock deadline",
+            request=httpx.Request("POST", "https://provider.example/v1/chat/completions"),
+        )
+
+    monkeypatch.setattr(NarrativeClient, "complete", timeout_complete)
+    write_worldpack(tmp_path)
+    c = client(
+        tmp_path,
+        model_attempt_timeout_seconds=75,
+        party_start_model_attempt_timeout_seconds=300,
+    )
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "start-provider-timeout"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_start_provider_timeout"},
+    )
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "Narrative provider exceeded the party-start deadline"
+    assert observed_timeouts == [300]
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+    status = c.get(f"/api/parties/{party['id']}/requests/req_start_provider_timeout").json()
+    assert status["status"] == "failed"
+    assert "ReadTimeout" in status["error"]
 
 
 def test_training_runtime_party_start_provider_error_uses_world_fallback(

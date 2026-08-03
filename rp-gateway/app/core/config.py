@@ -86,7 +86,10 @@ class Settings:
     log_prompts: bool = env_bool("LOG_PROMPTS", False)
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)
     request_timeout_seconds: float = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "900"))
-    model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "45"))
+    model_attempt_timeout_seconds: float = float(os.getenv("MODEL_ATTEMPT_TIMEOUT_SECONDS", "75"))
+    party_start_model_attempt_timeout_seconds: float = float(
+        os.getenv("PARTY_START_MODEL_ATTEMPT_TIMEOUT_SECONDS", "300")
+    )
     rate_limit_retry_attempts: int = env_int("RATE_LIMIT_RETRY_ATTEMPTS", 1)
     rate_limit_retry_default_wait_seconds: float = float(os.getenv("RATE_LIMIT_RETRY_DEFAULT_WAIT_SECONDS", "1"))
     rate_limit_retry_max_wait_seconds: float = float(os.getenv("RATE_LIMIT_RETRY_MAX_WAIT_SECONDS", "10"))

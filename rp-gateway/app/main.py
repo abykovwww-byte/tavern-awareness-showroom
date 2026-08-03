@@ -1252,6 +1252,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
+            party_settings = replace(
+                party_settings,
+                model_attempt_timeout_seconds=party_settings.party_start_model_attempt_timeout_seconds,
+            )
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1549,6 +1553,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except PermissionError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except httpx.TimeoutException as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            raise HTTPException(
+                status_code=504,
+                detail="Narrative provider exceeded the party-start deadline",
+            ) from exc
         except httpx.HTTPStatusError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             status = exc.response.status_code if exc.response is not None else "unknown"
@@ -2206,7 +2216,11 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     if model_profile is None:
         return replace(settings, **prompt_values)
     configured = settings_for_model_profile(settings, model_profile, f"rp-party:{party_cache_id}")
-    return replace(configured, **prompt_values)
+    return replace(
+        configured,
+        **prompt_values,
+        model_attempt_timeout_seconds=settings.model_attempt_timeout_seconds,
+    )
 
 
 def settings_for_model_profile(settings: Settings, model_profile: Any, cache_session_id: str) -> Settings:
