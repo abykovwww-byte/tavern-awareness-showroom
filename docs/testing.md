@@ -3,7 +3,7 @@
 ## Static validation
 
 ```bash
-python3 scripts/validate-state.py
+python3 scripts/validate-state.py --state worldpacks/<slug>/state-seed.json --schema state/schema.json
 python3 scripts/validate-training-runtime.py --worldpacks worldpacks
 python3 scripts/test-state-workflow.py
 python3 scripts/test-check-workflow.py
