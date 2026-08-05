@@ -29,7 +29,7 @@ Gateway owns only common mechanics:
 - snapshotting the resolved runtime contract per party and branch;
 - evaluating allowlisted detector primitives and state effects;
 - constructing a sanitized active-turn prompt contract;
-- one narrator call, output validation and deterministic fallback;
+- one initial narrator call, canonical normalization, at most one training-specific soft repair, output validation and deterministic fallback;
 - integration with optional site/workspace evidence and public snapshots.
 
 Gateway must not add a campaign-ID branch, sender schedule, phishing regex,
@@ -43,7 +43,7 @@ A new deterministic training world declares:
 
 ```json
 "training_runtime": {
-  "schema_version": "rp-training-runtime.v1",
+  "schema_version": "rp-training-runtime.v2",
   "program": "training/program.json",
   "assessment": "training/assessment.json",
   "fallbacks": "training/fallbacks.json"
@@ -84,20 +84,37 @@ keeps universal mode rules and WorldPack prompts separate. At debrief the active
 contract includes only canonical score/evidence bindings required for the
 authored explanation.
 
-For plain turns the model returns only final narration bounded by the exact
-authored header and question. For interactive turns it returns one bare JSON
+For plain turns the model returns fresh surface narration; Gateway replaces an
+optional model-written boundary with the exact authored header and question and
+normalizes a missing/distorted no-link marker when no URL is present. For interactive turns it returns one bare JSON
 bundle with that complete narration in `narrative_text`. Gateway may unwrap one
 provider-added Markdown JSON fence as transport normalization, but bundle
 schema, visible slots and WorldPack narrative validation remain strict and
 domain-neutral.
 
-Runtime turns make at most one narrator request. A generic runtime validation
-failure goes directly to the authored fallback; it does not spend a second
-repair completion. Provider failures on party start follow the same path, so a
-training run remains playable without turning provider health into fake success.
+Runtime turns make one initial narrator request. A soft field/profile failure
+may spend at most one repair completion controlled by `TRAINING_REPAIR_ATTEMPTS`;
+the repair prompt lists only actual failed constraints in human language and
+never exposes regexes. Hard sender/channel/shape/URL/attachment/forbidden-content
+or canonical-score failures go directly to authored fallback. Provider failures
+on party start follow the same path without repair, so a training run remains
+playable without turning provider health into fake success.
 Turn metadata records validation of the response actually delivered to the
 learner and separately preserves whether the original failure came from the
 provider or Gateway validation.
+
+This revises the original one-call decision after a read-only audit of 46
+`awareness-one-day` turns found 27 fallbacks (59%), including 25 validation
+failures. The change does not alter deterministic scoring or authored schedule;
+it reduces rejection of repairable presentation errors.
+
+### Schema v2 and compatibility
+
+`rp-training-runtime.v2` pairs with `rp-training-program.v2`. A turn may declare
+optional `variation_budget` entries describing what narrator wording may vary,
+and its surface may provide prose `must_include` requirements that mirror
+machine-only regexes. Existing v1 runtime/program pairs remain accepted and do
+not need either field. New builder output uses v2.
 
 ### Scoring contract
 

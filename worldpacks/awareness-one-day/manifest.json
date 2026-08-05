@@ -17,7 +17,7 @@
     "state_path": "player.resources.total-score"
   },
   "training_runtime": {
-    "schema_version": "rp-training-runtime.v1",
+    "schema_version": "rp-training-runtime.v2",
     "program": "training/program.json",
     "assessment": "training/assessment.json",
     "fallbacks": "training/fallbacks.json"

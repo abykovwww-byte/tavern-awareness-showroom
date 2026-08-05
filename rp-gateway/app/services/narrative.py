@@ -28,15 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
-    header = str(contract.get("header") or "")
-    question = str(contract.get("question") or "")
     output_rules = [
         "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences.",
+        "Write fresh natural wording for the visible surface body. Gateway applies the exact authored header and final question.",
     ]
-    if header:
-        output_rules.append(f"The narration must start with this exact authored header: {header}")
-    if question:
-        output_rules.append(f"The narration must end with this exact authored question: {question}")
     return "\n".join(
         [
             "ACTIVE_TRAINING_TURN_CONTRACT",
@@ -66,12 +61,13 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
         lines.extend(
             [
                 "Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.",
-                "Repeat the exact fixed display_url in the email/message narrative.",
+                "Put the exact fixed display_url only in the visible narrative_text field line 'Ссылки:'.",
+                "Do not emit display_url or any other fixed URL field inside an artifact object.",
             ]
         )
     lines.extend(
         [
-            "Put the complete final visible turn, including its exact authored header and question, inside narrative_text.",
+            "Put the complete visible surface body inside narrative_text; Gateway applies the exact authored header and final question.",
             "Do not put any text before or after the JSON object. Do not wrap it in a Markdown code fence.",
             "Never emit HTML, CSS, JavaScript, remote assets, credentials, paths, MIME types, file classification, answer keys, scoring, correctness, or remediation.",
             json.dumps({"site": site, "workspace": workspace}, ensure_ascii=False, separators=(",", ":")),

@@ -3445,6 +3445,71 @@ def test_training_runtime_party_start_provider_error_uses_world_fallback(
     assert deleted.status_code == 200, deleted.text
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_calls", "expected_finish_reason"),
+    [("soft-profile", 2, "stop"), ("hard-sender", 1, "provider_fallback")],
+)
+def test_training_runtime_repairs_only_soft_validation_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_calls: int,
+    expected_finish_reason: str,
+):
+    llm_calls = 0
+
+    async def training_complete(*args: object, **kwargs: object) -> dict:
+        nonlocal llm_calls
+        llm_calls += 1
+        sender = "Посторонний" if failure_kind == "hard-sender" else "Анна Петрова <petrova@ptsecurity.com>"
+        profile_detail = "по текущей задаче" if llm_calls == 1 else "по работе Investigator"
+        content = (
+            "ПИСЬМО\n"
+            "Канал: корпоративная почта\n"
+            f"От: {sender}\n"
+            "Кому: Эллина\n"
+            "Дата/время: понедельник, 09:12\n"
+            "Тема: Первый результат\n"
+            "Вложения: нет\n"
+            "Ссылки: нет\n"
+            "Тело:\n"
+            f"К 09:35 пришли первый результат или конкретный вопрос {profile_detail}.\n"
+            "Подпись:\nАнна Петрова"
+        )
+        return {
+            "id": f"training-repair-{llm_calls}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "mock-model",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", training_complete)
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+    shutil.copytree(source, tmp_path / "worldpacks" / "awareness-one-day")
+    c = client(tmp_path)
+    party = create_demo_party(
+        c,
+        title="Runtime repair classification",
+        character_name="Эллина",
+        scenario_type="training",
+        worldpack_id="awareness-one-day",
+    )
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": f"runtime-repair-{failure_kind}"},
+        headers={"Authorization": "Bearer test"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert llm_calls == expected_calls
+    assert response.json()["choices"][0]["finish_reason"] == expected_finish_reason
+    if failure_kind == "soft-profile":
+        assert "Investigator" in response.json()["choices"][0]["message"]["content"]
+
+
 def test_default_nvidia_attempt_order_keeps_user_models():
     from app.core.config import Settings
     from app.services.narrative import NarrativeClient

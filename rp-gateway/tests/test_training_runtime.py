@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
+
+import pytest
 
 from app.models.schemas import Intent, WorldPackSummary
 from app.services.narrative import training_turn_prompt_block
@@ -39,6 +42,8 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     runtime = TrainingRuntimeService(pack, store)
 
     assert runtime.enabled is True
+    assert runtime.contract["schema_version"] == "rp-training-runtime.v2"
+    assert runtime.program["schema_version"] == "rp-training-program.v2"
     assert runtime.program["turns"][0]["instruction"].startswith("Сгенерируй письмо от руководителя")
     assert runtime.assessment["rules"][0]["id"] == "count-link-open"
 
@@ -53,15 +58,22 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     assert prompt_contract["header"] == runtime.program["turns"][0]["header"]
     assert prompt_contract["question"] == runtime.program["turns"][0]["question"]
     prompt_block = training_turn_prompt_block(prompt_contract)
-    assert f"must start with this exact authored header: {prompt_contract['header']}" in prompt_block
-    assert f"must end with this exact authored question: {prompt_contract['question']}" in prompt_block
+    assert "Gateway applies the exact authored header and final question" in prompt_block
+    assert "must start with this exact authored header" not in prompt_block
     assert "комплектность требований" in runtime.fallback_text(state)
     serialized = json.dumps(prompt_contract, ensure_ascii=False)
     assert "security-score" not in serialized
     assert "assessment" not in serialized
+    assert "required_patterns" not in serialized
+    assert "(?m)" not in serialized
+    assert "must_include" in serialized
+    assert "Тендерный специалист" in serialized
+    assert "variation_budget" in serialized
 
     invalid_question = runtime.fallback_text(state).replace(prompt_contract["question"], "Что вы делаете?")
-    assert "exact authored player question" in " ".join(runtime.validate_narrative(invalid_question, state))
+    normalized = runtime.normalize_narrative(invalid_question, state)
+    assert normalized.endswith(prompt_contract["question"])
+    assert runtime.validate_narrative(normalized, state) == []
 
     state["meta"]["turn"] = 3
     _, patch = RuleEngine().resolve(
@@ -136,6 +148,177 @@ def test_one_day_world_fallback_is_valid_for_every_capability_state(tmp_path: Pa
         for interaction_contract in contracts:
             text = runtime.fallback_text(state, interaction_contract)
             assert runtime.validate_narrative(text, state, interaction_contract) == []
+
+
+LLM_BODY_VARIANTS = {
+    1: [
+        "По тендерной документации проверь комплект требований. К 09:35 нужен первый результат или вопрос, который блокирует проверку.",
+        "Начни с назначенного тендерного лота: к 09:35 пришли проверяемый результат либо конкретный вопрос по документам.",
+    ],
+    2: [
+        "По тендерной задаче пришли план: следующий приоритет, ожидаемый результат и возможный блокер.",
+        "Продолжи текущую тендерную проверку и обозначь план, приоритет, результат и блокер.",
+    ],
+    3: [
+        "По тендерному подрядчику срочно подтверди оплату, дай контакт финансов и пока не подключай Анну.",
+        "Нужен ответ по оплате тендерного подрядчика и контакт ответственного в финансах; Анну не добавляй.",
+    ],
+    4: [
+        "Для доступа к тендерным материалам требуется подтвердить учётную запись на корпоративном портале.",
+        "Подтвердите учётные данные, чтобы продолжить работу с закупочной документацией.",
+    ],
+    5: [
+        "Для тендерной команды пришли имена сотрудников, личные телефоны и сведения об отпусках.",
+        "Нужна сверка тендерного отдела: имена, личные номера телефонов и график отпусков.",
+    ],
+    6: [
+        "По тендерной проверке напиши, что уже готово, что осталось и кто держит блокер.",
+        "Обнови тендерный статус: что готово, что осталось и у кого находится блокер.",
+    ],
+    7: [
+        "Для доступа к тендерным материалам отправь шестизначный код из приложения-аутентификатора.",
+        "Чтобы открыть закупочные документы, пришли шестизначный код аутентификатора.",
+    ],
+    8: [
+        "По тендерному блоку назови проверяемый результат, рабочий риск и следующий шаг.",
+        "Для тендерной синхронизации нужны результат, риск и следующий практический шаг.",
+    ],
+    9: [
+        "Для тендерной задачи требуется срочное согласование приложенного акта.",
+        "Закупочный подрядчик ждёт срочное согласование приложенного документа.",
+    ],
+    10: [
+        "Пришли в личный мессенджер внутреннюю схему тендерного проекта и список администраторов.",
+        "Нужны схема тендерного проекта и перечень администраторов в этом личном канале.",
+    ],
+}
+
+
+def llm_variant(runtime: TrainingRuntimeService, state: dict, turn: int, body: str, interaction_contract=None) -> str:
+    text = runtime.fallback_text(state, interaction_contract)
+    header = runtime.turn_definition(turn)["header"]
+    marker = "\nТело:\n" if runtime.turn_definition(turn)["surface"]["type"] == "email" else "\nТекст:\n"
+    prefix, remainder = text.split(marker, 1)
+    prefix = prefix.replace(header, f"Ход {turn} — вариант модели", 1)
+    if marker == "\nТело:\n":
+        _, suffix = remainder.split("\nПодпись:", 1)
+        text = f"{prefix}\n{marker.strip()}\n{body}\nПодпись:{suffix}"
+    else:
+        question = runtime.turn_definition(turn)["question"]
+        text = f"{prefix}\n{marker.strip()}\n{body}\n\nДругой финальный вопрос?"
+        assert question not in text
+    return runtime.normalize_narrative(text, state, interaction_contract)
+
+
+def lexical_similarity(left: str, right: str) -> float:
+    left_tokens = set(re.findall(r"\w+", left.casefold()))
+    right_tokens = set(re.findall(r"\w+", right.casefold()))
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+@pytest.mark.parametrize("turn", range(1, 11))
+def test_one_day_accepts_two_fresh_llm_wordings_per_turn(tmp_path: Path, turn: int):
+    root = WORLD_PACKS_ROOT / "awareness-one-day"
+    pack = worldpack(root)
+    store = StateStore(str(tmp_path / f"state-{turn}.db"), f"party-variant-{turn}", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = turn
+    state["player"]["name"] = "Эллина"
+    state["player"]["description"] = "Тендерный специалист по закупкам и документам"
+    surface = runtime.turn_definition(turn)["surface"]
+    interaction_contract = (
+        {"site": {"display_url": f"https://training.example.test/turn-{turn}"}}
+        if surface["links"] == "artifact"
+        else None
+    )
+
+    variants = [llm_variant(runtime, state, turn, body, interaction_contract) for body in LLM_BODY_VARIANTS[turn]]
+    assert variants[0] != variants[1]
+    assert lexical_similarity(*LLM_BODY_VARIANTS[turn]) < 0.5
+    for text in variants:
+        assert runtime.validate_narrative(text, state, interaction_contract) == []
+
+
+def test_training_normalization_repairs_boundaries_and_no_link_marker_but_not_urls(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
+    store = StateStore(str(tmp_path / "state.db"), "party-normalize", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = 1
+    state["player"]["description"] = "Тендерный специалист по закупкам и документам"
+    source = runtime.fallback_text(state).replace("Ссылки: нет", "Ссылки: отсутствуют").replace(
+        runtime.turn_definition(1)["header"], "Ход 1 — утро"
+    )
+    normalized = runtime.normalize_narrative(source, state)
+    assert normalized.startswith(runtime.turn_definition(1)["header"])
+    assert normalized.endswith(runtime.turn_definition(1)["question"])
+    assert "Ссылки: нет" in normalized
+    assert runtime.validate_narrative(normalized, state) == []
+
+    with_url = runtime.fallback_text(state).replace("Ссылки: нет", "Ссылки: https://outside.example")
+    normalized_url = runtime.normalize_narrative(with_url, state)
+    assert "https://outside.example" in normalized_url
+    assert runtime.hard_violations(normalized_url, state) == ["Training turn must not contain a URL."]
+
+
+def test_training_hard_violations_skip_repair_and_soft_profile_has_russian_instruction(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
+    store = StateStore(str(tmp_path / "state.db"), "party-severity", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = 1
+    state["player"]["description"] = "Археолог по керамическим артефактам"
+
+    wrong_sender = runtime.fallback_text(state).replace("От: Анна Петрова", "От: Посторонний", 1)
+    assert any("authored fact" in item for item in runtime.hard_violations(wrong_sender, state))
+
+    state["meta"]["turn"] = 5
+    wrong_channel = runtime.fallback_text(state).replace("Канал: рабочий мессенджер", "Канал: личная почта", 1)
+    assert any("authored fact" in item for item in runtime.hard_violations(wrong_channel, state))
+
+    state["meta"]["turn"] = 1
+
+    no_profile = runtime.fallback_text(state).replace("«Археолог по керамическим артефактам»", "по текущей задаче")
+    assert runtime.hard_violations(no_profile, state) == []
+    instruction = runtime.repair_instruction(no_profile, state)
+    assert instruction.startswith("Исправь только перечисленные ограничения:")
+    assert "Археолог" in instruction
+    assert "(?m)" not in instruction
+
+    missing_deadline = runtime.fallback_text(state).replace("09:35", "утром")
+    deadline_instruction = runtime.repair_instruction(missing_deadline, state)
+    assert "указан срок 09:35" in deadline_instruction
+    assert "первый результат" not in deadline_instruction
+    assert "(?m)" not in deadline_instruction
+
+
+def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
+    store = StateStore(str(tmp_path / "state.db"), "party-mutation", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = 1
+    mutated = runtime.fallback_text(state).replace("ПИСЬМО", "ПИСЬМО-ПЕРЕИМЕНОВАНО", 1)
+    violations = runtime.validate_narrative(mutated, state)
+    assert violations == ["Training turn must contain exactly 1 ПИСЬМО block(s)."]
+
+
+def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
+    store = StateStore(str(tmp_path / "state.db"), "party-hard-invariants", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["player"]["description"] = "Тендерный специалист по закупкам и документам"
+
+    state["meta"]["turn"] = 9
+    site = {"site": {"display_url": "https://training.example.test/turn-9"}}
+    wrong_attachment = runtime.fallback_text(state, site).replace("Act_July.pdf.exe", "Act_July.pdf", 1)
+    assert any("authored fact" in item for item in runtime.hard_violations(wrong_attachment, state, site))
+
+    state["meta"]["turn"] = 11
+    wrong_scores = runtime.fallback_text(state).replace("0 из 100", "1 из 100", 1)
+    assert any("canonical total-score=0/100" in item for item in runtime.hard_violations(wrong_scores, state))
 
 
 def write_obzh_world(root: Path) -> WorldPackSummary:
@@ -253,12 +436,17 @@ def test_gateway_runtime_executes_non_awareness_obzh_world_without_domain_code(t
     pack = write_obzh_world(tmp_path / "obzh-evacuation")
     store = StateStore(str(tmp_path / "state.db"), "party-obzh", pack.state_seed_path)
     runtime = TrainingRuntimeService(pack, store)
+    assert runtime.contract["schema_version"] == "rp-training-runtime.v1"
+    assert runtime.program["schema_version"] == "rp-training-program.v1"
     state = store.get_state()
     state["meta"]["turn"] = 1
 
     contract = runtime.prompt_contract(state)
     serialized = json.dumps(contract, ensure_ascii=False).casefold()
     assert "преподавателя обж" in serialized
+    assert "упомяни обязательный факт «дым»" in serialized
+    assert "required_patterns" not in serialized
+    assert "(?m)" not in serialized
     assert "soc" not in serialized
     assert "фишинг" not in serialized
     fallback = runtime.fallback_text(state)
@@ -276,6 +464,36 @@ def test_gateway_runtime_executes_non_awareness_obzh_world_without_domain_code(t
     assert values["/player/resources/safety-points"] == 5
     assert values["/player/resources/total-points"] == 5
     assert "/player/resources/security-score" not in values
+
+
+def test_runtime_v2_variation_budget_is_optional_but_typed(tmp_path: Path):
+    root = tmp_path / "obzh-v2"
+    pack = write_obzh_world(root)
+    manifest_path = root / "manifest.json"
+    program_path = root / "training" / "program.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    program = json.loads(program_path.read_text(encoding="utf-8"))
+    manifest["training_runtime"]["schema_version"] = "rp-training-runtime.v2"
+    program["schema_version"] = "rp-training-program.v2"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    program_path.write_text(json.dumps(program, ensure_ascii=False), encoding="utf-8")
+    pack = worldpack(root)
+
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "valid-v2.db"), "party-obzh-v2", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    assert runtime.prompt_contract(state)["variation_budget"] == []
+
+    program["turns"][0]["variation_budget"] = "тон"
+    program_path.write_text(json.dumps(program, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="variation_budget must contain non-empty strings"):
+        TrainingRuntimeService(
+            worldpack(root),
+            StateStore(str(tmp_path / "invalid-v2.db"), "party-obzh-v2-invalid", pack.state_seed_path),
+        )
 
 
 def test_training_contract_snapshot_is_immutable_for_an_active_party(tmp_path: Path):

@@ -13,8 +13,12 @@ from app.models.schemas import InteractionEvidence, PatchOperation, StatePatch, 
 from app.services.state_store import StateStore
 
 
-RUNTIME_SCHEMA = "rp-training-runtime.v1"
-PROGRAM_SCHEMA = "rp-training-program.v1"
+RUNTIME_SCHEMA = "rp-training-runtime.v2"
+PROGRAM_SCHEMA = "rp-training-program.v2"
+RUNTIME_PROGRAM_SCHEMAS = {
+    "rp-training-runtime.v1": "rp-training-program.v1",
+    RUNTIME_SCHEMA: PROGRAM_SCHEMA,
+}
 ASSESSMENT_SCHEMA = "rp-training-assessment.v1"
 FALLBACKS_SCHEMA = "rp-training-fallbacks.v1"
 SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
@@ -226,6 +230,17 @@ class TrainingRuntimeService:
             visible_state = self.visible_state(state, active.get("visible_state_paths", []))
             surface = copy.deepcopy(active["surface"])
             surface.pop("fallback", None)
+            surface.pop("required_patterns", None)
+            surface.pop("forbidden_patterns", None)
+            profile_adaptation = bool(surface.pop("profile_adaptation", False))
+            surface["must_include"] = self.must_include_requirements(active["surface"])
+            if profile_adaptation:
+                description = str(player.get("description") or "").strip()
+                surface["profile_adaptation_instruction"] = (
+                    "Свяжи рабочую просьбу с профессией и обязанностями игрока"
+                    + (f" «{description}»" if description else "")
+                    + " и назови конкретный рабочий предмет из этой профессии."
+                )
             site = interaction_contract.get("site") if interaction_contract else None
             if surface.get("links") == "artifact":
                 surface["effective_links"] = (
@@ -242,6 +257,7 @@ class TrainingRuntimeService:
                 "header": active["header"],
                 "instruction": active["instruction"],
                 "question": active.get("question", ""),
+                "variation_budget": list(active.get("variation_budget", [])),
                 "surface": surface,
                 "player": {
                     "name": str(player.get("name") or "Коллега"),
@@ -272,19 +288,95 @@ class TrainingRuntimeService:
             }
         return None
 
+    def normalize_narrative(
+        self,
+        text: str,
+        state: dict[str, Any],
+        interaction_contract: dict[str, Any] | None = None,
+    ) -> str:
+        """Apply canonical boundaries that do not require narrator judgment."""
+        contract = self.prompt_contract(state, interaction_contract)
+        if not contract:
+            return text
+        if contract["kind"] == "debrief":
+            header = str(self.program["debrief"].get("header", "Итоговый разбор.")).strip()
+            body = self._strip_leading_boundary(text, header, debrief=True)
+            return f"{header}\n\n{body}".rstrip()
+
+        turn = self.turn_definition(int(contract["turn"]))
+        if not turn:
+            return text
+        header = str(turn["header"]).strip()
+        question = str(turn.get("question") or "").strip()
+        body = self._strip_leading_boundary(text, header)
+        if question:
+            body = self._strip_trailing_question(body, question)
+
+        surface = turn["surface"]
+        site = interaction_contract.get("site") if interaction_contract else None
+        links_disabled = surface.get("links", "none") == "none" or (
+            surface.get("links") == "artifact" and not site
+        )
+        if links_disabled and not re.search(r"(?:https?://|www\.)[^\s<>]+", body, re.IGNORECASE):
+            link_line = re.compile(r"(?mi)^Ссылки\s*:\s*.*$")
+            if link_line.search(body):
+                body = link_line.sub("Ссылки: нет", body)
+            else:
+                body = re.sub(r"(?mi)^(Тело|Текст)\s*:", "Ссылки: нет\n\\1:", body, count=1)
+
+        parts = [header, body.strip()]
+        if question:
+            parts.append(question)
+        return "\n\n".join(part for part in parts if part)
+
     def validate_narrative(
         self,
         text: str,
         state: dict[str, Any],
         interaction_contract: dict[str, Any] | None = None,
     ) -> list[str]:
+        return [message for _, message, _ in self._narrative_issues(text, state, interaction_contract)]
+
+    def hard_violations(
+        self,
+        text: str,
+        state: dict[str, Any],
+        interaction_contract: dict[str, Any] | None = None,
+    ) -> list[str]:
+        return [
+            message
+            for severity, message, _ in self._narrative_issues(text, state, interaction_contract)
+            if severity == "hard"
+        ]
+
+    def repair_instruction(
+        self,
+        text: str,
+        state: dict[str, Any],
+        interaction_contract: dict[str, Any] | None = None,
+    ) -> str:
+        repairs = [
+            repair
+            for severity, _, repair in self._narrative_issues(text, state, interaction_contract)
+            if severity == "soft" and repair
+        ]
+        if not repairs:
+            return ""
+        return "Исправь только перечисленные ограничения: " + " ".join(dict.fromkeys(repairs))
+
+    def _narrative_issues(
+        self,
+        text: str,
+        state: dict[str, Any],
+        interaction_contract: dict[str, Any] | None = None,
+    ) -> list[tuple[str, str, str]]:
         contract = self.prompt_contract(state, interaction_contract)
         if not contract:
-            return ["Training runtime has no active turn contract."]
-        violations: list[str] = []
+            return [("hard", "Training runtime has no active turn contract.", "")]
+        issues: list[tuple[str, str, str]] = []
         if contract["kind"] == "debrief":
             if not text.lstrip().startswith(str(self.program["debrief"].get("header", "Итоговый разбор."))):
-                violations.append("Training debrief must start with its authored header.")
+                issues.append(("soft", "Training debrief must start with its authored header.", "Начни разбор с заданного заголовка."))
             for score in self.program["debrief"].get("scores", []):
                 expected = int(self.resource_value(state, score["resource"]) or 0)
                 maximum = int(score["max"])
@@ -293,60 +385,133 @@ class TrainingRuntimeService:
                     for value in re.findall(rf"\b(\d{{1,4}})\s*(?:из|/)\s*{maximum}\b", text, re.IGNORECASE)
                 }
                 if found != {expected}:
-                    violations.append(
-                        f"Training debrief must report canonical {score['resource']}={expected}/{maximum}."
-                    )
-            return violations
+                    issues.append((
+                        "hard",
+                        f"Training debrief must report canonical {score['resource']}={expected}/{maximum}.",
+                        "",
+                    ))
+            return issues
 
         turn = self.turn_definition(int(contract["turn"]))
         surface = turn["surface"]
         for pattern in self.program.get("global_validation", {}).get("forbidden_patterns", []):
             if re.search(str(pattern), text, re.IGNORECASE | re.DOTALL):
-                violations.append(f"Training narrative contains globally forbidden content: {pattern}")
-        if not text.lstrip().startswith(str(turn["header"])):
-            violations.append(f"Training narrative must start with the authored header: {turn['header']}")
+                issues.append(("hard", f"Training narrative contains globally forbidden content: {pattern}", ""))
         marker = "ПИСЬМО" if surface["type"] == "email" else "СООБЩЕНИЕ"
         other_marker = "СООБЩЕНИЕ" if marker == "ПИСЬМО" else "ПИСЬМО"
         blocks = self.structured_blocks(text, marker)
         if len(blocks) != int(surface.get("count", 1)) or self.structured_blocks(text, other_marker):
-            violations.append(f"Training turn must contain exactly {surface.get('count', 1)} {marker} block(s).")
-            block = text.casefold()
-        else:
-            block = "\n".join(blocks).casefold()
+            return [(
+                "hard",
+                f"Training turn must contain exactly {surface.get('count', 1)} {marker} block(s).",
+                "",
+            )]
+        block = "\n".join(blocks).casefold()
+        missing_fields: set[str] = set()
         for field in surface.get("required_fields", []):
             if str(field).casefold() not in block:
-                violations.append(f"Training surface is missing required field: {field}")
+                missing_fields.add(str(field).rstrip(":").casefold())
+                issues.append((
+                    "soft",
+                    f"Training surface is missing required field: {field}",
+                    f"Добавь видимое поле «{field}».",
+                ))
         for pattern in surface.get("required_patterns", []):
             if not re.search(str(pattern), block, re.IGNORECASE | re.DOTALL):
-                violations.append(f"Training surface is missing authored fact: {pattern}")
+                field_name = self._pattern_field_name(str(pattern))
+                if field_name and field_name in missing_fields:
+                    continue
+                hard = field_name in {"канал", "от", "вложения"}
+                issues.append((
+                    "hard" if hard else "soft",
+                    f"Training surface is missing authored fact: {pattern}",
+                    "" if hard else self._pattern_repair_text(str(pattern), surface),
+                ))
         for pattern in surface.get("forbidden_patterns", []):
             if re.search(str(pattern), text, re.IGNORECASE | re.DOTALL):
-                violations.append(f"Training surface contains forbidden fact: {pattern}")
+                issues.append(("hard", f"Training surface contains forbidden fact: {pattern}", ""))
         site = interaction_contract.get("site") if interaction_contract else None
         links_policy = str(surface.get("links", "none"))
         urls = re.findall(r"(?:https?://|www\.)[^\s<>]+", text, re.IGNORECASE)
         if links_policy == "none" and urls:
-            violations.append("Training turn must not contain a URL.")
+            issues.append(("hard", "Training turn must not contain a URL.", ""))
         if links_policy == "artifact":
             if site and str(site["display_url"]) not in text:
-                violations.append("Training turn must contain the active artifact URL.")
+                issues.append(("hard", "Training turn must contain the active artifact URL.", ""))
             if site and any(str(site["display_url"]).casefold() not in url.casefold() for url in urls):
-                violations.append("Training turn must not contain a URL outside the active artifact contract.")
+                issues.append(("hard", "Training turn must not contain a URL outside the active artifact contract.", ""))
             if not site and urls:
-                violations.append("Training turn with disabled links must not contain a URL.")
+                issues.append(("hard", "Training turn with disabled links must not contain a URL.", ""))
             if not site and not re.search(r"(?mi)^Ссылки:\s*нет\s*$", text):
-                violations.append("Training turn with disabled links must state 'Ссылки: нет'.")
+                issues.append(("soft", "Training turn with disabled links must state 'Ссылки: нет'.", "Укажи отдельной строкой «Ссылки: нет»."))
         if surface.get("profile_adaptation"):
             markers = self.profile_markers(str(contract["player"].get("description") or ""))
             if markers and not any(marker in text.casefold() for marker in markers):
-                violations.append("Training surface must use the stored player profession or responsibilities.")
-        if surface.get("require_question"):
-            expected_question = str(turn.get("question") or "").strip()
-            if expected_question and not text.rstrip().endswith(expected_question):
-                violations.append("Training turn must end with the exact authored player question.")
-            elif not expected_question and "?" not in text[-300:]:
-                violations.append("Training turn must end with a neutral player question.")
-        return violations
+                description = str(contract["player"].get("description") or "").strip()
+                issues.append((
+                    "soft",
+                    "Training surface must use the stored player profession or responsibilities.",
+                    "Свяжи просьбу с профессией"
+                    + (f" «{description}»" if description else " игрока")
+                    + " и назови конкретный рабочий предмет из неё.",
+                ))
+        return issues
+
+    @staticmethod
+    def _strip_leading_boundary(text: str, header: str, debrief: bool = False) -> str:
+        body = text.strip()
+        if body.startswith(header):
+            return body[len(header):].lstrip()
+        lines = body.splitlines()
+        if lines and (re.match(r"^\s*#{0,3}\s*Ход\s+\d+\b", lines[0], re.IGNORECASE) or (
+            debrief and re.match(r"^\s*#{0,3}\s*Итоговый\s+разбор\b", lines[0], re.IGNORECASE)
+        )):
+            return "\n".join(lines[1:]).lstrip()
+        return body
+
+    @staticmethod
+    def _strip_trailing_question(text: str, question: str) -> str:
+        body = text.rstrip()
+        if body.endswith(question):
+            return body[:-len(question)].rstrip()
+        lines = body.splitlines()
+        if lines and lines[-1].strip().endswith("?"):
+            return "\n".join(lines[:-1]).rstrip()
+        return body
+
+    @staticmethod
+    def _pattern_field_name(pattern: str) -> str | None:
+        match = re.match(r"(?:\(\?m\))?\^([^:\\]+):", pattern)
+        return match.group(1).strip().casefold() if match else None
+
+    @classmethod
+    def _pattern_repair_text(cls, pattern: str, surface: dict[str, Any]) -> str:
+        patterns = [str(item) for item in surface.get("required_patterns", [])]
+        authored = surface.get("must_include", [])
+        if isinstance(authored, list) and len(authored) == len(patterns) and pattern in patterns:
+            return f"Выполни требование: {authored[patterns.index(pattern)]}."
+        return cls._humanize_pattern(pattern)
+
+    @classmethod
+    def must_include_requirements(cls, surface: dict[str, Any]) -> list[str]:
+        authored = surface.get("must_include", [])
+        if isinstance(authored, list) and authored:
+            return [str(item) for item in authored]
+        return [cls._humanize_pattern(str(pattern)) for pattern in surface.get("required_patterns", [])]
+
+    @classmethod
+    def _humanize_pattern(cls, pattern: str) -> str:
+        field = cls._pattern_field_name(pattern)
+        value = pattern.split(":", 1)[1] if field and ":" in pattern else pattern
+        value = re.sub(r"\(\?[a-zA-Z-]+\)", "", value)
+        value = value.replace(r"\s*", " ").replace(r"\s+", " ").replace(".*", " ")
+        value = value.replace("(?:", "(").replace(r"\.", ".")
+        value = re.sub(r"\[([^\]]+)\]", lambda match: "/".join(match.group(1)), value)
+        value = re.sub(r"[\\^$?*+{}()]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip(" .|")
+        if field:
+            return f"Поле «{field.capitalize()}» должно содержать значение «{value or 'из authored contract'}»."
+        return f"Упомяни обязательный факт «{value or 'из authored contract'}»."
 
     def fallback_text(
         self,
@@ -548,7 +713,8 @@ class TrainingRuntimeService:
         declaration = worldpack.manifest.get("training_runtime")
         if not isinstance(declaration, dict):
             return None
-        if declaration.get("schema_version") != RUNTIME_SCHEMA:
+        runtime_schema = declaration.get("schema_version")
+        if runtime_schema not in RUNTIME_PROGRAM_SCHEMAS:
             raise ValueError("unsupported training_runtime schema_version")
         root = Path(worldpack.manifest_path).resolve().parent
 
@@ -570,7 +736,7 @@ class TrainingRuntimeService:
             return value
 
         payload = {
-            "schema_version": RUNTIME_SCHEMA,
+            "schema_version": runtime_schema,
             "worldpack_id": worldpack.id,
             "program": load_json("program"),
             "assessment": load_json("assessment"),
@@ -583,7 +749,8 @@ class TrainingRuntimeService:
 
     @classmethod
     def _validate_contract(cls, contract: dict[str, Any]) -> None:
-        if contract.get("schema_version") != RUNTIME_SCHEMA:
+        runtime_schema = contract.get("schema_version")
+        if runtime_schema not in RUNTIME_PROGRAM_SCHEMAS:
             raise ValueError("invalid training runtime snapshot schema")
         contract_hash = str(contract.get("contract_hash") or "")
         unsigned = {key: value for key, value in contract.items() if key != "contract_hash"}
@@ -592,7 +759,7 @@ class TrainingRuntimeService:
             raise ValueError("training runtime contract hash mismatch")
         program = contract.get("program")
         assessment = contract.get("assessment")
-        if not isinstance(program, dict) or program.get("schema_version") != PROGRAM_SCHEMA:
+        if not isinstance(program, dict) or program.get("schema_version") != RUNTIME_PROGRAM_SCHEMAS[runtime_schema]:
             raise ValueError("invalid training program schema")
         if not isinstance(assessment, dict) or assessment.get("schema_version") != ASSESSMENT_SCHEMA:
             raise ValueError("invalid training assessment schema")
@@ -644,6 +811,15 @@ class TrainingRuntimeService:
                 raise ValueError(f"training turn {item.get('turn')} has an unsupported links policy")
             if not isinstance(surface.get("count", 1), int) or int(surface.get("count", 1)) < 1:
                 raise ValueError(f"training turn {item.get('turn')} surface count must be positive")
+            for key in ("variation_budget",):
+                value = item.get(key, [])
+                if not isinstance(value, list) or any(not isinstance(entry, str) or not entry.strip() for entry in value):
+                    raise ValueError(f"training turn {item.get('turn')} {key} must contain non-empty strings")
+            must_include = surface.get("must_include", [])
+            if not isinstance(must_include, list) or any(
+                not isinstance(entry, str) or not entry.strip() for entry in must_include
+            ):
+                raise ValueError(f"training turn {item.get('turn')} surface.must_include must contain non-empty strings")
             for pattern in [
                 *program.get("global_validation", {}).get("forbidden_patterns", []),
                 *surface.get("required_patterns", []),

@@ -231,6 +231,8 @@ class Adjudicator:
                     workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
                     if workspace_result.valid:
                         text = workspace_result.text
+                if self.training_runtime and self.training_runtime.enabled:
+                    text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
                 if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
                     raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                 validation = self.validator.validate(
@@ -246,25 +248,46 @@ class Adjudicator:
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
+                training_runtime_enabled = bool(self.training_runtime and self.training_runtime.enabled)
+                repair_attempts = (
+                    self.settings.training_repair_attempts
+                    if training_runtime_enabled
+                    else self.settings.max_repair_attempts
+                )
+                training_repair_allowed = True
+                if training_runtime_enabled and self.training_runtime:
+                    runtime_violations = self.training_runtime.validate_narrative(
+                        text, narrative_state, interaction_contract
+                    )
+                    runtime_violation_set = set(runtime_violations)
+                    training_repair_allowed = not self.training_runtime.hard_violations(
+                        text, narrative_state, interaction_contract
+                    ) and not any(
+                        violation not in runtime_violation_set for violation in validation.violations
+                    )
                 if (
                     (not validation.valid or not interaction_valid)
-                    and self.settings.max_repair_attempts > 0
-                    and not (self.training_runtime and self.training_runtime.enabled)
+                    and repair_attempts > 0
+                    and training_repair_allowed
                 ):
                     repaired = True
-                    repair_instruction = validation.repair_instruction
+                    repair_instruction = (
+                        self.training_runtime.repair_instruction(text, narrative_state, interaction_contract)
+                        if training_runtime_enabled and self.training_runtime
+                        else validation.repair_instruction
+                    )
                     if artifact_result and not artifact_result.valid:
                         repair_instruction = " ".join(
                             [
                                 repair_instruction,
-                                "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                                "Верни корректный JSON bundle: объект artifact должен содержать только разрешённые ключи и slots; fixed display_url оставь только в строке «Ссылки:» видимого narrative_text.",
                             ]
                         ).strip()
                     if workspace_result and not workspace_result.valid:
                         repair_instruction = " ".join(
                             [
                                 repair_instruction,
-                                "Return valid workspace_files: " + "; ".join(workspace_result.violations),
+                                "Верни корректный workspace_files только с разрешёнными file_key, blueprint_id и строковыми slots.",
                             ]
                         ).strip()
                     llm_calls += 1
@@ -290,6 +313,8 @@ class Adjudicator:
                         workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
                         if workspace_result.valid:
                             text = workspace_result.text
+                    if self.training_runtime and self.training_runtime.enabled:
+                        text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
                     if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
                         raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                     validation = self.validator.validate(

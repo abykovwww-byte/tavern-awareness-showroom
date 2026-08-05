@@ -11,8 +11,12 @@ from pathlib import Path
 from typing import Any
 
 
-RUNTIME_SCHEMA = "rp-training-runtime.v1"
-PROGRAM_SCHEMA = "rp-training-program.v1"
+RUNTIME_SCHEMA = "rp-training-runtime.v2"
+PROGRAM_SCHEMA = "rp-training-program.v2"
+RUNTIME_PROGRAM_SCHEMAS = {
+    "rp-training-runtime.v1": "rp-training-program.v1",
+    RUNTIME_SCHEMA: PROGRAM_SCHEMA,
+}
 ASSESSMENT_SCHEMA = "rp-training-assessment.v1"
 FALLBACKS_SCHEMA = "rp-training-fallbacks.v1"
 SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,119}$")
@@ -96,7 +100,8 @@ def validate_worldpack(root: Path) -> bool:
     declaration = manifest.get("training_runtime")
     if declaration is None:
         return False
-    if not isinstance(declaration, dict) or declaration.get("schema_version") != RUNTIME_SCHEMA:
+    runtime_schema = declaration.get("schema_version") if isinstance(declaration, dict) else None
+    if runtime_schema not in RUNTIME_PROGRAM_SCHEMAS:
         raise ContractError(f"{root.name}: unsupported training_runtime schema")
 
     program_path = contract_path(root, declaration, "program")
@@ -111,7 +116,7 @@ def validate_worldpack(root: Path) -> bool:
         raise ContractError(f"{root.name}: state seed player.resources must be an object")
     resources = set(resources_value)
 
-    if program.get("schema_version") != PROGRAM_SCHEMA:
+    if program.get("schema_version") != RUNTIME_PROGRAM_SCHEMAS[runtime_schema]:
         raise ContractError(f"{root.name}: unsupported training program schema")
     if assessment.get("schema_version") != ASSESSMENT_SCHEMA:
         raise ContractError(f"{root.name}: unsupported training assessment schema")
@@ -164,6 +169,16 @@ def validate_worldpack(root: Path) -> bool:
             raise ContractError(f"{root.name}: turn {turn.get('turn')} has unsupported links policy")
         if int(surface.get("count", 1)) < 1:
             raise ContractError(f"{root.name}: turn {turn.get('turn')} surface count must be positive")
+        variation_budget = turn.get("variation_budget", [])
+        if not isinstance(variation_budget, list) or any(
+            not isinstance(item, str) or not item.strip() for item in variation_budget
+        ):
+            raise ContractError(f"{root.name}: turn {turn.get('turn')} variation_budget must contain non-empty strings")
+        must_include = surface.get("must_include", [])
+        if not isinstance(must_include, list) or any(
+            not isinstance(item, str) or not item.strip() for item in must_include
+        ):
+            raise ContractError(f"{root.name}: turn {turn.get('turn')} surface.must_include must contain non-empty strings")
         for pattern in [*surface.get("required_patterns", []), *surface.get("forbidden_patterns", [])]:
             compile_regex(pattern, f"{root.name}: turn {turn.get('turn')}")
         validate_placeholders(surface.get("fallback"), resources, f"{root.name}: turn {turn.get('turn')}")
