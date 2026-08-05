@@ -525,7 +525,7 @@ codex-skills/training-world-pack-builder/
 Update `SKILL.md` and `references/training-contract.md`; add a focused
 `references/site-artifacts-contract.md`. The repository copy is authoritative.
 After validation, synchronize the installed local skill under
-`C:\Users\albykov\.codex\skills\training-world-pack-builder\` as a separate,
+`$env:USERPROFILE\.codex\skills\training-world-pack-builder\` as a separate,
 reported local delivery step.
 
 The skill must:
