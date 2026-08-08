@@ -189,8 +189,10 @@ class Adjudicator:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                 )
-                if awareness_final_summary(narrative_state) and not (
-                    self.training_runtime and self.training_runtime.enabled
+                if (
+                    self.settings.scenario_type == "training"
+                    and awareness_final_summary(narrative_state)
+                    and not (self.training_runtime and self.training_runtime.enabled)
                 ):
                     # Scores and their evidence are canonical Gateway state.
                     # Never let a free-form narrator reinterpret the debrief.

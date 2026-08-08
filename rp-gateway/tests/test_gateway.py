@@ -754,6 +754,30 @@ def test_existing_parties_migrate_to_compatible_scenario_types(tmp_path: Path):
     assert migrated == {"old-awareness": "training", "old-rp": "rp"}
 
 
+def test_rp_party_after_turn_10_keeps_narrator_response(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Long RP party", scenario_type="rp")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    state = store.get_state()
+    state["meta"]["turn"] = 10
+    state["meta"]["state_version"] = 2
+    store.insert_state_version(state, "test:rp-turn-10")
+    store.write_state_file(state)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Continue the scene", "idempotency_key": "rp-turn-11"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_rp_turn_11"},
+    )
+
+    assert response.status_code == 200, response.text
+    expected = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
+    assert response.json()["message"]["content"] == expected
+    turn = c.get(f"/api/parties/{party['id']}/history").json()["turns"][-1]
+    assert turn["narrative_response"] == expected
+
+
 def test_novel_party_has_no_checks_and_loads_world_prompts(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
