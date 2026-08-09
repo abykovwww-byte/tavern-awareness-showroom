@@ -10,12 +10,14 @@ from pydantic import ValidationError
 
 from app.models.schemas import InteractionEvidence, Intent, TrainingArtifactEventRequest, WorldPackSummary
 from app.services.narrative import training_artifact_prompt_block
-from app.services.rule_engine import AWARENESS_ONE_DAY_ID, RuleEngine
+from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
+from app.services.training_runtime import TrainingRuntimeService
 
 
 WORLD_PACKS_ROOT = Path(__file__).resolve().parents[2] / "worldpacks"
+AWARENESS_ONE_DAY_ID = "awareness-one-day"
 WORLD_ROOT = WORLD_PACKS_ROOT / AWARENESS_ONE_DAY_ID
 WEEKLY_AWARENESS_ID = "awareness"
 
@@ -279,7 +281,7 @@ def test_neutral_one_day_site_report_does_not_award_security_score(tmp_path: Pat
 
 
 def test_weekly_risky_link_is_consumed_by_awareness_scoring(tmp_path: Path):
-    _, _, state = artifact_service(tmp_path, turn=5, world_id=WEEKLY_AWARENESS_ID)
+    store, artifacts, state = artifact_service(tmp_path, turn=5, world_id=WEEKLY_AWARENESS_ID)
     failed_link = InteractionEvidence(
         event_sequence=1,
         event_id="evt-weekly-failed-link",
@@ -301,6 +303,7 @@ def test_weekly_risky_link_is_consumed_by_awareness_scoring(tmp_path: Path):
         campaign_id=WEEKLY_AWARENESS_ID,
         scenario_type="training",
         interaction_evidence=[failed_link],
+        training_runtime=TrainingRuntimeService(artifacts.worldpack, store),
     )
 
     values = patch_values(score_patch)
@@ -375,6 +378,7 @@ def test_event_is_idempotent_private_and_consumed_by_scoring(tmp_path: Path):
         campaign_id=AWARENESS_ONE_DAY_ID,
         scenario_type="training",
         interaction_evidence=evidence,
+        training_runtime=TrainingRuntimeService(service.worldpack, store),
     )
     values = patch_values(score_patch)
     assert values["/player/resources/links-opened"] == 1
