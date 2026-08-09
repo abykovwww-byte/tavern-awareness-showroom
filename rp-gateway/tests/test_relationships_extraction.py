@@ -95,6 +95,51 @@ def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, m
     assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == first_value
 
 
+def test_process_turn_accepts_single_fenced_json_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the local service model's fenced JSON response still accrues one valid cause."""
+    store = make_store(tmp_path)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    async def fenced_completion(*_args, **_kwargs):
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": """```json
+{"events":[{"character_id":"ivan","event_id":"insult_public","evidence":"public insult"}]}
+```"""}}],
+        }
+
+    monkeypatch.setattr(service, "_complete", fenced_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert result["applied"] is True
+    assert result["party_turn"] == 1
+    assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == -20
+
+
+def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves malformed provider output is terminal instead of retrying as a technical failure."""
+    store = make_store(tmp_path)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    async def malformed_completion(*_args, **_kwargs):
+        return {"model": "fixture", "choices": [{"message": {"content": "not json"}}]}
+
+    monkeypatch.setattr(service, "_complete", malformed_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert result["rejection_code"] == "missing_evidence"
+    with store.connect() as connection:
+        audit = connection.execute(
+            "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_rejected'"
+        ).fetchone()
+    assert json.loads(audit["event_json"])["code"] == "missing_evidence"
+
+
 def test_numeric_field_rejects_whole_response_without_partial_accrual(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

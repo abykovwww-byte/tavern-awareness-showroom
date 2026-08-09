@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.services.narrative import NarrativeClient, response_text
+from app.services.narrative import NarrativeClient, json_object_content, response_text
 from app.services.provider_auth import outbound_headers
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
@@ -117,12 +117,15 @@ class RelationshipExtractionService:
 
     def parse_response(self, payload: object, *, character_ids: set[str]) -> dict[str, Any]:
         """Parse and validate the all-or-nothing qualitative extraction payload."""
-        if isinstance(payload, str):
-            data = json.loads(payload)
-        elif isinstance(payload, (bytes, bytearray)):
-            data = json.loads(payload.decode("utf-8"))
-        else:
-            data = payload
+        try:
+            if isinstance(payload, str):
+                data = json.loads(json_object_content(payload))
+            elif isinstance(payload, (bytes, bytearray)):
+                data = json.loads(json_object_content(payload.decode("utf-8")))
+            else:
+                data = payload
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RelationshipExtractionRejected("missing_evidence") from exc
 
         # Scan the complete decoded document before inspecting its expected shape.
         # bool is a JSON boolean, not a numeric relationship value.
