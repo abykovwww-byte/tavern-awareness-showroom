@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Any
 
 
-RUNTIME_SCHEMA = "rp-training-runtime.v2"
-PROGRAM_SCHEMA = "rp-training-program.v2"
+RUNTIME_SCHEMA = "rp-training-runtime.v3"
+PROGRAM_SCHEMA = "rp-training-program.v3"
 RUNTIME_PROGRAM_SCHEMAS = {
     "rp-training-runtime.v1": "rp-training-program.v1",
+    "rp-training-runtime.v2": "rp-training-program.v2",
     RUNTIME_SCHEMA: PROGRAM_SCHEMA,
 }
 ASSESSMENT_SCHEMA = "rp-training-assessment.v1"
@@ -125,6 +126,10 @@ def validate_worldpack(root: Path) -> bool:
         if fallbacks.get("schema_version") != FALLBACKS_SCHEMA:
             raise ContractError(f"{root.name}: unsupported training fallbacks schema")
 
+    is_v3 = runtime_schema == "rp-training-runtime.v3"
+    if is_v3 and (not isinstance(program.get("revision"), int) or int(program["revision"]) < 1):
+        raise ContractError(f"{root.name}: program.revision must be a positive integer")
+
     progression = program.get("progression")
     if not isinstance(progression, dict):
         raise ContractError(f"{root.name}: program.progression must be an object")
@@ -135,6 +140,11 @@ def validate_worldpack(root: Path) -> bool:
         resource = progression.get(key)
         if resource not in resources:
             raise ContractError(f"{root.name}: progression resource {resource!r} is absent from state seed")
+    if is_v3 and (
+        not isinstance(progression.get("complete_value"), str)
+        or not progression["complete_value"].strip()
+    ):
+        raise ContractError(f"{root.name}: progression.complete_value must be a non-empty string")
 
     turns = program.get("turns")
     if not isinstance(turns, list) or len(turns) != total_turns:
@@ -158,30 +168,58 @@ def validate_worldpack(root: Path) -> bool:
         for key in ("window", "header", "instruction"):
             if not isinstance(turn.get(key), str) or not turn[key].strip():
                 raise ContractError(f"{root.name}: turn {turn.get('turn')} requires {key}")
-        surface = turn.get("surface")
-        if not isinstance(surface, dict) or surface.get("type") not in {"email", "messenger"}:
-            raise ContractError(f"{root.name}: turn {turn.get('turn')} requires email or messenger surface")
-        if surface.get("require_question") and (
+        if is_v3:
+            surfaces = turn.get("surfaces")
+            if not isinstance(surfaces, list) or not surfaces:
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} requires non-empty surfaces")
+            if not isinstance(turn.get("require_question"), bool):
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} requires boolean require_question")
+            if not isinstance(turn.get("question"), str):
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} requires question")
+            validate_placeholders(turn.get("fallback"), resources, f"{root.name}: turn {turn.get('turn')}")
+        else:
+            surface = turn.get("surface")
+            if not isinstance(surface, dict):
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} requires email or messenger surface")
+            surfaces = [surface]
+        surface_types = [surface.get("type") for surface in surfaces if isinstance(surface, dict)]
+        if len(surface_types) != len(surfaces) or any(
+            surface_type not in {"email", "messenger"} for surface_type in surface_types
+        ):
+            raise ContractError(f"{root.name}: turn {turn.get('turn')} requires email or messenger surfaces")
+        if len(set(surface_types)) != len(surface_types):
+            raise ContractError(f"{root.name}: turn {turn.get('turn')} surface types must be unique")
+        require_question = turn.get("require_question", False) if is_v3 else surfaces[0].get("require_question")
+        if require_question and (
             not isinstance(turn.get("question"), str) or not turn["question"].strip()
         ):
             raise ContractError(f"{root.name}: turn {turn.get('turn')} requires a question")
-        if surface.get("links", "none") not in {"none", "artifact"}:
-            raise ContractError(f"{root.name}: turn {turn.get('turn')} has unsupported links policy")
-        if int(surface.get("count", 1)) < 1:
-            raise ContractError(f"{root.name}: turn {turn.get('turn')} surface count must be positive")
         variation_budget = turn.get("variation_budget", [])
         if not isinstance(variation_budget, list) or any(
             not isinstance(item, str) or not item.strip() for item in variation_budget
         ):
             raise ContractError(f"{root.name}: turn {turn.get('turn')} variation_budget must contain non-empty strings")
-        must_include = surface.get("must_include", [])
-        if not isinstance(must_include, list) or any(
-            not isinstance(item, str) or not item.strip() for item in must_include
-        ):
-            raise ContractError(f"{root.name}: turn {turn.get('turn')} surface.must_include must contain non-empty strings")
-        for pattern in [*surface.get("required_patterns", []), *surface.get("forbidden_patterns", [])]:
-            compile_regex(pattern, f"{root.name}: turn {turn.get('turn')}")
-        validate_placeholders(surface.get("fallback"), resources, f"{root.name}: turn {turn.get('turn')}")
+        for surface in surfaces:
+            if is_v3 and ("fallback" in surface or "require_question" in surface):
+                raise ContractError(
+                    f"{root.name}: turn {turn.get('turn')} keeps fallback and require_question at turn level"
+                )
+            if surface.get("links", "none") not in {"none", "artifact"}:
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} has unsupported links policy")
+            if is_v3 and "links" not in surface:
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} surface requires links policy")
+            count = surface.get("count", 1)
+            if (is_v3 and "count" not in surface) or not isinstance(count, int) or count < 1:
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} surface count must be positive")
+            must_include = surface.get("must_include", [])
+            if not isinstance(must_include, list) or any(
+                not isinstance(item, str) or not item.strip() for item in must_include
+            ):
+                raise ContractError(f"{root.name}: turn {turn.get('turn')} surface.must_include must contain non-empty strings")
+            for pattern in [*surface.get("required_patterns", []), *surface.get("forbidden_patterns", [])]:
+                compile_regex(pattern, f"{root.name}: turn {turn.get('turn')}")
+            if not is_v3:
+                validate_placeholders(surface.get("fallback"), resources, f"{root.name}: turn {turn.get('turn')}")
 
     debrief = program.get("debrief")
     if not isinstance(debrief, dict):
