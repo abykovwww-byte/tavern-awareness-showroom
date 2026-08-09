@@ -251,7 +251,17 @@ class NarrativeClient:
                             elapsed_ms,
                             index < len(attempts) - 1,
                         )
-                        if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
+                        if index < len(attempts) - 1 and response.status_code in {
+                            400,
+                            403,
+                            404,
+                            408,
+                            410,
+                            500,
+                            502,
+                            503,
+                            504,
+                        }:
                             break
                         raise
                     data = response.json()
@@ -396,14 +406,8 @@ class NarrativeClient:
             return
         if model.strip().lower() != "deepseek/deepseek-v4-flash":
             return
-        payload["reasoning"] = {"effort": "minimal"}
         provider_preferences = dict(payload.get("provider") or {})
-        provider_preferences.update(
-            {
-                "sort": "throughput",
-                "require_parameters": True,
-            }
-        )
+        provider_preferences["sort"] = "throughput"
         payload["provider"] = provider_preferences
 
     def repair_messages(

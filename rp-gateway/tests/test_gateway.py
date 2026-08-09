@@ -1610,6 +1610,26 @@ def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks(
     assert selected.model_attempt_timeout_seconds == 150
 
 
+def test_openrouter_party_uses_same_provider_fallbacks():
+    settings = Settings(openrouter_fallback_models=("openrouter/auto",))
+    party = SimpleNamespace(
+        scenario_type="rp",
+        worldpack_id="demo-world",
+        worldpack=None,
+        model_profile=SimpleNamespace(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="deepseek/deepseek-v4-flash",
+        ),
+    )
+
+    selected = settings_for_party(settings, party)
+
+    assert selected.llm_provider == "openrouter"
+    assert selected.nvidia_fallback_models == ("openrouter/auto",)
+    assert selected.nvidia_disabled_models == ()
+
+
 def test_party_narrator_deadline_overrides_local_service_deadline():
     settings = Settings(
         model_attempt_timeout_seconds=150,
@@ -2764,7 +2784,7 @@ def test_rp_does_not_repair_meta_output_labels(tmp_path: Path):
     assert "анализ:" in content.lower()
 
 
-def test_openrouter_deepseek_flash_uses_minimal_reasoning_and_throughput_routing(
+def test_openrouter_deepseek_flash_uses_supported_throughput_routing(
     monkeypatch: pytest.MonkeyPatch,
 ):
     captured: dict[str, object] = {}
@@ -2818,9 +2838,72 @@ def test_openrouter_deepseek_flash_uses_minimal_reasoning_and_throughput_routing
 
     asyncio.run(NarrativeClient(settings).complete(request, base_state(), outcome, None))
 
-    assert captured["reasoning"] == {"effort": "minimal"}
-    assert captured["provider"] == {"sort": "throughput", "require_parameters": True}
+    assert "reasoning" not in captured
+    assert captured["provider"] == {"sort": "throughput"}
     assert "max_tokens" not in captured
+
+
+@pytest.mark.parametrize("status_code", [403, 410])
+def test_narrative_retries_provider_rejection_with_configured_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+):
+    attempted_models: list[str] = []
+
+    class FallbackAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "FallbackAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            attempted_models.append(str(payload["model"]))
+            request = httpx.Request("POST", url)
+            if len(attempted_models) == 1:
+                return httpx.Response(status_code, request=request, json={"error": {"code": status_code}})
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": "Fallback scene."}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FallbackAsyncClient)
+    settings = Settings(
+        nvidia_api_base="https://provider.example/v1",
+        nvidia_api_key="test-key",
+        narrative_model="primary/model",
+        nvidia_fallback_models=("fallback/model",),
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    outcome = Outcome(
+        check_id=f"fallback-{status_code}",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: success.",
+    )
+
+    response = asyncio.run(NarrativeClient(settings).complete(request, base_state(), outcome, None))
+
+    assert attempted_models == ["primary/model", "fallback/model"]
+    assert response["choices"][0]["message"]["content"] == "Fallback scene."
 
 
 def test_repair_prompt_is_compact_and_does_not_replay_party_history():

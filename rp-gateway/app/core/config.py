@@ -60,6 +60,7 @@ class Settings:
     # the stack-wide service model.
     service_openrouter_api_key: str = os.getenv("SERVICE_OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))
     openrouter_models: tuple[str, ...] = env_list("OPENROUTER_MODELS", "openrouter/auto,openrouter/free")
+    openrouter_fallback_models: tuple[str, ...] = env_list("OPENROUTER_FALLBACK_MODELS", "openrouter/auto")
     openrouter_model_catalog_live: bool = env_bool("OPENROUTER_MODEL_CATALOG_LIVE", True)
     local_llm_enabled: bool = env_bool("LOCAL_LLM_ENABLED", False)
     local_llm_base_url: str = os.getenv("LOCAL_LLM_BASE_URL", "http://rp-local-llm:8080/v1")

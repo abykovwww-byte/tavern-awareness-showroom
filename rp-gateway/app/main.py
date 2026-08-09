@@ -2287,6 +2287,9 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
 
 def settings_for_model_profile(settings: Settings, model_profile: Any, cache_session_id: str) -> Settings:
     provider = normalize_provider(model_profile.provider)
+    fallback_models = settings.nvidia_fallback_models if provider == "nvidia" else ()
+    if provider == "openrouter":
+        fallback_models = settings.openrouter_fallback_models
     return replace(
         settings,
         llm_provider=provider,
@@ -2294,7 +2297,7 @@ def settings_for_model_profile(settings: Settings, model_profile: Any, cache_ses
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
         validator_model=model_profile.model,
-        nvidia_fallback_models=settings.nvidia_fallback_models if provider == "nvidia" else (),
+        nvidia_fallback_models=fallback_models,
         nvidia_disabled_models=settings.nvidia_disabled_models if provider == "nvidia" else (),
         model_attempt_timeout_seconds=(
             settings.local_llm_timeout_seconds if provider == "local" else settings.model_attempt_timeout_seconds
