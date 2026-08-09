@@ -18,12 +18,12 @@ from app.services.narrative import ProviderRateLimitError, NarrativeClient, resp
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
-from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
+from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService, WorkspaceMaterialization
-from app.services.validator import OutputValidator, awareness_final_summary, safe_fallback
+from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
 
@@ -128,14 +128,6 @@ class Adjudicator:
                 return response
 
             state = self.store.get_state()
-            if self.settings.scenario_type == "training" and not (
-                self.training_runtime and self.training_runtime.enabled
-            ):
-                state = awareness_state_after_auto_start(
-                    state,
-                    self.settings.campaign_id,
-                    self.has_auto_start_history(),
-                )
             intent = self.intent_parser.parse(latest)
             artifact_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
             workspace_evidence = self.training_workspace.pending_evidence() if self.training_workspace else []
@@ -206,23 +198,7 @@ class Adjudicator:
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
                 )
-                if (
-                    self.settings.scenario_type == "training"
-                    and awareness_final_summary(narrative_state)
-                    and not (self.training_runtime and self.training_runtime.enabled)
-                ):
-                    # Scores and their evidence are canonical Gateway state.
-                    # Never let a free-form narrator reinterpret the debrief.
-                    text = safe_fallback(
-                        outcome,
-                        narrative_state,
-                        latest,
-                        self.settings.campaign_id,
-                        self.settings.scenario_type,
-                    )
-                    raw = with_text(raw, text)
-                else:
-                    text = response_text(raw)
+                text = response_text(raw)
                 if self.training_artifacts:
                     artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                     if artifact_result.valid:
@@ -528,12 +504,6 @@ class Adjudicator:
         candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
         candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
         return candidate
-
-    def has_auto_start_history(self) -> bool:
-        turns = self.store.turn_history(limit=1)
-        if not turns:
-            return False
-        return str(turns[-1].get("player_message") or "").startswith("[AUTO_START]")
 
     def safe_text(
         self,

@@ -88,11 +88,6 @@ from app.services.service_models import (
 )
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
-from app.services.rule_engine import (
-    awareness_turn_window,
-    awareness_turns_remaining,
-    is_awareness_campaign,
-)
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.showroom import ShowroomStore
 from app.services.state_store import StateStore
@@ -779,6 +774,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
 
+    @app.post("/api/parties/{party_id}/complete")
+    def complete_party(request: Request, party_id: str) -> dict[str, Any]:
+        user = current_user(request)
+        party_owner_id = None if user and user.is_admin else (user.id if user else None)
+        try:
+            party = party_store.complete_party(party_id, owner_user_id=party_owner_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"party": party.model_dump(mode="json")}
+
     @app.delete("/api/parties/{party_id}")
     def delete_party(request: Request, party_id: str) -> dict[str, Any]:
         owner_id = owner_user_id(request)
@@ -1418,11 +1423,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 training_runtime=runtime_service,
                 interaction_contract=interaction_contract,
             )
+            training_runtime_enabled = runtime_service.enabled
+            repair_attempts = (
+                party_settings.training_repair_attempts
+                if training_runtime_enabled
+                else party_settings.max_repair_attempts
+            )
+            training_repair_allowed = True
+            if training_runtime_enabled:
+                runtime_violations = runtime_service.validate_narrative(
+                    text, narrative_state, interaction_contract
+                )
+                runtime_violation_set = set(runtime_violations)
+                training_repair_allowed = not runtime_service.hard_violations(
+                    text, narrative_state, interaction_contract
+                ) and not any(
+                    violation not in runtime_violation_set for violation in validation.violations
+                )
             if (
                 not validation.valid or not artifact_result.valid or not workspace_result.valid
-            ) and party_settings.max_repair_attempts > 0 and not runtime_service.enabled:
+            ) and repair_attempts > 0 and training_repair_allowed:
                 repaired = True
-                repair_instruction = validation.repair_instruction
+                repair_instruction = (
+                    runtime_service.repair_instruction(text, narrative_state, interaction_contract)
+                    if training_runtime_enabled
+                    else validation.repair_instruction
+                )
                 if not artifact_result.valid:
                     repair_instruction = " ".join(
                         [
@@ -1486,10 +1512,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 allow_safe_fallback = getattr(http_request.state, "showroom_party_access", False) or (
                     party.scenario_type == "training"
-                    and (
-                        runtime_service.enabled
-                        or is_awareness_campaign(narrative_state, party.worldpack_id)
-                    )
+                    and runtime_service.enabled
                 )
                 if not allow_safe_fallback:
                     raise RuntimeError("LLM response failed narrative validation")
@@ -1638,10 +1661,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 x_request_id,
                 allow_gateway_fallback=(
                     party.scenario_type == "training"
-                    and (
-                        runtime_service.enabled
-                        or is_awareness_campaign(party_state_store.get_state(), party.worldpack_id)
-                    )
+                    and runtime_service.enabled
                 ),
             )
         except RequestAlreadyRunning as exc:
@@ -2389,44 +2409,7 @@ def party_start_state_patch(
     worldpack_id: str | None = None,
     scenario_type: str = "rp",
 ) -> StatePatch | None:
-    if scenario_type != "training":
-        return None
-    if not is_awareness_campaign(state, worldpack_id):
-        return None
-    turn = 1
-    window = awareness_turn_window(turn, state, worldpack_id)
-    if not window:
-        return None
-    resources = state.get("player", {}).get("resources", {})
-    operations = [
-        resource_value_patch(
-            resources,
-            "current-turn-window",
-            window,
-            "Marks Awareness opening scene as the first scheduled message window.",
-            turn,
-        ),
-        resource_value_patch(
-            resources,
-            "turns-remaining",
-            awareness_turns_remaining(turn),
-            "Tracks remaining Awareness message turns after opening.",
-            turn,
-        ),
-        PatchOperation(
-            op="add",
-            path="/timeline/-",
-            value={
-                "turn": turn,
-                "event": f"Ход 1 Awareness открыт: {window}.",
-                "confirmed": True,
-                "participants": ["player"],
-            },
-            reason="Records the first Awareness turn opened by party start.",
-            turn=turn,
-        ),
-    ]
-    return StatePatch(turn=turn, check_id=f"party_start_state:{party_id}", source="party-start", patch=operations)
+    return None
 
 
 def party_start_narrative_state(state: dict[str, Any], patch: StatePatch | None) -> dict[str, Any]:
@@ -2441,17 +2424,6 @@ def party_start_narrative_state(state: dict[str, Any], patch: StatePatch | None)
         if operation.path.startswith(prefix):
             resources[operation.path.removeprefix(prefix)] = operation.value
     return cloned
-
-
-def resource_value_patch(resources: Any, resource_id: str, value: Any, reason: str, turn: int) -> PatchOperation:
-    op = "replace" if isinstance(resources, dict) and resource_id in resources else "add"
-    return PatchOperation(
-        op=op,
-        path=f"/player/resources/{resource_id}",
-        value=value,
-        reason=reason,
-        turn=turn,
-    )
 
 
 def party_chat_request(

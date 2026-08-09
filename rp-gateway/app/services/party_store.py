@@ -228,7 +228,6 @@ class PartyStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
         if "scenario_type" not in columns:
             connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
-            connection.execute("UPDATE parties SET scenario_type = 'training' WHERE worldpack_id = 'awareness'")
 
     def migrate_autotest_branches(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(autotest_runs)").fetchall()}
@@ -943,6 +942,22 @@ class PartyStore:
     def activate_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
         timestamp = now_iso()
         sql = "UPDATE parties SET status = 'active', updated_at = ? WHERE id = ?"
+        params: list[Any] = [timestamp, party_id]
+        if owner_user_id:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        with self.connect() as connection:
+            updated = connection.execute(sql, tuple(params)).rowcount
+        if updated == 0:
+            raise ValueError(f"party not found: {party_id}")
+        return self.get_party(party_id, owner_user_id=owner_user_id)
+
+    def complete_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
+        if party.status == "completed":
+            return party
+        timestamp = now_iso()
+        sql = "UPDATE parties SET status = 'completed', updated_at = ? WHERE id = ?"
         params: list[Any] = [timestamp, party_id]
         if owner_user_id:
             sql += " AND owner_user_id = ?"
