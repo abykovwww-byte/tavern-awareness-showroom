@@ -35,6 +35,7 @@ from app.services.nvidia_catalog import (
     prices_are_free,
     provider_model_is_suitable,
 )
+from app.services.relationship_store import RelationshipStore
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.state_store import StateStore
@@ -696,6 +697,145 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
 
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
+
+
+def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tmp_path: Path):
+    """Proves prompt placement and the absence of relationship internals from party API surfaces."""
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    model = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "worldpacks"
+            / "mechanist-new-world"
+            / "relationships"
+            / "model.json"
+        ).read_text(encoding="utf-8")
+    )
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["relationships"] = {
+        "schema_version": "rp-relationships.v1",
+        "model": "relationships/model.json",
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    relationship_dir = pack_dir / "relationships"
+    relationship_dir.mkdir()
+    (relationship_dir / "model.json").write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
+
+    c = client(tmp_path)
+    party = create_demo_party(c)
+    party_id = str(party["id"])
+    store = c.app.state.party_store.store_for_party(party_id)
+    relationships = RelationshipStore(store, model)
+    relationships.set_axis_state(character_id="king", axis="loyalty", band="enmity", band_since_turn=0)
+    relationships.open_event(
+        character_id="king",
+        axis="loyalty",
+        event_id="plot",
+        opened_turn=0,
+        due_turn=7,
+        payload={
+            "accomplice_id": "advisor-secret-id",
+            "target_id": "player",
+            "strike_form": "sabotage",
+        },
+    )
+
+    response = c.post(
+        f"/api/parties/{party_id}/messages",
+        json={"content": "Я наблюдаю за придворными.", "idempotency_key": "relationship-pressure-turn"},
+    )
+    assert response.status_code == 200, response.text
+    recorded = store.latest_turn(include_prompt=True)
+    prompt = json.loads(recorded["prompt_json"])
+    pressure_index = next(index for index, item in enumerate(prompt) if item["content"].startswith("RELATIONSHIP_PRESSURE"))
+    state_index = next(index for index, item in enumerate(prompt) if item["content"].startswith("Relevant state summary:"))
+    outcome_index = next(index for index, item in enumerate(prompt) if "AUTHORITATIVE_OUTCOME" in item["content"])
+    assert state_index < outcome_index < pressure_index == len(prompt) - 2
+    pressure = prompt[pressure_index]["content"]
+    assert "King" in pressure and "вражда" in pressure
+    for forbidden in ("advisor-secret-id", "sabotage", "target_id", "due_turn", "-70", "plot"):
+        assert forbidden not in pressure
+
+    request_id = str(recorded["request_id"])
+    api_responses = [
+        c.get(f"/api/parties/{party_id}"),
+        c.get(f"/api/parties/{party_id}/state"),
+        c.get(f"/api/parties/{party_id}/history"),
+        c.get(f"/api/parties/{party_id}/memory"),
+        c.get(f"/api/parties/{party_id}/context"),
+        c.get(f"/api/parties/{party_id}/characters"),
+        c.get(f"/api/parties/{party_id}/service-jobs"),
+        c.get(f"/api/parties/{party_id}/lore-cards"),
+        c.get(f"/api/parties/{party_id}/checkpoints"),
+        c.get(f"/api/parties/{party_id}/branches"),
+        c.get(f"/api/parties/{party_id}/requests/{request_id}"),
+        c.post(f"/api/parties/{party_id}/prompt/preview", json={"content": "Следующий ход"}),
+    ]
+    assert all(item.status_code == 200 for item in api_responses)
+    public_payload = "\n".join(item.text for item in api_responses)
+    for forbidden in ("RELATIONSHIP_PRESSURE", "вражда", "advisor-secret-id", '"event_id":"plot"'):
+        assert forbidden not in public_payload
+    assert any(job["job_type"] == "relationship_extraction" for job in store.service_jobs(limit=10))
+
+
+def test_training_party_ignores_relationship_declaration_and_writes_no_relationship_rows(tmp_path: Path):
+    """Proves the full Training lifecycle cannot activate the RP relationship layer."""
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+    target = tmp_path / "worldpacks" / "awareness-one-day"
+    shutil.copytree(source, target)
+    model_source = (
+        Path(__file__).resolve().parents[2]
+        / "worldpacks"
+        / "mechanist-new-world"
+        / "relationships"
+        / "model.json"
+    )
+    manifest_path = target / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["relationships"] = {
+        "schema_version": "rp-relationships.v1",
+        "model": "relationships/model.json",
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    relationship_dir = target / "relationships"
+    relationship_dir.mkdir()
+    shutil.copy2(model_source, relationship_dir / "model.json")
+
+    c = client(tmp_path, mode="repair-fail")
+    party = create_demo_party(
+        c,
+        title="Training relationship guard",
+        character_name="Эллина",
+        scenario_type="training",
+        worldpack_id="awareness-one-day",
+    )
+    started = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "training-relationship-start"},
+    )
+    assert started.status_code == 200, started.text
+    message = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Проверяю сообщение.", "idempotency_key": "training-relationship-turn"},
+    )
+    assert message.status_code == 200, message.text
+
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    with store.connect() as connection:
+        counts = {
+            table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in (
+                "relationship_causes",
+                "character_badges",
+                "narrative_events",
+                "character_axis_state",
+            )
+        }
+    assert counts == {table: 0 for table in counts}
+    assert all(job["job_type"] != "relationship_extraction" for job in store.service_jobs(limit=20))
+    recorded = store.latest_turn(include_prompt=True)
+    assert "RELATIONSHIP_PRESSURE" not in str(recorded.get("prompt_json") or "")
 
 
 def test_party_requires_manual_scenario_type_and_rejects_unsupported_mode(tmp_path: Path):

@@ -8,7 +8,7 @@ later, after Part B is obsolete.
 
 ## Status
 
-Proposed. Decided by the user on 2026-08-09; три вопроса, оставленные открытыми в
+Accepted. Decided by the user on 2026-08-09; три вопроса, оставленные открытыми в
 первой редакции — поверхность fallback-текстов, судьба активных legacy-партий и
 срок жизни RP-полей `validator_valid`/`repaired`/`fallback` — закрыты
 пользователем в тот же день и внесены в решение. Implementation is delegated to

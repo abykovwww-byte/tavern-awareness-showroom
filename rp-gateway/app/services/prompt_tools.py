@@ -41,6 +41,9 @@ class PromptInspector:
             except (TypeError, ValueError, json.JSONDecodeError):
                 messages = None
             if isinstance(messages, list) and all(isinstance(message, dict) for message in messages):
+                messages = self.public_messages(messages)
+                public_turn = dict(latest_turn)
+                public_turn["prompt_json"] = json.dumps(messages, ensure_ascii=False)
                 blocks = self.blocks(messages)
                 return self.payload(
                     latest_turn.get("player_message") or "",
@@ -48,7 +51,7 @@ class PromptInspector:
                     blocks,
                     source="recorded_last_turn",
                     dry_run=False,
-                    turn=latest_turn,
+                    turn=public_turn,
                 )
         if latest_turn:
             reconstructed = self.reconstruct_last_prompt(latest_turn)
@@ -231,6 +234,17 @@ class PromptInspector:
             raw_block["messages"] = raw_items
             blocks.append(raw_block)
         return blocks
+
+    @staticmethod
+    def public_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            dict(message)
+            for message in messages
+            if not (
+                message.get("role") == "system"
+                and str(message.get("content") or "").startswith("RELATIONSHIP_PRESSURE")
+            )
+        ]
 
     def system_block_label(self, content: str, index: int) -> tuple[str, str]:
         if content.startswith("LONG_TERM_PARTY_MEMORY"):

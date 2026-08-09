@@ -16,6 +16,8 @@ from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.relationship_extraction import RelationshipExtractionService
+from app.services.relationships import RelationshipMechanics
 from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
 from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
@@ -46,6 +48,7 @@ class Adjudicator:
         training_artifacts: TrainingArtifactService | None = None,
         training_workspace: TrainingWorkspaceService | None = None,
         training_runtime: TrainingRuntimeService | None = None,
+        relationship_model: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -59,6 +62,17 @@ class Adjudicator:
         self.training_artifacts = training_artifacts
         self.training_workspace = training_workspace
         self.training_runtime = training_runtime
+        self.relationship_model = relationship_model if settings.scenario_type == "rp" else None
+        self.relationship_mechanics = (
+            RelationshipMechanics(store, self.relationship_model)
+            if self.relationship_model is not None
+            else None
+        )
+        self.relationship_extraction = (
+            RelationshipExtractionService(settings, store, self.relationship_model)
+            if self.relationship_model is not None
+            else None
+        )
 
     async def handle_chat(
         self,
@@ -165,6 +179,7 @@ class Adjudicator:
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
             try:
+                relationship_pressure = self.relationship_pressure(narrative_state)
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
                 rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
                 prompt_messages = self.narrative.narrative_messages(
@@ -176,6 +191,7 @@ class Adjudicator:
                     rp_story_memory=rp_story_memory,
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
+                    relationship_pressure=relationship_pressure,
                 )
                 llm_calls += 1
                 raw = await self.narrative.complete(
@@ -188,6 +204,7 @@ class Adjudicator:
                     request_id=request_id,
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
+                    relationship_pressure=relationship_pressure,
                 )
                 if (
                     self.settings.scenario_type == "training"
@@ -540,6 +557,8 @@ class Adjudicator:
         job_types = ["memory"]
         if self.settings.scenario_type == "rp":
             job_types.append("rp_story_memory")
+            if self.relationship_extraction is not None:
+                job_types.append("relationship_extraction")
         for job_type in job_types:
             self.store.enqueue_service_job(job_type, request_id, self.settings.service_job_max_attempts)
         if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
@@ -602,6 +621,14 @@ class Adjudicator:
                     fail_open=True,
                     request_id=job.get("request_id"),
                 )
+            elif job["job_type"] == "relationship_extraction" and self.relationship_extraction is not None:
+                turn = self.store.get_turn_by_request_id(str(job.get("request_id") or ""))
+                if turn is None:
+                    raise ValueError("relationship extraction turn not found")
+                result = await self.relationship_extraction.process_turn(
+                    int(turn["id"]),
+                    authorization,
+                )
             elif job["job_type"] == "journal":
                 # Retire jobs queued by versions that still had a party journal.
                 # Returning a terminal no-op prevents endless retries after upgrade.
@@ -614,6 +641,26 @@ class Adjudicator:
                 raise RuntimeError(str(result.get("reason") or result.get("error") or "service job failed"))
             return
         raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")
+
+    def relationship_pressure(self, state: dict[str, Any]) -> str | None:
+        if self.relationship_mechanics is None:
+            return None
+        turn_id = int(state.get("meta", {}).get("turn", 0))
+        self.relationship_mechanics.advance_turn(turn_id)
+        characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
+        names = {
+            str(character_id): self.relationship_character_name(str(character_id), value)
+            for character_id, value in characters.items()
+        }
+        return self.relationship_mechanics.pressure_block(turn_id, names)
+
+    @staticmethod
+    def relationship_character_name(character_id: str, value: Any) -> str:
+        if isinstance(value, dict):
+            explicit = value.get("name") or value.get("display_name")
+            if isinstance(explicit, str) and explicit.strip():
+                return explicit.strip()
+        return character_id.replace("-", " ").replace("_", " ").title()
 
     def post_turn_helpers_done(self, campaign_id: str, completed: asyncio.Task[None]) -> None:
         self._post_turn_helper_campaigns.discard(campaign_id)

@@ -130,6 +130,7 @@ class NarrativeClient:
         request_id: str | None = None,
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
+        relationship_pressure: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(self.settings, inbound_authorization)
         if self.settings.nvidia_api_base.startswith("mock://"):
@@ -144,6 +145,7 @@ class NarrativeClient:
                 failed_response_text or "",
                 artifact_contract=artifact_contract,
                 training_turn_contract=training_turn_contract,
+                relationship_pressure=relationship_pressure,
             )
         else:
             payload["messages"] = self.narrative_messages(
@@ -295,6 +297,7 @@ class NarrativeClient:
         rp_story_memory: dict[str, Any] | None = None,
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
+        relationship_pressure: str | None = None,
     ) -> list[dict[str, str]]:
         relevant_characters = retrieve_relevant_characters(
             state,
@@ -374,6 +377,8 @@ class NarrativeClient:
                 {"role": "system", "content": outcome.authoritative_block},
             ]
         )
+        if self.settings.scenario_type == "rp" and relationship_pressure:
+            messages.append({"role": "system", "content": relationship_pressure})
         # The current player action must remain the final message after dynamic runtime context.
         if request_messages:
             current_action = request_messages[-1]

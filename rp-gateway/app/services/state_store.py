@@ -82,6 +82,63 @@ class StateStore:
                     id TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS relationship_causes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    character_id TEXT NOT NULL,
+                    axis TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    weight INTEGER NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    expires_turn INTEGER,
+                    evidence TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, character_id, axis, event_id, turn_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE TABLE IF NOT EXISTS character_badges (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    character_id TEXT NOT NULL,
+                    badge_kind TEXT NOT NULL,
+                    badge_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    payload_json TEXT,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(campaign_id, character_id, badge_kind, badge_id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE TABLE IF NOT EXISTS narrative_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    character_id TEXT NOT NULL,
+                    axis TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    opened_turn INTEGER NOT NULL,
+                    due_turn INTEGER,
+                    payload_json TEXT NOT NULL,
+                    resolution TEXT,
+                    resolved_turn INTEGER,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE TABLE IF NOT EXISTS character_axis_state (
+                    campaign_id TEXT NOT NULL,
+                    character_id TEXT NOT NULL,
+                    axis TEXT NOT NULL,
+                    band TEXT NOT NULL,
+                    band_since_turn INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(campaign_id, character_id, axis),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_relationship_causes_lookup
+                    ON relationship_causes(campaign_id, character_id, axis, turn_id);
+                CREATE INDEX IF NOT EXISTS idx_narrative_events_active
+                    ON narrative_events(campaign_id, status, due_turn);
                 CREATE TABLE IF NOT EXISTS training_runtime_snapshots (
                     campaign_id TEXT PRIMARY KEY,
                     contract_hash TEXT NOT NULL,
@@ -110,6 +167,7 @@ class StateStore:
                     prompt_json TEXT,
                     metadata_json TEXT,
                     state_version INTEGER NOT NULL,
+                    excluded_from_memory INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     UNIQUE(campaign_id, idempotency_key),
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
@@ -370,6 +428,10 @@ class StateStore:
             connection.execute("ALTER TABLE turns ADD COLUMN prompt_json TEXT")
         if "metadata_json" not in columns:
             connection.execute("ALTER TABLE turns ADD COLUMN metadata_json TEXT")
+        if "excluded_from_memory" not in columns:
+            connection.execute(
+                "ALTER TABLE turns ADD COLUMN excluded_from_memory INTEGER NOT NULL DEFAULT 0"
+            )
 
     def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
@@ -434,18 +496,28 @@ class StateStore:
         }
 
     def enqueue_service_job(self, job_type: str, request_id: str | None, max_attempts: int = 5) -> dict[str, Any]:
-        if job_type not in {"memory", "rp_story_memory", "journal"}:
+        if job_type not in {"memory", "rp_story_memory", "relationship_extraction", "journal"}:
             raise ValueError(f"unsupported service job type: {job_type}")
         timestamp = now_ts()
         with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT * FROM service_jobs
-                WHERE campaign_id = ? AND job_type = ? AND status IN ('pending', 'running')
-                ORDER BY id DESC LIMIT 1
-                """,
-                (self.campaign_id, job_type),
-            ).fetchone()
+            if job_type == "relationship_extraction":
+                row = connection.execute(
+                    """
+                    SELECT * FROM service_jobs
+                    WHERE campaign_id = ? AND job_type = ? AND request_id = ?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (self.campaign_id, job_type, request_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT * FROM service_jobs
+                    WHERE campaign_id = ? AND job_type = ? AND status IN ('pending', 'running')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (self.campaign_id, job_type),
+                ).fetchone()
             if row is None:
                 cursor = connection.execute(
                     """
@@ -1291,7 +1363,7 @@ class StateStore:
         query = """
             SELECT id, request_id, player_message, narrative_response, state_version, created_at
             FROM turns
-            WHERE campaign_id = ? AND id > ?
+            WHERE campaign_id = ? AND id > ? AND excluded_from_memory = 0
         """
         params: list[Any] = [self.campaign_id, after_turn_id]
         if to_turn_id is not None:
@@ -2027,6 +2099,13 @@ class StateStore:
                     now_ts(),
                     f"rollback:v{target_version}",
                 ),
+            )
+            connection.execute(
+                """
+                UPDATE turns SET excluded_from_memory = 1
+                WHERE campaign_id = ? AND state_version > ?
+                """,
+                (self.campaign_id, target_version),
             )
         self.write_state_file(restored)
         return restored

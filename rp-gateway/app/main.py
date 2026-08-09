@@ -255,6 +255,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     training_artifacts=artifact_service,
                     training_workspace=workspace_service,
                     training_runtime=runtime_service,
+                    relationship_model=relationship_model_for_party(party),
                 ).handle_chat(
                     chat_request,
                     authorization=None,
@@ -305,7 +306,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if any(recovered.values()):
                 logger.warning("recovered_interrupted_work party_id=%s %s", party.id, recovered)
             if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
-                Adjudicator(runtime_settings_for_party(party), party_state_store).schedule_service_jobs()
+                Adjudicator(
+                    runtime_settings_for_party(party),
+                    party_state_store,
+                    relationship_model=relationship_model_for_party(party),
+                ).schedule_service_jobs()
         for branch in party_store.list_all_party_branches():
             branch_store = party_store.store_for_branch(branch["party_id"], branch["id"])
             recovered = branch_store.recover_interrupted_work()
@@ -1625,6 +1630,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 training_artifacts=artifact_service,
                 training_workspace=workspace_service,
                 training_runtime=runtime_service,
+                relationship_model=relationship_model_for_party(party),
             ).handle_chat(
                 chat_request,
                 authorization,
@@ -2276,6 +2282,33 @@ def worldpack_prompt_text(party: Any, file_key: str) -> str:
         return target.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def relationship_model_for_party(party: Any) -> dict[str, Any] | None:
+    if getattr(party, "scenario_type", None) != "rp":
+        return None
+    world = getattr(party, "worldpack", None)
+    if world is None or not isinstance(world.manifest, dict):
+        return None
+    declaration = world.manifest.get("relationships")
+    if declaration is None:
+        return None
+    if not isinstance(declaration, dict) or declaration.get("schema_version") != "rp-relationships.v1":
+        raise ValueError("invalid WorldPack relationship declaration")
+    relative_path = declaration.get("model")
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise ValueError("WorldPack relationship model path is missing")
+    root = Path(world.manifest_path).resolve().parent
+    target = (root / relative_path).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError("WorldPack relationship model path escapes the pack")
+    try:
+        model = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot load WorldPack relationship model") from exc
+    if not isinstance(model, dict) or model.get("schema_version") != "rp-relationships.v1":
+        raise ValueError("invalid WorldPack relationship model")
+    return model
 
 
 def party_start_prompt(party_store: PartyStore, party: Any) -> str:
