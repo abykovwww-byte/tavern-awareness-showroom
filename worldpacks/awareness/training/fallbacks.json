@@ -1,0 +1,4 @@
+{
+  "schema_version": "rp-training-fallbacks.v1",
+  "note": "Turn and debrief fallbacks are colocated with their program turns so the active contract remains reviewable in one file."
+}

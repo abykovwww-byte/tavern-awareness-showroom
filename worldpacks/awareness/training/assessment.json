@@ -1,0 +1,169 @@
+{
+  "schema_version": "rp-training-assessment.v1",
+  "revision": 1,
+  "detectors": {
+    "double_extension": {
+      "type": "text_regex",
+      "patterns": ["\\b[\\w.-]+\\.(?:xlsx|xlsm|docx|pdf|zip|rar|7z|pptx)\\.exe\\b"]
+    },
+    "dangerous_file_action": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:открываю|открою|открыть|скачиваю|скачаю|скачать|запускаю|запущу|запустить|open|run|download)\\b"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:открывать|открываю|открою|скачивать|скачиваю|скачаю|запускать|запускаю|запущу)\\b"]
+    },
+    "dangerous_file": {
+      "type": "expression",
+      "value": {"all": ["double_extension", "dangerous_file_action"]}
+    },
+    "report_text": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:сообщаю|сообщу|сообщить|пишу|напишу|написать|отправляю|отправлю|отправить|пересылаю|перешлю|переслать|направляю|направлю|направить|эскалирую|эскалировать|регистрирую|зарегистрирую|зарегистрировать|report|forward)\\b.{0,200}\\b(?:soc|soc@|диб|специалист(?:у|а)? (?:диб|информационной безопасности)|серге(?:й|ю|я) литвинов(?:у|а)?)\\b"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|сообщу|писать|пишу|напишу|отправлять|отправляю|отправлю|пересылать|пересылаю|перешлю|направлять|направляю|направлю|эскалировать|эскалирую|регистрировать|регистрирую|зарегистрирую)\\b"]
+    },
+    "report_event": {
+      "type": "interaction_event",
+      "event_types": ["reported", "file_reported"],
+      "decision_result": "pass"
+    },
+    "reported": {
+      "type": "expression",
+      "value": {"any": ["report_text", "report_event"]}
+    },
+    "report_details": {
+      "type": "text_regex_count",
+      "patterns": ["\\b(?:отправител|адрес|домен|врем|тем|вложени|ссылк|канал)\\w*"],
+      "min": 2
+    },
+    "forward_action": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:пересылаю|перешлю|переслать|отправляю|отправлю|отправить|скидываю|скину|скинуть|forward)\\b.{0,180}\\b(?:коллег|общ(?:ий|ему) чат|групп|личн(?:ый|ому) чат|друг|знаком)\\w*"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:пересылать|пересылаю|перешлю|отправлять|отправляю|отправлю|скидывать|скидываю|скину)\\b"]
+    },
+    "suspicious_content": {
+      "type": "text_regex",
+      "patterns": ["(?:подозр|неизвестн|странн|вложени|полученн\\w* письм|двойн\\w* расширени|\\.exe\\b)"]
+    },
+    "unsafe_forward": {
+      "type": "expression",
+      "value": {"all": ["forward_action", "suspicious_content"]}
+    },
+    "credential_text": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:сообщаю|сообщу|передаю|передам|отправляю|отправлю|скидываю|скину|ввожу|введу|называю|назову|диктую|send|enter|share)\\b.{0,140}\\b(?:парол|проверочн\\w* код|одноразов\\w* код|уч[её]тн\\w* (?:запис|данн)|логин|mfa|otp|token|токен)\\w*"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|сообщу|передавать|передаю|передам|отправлять|отправляю|отправлю|скидывать|скидываю|скину|вводить|ввожу|введу|называть|называю|назову|диктовать|диктую)\\b.{0,140}\\b(?:парол|проверочн\\w* код|одноразов\\w* код|уч[её]тн\\w* (?:запис|данн)|логин|mfa|otp|token|токен)\\w*"]
+    },
+    "external_login": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:перехожу|перейду|открываю|открою|захожу|go|open)\\b.{0,120}\\b(?:ссыл|сайт|страниц)\\w*.{0,180}\\b(?:ввожу|авториз|вхожу|логин|уч[её]тн)\\w*"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:переходить|перехожу|перейду|открывать|открываю|открою|заходить|захожу)\\b"]
+    },
+    "credential_event": {
+      "type": "interaction_event",
+      "event_types": ["credentials_submitted"]
+    },
+    "credential_exposure": {
+      "type": "expression",
+      "value": {"any": ["credential_text", "external_login", "credential_event"]}
+    },
+    "confidential_disclosure": {
+      "type": "text_regex",
+      "patterns": ["\\b(?:сообщаю|сообщу|рассказываю|передаю|передам|отправляю|отправлю|описываю|раскрываю|send|share)\\b.{0,180}\\b(?:структур\\w* компан|внутренн\\w* (?:систем|сет|процедур)|администратор|схем\\w* сет|(?:данн|спис|контакт)\\w* клиент|клиент\\w* (?:данн|спис|контакт)|конфиденциальн\\w* (?:информац|данн))\\w*"],
+      "exclude_patterns": ["\\bне\\s+(?:буду\\s+)?(?:сообщать|сообщаю|рассказывать|рассказываю|передавать|передаю|передам|отправлять|отправляю|отправлю|описывать|описываю|раскрывать|раскрываю)\\b.{0,180}\\b(?:структур\\w* компан|внутренн\\w* (?:систем|сет|процедур)|администратор|схем\\w* сет|(?:данн|спис|контакт)\\w* клиент|клиент\\w* (?:данн|спис|контакт)|конфиденциальн\\w* (?:информац|данн))\\w*"]
+    },
+    "failed_link_event": {
+      "type": "interaction_event",
+      "event_types": ["link_opened"],
+      "decision_result": "fail"
+    },
+    "failed_file_event": {
+      "type": "interaction_event",
+      "event_types": ["file_opened", "file_downloaded", "active_content_enabled"],
+      "decision_result": "fail"
+    },
+    "failed_artifact": {
+      "type": "expression",
+      "value": {"any": ["failed_link_event", "failed_file_event"]}
+    },
+    "link_opened": {
+      "type": "interaction_event",
+      "event_types": ["link_opened"]
+    }
+  },
+  "rules": [
+    {
+      "id": "count-link-open",
+      "turns": "*",
+      "when": "link_opened",
+      "effects": [{"increment": {"resource": "links-opened", "value": 1}}]
+    },
+    {
+      "id": "safe-escalation",
+      "turns": "*",
+      "when": "reported",
+      "effects": [
+        {"increment": {"resource": "safe-escalations", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": 2}}
+      ]
+    },
+    {
+      "id": "detailed-report",
+      "turns": "*",
+      "when": {"all": ["reported", "report_details"]},
+      "effects": [
+        {"increment": {"resource": "reporting-quality", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": 1}}
+      ]
+    },
+    {
+      "id": "dangerous-file-action",
+      "turns": "*",
+      "when": "dangerous_file",
+      "effects": [
+        {"increment": {"resource": "suspicious-artifacts-opened", "value": 1}},
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": -3}}
+      ]
+    },
+    {
+      "id": "unsafe-forward",
+      "turns": "*",
+      "when": "unsafe_forward",
+      "effects": [
+        {"increment": {"resource": "unnecessary-forwarding", "value": 1}},
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": -2}}
+      ]
+    },
+    {
+      "id": "credential-exposure",
+      "turns": "*",
+      "when": "credential_exposure",
+      "effects": [
+        {"increment": {"resource": "credential-exposure", "value": 1}},
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": -5}}
+      ]
+    },
+    {
+      "id": "failed-artifact-action",
+      "turns": "*",
+      "when": "failed_artifact",
+      "effects": [
+        {"increment": {"resource": "suspicious-artifacts-opened", "value": 1}},
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": -2}}
+      ]
+    },
+    {
+      "id": "confidential-disclosure",
+      "turns": "*",
+      "when": "confidential_disclosure",
+      "effects": [
+        {"increment": {"resource": "confidential-disclosures", "value": 1}},
+        {"increment": {"resource": "unsafe-actions", "value": 1}},
+        {"increment": {"resource": "awareness-score", "value": -3}}
+      ]
+    }
+  ],
+  "aggregates": {}
+}
