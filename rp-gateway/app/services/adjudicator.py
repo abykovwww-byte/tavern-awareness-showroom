@@ -121,6 +121,7 @@ class Adjudicator:
                         validator_valid=None,
                         repaired=False,
                         fallback_reason=None,
+                        transport_status="ok",
                     ),
                 )
                 self.store.complete_turn_request(idempotency_key, response)
@@ -167,6 +168,7 @@ class Adjudicator:
             repaired = False
             provider_fallback_reason: str | None = None
             gateway_fallback_reason: str | None = None
+            transport_status = "ok"
             prompt_messages: list[dict[str, str]] | None = None
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
@@ -211,7 +213,9 @@ class Adjudicator:
                     text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
                 if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
                     raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
-                validation = self.validator.validate(
+                if self.settings.scenario_type == "rp" and not text.strip():
+                    raise RuntimeError("Narrative provider returned an invalid response")
+                validation = None if self.settings.scenario_type == "rp" else self.validator.validate(
                     text,
                     outcome,
                     narrative_state,
@@ -241,7 +245,7 @@ class Adjudicator:
                     ) and not any(
                         violation not in runtime_violation_set for violation in validation.violations
                     )
-                if (
+                if validation is not None and (
                     (not validation.valid or not interaction_valid)
                     and repair_attempts > 0
                     and training_repair_allowed
@@ -306,8 +310,9 @@ class Adjudicator:
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
-                if not validation.valid or not interaction_valid:
+                if validation is not None and (not validation.valid or not interaction_valid):
                     gateway_fallback_reason = "validation_failed"
+                    transport_status = "invalid_response"
                     self.store.audit(
                         "llm_validation_failed",
                         {
@@ -339,29 +344,33 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
                     request_id,
                 )
-                if not allow_gateway_fallback:
+                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
                     raise RuntimeError(f"Narrative provider HTTP {status}") from exc
                 provider_fallback_reason = f"http_{status}"
+                transport_status = "provider_error"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
-                if not allow_gateway_fallback:
+                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
                     raise RuntimeError("Narrative provider timed out") from exc
                 provider_fallback_reason = "timeout"
+                transport_status = "provider_timeout"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except ProviderRateLimitError as exc:
                 self.store.audit("llm_rate_limited", {"request_id": request_id, **exc.details}, request_id)
-                if not allow_gateway_fallback:
+                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
                     raise
                 provider_fallback_reason = "rate_limited"
+                transport_status = "provider_error"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
                 raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
             except RuntimeError as exc:
-                if not allow_gateway_fallback:
+                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
                     raise
                 provider_fallback_reason = "runtime_error"
+                transport_status = "provider_error"
                 self.store.audit(
                     "llm_runtime_error",
                     {"request_id": request_id, "model": self.settings.narrative_model, "error": str(exc)},
@@ -395,7 +404,7 @@ class Adjudicator:
             text = response_text(response)
             updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
             version = int(updated_state.get("meta", {}).get("state_version", 0))
-            final_validation = self.validator.validate(
+            final_validation = None if self.settings.scenario_type == "rp" else self.validator.validate(
                 text,
                 outcome,
                 updated_state,
@@ -415,9 +424,10 @@ class Adjudicator:
                 prompt_messages,
                 self.turn_metadata(
                     turn_kind="narrative",
-                    validator_valid=final_validation.valid,
+                    validator_valid=final_validation.valid if final_validation is not None else None,
                     repaired=repaired,
                     fallback_reason=provider_fallback_reason or gateway_fallback_reason,
+                    transport_status=transport_status,
                     outcome=outcome.model_dump(mode="json"),
                     llm_calls=llm_calls,
                     interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
@@ -439,7 +449,7 @@ class Adjudicator:
                     "duration_ms": duration_ms,
                     "llm_calls": llm_calls,
                     "model": self.settings.narrative_model,
-                    "validator_valid": final_validation.valid,
+                    "validator_valid": final_validation.valid if final_validation is not None else None,
                     "repair": repaired,
                     "fallback_reason": provider_fallback_reason or gateway_fallback_reason,
                     "provider_fallback_reason": provider_fallback_reason,
@@ -462,6 +472,7 @@ class Adjudicator:
         validator_valid: bool | None,
         repaired: bool,
         fallback_reason: str | None,
+        transport_status: str,
         outcome: dict[str, Any] | None = None,
         llm_calls: int = 0,
         interaction_evidence: list[dict[str, Any]] | None = None,
@@ -479,6 +490,7 @@ class Adjudicator:
             "repaired": repaired,
             "fallback": fallback_reason is not None,
             "fallback_reason": fallback_reason,
+            "transport_status": transport_status,
             "llm_calls": llm_calls,
             "outcome": outcome,
             "interaction_evidence": interaction_evidence or [],

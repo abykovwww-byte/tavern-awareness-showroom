@@ -1366,6 +1366,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             repaired = False
             fallback_reason: str | None = None
+            transport_status = "ok"
             adjudicator = Adjudicator(party_settings, party_state_store)
             try:
                 raw = await narrative.complete(
@@ -1385,12 +1386,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if isinstance(exc, httpx.HTTPStatusError):
                     status = exc.response.status_code if exc.response is not None else "unknown"
                     fallback_reason = f"http_{status}"
+                    transport_status = "provider_error"
                 elif isinstance(exc, httpx.TimeoutException):
                     fallback_reason = "timeout"
+                    transport_status = "provider_timeout"
                 elif isinstance(exc, ProviderRateLimitError):
                     fallback_reason = "rate_limited"
+                    transport_status = "provider_error"
                 else:
                     fallback_reason = "runtime_error"
+                    transport_status = "provider_error"
                 text = runtime_service.fallback_text(narrative_state, interaction_contract)
                 raw = adjudicator.provider_fallback_response(
                     start_outcome,
@@ -1400,6 +1405,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
+            if party.scenario_type == "rp" and not text.strip():
+                raise RuntimeError("Narrative provider returned an invalid response")
             if fallback_reason is None:
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
                 workspace_result = workspace_service.materialize_response(response, workspace_contract)
@@ -1414,7 +1421,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = artifact_result.text
                 workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             validator = OutputValidator()
-            validation = validator.validate(
+            validation = None if party.scenario_type == "rp" else validator.validate(
                 text,
                 start_outcome,
                 narrative_state,
@@ -1440,7 +1447,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ) and not any(
                     violation not in runtime_violation_set for violation in validation.violations
                 )
-            if (
+            if validation is not None and (
                 not validation.valid or not artifact_result.valid or not workspace_result.valid
             ) and repair_attempts > 0 and training_repair_allowed:
                 repaired = True
@@ -1495,8 +1502,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     training_runtime=runtime_service,
                     interaction_contract=interaction_contract,
                 )
-            if not validation.valid or not artifact_result.valid or not workspace_result.valid:
+            if validation is not None and (
+                not validation.valid or not artifact_result.valid or not workspace_result.valid
+            ):
                 fallback_reason = fallback_reason or "validation_failed"
+                transport_status = "invalid_response"
                 party_state_store.audit(
                     "party_start_validation_failed",
                     {
@@ -1537,7 +1547,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = artifact_result.text
                 workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
-            final_validation = validator.validate(
+            final_validation = None if party.scenario_type == "rp" else validator.validate(
                 text,
                 start_outcome,
                 narrative_state,
@@ -1566,10 +1576,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "narrative_provider": party_settings.llm_provider,
                     "narrative_model": model_profile.model,
                     "generated_by": "human",
-                    "validator_valid": final_validation.valid,
+                    "validator_valid": final_validation.valid if final_validation is not None else None,
                     "repaired": repaired,
                     "fallback": fallback_reason is not None,
                     "fallback_reason": fallback_reason,
+                    "transport_status": transport_status,
                     "llm_calls": 2 if repaired else 1,
                     "training_runtime_contract_hash": runtime_service.contract_hash,
                     "outcome": start_outcome.model_dump(mode="json"),
@@ -1588,7 +1599,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "request_id": request_id,
                     "turn_id": turn_id,
                     "model": model_profile.model,
-                    "validator_valid": final_validation.valid,
+                    "validator_valid": final_validation.valid if final_validation is not None else None,
                     "fallback_reason": fallback_reason,
                 },
                 request_id,

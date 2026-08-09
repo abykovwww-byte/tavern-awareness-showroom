@@ -226,6 +226,16 @@ def create_demo_party(
     ).json()["party"]
 
 
+def latest_turn_metadata(store: StateStore) -> dict[str, object]:
+    with sqlite3.connect(store.sqlite_path) as connection:
+        row = connection.execute(
+            "SELECT metadata_json FROM turns WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (store.campaign_id,),
+        ).fetchone()
+    assert row is not None
+    return json.loads(row[0])
+
+
 def login(c: TestClient, username: str = "admin", password: str = "admin-secret") -> dict[str, object]:
     response = c.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
@@ -507,7 +517,7 @@ def test_showroom_training_capabilities_are_validated_and_snapshotted(tmp_path: 
     assert "does not support interactive links" in unsupported.text
 
 
-def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_showroom_rp_start_ignores_semantic_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     write_worldpack(tmp_path)
     admin = client(
         tmp_path,
@@ -549,9 +559,17 @@ def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Pa
     )
 
     assert started.status_code == 200, started.text
-    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
+    assert started.json()["raw"]["choices"][0]["finish_reason"] == "stop"
     history = public.get(f"/api/showroom/runs/{run['id']}/history").json()["turns"]
     assert len(history) == 1
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        showroom_party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?", (run["id"],)
+        ).fetchone()[0]
+    metadata = latest_turn_metadata(admin.app.state.party_store.store_for_party(showroom_party_id))
+    assert metadata["validator_valid"] is None
+    assert metadata["fallback"] is False
+    assert metadata["transport_status"] == "ok"
 
 
 def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_path: Path):
@@ -887,9 +905,10 @@ def test_rp_party_after_turn_10_keeps_narrator_response_and_honest_metadata(tmp_
     assert metadata["scenario_type"] == "rp"
     assert metadata["fallback"] is False
     assert metadata["fallback_reason"] is None
-    assert metadata["validator_valid"] is True
+    assert metadata["validator_valid"] is None
     assert metadata["repaired"] is False
     assert metadata["llm_calls"] == 1
+    assert metadata["transport_status"] == "ok"
 
 
 def test_rp_party_runs_twelve_turns_without_training_or_fallback_metadata(tmp_path: Path):
@@ -916,8 +935,9 @@ def test_rp_party_runs_twelve_turns_without_training_or_fallback_metadata(tmp_pa
     assert {item["training_runtime_contract_hash"] for item in metadata} == {None}
     assert all(item["fallback"] is False for item in metadata)
     assert all(item["fallback_reason"] is None for item in metadata)
-    assert all(item["validator_valid"] is True for item in metadata)
+    assert all(item["validator_valid"] is None for item in metadata)
     assert all(item["repaired"] is False for item in metadata)
+    assert {item["transport_status"] for item in metadata} == {"ok"}
 
 
 def test_party_complete_is_idempotent_retains_history_and_state_and_can_reactivate(tmp_path: Path):
@@ -996,6 +1016,8 @@ def test_novel_party_has_no_checks_and_loads_world_prompts(tmp_path: Path):
     assert turn.status_code == 200
     state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
     assert state["timeline"][-1]["event"].startswith("novel turn")
+    metadata = latest_turn_metadata(c.app.state.party_store.store_for_party(party["id"]))
+    assert metadata["transport_status"] == "ok"
 
     preview = c.post(
         f"/api/parties/{party['id']}/prompt/preview",
@@ -1244,7 +1266,7 @@ def test_admin_autotest_forks_checkpoint_branch_with_separate_local_player_model
     assert listed_branches[0]["status"] == "completed"
 
 
-def test_admin_autotest_continues_with_audited_fallback_after_narrative_validation_failure(
+def test_admin_rp_autotest_ignores_semantic_validator_without_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1305,7 +1327,7 @@ def test_admin_autotest_continues_with_audited_fallback_after_narrative_validati
 
     assert run["status"] == "completed", run
     assert run["completed_turns"] == 1
-    assert run["fallback_turns"] == 1
+    assert run["fallback_turns"] == 0
     branch_store = admin.app.state.party_store.store_for_branch(
         source_party["id"],
         run["branch_id"],
@@ -1313,7 +1335,11 @@ def test_admin_autotest_continues_with_audited_fallback_after_narrative_validati
     )
     latest_turn = branch_store.latest_turn(include_response=True)
     response = json.loads(latest_turn["response_json"])
-    assert response["choices"][0]["finish_reason"] == "provider_fallback"
+    assert response["choices"][0]["finish_reason"] == "stop"
+    metadata = latest_turn_metadata(branch_store)
+    assert metadata["validator_valid"] is None
+    assert metadata["fallback"] is False
+    assert metadata["transport_status"] == "ok"
 
 
 def test_party_byok_is_scoped_to_current_party(tmp_path: Path):
@@ -2611,7 +2637,7 @@ def test_hard_constraint_overrides_success(tmp_path: Path):
     assert "failure" in state["timeline"][-1]["event"]
 
 
-def test_validator_repairs_hidden_compensation(tmp_path: Path):
+def test_rp_returns_nonempty_semantic_output_without_repair(tmp_path: Path):
     c = client(tmp_path, mode="violate")
     response = c.post(
         "/v1/chat/completions",
@@ -2620,10 +2646,10 @@ def test_validator_repairs_hidden_compensation(tmp_path: Path):
     )
     assert response.status_code == 200
     content = response.json()["choices"][0]["message"]["content"].lower()
-    assert "equivalent military authority" not in content
+    assert "equivalent military authority" in content
 
 
-def test_repair_failure_returns_safe_fallback(tmp_path: Path):
+def test_rp_does_not_replace_semantic_output_with_safe_fallback(tmp_path: Path):
     c = client(tmp_path, mode="repair-fail")
     response = c.post(
         "/v1/chat/completions",
@@ -2632,11 +2658,10 @@ def test_repair_failure_returns_safe_fallback(tmp_path: Path):
     )
     assert response.status_code == 200
     content = response.json()["choices"][0]["message"]["content"].lower()
-    assert_no_gateway_service_text(content)
-    assert "transfers command authority" not in content
+    assert "transfers command authority" in content
 
 
-def test_validator_repairs_meta_output_labels(tmp_path: Path):
+def test_rp_does_not_repair_meta_output_labels(tmp_path: Path):
     c = client(tmp_path, mode="meta-leak")
     response = c.post(
         "/v1/chat/completions",
@@ -2645,8 +2670,7 @@ def test_validator_repairs_meta_output_labels(tmp_path: Path):
     )
     assert response.status_code == 200
     content = response.json()["choices"][0]["message"]["content"]
-    assert_no_gateway_service_text(content)
-    assert "мост" in content.lower()
+    assert "анализ:" in content.lower()
 
 
 def test_openrouter_deepseek_flash_uses_minimal_reasoning_and_throughput_routing(
@@ -2800,10 +2824,8 @@ def test_timeout_and_rate_limit(tmp_path: Path):
         json=chat_payload("/check stealth skill=1 difficulty=10"),
         headers={"Authorization": "Bearer test", "Idempotency-Key": "timeout"},
     )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider timed out"
 
     c_rate = client(tmp_path / "rate", mode="rate-limit")
     response = c_rate.post(
@@ -2811,10 +2833,7 @@ def test_timeout_and_rate_limit(tmp_path: Path):
         json=chat_payload("/check stealth skill=1 difficulty=10"),
         headers={"Authorization": "Bearer test", "Idempotency-Key": "rate"},
     )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
+    assert response.status_code == 502
 
 
 def test_provider_rate_limit_error_preserves_retry_metadata():
@@ -2845,7 +2864,7 @@ def test_provider_rate_limit_error_preserves_retry_metadata():
     assert error.public_detail()["retry_after_seconds"] == 12
 
 
-def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
+def test_rp_provider_http_error_returns_explicit_error(tmp_path: Path):
     c = client(tmp_path, mode="http-503")
     response = c.post(
         "/v1/chat/completions",
@@ -2853,10 +2872,8 @@ def test_provider_http_error_returns_safe_fallback(tmp_path: Path):
         headers={"Authorization": "Bearer test", "Idempotency-Key": "provider-http-503"},
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["choices"][0]["finish_reason"] == "provider_fallback"
-    assert_no_gateway_service_text(body["choices"][0]["message"]["content"])
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider HTTP 503"
 
 
 def test_party_rate_limit_is_saved_and_reported_to_gui(tmp_path: Path):
@@ -2908,7 +2925,43 @@ def test_party_message_provider_http_error_fails_without_gateway_fallback(tmp_pa
     assert "Narrative provider HTTP 503" in status["error"]
 
 
-def test_party_message_validation_failure_fails_without_gateway_fallback(tmp_path: Path):
+@pytest.mark.parametrize("operation", ["start", "message"])
+def test_rp_rejects_empty_provider_response_after_one_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+):
+    write_worldpack(tmp_path)
+    llm_calls = 0
+
+    async def empty_complete(*args: object, **kwargs: object) -> dict:
+        nonlocal llm_calls
+        llm_calls += 1
+        return {"id": "empty", "choices": []}
+
+    monkeypatch.setattr(NarrativeClient, "complete", empty_complete)
+    c = client(tmp_path)
+    party = create_demo_party(c, title=f"Empty RP {operation}", scenario_type="rp")
+    if operation == "start":
+        response = c.post(
+            f"/api/parties/{party['id']}/start",
+            json={"idempotency_key": "empty-rp-start"},
+            headers={"Authorization": "Bearer test"},
+        )
+    else:
+        response = c.post(
+            f"/api/parties/{party['id']}/messages",
+            json={"content": "Continue", "idempotency_key": "empty-rp-message"},
+            headers={"Authorization": "Bearer test"},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "Narrative provider returned an invalid response"
+    assert llm_calls == 1
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+
+
+def test_rp_party_message_skips_semantic_validation_and_uses_one_completion(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path, mode="repair-fail")
     party = create_demo_party(c)
@@ -2922,13 +2975,18 @@ def test_party_message_validation_failure_fails_without_gateway_fallback(tmp_pat
         headers={"Authorization": "Bearer test", "X-Request-ID": "req_party_repair_fail"},
     )
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "LLM response failed narrative validation"
+    assert response.status_code == 200, response.text
+    assert "transfers command authority" in response.json()["message"]["content"].lower()
     history = c.get(f"/api/parties/{party['id']}/history").json()
-    assert history["turns"] == []
+    assert len(history["turns"]) == 1
+    metadata = latest_turn_metadata(c.app.state.party_store.store_for_party(party["id"]))
+    assert metadata["llm_calls"] == 1
+    assert metadata["validator_valid"] is None
+    assert metadata["repaired"] is False
+    assert metadata["fallback"] is False
+    assert metadata["transport_status"] == "ok"
     status = c.get(f"/api/parties/{party['id']}/requests/req_party_repair_fail").json()
-    assert status["status"] == "failed"
-    assert "LLM response failed narrative validation" in status["error"]
+    assert status["status"] == "completed"
 
 
 def test_party_start_provider_http_error_returns_502(tmp_path: Path):
@@ -3019,9 +3077,15 @@ def test_party_start_timeout_returns_504_and_marks_request_failed(
     assert "ReadTimeout" in status["error"]
 
 
+@pytest.mark.parametrize(
+    ("provider_mode", "expected_transport"),
+    [("http-503", "provider_error"), ("timeout", "provider_timeout")],
+)
 def test_training_runtime_party_start_provider_error_uses_world_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    provider_mode: str,
+    expected_transport: str,
 ):
     original_complete = NarrativeClient.complete
     llm_calls = 0
@@ -3034,7 +3098,7 @@ def test_training_runtime_party_start_provider_error_uses_world_fallback(
     monkeypatch.setattr(NarrativeClient, "complete", counted_complete)
     source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
     shutil.copytree(source, tmp_path / "worldpacks" / "awareness-one-day")
-    c = client(tmp_path, mode="http-503")
+    c = client(tmp_path, mode=provider_mode)
     party = create_demo_party(
         c,
         title="Runtime provider fallback",
@@ -3057,6 +3121,8 @@ def test_training_runtime_party_start_provider_error_uses_world_fallback(
     history = c.get(f"/api/parties/{party['id']}/history").json()["turns"]
     assert len(history) == 1
     assert llm_calls == 1
+    metadata = latest_turn_metadata(c.app.state.party_store.store_for_party(party["id"]))
+    assert metadata["transport_status"] == expected_transport
     deleted = c.delete(f"/api/parties/{party['id']}")
     assert deleted.status_code == 200, deleted.text
 
@@ -3122,6 +3188,8 @@ def test_training_runtime_repairs_only_soft_validation_failures(
     assert response.status_code == 200, response.text
     assert llm_calls == expected_calls
     assert response.json()["choices"][0]["finish_reason"] == expected_finish_reason
+    metadata = latest_turn_metadata(c.app.state.party_store.store_for_party(party["id"]))
+    assert metadata["transport_status"] == "invalid_response"
     if failure_kind == "soft-profile":
         assert "Investigator" in response.json()["choices"][0]["message"]["content"]
 

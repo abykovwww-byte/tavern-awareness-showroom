@@ -565,7 +565,14 @@ class NarrativeClient:
 
 
 def response_text(response: dict[str, Any]) -> str:
-    return str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return str(content) if content is not None else ""
 
 
 def json_object_content(value: str) -> str:
