@@ -1,0 +1,136 @@
+# Decision 020 contract freeze
+
+This file freezes the first-slice implementation contracts for Decision 020.
+It is an execution artifact, not a replacement for the ADR.
+
+## Storage DDL
+
+```sql
+CREATE TABLE IF NOT EXISTS relationship_causes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    axis TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    weight INTEGER NOT NULL,
+    turn_id INTEGER NOT NULL,
+    expires_turn INTEGER,
+    evidence TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(campaign_id, character_id, axis, event_id, turn_id),
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+);
+
+CREATE TABLE IF NOT EXISTS character_badges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    badge_kind TEXT NOT NULL,
+    badge_id TEXT NOT NULL,
+    turn_id INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    payload_json TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(campaign_id, character_id, badge_kind, badge_id),
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+);
+
+CREATE TABLE IF NOT EXISTS narrative_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    axis TEXT NOT NULL,
+    event_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    opened_turn INTEGER NOT NULL,
+    due_turn INTEGER,
+    payload_json TEXT NOT NULL,
+    resolution TEXT,
+    resolved_turn INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+);
+
+CREATE TABLE IF NOT EXISTS character_axis_state (
+    campaign_id TEXT NOT NULL,
+    character_id TEXT NOT NULL,
+    axis TEXT NOT NULL,
+    band TEXT NOT NULL,
+    band_since_turn INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(campaign_id, character_id, axis),
+    FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_relationship_causes_lookup
+    ON relationship_causes(campaign_id, character_id, axis, turn_id);
+CREATE INDEX IF NOT EXISTS idx_narrative_events_active
+    ON narrative_events(campaign_id, status, due_turn);
+```
+
+## Service signatures
+
+```python
+class RelationshipStore:
+    def add_cause(self, *, character_id: str, axis: str, event_id: str,
+                  weight: int, turn_id: int, expires_turn: int | None,
+                  evidence: str, source: str) -> bool: ...
+    def value(self, character_id: str, axis: str, at_turn: int) -> int: ...
+    def set_badge(self, *, character_id: str, badge_kind: str, badge_id: str,
+                  turn_id: int, payload: dict | None = None) -> bool: ...
+    def active_events(self, at_turn: int) -> list[dict]: ...
+    def pressure_rows(self, at_turn: int) -> list[dict]: ...
+
+class RelationshipMechanics:
+    def apply_events(self, *, turn_id: int, events: list[dict]) -> list[dict]: ...
+    def advance_turn(self, turn_id: int) -> list[dict]: ...
+    def pressure_block(self, turn_id: int, character_names: dict[str, str]) -> str | None: ...
+
+class RelationshipExtractionService:
+    async def process_turn(self, turn_id: int, authorization: str | None = None) -> dict: ...
+    def parse_response(self, payload: object, *, character_ids: set[str]) -> dict: ...
+```
+
+The three services receive the party-scoped `StateStore` and the validated
+WorldPack relationship model in their constructors. Mechanics receives no
+model client. `process_turn` is idempotent through the frozen cause uniqueness
+constraint and the existing `relationship_extraction` service job keyed by the
+recorded turn request ID.
+
+## Extraction response
+
+```json
+{"events": [{"character_id": "ivan", "event_id": "insult_public", "evidence": "..."}]}
+```
+
+The complete response is rejected without retry when it contains any numeric
+value, more than five events, an unknown character or event identifier, or an
+event without non-empty evidence. Audit rejection codes are exactly:
+`unknown_event_id`, `unknown_character_id`, `missing_evidence`,
+`numeric_field_present`, `too_many_events`.
+
+## WorldPack manifest and model
+
+The manifest entry is:
+
+```json
+"relationships": {
+  "schema_version": "rp-relationships.v1",
+  "model": "relationships/model.json"
+}
+```
+
+The `model.json` shape, identifiers and initial values are the JSON object in
+Decision 020 section B.4. Unknown keys are rejected by preflight. The first
+slice permits only axis `loyalty`, badge kinds `wound` and `role`, and boundary
+events `crack`, `ultimatum`, `plot`, `strike`, and `favour`.
+
+## Prompt boundary
+
+`RELATIONSHIP_PRESSURE` is computed only for `scenario_type == "rp"` and is
+inserted after state summary and `AUTHORITATIVE_OUTCOME`, before the current
+player message. It may contain character display names, Russian band labels,
+qualitative pressure, and the generic plot-tell instruction. It must not
+contain axis values, weights, numeric clock residue, character/event IDs,
+accomplice or target IDs, strike form, or raw `payload_json`.
