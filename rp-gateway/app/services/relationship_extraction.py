@@ -143,6 +143,12 @@ class RelationshipExtractionService:
         for event in events:
             if not isinstance(event, dict):
                 raise RelationshipExtractionRejected("missing_evidence")
+            if set(event) == {"character_id", "event_id", "evidence_quote"}:
+                event = {
+                    "character_id": event.get("character_id"),
+                    "event_id": event.get("event_id"),
+                    "evidence": event.get("evidence_quote"),
+                }
             character_id = event.get("character_id")
             event_id = event.get("event_id")
             evidence = event.get("evidence")

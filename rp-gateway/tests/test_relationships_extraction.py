@@ -117,6 +117,33 @@ def test_process_turn_accepts_single_fenced_json_object(tmp_path: Path, monkeypa
     assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == -20
 
 
+def test_process_turn_accepts_fenced_service_model_evidence_quote_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the observed local-model alias is normalized to the canonical evidence field."""
+    store = make_store(tmp_path)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    async def fenced_completion(*_args, **_kwargs):
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": """```json
+{"events":[{"character_id":"ivan","event_id":"insult_public","evidence_quote":"public insult"}]}
+```"""}}],
+        }
+
+    monkeypatch.setattr(service, "_complete", fenced_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert result["applied"] is True
+    with store.connect() as connection:
+        cause = connection.execute("SELECT evidence FROM relationship_causes").fetchone()
+    assert cause["evidence"] == "public insult"
+    assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == -20
+
+
 def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
