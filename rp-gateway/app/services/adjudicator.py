@@ -215,6 +215,15 @@ class Adjudicator:
                 if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
                     raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                 if self.settings.scenario_type == "rp" and not text.strip():
+                    self.store.audit(
+                        "llm_invalid_response",
+                        {
+                            "request_id": request_id,
+                            "model": self.settings.narrative_model,
+                            "reason": "empty_response",
+                        },
+                        request_id,
+                    )
                     raise RuntimeError("Narrative provider returned an invalid response")
                 validation = None if self.settings.scenario_type == "rp" else self.validator.validate(
                     text,

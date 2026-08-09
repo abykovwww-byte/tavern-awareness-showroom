@@ -1406,6 +1406,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response = adjudicator.normalize_response(raw, model_profile.model)
             text = response_text(response)
             if party.scenario_type == "rp" and not text.strip():
+                party_state_store.audit(
+                    "llm_invalid_response",
+                    {
+                        "request_id": request_id,
+                        "model": model_profile.model,
+                        "reason": "empty_response",
+                    },
+                    request_id,
+                )
                 raise RuntimeError("Narrative provider returned an invalid response")
             if fallback_reason is None:
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
