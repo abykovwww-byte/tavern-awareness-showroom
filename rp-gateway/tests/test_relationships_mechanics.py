@@ -72,10 +72,10 @@ def test_chronological_crossings_open_crack_then_ultimatum_without_model(tmp_pat
     mechanics = RelationshipMechanics(make_store(tmp_path), relationship_model())
 
     changes = [
-        mechanics.apply_events(turn_id=1, events=[event("ivan", "loss_10_a")]),
-        mechanics.apply_events(turn_id=2, events=[event("ivan", "loss_10_b")]),
-        mechanics.apply_events(turn_id=3, events=[event("ivan", "loss_10_c")]),
-        mechanics.apply_events(turn_id=4, events=[event("ivan", "loss_15")]),
+        mechanics.apply_events(turn_id=1, party_turn=1, events=[event("ivan", "loss_10_a")]),
+        mechanics.apply_events(turn_id=2, party_turn=2, events=[event("ivan", "loss_10_b")]),
+        mechanics.apply_events(turn_id=3, party_turn=3, events=[event("ivan", "loss_10_c")]),
+        mechanics.apply_events(turn_id=4, party_turn=4, events=[event("ivan", "loss_15")]),
     ]
 
     assert [[change["event_id"] for change in turn] for turn in changes] == [[], ["crack"], [], ["ultimatum"]]
@@ -90,6 +90,7 @@ def test_per_turn_cap_limits_combined_events(tmp_path: Path) -> None:
 
     mechanics.apply_events(
         turn_id=1,
+        party_turn=1,
         events=[event("ivan", "loss_20_a"), event("ivan", "loss_20_b")],
     )
 
@@ -109,6 +110,7 @@ def test_one_band_per_turn_even_when_value_crosses_multiple_boundaries(tmp_path:
         event_id="historical-loss",
         weight=-60,
         turn_id=0,
+        party_turn=0,
         expires_turn=None,
         evidence="historical evidence",
         source="gm",
@@ -121,19 +123,52 @@ def test_one_band_per_turn_even_when_value_crosses_multiple_boundaries(tmp_path:
     )
     mechanics = RelationshipMechanics(store, model)
 
-    changes = mechanics.apply_events(turn_id=1, events=[event("ivan", "loss_10_a")])
+    changes = mechanics.apply_events(turn_id=1, party_turn=1, events=[event("ivan", "loss_10_a")])
 
     assert [change["event_id"] for change in changes] == ["crack"]
     assert mechanics.store.axis_state("ivan", "loyalty")["band"] == "estranged"
     assert mechanics.store.value("ivan", "loyalty", 1) == -70
 
 
+def test_advance_turn_twice_changes_at_most_one_band_for_the_party_turn(tmp_path: Path) -> None:
+    """Proves a failed/retried narrator request cannot advance the same party turn twice."""
+    store = make_store(tmp_path)
+    model = relationship_model()
+    relationships = RelationshipStore(store, model)
+    relationships.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="historical-loss",
+        weight=-100,
+        turn_id=99,
+        party_turn=0,
+        expires_turn=None,
+        evidence="historical evidence",
+        source="gm",
+    )
+    relationships.set_axis_state(
+        character_id="ivan",
+        axis="loyalty",
+        band="neutral",
+        band_since_turn=0,
+    )
+    mechanics = RelationshipMechanics(store, model)
+
+    first = mechanics.advance_turn(1)
+    second = mechanics.advance_turn(1)
+
+    assert [change["event_id"] for change in first] == ["crack"]
+    assert second == []
+    assert relationships.axis_state("ivan", "loyalty")["band"] == "estranged"
+    assert relationships.event_rows("ivan", "ultimatum") == []
+
+
 def test_deadband_requires_reserve_beyond_band_boundary(tmp_path: Path) -> None:
     """Proves reaching -15 is insufficient and crossing -20 opens the crack exactly once."""
     mechanics = RelationshipMechanics(make_store(tmp_path), relationship_model())
 
-    first = mechanics.apply_events(turn_id=1, events=[event("ivan", "loss_15")])
-    second = mechanics.apply_events(turn_id=2, events=[event("ivan", "loss_10_a")])
+    first = mechanics.apply_events(turn_id=1, party_turn=1, events=[event("ivan", "loss_15")])
+    second = mechanics.apply_events(turn_id=2, party_turn=2, events=[event("ivan", "loss_10_a")])
 
     assert first == []
     assert [change["event_id"] for change in second] == ["crack"]
@@ -180,8 +215,8 @@ def test_crack_cascades_the_trigger_cause_to_connected_witness(tmp_path: Path) -
     store.write_state_file(state)
     mechanics = RelationshipMechanics(store, relationship_model())
 
-    mechanics.apply_events(turn_id=1, events=[event("ivan", "loss_10_a")])
-    changes = mechanics.apply_events(turn_id=2, events=[event("ivan", "loss_10_b")])
+    mechanics.apply_events(turn_id=1, party_turn=1, events=[event("ivan", "loss_10_a")])
+    changes = mechanics.apply_events(turn_id=2, party_turn=2, events=[event("ivan", "loss_10_b")])
 
     assert [change["event_id"] for change in changes] == ["crack"]
     witness_rows = mechanics.store.cause_rows("maria", "loyalty", 2)
@@ -194,7 +229,7 @@ def test_ultimatum_deadline_resolves_and_moves_band_on_unfavourable_outcome(tmp_
     """Proves band_on resolution holds rupture until the ultimatum deadline is missed."""
     mechanics = RelationshipMechanics(make_store(tmp_path), relationship_model())
     for turn_id, event_id in enumerate(("loss_10_a", "loss_10_b", "loss_10_c", "loss_15"), start=1):
-        mechanics.apply_events(turn_id=turn_id, events=[event("ivan", event_id)])
+        mechanics.apply_events(turn_id=turn_id, party_turn=turn_id, events=[event("ivan", event_id)])
     ultimatum = mechanics.store.event_rows("ivan", "ultimatum")[0]
     assert ultimatum["due_turn"] == 8
     assert mechanics.store.axis_state("ivan", "loyalty")["band"] == "estranged"

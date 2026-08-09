@@ -36,6 +36,7 @@ from app.services.nvidia_catalog import (
     provider_model_is_suitable,
 )
 from app.services.relationship_store import RelationshipStore
+from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.state_store import StateStore
@@ -757,6 +758,96 @@ def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tm
     for forbidden in ("RELATIONSHIP_PRESSURE", "вражда", "advisor-secret-id", '"event_id":"plot"'):
         assert forbidden not in public_payload
     assert any(job["job_type"] == "relationship_extraction" for job in store.service_jobs(limit=10))
+
+
+def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Proves turn -> extraction -> cause -> band -> next prompt uses party-local time."""
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    model = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "worldpacks"
+            / "mechanist-new-world"
+            / "relationships"
+            / "model.json"
+        ).read_text(encoding="utf-8")
+    )
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["relationships"] = {
+        "schema_version": "rp-relationships.v1",
+        "model": "relationships/model.json",
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    relationship_dir = pack_dir / "relationships"
+    relationship_dir.mkdir()
+    (relationship_dir / "model.json").write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
+
+    target_party_id: str | None = None
+
+    async def extracted_event(service, *_args, **_kwargs):
+        events = []
+        if service.store.campaign_id == target_party_id:
+            events = [{
+                "character_id": "king",
+                "event_id": "insult_public",
+                "evidence": "the king was insulted in public",
+            }]
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": json.dumps({"events": events})}}],
+        }
+
+    monkeypatch.setattr(RelationshipExtractionService, "_complete", extracted_event)
+    c = client(tmp_path)
+    offset_party = create_demo_party(c, title="Offset Party", character_name="Offset")
+    for index in range(3):
+        response = c.post(
+            f"/api/parties/{offset_party['id']}/messages",
+            json={"content": f"offset turn {index}", "idempotency_key": f"offset-{index}"},
+        )
+        assert response.status_code == 200, response.text
+
+    target = create_demo_party(c, title="Relationship Party", character_name="Target")
+    target_party_id = str(target["id"])
+    first = c.post(
+        f"/api/parties/{target_party_id}/messages",
+        json={"content": "I insult the king before the court.", "idempotency_key": "relationship-negative"},
+    )
+    assert first.status_code == 200, first.text
+    second = c.post(
+        f"/api/parties/{target_party_id}/messages",
+        json={"content": "I watch his reaction.", "idempotency_key": "relationship-pressure"},
+    )
+    assert second.status_code == 200, second.text
+
+    store = c.app.state.party_store.store_for_party(target_party_id)
+    prompt = json.loads(store.latest_turn(include_prompt=True)["prompt_json"])
+    assert any(item["content"].startswith("RELATIONSHIP_PRESSURE") for item in prompt), (
+        "RELATIONSHIP_PRESSURE did not appear after a party-local relationship crossing"
+    )
+    with store.connect() as connection:
+        cause = connection.execute(
+            "SELECT turn_id, party_turn, expires_turn FROM relationship_causes "
+            "WHERE campaign_id = ? ORDER BY id ASC LIMIT 1",
+            (target_party_id,),
+        ).fetchone()
+    assert cause is not None
+    assert int(cause["turn_id"]) > int(cause["party_turn"]) == 1
+    assert int(cause["expires_turn"]) == 41
+    assert RelationshipStore(store, model).axis_state("king", "loyalty") == {
+        "campaign_id": target_party_id,
+        "character_id": "king",
+        "axis": "loyalty",
+        "band": "estranged",
+        "band_since_turn": 1,
+        "updated_at": RelationshipStore(store, model).axis_state("king", "loyalty")["updated_at"],
+    }
+    crack = RelationshipStore(store, model).event_rows("king", "crack")
+    assert crack and crack[0]["opened_turn"] == 1
 
 
 def test_training_party_ignores_relationship_declaration_and_writes_no_relationship_rows(tmp_path: Path):

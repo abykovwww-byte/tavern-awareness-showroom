@@ -64,7 +64,7 @@ def settings(tmp_path: Path, *, scenario_type: str) -> Settings:
 def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Proves rerunning extraction cannot add a second cause or change the sum."""
     store = make_store(tmp_path)
-    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
     calls = 0
 
@@ -82,7 +82,7 @@ def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, m
 
     monkeypatch.setattr(service, "_complete", fixed_completion)
     first = asyncio.run(service.process_turn(turn_id))
-    first_value = RelationshipStore(store, MODEL).value("ivan", "loyalty", turn_id)
+    first_value = RelationshipStore(store, MODEL).value("ivan", "loyalty", 1)
     second = asyncio.run(service.process_turn(turn_id))
 
     with store.connect() as connection:
@@ -92,7 +92,7 @@ def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, m
     assert second["applied"] is False
     assert count == 1
     assert first_value == -20
-    assert RelationshipStore(store, MODEL).value("ivan", "loyalty", turn_id) == first_value
+    assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == first_value
 
 
 def test_numeric_field_rejects_whole_response_without_partial_accrual(
@@ -101,7 +101,7 @@ def test_numeric_field_rejects_whole_response_without_partial_accrual(
 ) -> None:
     """Proves any nested number rejects all otherwise valid events and persists no cause."""
     store = make_store(tmp_path)
-    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
 
     async def numeric_completion(*_args, **_kwargs):
@@ -137,6 +137,48 @@ def test_parse_response_rejects_numeric_values_before_shape_acceptance(tmp_path:
         service.parse_response({"events": [], "diagnostic": {"confidence": 0.9}}, character_ids={"ivan"})
 
     assert exc_info.value.code == "numeric_field_present"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"events": ["not-an-object"]},
+        {"events": [{
+            "character_id": "ivan",
+            "event_id": "insult_public",
+            "evidence": "public insult",
+            "comment": "extra",
+        }]},
+    ],
+)
+def test_shape_violations_are_terminal_existing_b4_rejections(tmp_path: Path, payload: object) -> None:
+    service = RelationshipExtractionService(
+        settings(tmp_path, scenario_type="rp"),
+        make_store(tmp_path),
+        MODEL,
+    )
+
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        service.parse_response(payload, character_ids={"ivan"})
+
+    assert exc_info.value.code == "missing_evidence"
+
+
+def test_missing_party_turn_is_a_named_technical_failure_with_audit(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    turn_id = store.record_turn("turn-1", "request-1", "player", "narrative", {}, 1, party_turn=1)
+    with store.connect() as connection:
+        connection.execute("UPDATE turns SET party_turn = NULL WHERE id = ?", (turn_id,))
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    with pytest.raises(RuntimeError, match="missing party_turn"):
+        asyncio.run(service.process_turn(turn_id))
+
+    with store.connect() as connection:
+        audit = connection.execute(
+            "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_failed'"
+        ).fetchone()
+    assert json.loads(audit["event_json"])["error"] == "missing_party_turn"
 
 
 def test_training_guard_skips_model_and_writes_no_relationship_rows(

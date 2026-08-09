@@ -1591,6 +1591,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 },
                 artifacts=artifact_result.persistence_records,
                 workspace_files=workspace_result.persistence_records,
+                party_turn=int(state["meta"]["turn"]),
             )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(

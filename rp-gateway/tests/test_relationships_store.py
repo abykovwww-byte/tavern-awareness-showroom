@@ -16,16 +16,19 @@ def make_store(tmp_path: Path, campaign_id: str = "relationship-store") -> State
     return StateStore(str(tmp_path / "state.db"), campaign_id, str(state_path))
 
 
-def record_turns(store: StateStore, count: int) -> None:
+def record_turns(store: StateStore, count: int) -> list[int]:
+    turn_ids: list[int] = []
     for number in range(1, count + 1):
-        store.record_turn(
+        turn_ids.append(store.record_turn(
             f"turn-{number}",
             f"request-{number}",
             f"player-{number}",
             f"narrative-{number}",
             {},
             number,
-        )
+            party_turn=number,
+        ))
+    return turn_ids
 
 
 def add_cause(
@@ -34,6 +37,7 @@ def add_cause(
     event_id: str,
     weight: int,
     turn_id: int,
+    party_turn: int | None = None,
     expires_turn: int | None = None,
 ) -> bool:
     return relationships.add_cause(
@@ -42,6 +46,7 @@ def add_cause(
         event_id=event_id,
         weight=weight,
         turn_id=turn_id,
+        party_turn=turn_id if party_turn is None else party_turn,
         expires_turn=expires_turn,
         evidence=f"evidence-{event_id}",
         source="gm",
@@ -50,20 +55,117 @@ def add_cause(
 
 def test_value_is_sum_of_live_causes_and_rollback_excludes_its_turn(tmp_path: Path) -> None:
     """Proves strict expiry and Decision 019 rollback exclusion affect the derived sum."""
+    offset = make_store(tmp_path, "relationship-offset")
+    record_turns(offset, 3)
     store = make_store(tmp_path)
-    record_turns(store, 4)
+    turn_ids = record_turns(store, 4)
     relationships = RelationshipStore(store, {})
 
-    assert add_cause(relationships, event_id="lasting", weight=-10, turn_id=1)
-    assert add_cause(relationships, event_id="temporary", weight=-20, turn_id=2, expires_turn=4)
-    assert add_cause(relationships, event_id="rolled-back", weight=-15, turn_id=3)
+    assert add_cause(relationships, event_id="lasting", weight=-10, turn_id=turn_ids[0], party_turn=1)
+    assert add_cause(
+        relationships,
+        event_id="temporary",
+        weight=-20,
+        turn_id=turn_ids[1],
+        party_turn=2,
+        expires_turn=4,
+    )
+    assert add_cause(
+        relationships,
+        event_id="rolled-back",
+        weight=-15,
+        turn_id=turn_ids[2],
+        party_turn=3,
+    )
     assert relationships.value("ivan", "loyalty", 3) == -45
 
     with store.connect() as connection:
-        connection.execute("UPDATE turns SET excluded_from_memory = 1 WHERE id = 3")
+        connection.execute("UPDATE turns SET excluded_from_memory = 1 WHERE id = ?", (turn_ids[2],))
 
     assert relationships.value("ivan", "loyalty", 3) == -30
     assert relationships.value("ivan", "loyalty", 4) == -10
+
+
+def test_turn_party_turn_backfill_is_monotonic_per_campaign(tmp_path: Path) -> None:
+    first = make_store(tmp_path, "first-campaign")
+    second = make_store(tmp_path, "second-campaign")
+    record_turns(first, 3)
+    record_turns(second, 2)
+    with first.connect() as connection:
+        connection.execute("UPDATE turns SET party_turn = NULL")
+
+    StateStore(str(tmp_path / "state.db"), "migration-trigger", str(tmp_path / "migration.json"))
+
+    with first.connect() as connection:
+        rows = connection.execute(
+            "SELECT campaign_id, party_turn FROM turns ORDER BY id"
+        ).fetchall()
+    assert [(row["campaign_id"], row["party_turn"]) for row in rows] == [
+        ("first-campaign", 1),
+        ("first-campaign", 2),
+        ("first-campaign", 3),
+        ("second-campaign", 1),
+        ("second-campaign", 2),
+    ]
+
+
+def test_empty_legacy_relationship_tables_migrate_to_two_clock_ddl(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    with store.connect() as connection:
+        connection.execute("DROP INDEX idx_relationship_causes_lookup")
+        connection.execute("DROP INDEX idx_narrative_events_active")
+        for table in (
+            "relationship_causes",
+            "character_badges",
+            "narrative_events",
+            "character_axis_state",
+        ):
+            connection.execute(f"DROP TABLE {table}")
+        connection.executescript(
+            """
+            CREATE TABLE relationship_causes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL, axis TEXT NOT NULL, event_id TEXT NOT NULL,
+                weight INTEGER NOT NULL, turn_id INTEGER NOT NULL, expires_turn INTEGER,
+                evidence TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL,
+                UNIQUE(campaign_id, character_id, axis, event_id, turn_id)
+            );
+            CREATE TABLE character_badges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL, badge_kind TEXT NOT NULL, badge_id TEXT NOT NULL,
+                turn_id INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+                payload_json TEXT, created_at INTEGER NOT NULL,
+                UNIQUE(campaign_id, character_id, badge_kind, badge_id)
+            );
+            CREATE TABLE narrative_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL, axis TEXT NOT NULL, event_id TEXT NOT NULL,
+                status TEXT NOT NULL, opened_turn INTEGER NOT NULL, due_turn INTEGER,
+                payload_json TEXT NOT NULL, resolution TEXT, resolved_turn INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE character_axis_state (
+                campaign_id TEXT NOT NULL, character_id TEXT NOT NULL, axis TEXT NOT NULL,
+                band TEXT NOT NULL, band_since_turn INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                PRIMARY KEY(campaign_id, character_id, axis)
+            );
+            CREATE INDEX idx_relationship_causes_lookup
+                ON relationship_causes(campaign_id, character_id, axis, turn_id);
+            CREATE INDEX idx_narrative_events_active
+                ON narrative_events(campaign_id, status, due_turn);
+            """
+        )
+
+    migrated = make_store(tmp_path)
+    with migrated.connect() as connection:
+        cause_columns = {row["name"] for row in connection.execute("PRAGMA table_info(relationship_causes)")}
+        badge_columns = {row["name"] for row in connection.execute("PRAGMA table_info(character_badges)")}
+        index_columns = [
+            row["name"] for row in connection.execute("PRAGMA index_info(idx_relationship_causes_lookup)")
+        ]
+    assert {"turn_id", "party_turn"} <= cause_columns
+    assert "party_turn" in badge_columns and "turn_id" not in badge_columns
+    assert index_columns == ["campaign_id", "character_id", "axis", "party_turn"]
 
 
 def test_add_cause_is_idempotent_and_value_is_clamped(tmp_path: Path) -> None:

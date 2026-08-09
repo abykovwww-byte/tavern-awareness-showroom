@@ -64,6 +64,14 @@ class RelationshipExtractionService:
             }
         turn = self._recorded_turn(turn_id)
         request_id = str(turn.get("request_id") or "") or None
+        party_turn = turn.get("party_turn")
+        if isinstance(party_turn, bool) or not isinstance(party_turn, int) or party_turn < 0:
+            self.store.audit(
+                "relationship_extraction_failed",
+                {"turn_id": int(turn_id), "error": "missing_party_turn"},
+                request_id,
+            )
+            raise RuntimeError(f"relationship extraction missing party_turn for turn_id={turn_id}")
         character_ids = self._character_ids()
 
         try:
@@ -83,11 +91,16 @@ class RelationshipExtractionService:
                 "events": [],
             }
 
-        applied = self.mechanics.apply_events(turn_id=int(turn_id), events=parsed["events"])
+        applied = self.mechanics.apply_events(
+            turn_id=int(turn_id),
+            party_turn=party_turn,
+            events=parsed["events"],
+        )
         self.store.audit(
             "relationship_extraction_applied",
             {
                 "turn_id": int(turn_id),
+                "party_turn": party_turn,
                 "extracted_events": len(parsed["events"]),
                 "applied_events": len(applied),
                 "model": raw_response.get("model"),
@@ -98,6 +111,7 @@ class RelationshipExtractionService:
             "processed": True,
             "applied": bool(applied),
             "turn_id": int(turn_id),
+            "party_turn": party_turn,
             "events": applied,
         }
 
@@ -115,7 +129,7 @@ class RelationshipExtractionService:
         if self._contains_number(data):
             raise RelationshipExtractionRejected("numeric_field_present")
         if not isinstance(data, dict) or set(data) != {"events"} or not isinstance(data["events"], list):
-            raise ValueError("relationship extraction response must be an object containing only an events array")
+            raise RelationshipExtractionRejected("missing_evidence")
 
         events = data["events"]
         if len(events) > MAX_EVENTS_PER_TURN:
@@ -125,7 +139,7 @@ class RelationshipExtractionService:
         normalized: list[dict[str, str]] = []
         for event in events:
             if not isinstance(event, dict):
-                raise ValueError("each relationship event must be an object")
+                raise RelationshipExtractionRejected("missing_evidence")
             character_id = event.get("character_id")
             event_id = event.get("event_id")
             evidence = event.get("evidence")
@@ -136,9 +150,7 @@ class RelationshipExtractionService:
             if not isinstance(evidence, str) or not evidence.strip():
                 raise RelationshipExtractionRejected("missing_evidence")
             if set(event) != {"character_id", "event_id", "evidence"}:
-                raise ValueError(
-                    "each relationship event must contain only character_id, event_id, and evidence"
-                )
+                raise RelationshipExtractionRejected("missing_evidence")
             normalized.append(
                 {
                     "character_id": character_id,

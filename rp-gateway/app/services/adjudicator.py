@@ -116,6 +116,7 @@ class Adjudicator:
                     text,
                     response,
                     state_version,
+                    party_turn=int(self.store.get_state().get("meta", {}).get("turn", 0)),
                     metadata=self.turn_metadata(
                         turn_kind="world_command",
                         validator_valid=None,
@@ -436,6 +437,7 @@ class Adjudicator:
                 consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
                 workspace_files=workspace_result.persistence_records if workspace_result else [],
                 consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
+                party_turn=int(updated_state["meta"]["turn"]),
             )
             self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp":
@@ -652,14 +654,14 @@ class Adjudicator:
     def relationship_pressure(self, state: dict[str, Any]) -> str | None:
         if self.relationship_mechanics is None:
             return None
-        turn_id = int(state.get("meta", {}).get("turn", 0))
-        self.relationship_mechanics.advance_turn(turn_id)
+        party_turn = int(state.get("meta", {}).get("turn", 0))
+        self.relationship_mechanics.advance_turn(party_turn)
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
         names = {
             str(character_id): self.relationship_character_name(str(character_id), value)
             for character_id, value in characters.items()
         }
-        return self.relationship_mechanics.pressure_block(turn_id, names)
+        return self.relationship_mechanics.pressure_block(party_turn, names)
 
     @staticmethod
     def relationship_character_name(character_id: str, value: Any) -> str:

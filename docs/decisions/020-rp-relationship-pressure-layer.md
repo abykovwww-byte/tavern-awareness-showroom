@@ -8,7 +8,7 @@ later, after Part B is obsolete.
 
 ## Status
 
-Proposed. Decided by the user on 2026-08-09; два вопроса, оставленные открытыми в
+Accepted. Decided by the user on 2026-08-09; два вопроса, оставленные открытыми в
 первой редакции — источник следов заговора и поверхность метки полосы в
 клиентах — закрыты пользователем в тот же день и внесены в решение. Part A
 фиксирует полный замысел слоя отношений, включая оси и механики, которые в
@@ -209,6 +209,10 @@ state-seed мира оно несёт принадлежность и фракц
    вычисляются для каждого хода в порядке возрастания. Пропуск полосы при
    догоняющем извлечении есть ошибка.
 4. **Не более одной ступени за ход** и запас на выход из полосы.
+   Каноническое время слоя — `state.meta.turn`, то есть номер хода конкретной
+   партии. `turns.id` является только глобальной идентичностью строки для
+   идемпотентности и связи с откатом; часы, затухание, полосы и давление по нему
+   не вычисляются.
 5. **Ни одна ветка не срабатывает без следа.** Пока активен заговор, каждый ход
    несёт указание дать след.
 6. **Промпт не содержит чисел и содержимого заговора** — только метку полосы и
@@ -253,6 +257,12 @@ anything editing a file two lanes read; the deploy.
 
 ### Хранилище (L1)
 
+В хранилище намеренно существуют две шкалы. `turns.id` и
+`relationship_causes.turn_id` обозначают глобальную идентичность записанного
+хода. `turns.party_turn`, `relationship_causes.party_turn`, сроки событий,
+затухание и `band_since_turn` обозначают номер хода внутри партии. JOIN для
+`excluded_from_memory` выполняется только по глобальному `turn_id`.
+
 ```sql
 CREATE TABLE IF NOT EXISTS relationship_causes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,6 +272,7 @@ CREATE TABLE IF NOT EXISTS relationship_causes (
     event_id TEXT NOT NULL,
     weight INTEGER NOT NULL,
     turn_id INTEGER NOT NULL,
+    party_turn INTEGER NOT NULL,
     expires_turn INTEGER,                    -- NULL = не затухает
     evidence TEXT NOT NULL,
     source TEXT NOT NULL,                    -- 'extraction' | 'gm' | 'cascade'
@@ -276,7 +287,7 @@ CREATE TABLE IF NOT EXISTS character_badges (
     character_id TEXT NOT NULL,
     badge_kind TEXT NOT NULL,                -- 'wound' | 'role' в первом срезе
     badge_id TEXT NOT NULL,
-    turn_id INTEGER NOT NULL,
+    party_turn INTEGER NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     payload_json TEXT,
     created_at INTEGER NOT NULL,
@@ -312,7 +323,7 @@ CREATE TABLE IF NOT EXISTS character_axis_state (
 );
 
 CREATE INDEX IF NOT EXISTS idx_relationship_causes_lookup
-    ON relationship_causes(campaign_id, character_id, axis, turn_id);
+    ON relationship_causes(campaign_id, character_id, axis, party_turn);
 CREATE INDEX IF NOT EXISTS idx_narrative_events_active
     ON narrative_events(campaign_id, status, due_turn);
 ```
@@ -325,12 +336,12 @@ CREATE INDEX IF NOT EXISTS idx_narrative_events_active
 Значение оси:
 
 ```
-value(character, axis, at_turn) =
+value(character, axis, at_party_turn) =
     SUM(weight)
     FROM relationship_causes
     WHERE campaign_id = ? AND character_id = ? AND axis = ?
-      AND turn_id <= at_turn
-      AND (expires_turn IS NULL OR expires_turn > at_turn)
+      AND party_turn <= at_party_turn
+      AND (expires_turn IS NULL OR expires_turn > at_party_turn)
       AND turn_id NOT IN (исключённые откатом ходы по механизму Decision 019)
     -- затем clamp(-100, 100)
 ```

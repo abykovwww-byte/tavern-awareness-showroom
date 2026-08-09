@@ -90,6 +90,7 @@ class StateStore:
                     event_id TEXT NOT NULL,
                     weight INTEGER NOT NULL,
                     turn_id INTEGER NOT NULL,
+                    party_turn INTEGER NOT NULL,
                     expires_turn INTEGER,
                     evidence TEXT NOT NULL,
                     source TEXT NOT NULL,
@@ -103,7 +104,7 @@ class StateStore:
                     character_id TEXT NOT NULL,
                     badge_kind TEXT NOT NULL,
                     badge_id TEXT NOT NULL,
-                    turn_id INTEGER NOT NULL,
+                    party_turn INTEGER NOT NULL,
                     active INTEGER NOT NULL DEFAULT 1,
                     payload_json TEXT,
                     created_at INTEGER NOT NULL,
@@ -135,8 +136,6 @@ class StateStore:
                     PRIMARY KEY(campaign_id, character_id, axis),
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
-                CREATE INDEX IF NOT EXISTS idx_relationship_causes_lookup
-                    ON relationship_causes(campaign_id, character_id, axis, turn_id);
                 CREATE INDEX IF NOT EXISTS idx_narrative_events_active
                     ON narrative_events(campaign_id, status, due_turn);
                 CREATE TABLE IF NOT EXISTS training_runtime_snapshots (
@@ -167,6 +166,7 @@ class StateStore:
                     prompt_json TEXT,
                     metadata_json TEXT,
                     state_version INTEGER NOT NULL,
+                    party_turn INTEGER,
                     excluded_from_memory INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     UNIQUE(campaign_id, idempotency_key),
@@ -416,6 +416,7 @@ class StateStore:
                 """
             )
             self.migrate_turn_columns(connection)
+            self.migrate_relationship_turn_columns(connection)
             self.migrate_turn_feedback_columns(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
@@ -432,6 +433,117 @@ class StateStore:
             connection.execute(
                 "ALTER TABLE turns ADD COLUMN excluded_from_memory INTEGER NOT NULL DEFAULT 0"
             )
+        if "party_turn" not in columns:
+            connection.execute("ALTER TABLE turns ADD COLUMN party_turn INTEGER")
+        connection.execute(
+            """
+            UPDATE turns AS current_turn
+            SET party_turn = (
+                SELECT COUNT(*)
+                FROM turns AS preceding_turn
+                WHERE preceding_turn.campaign_id = current_turn.campaign_id
+                  AND preceding_turn.id <= current_turn.id
+            )
+            WHERE current_turn.party_turn IS NULL
+            """
+        )
+
+    def migrate_relationship_turn_columns(self, connection: sqlite3.Connection) -> None:
+        cause_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(relationship_causes)").fetchall()
+        }
+        badge_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(character_badges)").fetchall()
+        }
+        if "party_turn" in cause_columns and "party_turn" in badge_columns:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_relationship_causes_lookup "
+                "ON relationship_causes(campaign_id, character_id, axis, party_turn)"
+            )
+            return
+
+        relationship_tables = (
+            "relationship_causes",
+            "character_badges",
+            "narrative_events",
+            "character_axis_state",
+        )
+        populated = {
+            table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in relationship_tables
+        }
+        if any(populated.values()):
+            raise RuntimeError(
+                "relationship party-turn migration requires empty relationship tables: "
+                + ", ".join(f"{table}={count}" for table, count in populated.items())
+            )
+
+        connection.execute("DROP INDEX IF EXISTS idx_relationship_causes_lookup")
+        connection.execute("DROP INDEX IF EXISTS idx_narrative_events_active")
+        for table in relationship_tables:
+            connection.execute(f"DROP TABLE {table}")
+        connection.executescript(
+            """
+            CREATE TABLE relationship_causes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                axis TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                weight INTEGER NOT NULL,
+                turn_id INTEGER NOT NULL,
+                party_turn INTEGER NOT NULL,
+                expires_turn INTEGER,
+                evidence TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(campaign_id, character_id, axis, event_id, turn_id),
+                FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+            );
+            CREATE TABLE character_badges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                badge_kind TEXT NOT NULL,
+                badge_id TEXT NOT NULL,
+                party_turn INTEGER NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                payload_json TEXT,
+                created_at INTEGER NOT NULL,
+                UNIQUE(campaign_id, character_id, badge_kind, badge_id),
+                FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+            );
+            CREATE TABLE narrative_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                axis TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                opened_turn INTEGER NOT NULL,
+                due_turn INTEGER,
+                payload_json TEXT NOT NULL,
+                resolution TEXT,
+                resolved_turn INTEGER,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+            );
+            CREATE TABLE character_axis_state (
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                axis TEXT NOT NULL,
+                band TEXT NOT NULL,
+                band_since_turn INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(campaign_id, character_id, axis),
+                FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
+            );
+            CREATE INDEX idx_relationship_causes_lookup
+                ON relationship_causes(campaign_id, character_id, axis, party_turn);
+            CREATE INDEX idx_narrative_events_active
+                ON narrative_events(campaign_id, status, due_turn);
+            """
+        )
 
     def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
@@ -881,8 +993,8 @@ class StateStore:
                             INSERT INTO turns(
                                 campaign_id, idempotency_key, request_id, player_message,
                                 narrative_response, response_json, prompt_json, metadata_json,
-                                state_version, created_at
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                state_version, party_turn, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 target_campaign_id,
@@ -894,6 +1006,7 @@ class StateStore:
                                 row["prompt_json"],
                                 row["metadata_json"],
                                 row["state_version"],
+                                row["party_turn"],
                                 row["created_at"],
                             ),
                         )
@@ -1361,7 +1474,7 @@ class StateStore:
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         query = """
-            SELECT id, request_id, player_message, narrative_response, state_version, created_at
+            SELECT id, request_id, player_message, narrative_response, state_version, party_turn, created_at
             FROM turns
             WHERE campaign_id = ? AND id > ? AND excluded_from_memory = 0
         """
@@ -2239,16 +2352,19 @@ class StateStore:
         consumed_artifact_event_ids: list[int] | None = None,
         workspace_files: list[dict[str, Any]] | None = None,
         consumed_workspace_event_ids: list[int] | None = None,
+        party_turn: int | None = None,
     ) -> int:
+        if party_turn is None:
+            party_turn = int(self.get_state().get("meta", {}).get("turn", 0))
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO turns(
                     campaign_id, idempotency_key, request_id, player_message,
                     narrative_response, response_json, prompt_json, metadata_json,
-                    state_version, created_at
+                    state_version, party_turn, created_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.campaign_id,
@@ -2260,6 +2376,7 @@ class StateStore:
                     json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
                     json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
                     state_version,
+                    party_turn,
                     now_ts(),
                 ),
             )

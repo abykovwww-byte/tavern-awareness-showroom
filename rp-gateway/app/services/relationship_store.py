@@ -24,6 +24,7 @@ class RelationshipStore:
         event_id: str,
         weight: int,
         turn_id: int,
+        party_turn: int,
         expires_turn: int | None,
         evidence: str,
         source: str,
@@ -33,8 +34,8 @@ class RelationshipStore:
                 """
                 INSERT OR IGNORE INTO relationship_causes(
                     campaign_id, character_id, axis, event_id, weight, turn_id,
-                    expires_turn, evidence, source, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    party_turn, expires_turn, evidence, source, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.campaign_id,
@@ -43,6 +44,7 @@ class RelationshipStore:
                     event_id,
                     weight,
                     turn_id,
+                    party_turn,
                     expires_turn,
                     evidence,
                     source,
@@ -51,7 +53,7 @@ class RelationshipStore:
             )
         return cursor.rowcount == 1
 
-    def value(self, character_id: str, axis: str, at_turn: int) -> int:
+    def value(self, character_id: str, axis: str, at_party_turn: int) -> int:
         with self.state_store.connect() as connection:
             row = connection.execute(
                 """
@@ -60,7 +62,7 @@ class RelationshipStore:
                 WHERE cause.campaign_id = ?
                   AND cause.character_id = ?
                   AND cause.axis = ?
-                  AND cause.turn_id <= ?
+                  AND cause.party_turn <= ?
                   AND (cause.expires_turn IS NULL OR cause.expires_turn > ?)
                   AND NOT EXISTS (
                       SELECT 1
@@ -70,11 +72,11 @@ class RelationshipStore:
                         AND turn.excluded_from_memory = 1
                   )
                 """,
-                (self.campaign_id, character_id, axis, at_turn, at_turn),
+                (self.campaign_id, character_id, axis, at_party_turn, at_party_turn),
             ).fetchone()
         return max(-100, min(100, int(row["value"])))
 
-    def cause_rows(self, character_id: str, axis: str, at_turn: int) -> list[dict[str, Any]]:
+    def cause_rows(self, character_id: str, axis: str, at_party_turn: int) -> list[dict[str, Any]]:
         with self.state_store.connect() as connection:
             rows = connection.execute(
                 """
@@ -83,7 +85,7 @@ class RelationshipStore:
                 WHERE cause.campaign_id = ?
                   AND cause.character_id = ?
                   AND cause.axis = ?
-                  AND cause.turn_id <= ?
+                  AND cause.party_turn <= ?
                   AND (cause.expires_turn IS NULL OR cause.expires_turn > ?)
                   AND NOT EXISTS (
                       SELECT 1
@@ -92,9 +94,9 @@ class RelationshipStore:
                         AND turn.id = cause.turn_id
                         AND turn.excluded_from_memory = 1
                   )
-                ORDER BY cause.turn_id ASC, cause.id ASC
+                ORDER BY cause.party_turn ASC, cause.id ASC
                 """,
-                (self.campaign_id, character_id, axis, at_turn, at_turn),
+                (self.campaign_id, character_id, axis, at_party_turn, at_party_turn),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -104,7 +106,7 @@ class RelationshipStore:
         character_id: str,
         badge_kind: str,
         badge_id: str,
-        turn_id: int,
+        party_turn: int,
         payload: dict[str, Any] | None = None,
     ) -> bool:
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload is not None else None
@@ -121,7 +123,7 @@ class RelationshipStore:
                 connection.execute(
                     """
                     INSERT INTO character_badges(
-                        campaign_id, character_id, badge_kind, badge_id, turn_id,
+                        campaign_id, character_id, badge_kind, badge_id, party_turn,
                         active, payload_json, created_at
                     ) VALUES(?, ?, ?, ?, ?, 1, ?, ?)
                     """,
@@ -130,7 +132,7 @@ class RelationshipStore:
                         character_id,
                         badge_kind,
                         badge_id,
-                        turn_id,
+                        party_turn,
                         payload_json,
                         now_ts(),
                     ),
@@ -141,10 +143,10 @@ class RelationshipStore:
             connection.execute(
                 """
                 UPDATE character_badges
-                SET active = 1, turn_id = ?, payload_json = ?
+                SET active = 1, party_turn = ?, payload_json = ?
                 WHERE campaign_id = ? AND character_id = ? AND badge_kind = ? AND badge_id = ?
                 """,
-                (turn_id, payload_json, self.campaign_id, character_id, badge_kind, badge_id),
+                (party_turn, payload_json, self.campaign_id, character_id, badge_kind, badge_id),
             )
         return True
 
@@ -161,7 +163,7 @@ class RelationshipStore:
         if badge_kind is not None:
             query += " AND badge_kind = ?"
             params.append(badge_kind)
-        query += " ORDER BY turn_id ASC, id ASC"
+        query += " ORDER BY party_turn ASC, id ASC"
         with self.state_store.connect() as connection:
             rows = connection.execute(query, tuple(params)).fetchall()
         return [self._badge_row(row) for row in rows]
@@ -179,7 +181,7 @@ class RelationshipStore:
             )
         return cursor.rowcount == 1
 
-    def active_events(self, at_turn: int) -> list[dict[str, Any]]:
+    def active_events(self, at_party_turn: int) -> list[dict[str, Any]]:
         with self.state_store.connect() as connection:
             rows = connection.execute(
                 """
@@ -188,7 +190,7 @@ class RelationshipStore:
                 WHERE campaign_id = ? AND status = 'active' AND opened_turn <= ?
                 ORDER BY opened_turn ASC, id ASC
                 """,
-                (self.campaign_id, at_turn),
+                (self.campaign_id, at_party_turn),
             ).fetchall()
         return [self._event_row(row) for row in rows]
 
@@ -321,7 +323,7 @@ class RelationshipStore:
             )
         return True
 
-    def pressure_rows(self, at_turn: int) -> list[dict[str, Any]]:
+    def pressure_rows(self, at_party_turn: int) -> list[dict[str, Any]]:
         with self.state_store.connect() as connection:
             rows = connection.execute(
                 """
@@ -330,10 +332,10 @@ class RelationshipStore:
                 WHERE campaign_id = ? AND band_since_turn <= ?
                 ORDER BY character_id ASC, axis ASC
                 """,
-                (self.campaign_id, at_turn),
+                (self.campaign_id, at_party_turn),
             ).fetchall()
         events_by_character: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for event in self.active_events(at_turn):
+        for event in self.active_events(at_party_turn):
             key = (str(event["character_id"]), str(event["axis"]))
             events_by_character.setdefault(key, []).append(event)
         result: list[dict[str, Any]] = []
