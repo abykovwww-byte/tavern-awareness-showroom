@@ -161,7 +161,10 @@ def turn_number_literal_operations(app_root: Path = APP_ROOT) -> list[str]:
     assignments and unpacking, and seeds parameters whose name or annotation
     identifies a turn number. Canonical ``+ 1`` progression and generic
     non-negative/positive schema bounds are not policy thresholds. The guard
-    does not infer values returned by another function or module.
+    does not resolve numeric names such as module-level constants, descend into
+    container literals used as thresholds (for example ``turn in (10, 11)``),
+    interpret numeric-keyed table dispatch such as ``rules.get(turn)``, or
+    infer values returned by another function or module.
     """
     violations: list[str] = []
     for path in sorted(app_root.rglob("*.py")):
