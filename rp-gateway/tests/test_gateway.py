@@ -2971,23 +2971,41 @@ def test_rp_rejects_empty_provider_response_after_one_completion(
     monkeypatch.setattr(NarrativeClient, "complete", empty_complete)
     c = client(tmp_path)
     party = create_demo_party(c, title=f"Empty RP {operation}", scenario_type="rp")
+    request_id = f"req_empty_rp_{operation}"
     if operation == "start":
         response = c.post(
             f"/api/parties/{party['id']}/start",
             json={"idempotency_key": "empty-rp-start"},
-            headers={"Authorization": "Bearer test"},
+            headers={"Authorization": "Bearer test", "X-Request-ID": request_id},
         )
     else:
         response = c.post(
             f"/api/parties/{party['id']}/messages",
             json={"content": "Continue", "idempotency_key": "empty-rp-message"},
-            headers={"Authorization": "Bearer test"},
+            headers={"Authorization": "Bearer test", "X-Request-ID": request_id},
         )
 
     assert response.status_code == 502
     assert response.json()["detail"] == "Narrative provider returned an invalid response"
     assert llm_calls == 1
     assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        audit_rows = connection.execute(
+            "SELECT event_json FROM audit_events "
+            "WHERE campaign_id = ? AND request_id = ? AND event_type = 'llm_invalid_response'",
+            (party["id"], request_id),
+        ).fetchall()
+        turn_count = connection.execute(
+            "SELECT count(*) FROM turns WHERE campaign_id = ?",
+            (party["id"],),
+        ).fetchone()[0]
+    assert len(audit_rows) == 1
+    audit = json.loads(audit_rows[0][0])
+    assert set(audit) == {"request_id", "model", "reason"}
+    assert audit["request_id"] == request_id
+    assert audit["reason"] == "empty_response"
+    assert isinstance(audit["model"], str) and audit["model"]
+    assert turn_count == 0
 
 
 def test_rp_party_message_skips_semantic_validation_and_uses_one_completion(tmp_path: Path):

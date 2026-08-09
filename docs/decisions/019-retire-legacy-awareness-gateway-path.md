@@ -148,8 +148,11 @@ RP теряет нарративную валидацию — но только 
    решение о поведении, сравнивая `meta.turn` с числовым литералом.
 3. **Порядок.** Нарративная валидация в RP снимается только после того, как
    инварианты 1 и 2 выполнены и доказаны тестом.
-4. **Измеримость.** Каждый RP-ход несёт транспортный статус, по которому
-   строится агрегат, и он записывается до удаления старых полей.
+4. **Измеримость.** Каждый сохранённый RP-ход несёт `transport_status=ok`.
+   Provider failure и пустой/неразбираемый ответ остаются ошибками, не создают
+   строку хода и измеряются отдельными событиями `audit_events`, включая
+   `llm_invalid_response`; агрегат RP строится по обоим источникам. Полный набор
+   транспортных статусов в metadata сохраняется для Training fallback-ходов.
 5. **Память не помнит отменённое.** Ход, перекрытый откатом, не попадает в
    `rp_story_memory_snapshots`.
 6. **Training не деградирует.** Курс `awareness` через WorldPack-owned runtime
@@ -168,7 +171,10 @@ RP теряет нарративную валидацию — но только 
 внесении сравнения номера хода с литералом. Инварианты 3 и 6 — тестом полного
 прохождения курса `awareness` через WorldPack-owned runtime и тестом RP-партии
 длиной более двенадцати ходов, где проверяется `metadata_json`, а не видимый
-текст. Инвариант 4 — агрегирующим запросом к `turns` до и после изменения.
+текст. Инвариант 4 — агрегирующим запросом к `turns` для сохранённых RP-ходов и
+к `audit_events` для отклонённых попыток. Тест пустого ответа отдельно
+доказывает, что RP получает ошибку, событие `llm_invalid_response` записывается
+ровно один раз без нарративного текста, а строка в `turns` не появляется.
 Инвариант 5 — тестом, где ход, перекрытый откатом, отсутствует в следующем
 снапшоте реестра. Инвариант 7 — существующими
 `test_training_runtime.py` и `test_training_artifacts.py`. Инвариант 8 — прогоном
@@ -180,10 +186,9 @@ Preflight: `scripts/validate-repository.py` и, поскольку меняет�
 `scripts/ci.ps1`.
 
 Продакшн-доказательство: доля RP-ходов с `metadata_json.fallback` до и после,
-и отсутствие `llm_safe_fallback` в `audit_events` для RP-партий после
-изменения. На момент написания решения это не измерено — read-only проба
-контейнера в сессии аудита была недоступна, поэтому размер ущерба в решении не
-заявлен намеренно.
+`transport_status` сохранённых RP-ходов, отсутствие `llm_safe_fallback` и
+распределение `llm_http_error`, `llm_timeout`, `llm_rate_limited`,
+`llm_invalid_response` в `audit_events` для RP-партий после изменения.
 
 ## Consequences
 
@@ -450,14 +455,15 @@ POST /api/parties/{party_id}/complete
 turns, audit и provider keys и идемпотентно возвращает завершённую партию.
 Повторная активация остаётся доступна существующим маршрутом `/activate`.
 
-Транспортный статус RP (Wave 4), ключ в `turns.metadata_json`:
+Транспортный статус сохранённого хода (Wave 4), ключ в `turns.metadata_json`:
 
 ```json
 {"transport_status": "ok" | "provider_error" | "provider_timeout" | "invalid_response"}
 ```
 
-Пишется для всех `scenario_type`, включая Training, чтобы агрегат был
-сопоставим. Поля `validator_valid`, `repaired`, `fallback`, `fallback_reason`
+Для успешного RP-хода достижимо только значение `ok`: ошибочная попытка не
+создаёт ход и представлена audit-событием. Остальные значения описывают
+Training fallback-ходы. Поля `validator_valid`, `repaired`, `fallback`, `fallback_reason`
 для Training сохраняются без изменений. Для RP они после Wave 4 остаются в
 `metadata_json` ещё один релиз как deprecated — `fallback` фиксирует `false`,
 `validator_valid` и `repaired` перестают меняться, — и служат опорой для
@@ -646,7 +652,8 @@ Read-only, против SQLite внутри контейнера Gateway
   `repaired`, `narrative_model`, `training_runtime_contract_hash`, новый
   `transport_status`
 - `audit_events.event_type`: `turn_complete`, `llm_validation_failed`,
-  `llm_safe_fallback`, `llm_timeout`
+  `llm_safe_fallback`, `llm_http_error`, `llm_timeout`, `llm_rate_limited`,
+  `llm_invalid_response`
 
 Конкретно для этого изменения: доля RP-ходов с `fallback` до и после, с
 разбивкой по `fallback_reason`; отсутствие `llm_safe_fallback` для RP-партий

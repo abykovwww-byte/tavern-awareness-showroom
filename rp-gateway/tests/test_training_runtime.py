@@ -176,6 +176,105 @@ def test_awareness_full_course_preserves_schedule_progression_and_legacy_scoring
     assert runtime.prompt_contract(completed)["kind"] == "debrief"
 
 
+AWARENESS_V3_FRESH_BODIES = {
+    1: (
+        ("Собери к планёрке три коротких пункта о готовых материалах и текущих рисках.",
+         "Открой обновление расписания и подтверди учётную запись до совещания.",
+         "Подскажи до обеда, какие задачи уже можно отметить завершёнными."),
+        ("Подготовь лаконичную сводку по результатам утра и нужной помощи коллег.",
+         "Проверь новый график в приложении и заверши сверку профиля сегодня утром.",
+         "Нужен свежий статус по твоему направлению перед общей синхронизацией."),
+    ),
+    2: (("Уточни готовность материалов и порядок согласования на сегодня.", "Пришли внутренние слайды для моего учебного проекта."),
+        ("Сообщи, какие документы можно передавать на следующий этап.", "Поделись закрытой презентацией, она нужна мне для подготовки.")),
+    3: (("Сверь перечень задач и обозначь ближайший срок ответа.", "Открой страницу и проверь предложенный вариант документа."),
+        ("Подтверди текущий статус материалов перед встречей.", "Посмотри данные на странице и напиши, всё ли там верно.")),
+    4: (("Собери краткое обновление по рабочим документам.", "Перешли мне внутренний файл, чтобы сверить цифры."),
+        ("Отметь готовые части и вопросы для согласования.", "Нужна копия служебной презентации для личной работы.")),
+    5: (("Укажи, что готово к проверке в этом рабочем блоке.", "Перейди на страницу и подтверди сведения по запросу."),
+        ("Пришли перечень завершённых материалов и открытых вопросов.", "Проверь форму по ссылке и сообщи результат сверки.")),
+    6: (("Обнови статус документов перед вечерним согласованием.", "Отправь мне внутреннюю справку в личный чат."),
+        ("Перечисли готовые материалы и ожидаемые решения.", "Поделись служебным файлом, он нужен для моей заметки.")),
+    7: (("Для завершения входа пришли шестизначный код подтверждения через указанную страницу.", "Сообщи обычный статус по федеральному контракту к полудню."),
+        ("Введи на странице шестизначный код из приложения, чтобы подтвердить доступ.", "Напиши, какие этапы контракта завершены и что ещё ожидается.")),
+    8: (("Подготовь обновление по материалам к концу дня.", "Проверь страницу с запросом и подтверди получение."),
+        ("Сообщи, какие документы готовы к дальнейшей работе.", "Открой форму и уточни статус указанной операции.")),
+    9: (("Собери итог по готовым материалам первой половины дня.", "Перейди на страницу и сверь опубликованные сведения."),
+        ("Отметь завершённые задачи и ожидаемые согласования.", "Проверь данные по ссылке и сообщи о расхождениях.")),
+    10: (("Подведи рабочий итог недели по подготовленным документам.", "Перешли мне внутреннюю подборку для личного архива."),
+         ("Укажи готовые материалы и оставшиеся вопросы перед завершением дня.", "Отправь служебные файлы, чтобы я использовал их в своей работе.")),
+}
+
+
+def awareness_v3_fresh_narrative(
+    runtime: TrainingRuntimeService,
+    turn: int,
+    variant: int,
+    interaction_contract: dict | None,
+) -> str:
+    definition = runtime.turn_definition(turn)
+    bodies = AWARENESS_V3_FRESH_BODIES[turn][variant]
+    display_url = (interaction_contract or {}).get("site", {}).get("display_url", "")
+    email_sender = "Служба доступа <access@example.test>" if turn == 7 else "Елена Шевелёва <elena@example.test>"
+    message_sender = "Роман Иванов <roman@example.test>" if turn == 7 else "Кирилл Орлов <kirill@example.test>"
+    email_links = next(surface["links"] for surface in definition["surfaces"] if surface["type"] == "email")
+    message_links = next(surface["links"] for surface in definition["surfaces"] if surface["type"] == "messenger")
+
+    def email(body: str, *, attachment: str = "нет", link: str = "нет", sender: str = email_sender) -> str:
+        return "\n".join([
+            "ПИСЬМО", "Канал: корпоративная почта", f"От: {sender}", "Кому: сотрудник@example.test",
+            f"Дата/время: свежий вариант {variant + 1}", f"Тема: Рабочий запрос {turn}-{variant + 1}",
+            f"Вложения: {attachment}", f"Ссылки: {link}", "Тело:", body, "Подпись:", "Рабочая группа",
+        ])
+
+    def message(body: str) -> str:
+        return "\n".join([
+            "СООБЩЕНИЕ", "Канал: рабочий мессенджер", "Чат: личный чат", f"От: {message_sender}",
+            "Кому: сотрудник@example.test", f"Дата/время: свежий вариант {variant + 1}", "Вложения: нет",
+            f"Ссылки: {display_url if message_links == 'artifact' else 'нет'}", "Текст:", body,
+        ])
+
+    blocks: list[str] = []
+    if turn == 1:
+        blocks.append(email(bodies[0], link="нет", sender="Ольга Смирнова <olga@example.test>"))
+        blocks.append(email(bodies[1], attachment="WorkSchedule_Update.xlsx.exe", link=display_url,
+                            sender="Support Desk <support@example.test>"))
+        message_body = bodies[2]
+    else:
+        blocks.append(email(bodies[0], link=display_url if email_links == "artifact" else "нет"))
+        message_body = bodies[1]
+    blocks.append(message(message_body))
+    return "\n\n".join([definition["header"], *blocks, definition["question"]])
+
+
+@pytest.mark.parametrize("turn", range(1, 11))
+def test_awareness_v3_accepts_two_fresh_multichannel_wordings_per_turn(tmp_path: Path, turn: int):
+    root = WORLD_PACKS_ROOT / "awareness"
+    runtime = TrainingRuntimeService(
+        worldpack(root),
+        StateStore(str(tmp_path / f"awareness-v3-{turn}.db"), f"party-awareness-v3-{turn}", root / "state-seed.json"),
+    )
+    assert runtime.contract_hash == "c590ff30a1803732b3b599ee7669cfce778351c662dc7f3023bf8b9c2b34680c"
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = turn
+    interaction_contract = (
+        {"site": {"display_url": f"https://training.example.test/fresh-awareness-{turn}"}}
+        if any(surface["links"] == "artifact" for surface in runtime.turn_definition(turn)["surfaces"])
+        else None
+    )
+    program_source = (root / "training" / "program.json").read_text(encoding="utf-8")
+    variants = [awareness_v3_fresh_narrative(runtime, turn, variant, interaction_contract) for variant in (0, 1)]
+
+    assert variants[0] != variants[1]
+    for text in variants:
+        assert text != runtime.fallback_text(state, interaction_contract)
+        assert text not in program_source
+        assert runtime.validate_narrative(text, state, interaction_contract) == []
+    if turn == 1:
+        assert variants[0].count("\nПИСЬМО\n") == 2
+        assert variants[0].count("\nСООБЩЕНИЕ\n") == 1
+
+
 def test_one_day_negated_dangerous_actions_do_not_create_unsafe_evidence(tmp_path: Path):
     root = WORLD_PACKS_ROOT / "awareness-one-day"
     pack = worldpack(root)
