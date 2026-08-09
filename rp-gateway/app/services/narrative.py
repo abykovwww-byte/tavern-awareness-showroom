@@ -414,6 +414,7 @@ class NarrativeClient:
         failed_response_text: str,
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
+        relationship_pressure: str | None = None,
     ) -> list[dict[str, str]]:
         """Build a compact correction request instead of replaying the full party prompt."""
         player_resources = state.get("player", {}).get("resources", {})
@@ -439,6 +440,8 @@ class NarrativeClient:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+        if self.settings.scenario_type == "rp" and relationship_pressure:
+            messages.append({"role": "system", "content": relationship_pressure})
         messages.append(
             {
                 "role": "user",

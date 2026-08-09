@@ -2759,6 +2759,7 @@ def test_repair_prompt_is_compact_and_does_not_replay_party_history():
         outcome,
         "Remove the leaked assessment label.",
         "Analysis: unsafe label. Correct scene text.",
+        relationship_pressure="RELATIONSHIP_PRESSURE\n- hidden RP-only pressure",
     )
     encoded = json.dumps(messages, ensure_ascii=False)
 
@@ -2768,6 +2769,34 @@ def test_repair_prompt_is_compact_and_does_not_replay_party_history():
     assert "Correct scene text" in encoded
     assert "The old tower burned" not in encoded
     assert "LONG_TERM_PARTY_MEMORY" not in encoded
+    assert "RELATIONSHIP_PRESSURE" not in encoded
+
+
+def test_rp_repair_prompt_keeps_relationship_pressure_before_the_failed_response():
+    settings = Settings(llm_provider="openrouter", narrative_model="test-model", scenario_type="rp")
+    outcome = Outcome(
+        check_id="rp-repair-pressure",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: continue the scene.",
+    )
+
+    messages = NarrativeClient(settings).repair_messages(
+        base_state(),
+        outcome,
+        "Correct the response.",
+        "Failed response.",
+        relationship_pressure="RELATIONSHIP_PRESSURE\n- Enri — отчуждение.",
+    )
+
+    assert [message["role"] for message in messages] == ["system", "system", "user"]
+    assert messages[-2]["content"].startswith("RELATIONSHIP_PRESSURE")
 
 
 def test_narrative_wall_clock_deadline_covers_the_complete_response(
