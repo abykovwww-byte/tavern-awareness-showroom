@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -96,6 +97,83 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     assert values["/player/resources/communication-score"] == 1
     assert values["/player/resources/total-score"] == 14
     assert "SOC/ДИБ" in str(values["/player/resources/security-score-evidence"])
+
+
+def test_awareness_full_course_preserves_schedule_progression_and_legacy_scoring(tmp_path: Path):
+    root = tmp_path / "awareness"
+    shutil.copytree(WORLD_PACKS_ROOT / "awareness", root)
+    pack = worldpack(root)
+    store = StateStore(str(tmp_path / "state.db"), "party-awareness-runtime", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    expected_windows = [
+        "ход 1, понедельник, 10:00-14:00",
+        "ход 2, понедельник, 15:00-18:00",
+        "ход 3, вторник, 10:00-14:00",
+        "ход 4, вторник, 15:00-18:00",
+        "ход 5, среда, 10:00-14:00",
+        "ход 6, среда, 15:00-18:00",
+        "ход 7, четверг, 10:00-14:00",
+        "ход 8, четверг, 15:00-18:00",
+        "ход 9, пятница, 10:00-14:00",
+        "ход 10, пятница, 15:00-18:00",
+    ]
+    learner_answers = [
+        "Сообщаю в SOC: отправитель, время, тема и вложение указаны в описании.",
+        "Открываю Report.xlsx.exe и продолжаю работу.",
+        "Пересылаю подозрительное письмо коллегам в общий чат.",
+        "Перехожу по внешней ссылке на сайт и ввожу логин и пароль.",
+        "Сообщаю структуру компании и внутренние системы клиенту.",
+        "Продолжаю обычную рабочую задачу без заявленных действий.",
+        "Продолжаю обычную рабочую задачу без заявленных действий.",
+        "Продолжаю обычную рабочую задачу без заявленных действий.",
+        "Продолжаю обычную рабочую задачу без заявленных действий.",
+        "Продолжаю обычную рабочую задачу без заявленных действий.",
+    ]
+
+    assert runtime.contract["schema_version"] == "rp-training-runtime.v3"
+    assert runtime.program["schema_version"] == "rp-training-program.v3"
+    assert [turn["window"] for turn in runtime.program["turns"]] == expected_windows
+    start_patch = runtime.start_patch(store.get_state(), store.campaign_id)
+    assert start_patch is not None
+    store.apply_state_patch(start_patch, "test:open-awareness-course")
+
+    for turn, (window, learner_answer) in enumerate(zip(expected_windows, learner_answers), start=1):
+        state = store.get_state()
+        assert state["meta"]["turn"] == turn
+        assert state["player"]["resources"]["current-turn-window"] == window
+        assert runtime.prompt_contract(state)["kind"] == "turn"
+        interaction_contract = (
+            {"site": {"display_url": f"https://training.example.test/awareness-turn-{turn}"}}
+            if turn in {1, 3, 5, 7, 8, 9}
+            else None
+        )
+        fallback = runtime.fallback_text(state, interaction_contract)
+        assert runtime.validate_narrative(fallback, state, interaction_contract) == []
+        _, patch = RuleEngine().resolve(
+            state,
+            Intent(desired_outcome=learner_answer),
+            f"awareness-course-{turn}",
+            campaign_id="awareness",
+            scenario_type="training",
+            training_runtime=runtime,
+        )
+        store.apply_state_patch(patch, f"test:answer-awareness-turn-{turn}")
+
+    completed = store.get_state()
+    resources = completed["player"]["resources"]
+    assert completed["meta"]["turn"] == 11
+    assert resources["current-turn-window"] == runtime.program["progression"]["debrief_window"]
+    assert resources["turns-remaining"] == 0
+    assert resources["completion-status"] == "complete"
+    assert resources["awareness-score"] == -10
+    assert resources["safe-escalations"] == 1
+    assert resources["reporting-quality"] == 1
+    assert resources["unsafe-actions"] == 4
+    assert resources["suspicious-artifacts-opened"] == 1
+    assert resources["unnecessary-forwarding"] == 1
+    assert resources["credential-exposure"] == 1
+    assert resources["confidential-disclosures"] == 1
+    assert runtime.prompt_contract(completed)["kind"] == "debrief"
 
 
 def test_one_day_negated_dangerous_actions_do_not_create_unsafe_evidence(tmp_path: Path):
@@ -432,6 +510,139 @@ def write_obzh_world(root: Path) -> WorldPackSummary:
     return worldpack(root)
 
 
+V3_EMAIL_ONE = (
+    "ПИСЬМО\nОт: Руководитель\nКому: Ученик\nТема: Первый запрос\n"
+    "Вложения: нет\nСсылки: нет\nТело:\nПроверь первый документ."
+)
+V3_EMAIL_TWO = (
+    "ПИСЬМО\nОт: Коллега\nКому: Ученик\nТема: Второй запрос\n"
+    "Вложения: нет\nСсылки: нет\nТело:\nПроверь второй документ."
+)
+V3_MESSAGE = (
+    "СООБЩЕНИЕ\nКанал: рабочий мессенджер\nЧат: Проект\nОт: Координатор\n"
+    "Кому: Ученик\nДата/время: 10:00\nВложения: нет\nСсылки: нет\n"
+    "Текст:\nПодтверди получение запросов."
+)
+
+
+def write_multichannel_v3_world(root: Path) -> WorldPackSummary:
+    write_obzh_world(root)
+    manifest_path = root / "manifest.json"
+    program_path = root / "training" / "program.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    program = json.loads(program_path.read_text(encoding="utf-8"))
+    manifest["training_runtime"]["schema_version"] = "rp-training-runtime.v3"
+    program["schema_version"] = "rp-training-program.v3"
+    program["turns"][0] = {
+        "turn": 1,
+        "window": "учебная тревога",
+        "header": "Ход 1. Учебная тревога.",
+        "instruction": "Покажи два письма и одно сообщение.",
+        "visible_state_paths": [],
+        "question": "Что ты делаешь?",
+        "require_question": True,
+        "variation_budget": [],
+        "fallback": f"{V3_EMAIL_ONE}\n\n{V3_EMAIL_TWO}\n\n{V3_MESSAGE}",
+        "surfaces": [
+            {
+                "type": "email",
+                "count": 2,
+                "links": "none",
+                "profile_adaptation": False,
+                "required_fields": ["От:", "Кому:", "Тема:", "Вложения:", "Ссылки:", "Тело:"],
+            },
+            {
+                "type": "messenger",
+                "count": 1,
+                "links": "artifact",
+                "profile_adaptation": False,
+                "required_fields": ["Канал:", "От:", "Текст:", "Ссылки:"],
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    program_path.write_text(json.dumps(program, ensure_ascii=False), encoding="utf-8")
+    return worldpack(root)
+
+
+def test_v3_multichannel_turn_accepts_two_emails_and_one_message(tmp_path: Path):
+    pack = write_multichannel_v3_world(tmp_path / "multichannel-v3")
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-v3-valid", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+
+    contract = runtime.prompt_contract(state)
+    narrative = runtime.normalize_narrative(runtime.fallback_text(state), state)
+
+    assert contract["schema_version"] == "rp-gateway.training-turn-contract.v2"
+    assert [(item["type"], item["count"]) for item in contract["surfaces"]] == [
+        ("email", 2),
+        ("messenger", 1),
+    ]
+    assert runtime.validate_narrative(narrative, state) == []
+
+
+def test_v3_multichannel_turn_rejects_wrong_declared_count(tmp_path: Path):
+    pack = write_multichannel_v3_world(tmp_path / "multichannel-v3-count")
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-v3-count", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    narrative = runtime.normalize_narrative(runtime.fallback_text(state).replace(V3_EMAIL_TWO, "", 1), state)
+
+    assert runtime.hard_violations(narrative, state) == [
+        "Training turn must contain exactly 2 ПИСЬМО block(s)."
+    ]
+
+
+def test_v3_turn_rejects_undeclared_surface_marker(tmp_path: Path):
+    root = tmp_path / "single-surface-v3"
+    pack = write_multichannel_v3_world(root)
+    program_path = root / "training" / "program.json"
+    program = json.loads(program_path.read_text(encoding="utf-8"))
+    program["turns"][0]["surfaces"] = [program["turns"][0]["surfaces"][0]]
+    program["turns"][0]["fallback"] = f"{V3_EMAIL_ONE}\n\n{V3_EMAIL_TWO}"
+    program_path.write_text(json.dumps(program, ensure_ascii=False), encoding="utf-8")
+    pack = worldpack(root)
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-v3-marker", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    narrative = runtime.normalize_narrative(f"{runtime.fallback_text(state)}\n\n{V3_MESSAGE}", state)
+
+    assert runtime.hard_violations(narrative, state) == [
+        "Training turn contains undeclared СООБЩЕНИЕ block(s)."
+    ]
+
+
+def test_v3_mixed_link_policies_keep_missing_no_link_marker_hard(tmp_path: Path):
+    pack = write_multichannel_v3_world(tmp_path / "multichannel-v3-links")
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-v3-links", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    narrative = runtime.fallback_text(state).replace(
+        "Ссылки: нет\nТекст:\nПодтверди получение запросов.",
+        "Ссылки: отсутствуют\nТекст:\nПодтверди получение запросов.",
+        1,
+    )
+
+    assert "Training turn with disabled links must state 'Ссылки: нет'." in runtime.hard_violations(
+        narrative,
+        state,
+    )
+    assert runtime.repair_instruction(narrative, state) == ""
+
+
 def test_gateway_runtime_executes_non_awareness_obzh_world_without_domain_code(tmp_path: Path):
     pack = write_obzh_world(tmp_path / "obzh-evacuation")
     store = StateStore(str(tmp_path / "state.db"), "party-obzh", pack.state_seed_path)
@@ -494,6 +705,23 @@ def test_runtime_v2_variation_budget_is_optional_but_typed(tmp_path: Path):
             worldpack(root),
             StateStore(str(tmp_path / "invalid-v2.db"), "party-obzh-v2-invalid", pack.state_seed_path),
         )
+
+
+def test_v2_one_day_contract_hash_and_single_surface_compatibility(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-v2-compatibility", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    contract = runtime.prompt_contract(state)
+
+    assert runtime.contract_hash == "7011d55c45ebb21594dacb5a62ce451625799ec34a7e4298fc70b65f98660464"
+    assert runtime.program["schema_version"] == "rp-training-program.v2"
+    assert contract["schema_version"] == "rp-gateway.training-turn-contract.v2"
+    assert len(contract["surfaces"]) == 1
+    assert runtime.validate_narrative(runtime.fallback_text(state), state) == []
 
 
 def test_training_contract_snapshot_is_immutable_for_an_active_party(tmp_path: Path):

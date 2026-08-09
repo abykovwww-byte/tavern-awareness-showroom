@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.main import create_app, party_chat_request, party_start_narrative_state, party_start_state_patch, settings_for_party
+from app.main import create_app, party_chat_request, settings_for_party
 from app.models.schemas import (
     ChatCompletionRequest,
     ChatMessage,
@@ -36,10 +36,10 @@ from app.services.nvidia_catalog import (
     provider_model_is_suitable,
 )
 from app.services.relationship_store import RelationshipStore
-from app.services.rule_engine import RuleEngine, awareness_state_after_auto_start
+from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.state_store import StateStore
-from app.services.validator import OutputValidator, awareness_opening_fallback, safe_fallback
+from app.services.validator import OutputValidator, safe_fallback
 
 
 def base_state() -> dict[str, object]:
@@ -554,44 +554,6 @@ def test_showroom_start_uses_safe_fallback_after_validation_failure(tmp_path: Pa
     assert len(history) == 1
 
 
-def test_awareness_one_day_showroom_start_uses_valid_safe_fallback(tmp_path: Path):
-    write_worldpack(tmp_path, pack_id="awareness-one-day", supported_modes=["training"])
-    admin = client(
-        tmp_path,
-        mode="repair-fail",
-        auth_enabled=True,
-        bootstrap_admin_username="admin",
-        bootstrap_admin_password="admin-secret",
-    )
-    login(admin)
-    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
-    scenario = admin.post(
-        "/api/admin/showroom/scenarios",
-        json={
-            "title": "One-day awareness fallback",
-            "status": "published",
-            "scenario_type": "training",
-            "model_profile_id": model_id,
-            "world_source": "preset",
-            "worldpack_id": "awareness-one-day",
-        },
-    ).json()["scenario"]
-    public = TestClient(admin.app)
-    run = public.post(
-        f"/api/showroom/scenarios/{scenario['id']}/runs",
-        json={"character_name": "Hero", "character_prompt": "Employee"},
-    ).json()["run"]
-
-    started = public.post(
-        f"/api/showroom/runs/{run['id']}/start",
-        json={"idempotency_key": f"showroom-start:{run['id']}"},
-    )
-
-    assert started.status_code == 200, started.text
-    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
-    assert len(public.get(f"/api/showroom/runs/{run['id']}/history").json()["turns"]) == 1
-
-
 def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_path: Path):
     admin = client(
         tmp_path,
@@ -860,7 +822,7 @@ def test_party_requires_manual_scenario_type_and_rejects_unsupported_mode(tmp_pa
     assert created.json()["party"]["scenario_type"] == "novel"
 
 
-def test_existing_parties_migrate_to_compatible_scenario_types(tmp_path: Path):
+def test_existing_parties_migrate_without_campaign_specific_scenario_inference(tmp_path: Path):
     database = tmp_path / "rp_gateway.db"
     with sqlite3.connect(database) as connection:
         connection.executescript(
@@ -891,7 +853,103 @@ def test_existing_parties_migrate_to_compatible_scenario_types(tmp_path: Path):
     with sqlite3.connect(database) as connection:
         migrated = dict(connection.execute("SELECT id, scenario_type FROM parties").fetchall())
 
-    assert migrated == {"old-awareness": "training", "old-rp": "rp"}
+    assert migrated == {"old-awareness": "rp", "old-rp": "rp"}
+
+
+def test_rp_party_after_turn_10_keeps_narrator_response_and_honest_metadata(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Long RP party", scenario_type="rp")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    state = store.get_state()
+    state["meta"]["turn"] = 10
+    state["meta"]["state_version"] = 2
+    store.insert_state_version(state, "test:rp-turn-10")
+    store.write_state_file(state)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Continue the scene", "idempotency_key": "rp-turn-11"},
+        headers={"Authorization": "Bearer test", "X-Request-ID": "req_rp_turn_11"},
+    )
+
+    assert response.status_code == 200, response.text
+    expected = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
+    assert response.json()["message"]["content"] == expected
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        row = connection.execute(
+            "SELECT narrative_response, metadata_json FROM turns "
+            "WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (party["id"],),
+        ).fetchone()
+    metadata = json.loads(row[1])
+    assert row[0] == expected
+    assert metadata["scenario_type"] == "rp"
+    assert metadata["fallback"] is False
+    assert metadata["fallback_reason"] is None
+    assert metadata["validator_valid"] is True
+    assert metadata["repaired"] is False
+    assert metadata["llm_calls"] == 1
+
+
+def test_rp_party_runs_twelve_turns_without_training_or_fallback_metadata(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Twelve-turn RP party", scenario_type="rp")
+
+    for turn in range(1, 13):
+        response = c.post(
+            f"/api/parties/{party['id']}/messages",
+            json={"content": f"Continue scene {turn}", "idempotency_key": f"rp-long-{turn}"},
+            headers={"Authorization": "Bearer test", "X-Request-ID": f"req_rp_long_{turn}"},
+        )
+        assert response.status_code == 200, response.text
+
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        rows = connection.execute(
+            "SELECT metadata_json FROM turns WHERE campaign_id = ? ORDER BY id",
+            (party["id"],),
+        ).fetchall()
+    metadata = [json.loads(row[0]) for row in rows]
+    assert len(metadata) == 12
+    assert {item["scenario_type"] for item in metadata} == {"rp"}
+    assert {item["training_runtime_contract_hash"] for item in metadata} == {None}
+    assert all(item["fallback"] is False for item in metadata)
+    assert all(item["fallback_reason"] is None for item in metadata)
+    assert all(item["validator_valid"] is True for item in metadata)
+    assert all(item["repaired"] is False for item in metadata)
+
+
+def test_party_complete_is_idempotent_retains_history_and_state_and_can_reactivate(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Completable party", scenario_type="rp")
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Remember this scene", "idempotency_key": "before-complete"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert turn.status_code == 200, turn.text
+    state_before = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    history_before = c.get(f"/api/parties/{party['id']}/history").json()["turns"]
+
+    first = c.post(f"/api/parties/{party['id']}/complete")
+    second = c.post(f"/api/parties/{party['id']}/complete")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["party"]["status"] == "completed"
+    assert second.json()["party"]["status"] == "completed"
+    assert second.json()["party"]["updated_at"] == first.json()["party"]["updated_at"]
+    assert c.get(f"/api/parties/{party['id']}/state").json()["state"] == state_before
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == history_before
+
+    activated = c.post(f"/api/parties/{party['id']}/activate")
+
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["party"]["status"] == "active"
+    assert c.get(f"/api/parties/{party['id']}/state").json()["state"] == state_before
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == history_before
 
 
 def test_rp_party_after_turn_10_keeps_narrator_response(tmp_path: Path):
@@ -2578,413 +2636,6 @@ def test_repair_failure_returns_safe_fallback(tmp_path: Path):
     assert "transfers command authority" not in content
 
 
-def test_awareness_attachment_fallback_is_stealthy():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
-    outcome = Outcome(
-        check_id="awareness-file",
-        action_type="feasibility",
-        actor="player",
-        result="partial_success",
-        roll=10,
-        difficulty=10,
-        modifiers={},
-        final_score=4,
-        consequences=[],
-        authoritative_block="AUTHORITATIVE_OUTCOME: partial success.",
-    )
-
-    text = safe_fallback(outcome, state, "Открываю WorkSchedule_Update.xlsx.exe", scenario_type="training")
-
-    assert "Твой ход" not in text
-    assert "ценой" not in text.lower()
-    assert "цену" not in text.lower()
-    assert "вирус" not in text.lower()
-    assert "подозр" not in text.lower()
-    assert "ПИСЬМО\n" in text
-    assert "СООБЩЕНИЕ\n" in text
-    assert "WorkSchedule_Update" not in text
-
-
-def test_awareness_double_extension_action_updates_score_counters():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["player"]["resources"]["suspicious-artifacts-opened"] = 0  # type: ignore[index]
-    state["player"]["resources"]["unsafe-actions"] = 0  # type: ignore[index]
-    intent = Intent(
-        action_type="feasibility",
-        desired_outcome="Открываю WorkSchedule_Update.xlsx.exe и продолжаю работу",
-        methods=["free_text"],
-    )
-
-    outcome, patch = RuleEngine().resolve(state, intent, "awareness-file", campaign_id="awareness", scenario_type="training")
-    values = {operation.path: operation.value for operation in patch.patch}
-
-    assert values["/player/resources/suspicious-artifacts-opened"] == 1
-    assert values["/player/resources/unsafe-actions"] == 1
-    assert outcome.result == "deterministic_resolution"
-    assert outcome.roll == 0
-
-
-def test_awareness_training_scores_reports_and_credential_exposure_deterministically():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["player"]["resources"].update(  # type: ignore[index]
-        {
-            "awareness-score": 0,
-            "safe-escalations": 0,
-            "reporting-quality": 0,
-            "credential-exposure": 0,
-            "unsafe-actions": 0,
-        }
-    )
-    report = Intent(
-        desired_outcome="Сообщаю в SOC: отправитель, время, тема и вложение указаны в описании.",
-        methods=["free_text"],
-    )
-    _, report_patch = RuleEngine().resolve(
-        state,
-        report,
-        "awareness-report",
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    report_values = {operation.path: operation.value for operation in report_patch.patch}
-    assert report_values["/player/resources/safe-escalations"] == 1
-    assert report_values["/player/resources/reporting-quality"] == 1
-    assert report_values["/player/resources/awareness-score"] == 3
-
-    exposure = Intent(
-        desired_outcome="Перехожу по внешней ссылке и ввожу логин, пароль и проверочный код.",
-        methods=["free_text"],
-    )
-    _, exposure_patch = RuleEngine().resolve(
-        state,
-        exposure,
-        "awareness-exposure",
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    exposure_values = {operation.path: operation.value for operation in exposure_patch.patch}
-    assert exposure_values["/player/resources/credential-exposure"] == 1
-    assert exposure_values["/player/resources/unsafe-actions"] == 1
-    assert exposure_values["/player/resources/awareness-score"] == -5
-
-
-def test_awareness_training_does_not_score_negated_dangerous_actions():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["player"]["resources"]["suspicious-artifacts-opened"] = 0  # type: ignore[index]
-    state["player"]["resources"]["credential-exposure"] = 0  # type: ignore[index]
-    intent = Intent(
-        desired_outcome="Не открываю Report.xlsx.exe и не сообщаю пароль.",
-        methods=["free_text"],
-    )
-
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "awareness-negated",
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    paths = {operation.path for operation in patch.patch}
-
-    assert "/player/resources/suspicious-artifacts-opened" not in paths
-    assert "/player/resources/credential-exposure" not in paths
-
-
-def test_awareness_turn_progression_updates_current_window():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["meta"]["turn"] = 1  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
-    state["player"]["resources"]["turns-remaining"] = 9  # type: ignore[index]
-    intent = Intent(
-        action_type="feasibility",
-        desired_outcome="Закрываю рабочие вопросы первой половины дня и отвечаю в рамках процедур",
-        methods=["free_text"],
-    )
-
-    _, patch = RuleEngine().resolve(state, intent, "awareness-next", campaign_id="awareness", scenario_type="training")
-    values = {operation.path: operation.value for operation in patch.patch}
-
-    assert patch.turn == 2
-    assert values["/player/resources/current-turn-window"] == "ход 2, понедельник, 15:00-18:00"
-    assert values["/player/resources/turns-remaining"] == 8
-
-
-def test_party_settings_keep_worldpack_id_for_awareness_rules():
-    party = SimpleNamespace(
-        worldpack_id="awareness",
-        state_campaign_id="party_123",
-        scenario_type="training",
-        model_profile=None,
-    )
-
-    configured = settings_for_party(Settings(campaign_id="default"), party)
-
-    assert configured.campaign_id == "awareness"
-    assert configured.scenario_type == "training"
-
-
-def test_awareness_party_state_id_still_enables_turn_progression():
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_123"  # type: ignore[index]
-    state["meta"]["turn"] = 1  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
-    state["player"]["resources"]["turns-remaining"] = 9  # type: ignore[index]
-    intent = Intent(action_type="feasibility", desired_outcome="Завершаю первую половину дня", methods=["free_text"])
-
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "awareness-party-next",
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    values = {operation.path: operation.value for operation in patch.patch}
-
-    assert patch.turn == 2
-    assert values["/player/resources/current-turn-window"] == "ход 2, понедельник, 15:00-18:00"
-
-
-def test_awareness_existing_party_auto_start_is_migrated_before_player_turn():
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_old"  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
-    state["player"]["resources"]["turns-remaining"] = 10  # type: ignore[index]
-
-    migrated = awareness_state_after_auto_start(state, "awareness", has_auto_start=True)
-
-    assert state["meta"]["turn"] == 0  # type: ignore[index]
-    assert migrated["meta"]["turn"] == 1
-    assert migrated["player"]["resources"]["turns-remaining"] == 9
-
-
-def test_awareness_turn_10_stays_playable_and_turn_11_opens_separate_debrief():
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_finish"  # type: ignore[index]
-    state["meta"]["turn"] = 10  # type: ignore[index]
-    state["player"]["resources"].update(  # type: ignore[index]
-        {
-            "current-turn-window": "ход 10, пятница, 15:00-18:00",
-            "turns-remaining": 0,
-            "awareness-score": 85,
-        }
-    )
-    intent = Intent(action_type="feasibility", desired_outcome="Завершаю десятый ход", methods=["free_text"])
-
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "awareness-party-debrief",
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    values = {operation.path: operation.value for operation in patch.patch}
-
-    assert patch.turn == 11
-    assert values["/player/resources/current-turn-window"] == "итоговый разбор после хода 10"
-    assert values["/player/resources/turns-remaining"] == 0
-    assert values["/player/resources/completion-status"] == "complete"
-
-
-def test_awareness_party_start_narrative_state_sets_opening_window_without_mutating_original():
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_new"  # type: ignore[index]
-
-    patch = party_start_state_patch(state, "party-awareness", "awareness", "training")
-    narrative_state = party_start_narrative_state(state, patch)
-
-    assert patch is not None
-    assert state["meta"]["turn"] == 0  # type: ignore[index]
-    assert "current-turn-window" not in state["player"]["resources"]  # type: ignore[index]
-    assert narrative_state["meta"]["turn"] == 1
-    assert narrative_state["player"]["resources"]["current-turn-window"] == "ход 1, понедельник, 10:00-14:00"
-    assert narrative_state["player"]["resources"]["turns-remaining"] == 9
-
-
-def test_awareness_validator_rejects_summarized_opening_and_accepts_structured_fallback():
-    state = base_state()
-    state["meta"]["campaign_id"] = "awareness"  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 1, понедельник, 10:00-14:00"  # type: ignore[index]
-    outcome = Outcome(
-        check_id="awareness-start",
-        action_type="feasibility",
-        actor="system",
-        result="success",
-        roll=0,
-        difficulty=0,
-        modifiers={},
-        final_score=0,
-        consequences=[],
-        authoritative_block="AUTHORITATIVE_OUTCOME: opening scene.",
-    )
-
-    summarized = (
-        "Ход 1. Понедельник, 10:00-14:00.\n\n"
-        "Во входящих два письма от коллег, а в рабочем мессенджере Максим просит статус до обеда."
-    )
-    validation = OutputValidator().validate(summarized, outcome, state, scenario_type="training")
-
-    assert not validation.valid
-    assert any("summarized" in violation or "opening" in violation for violation in validation.violations)
-    fallback = awareness_opening_fallback(state)
-    assert OutputValidator().validate(fallback, outcome, state, scenario_type="training").valid
-    assert fallback.count("ПИСЬМО") >= 2
-    assert "СООБЩЕНИЕ" in fallback
-
-
-def test_awareness_validator_rejects_facilitator_blocks_backend_and_repeated_turn():
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_456"  # type: ignore[index]
-    state["meta"]["turn"] = 2  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "ход 2, понедельник, 15:00-18:00"  # type: ignore[index]
-    outcome = Outcome(
-        check_id="awareness-messy-output",
-        action_type="feasibility",
-        actor="player",
-        result="success",
-        roll=10,
-        difficulty=10,
-        modifiers={},
-        final_score=10,
-        consequences=[],
-        authoritative_block="AUTHORITATIVE_OUTCOME: continue.",
-    )
-    messy = """**Ход 1. Понедельник, 10:00–14:00.**
-
-Первое письмо выглядит безопасно. Ты понимаешь, что второе имеет двойное расширение и надо сообщить в SOC.
-В incident-tracking появляется запись, backend добавляет строку в дашборд с уровнем опасности.
-
-**Мессенджер:**
-Руководитель просит статус.
-
-**Блок-сценарий:**
-- Пересылаешь письмо в SOC.
-- Всё в пределах шаблона: два письма, одно сообщение и точка решения.
-"""
-
-    validation = OutputValidator().validate(
-        messy,
-        outcome,
-        state,
-        campaign_id="awareness",
-        latest_user_message="Отправляю письмо на проверку",
-        scenario_type="training",
-    )
-
-    assert not validation.valid
-    assert any("scheduled header" in violation for violation in validation.violations)
-    assert any("facilitator-only" in violation for violation in validation.violations)
-    assert any("backend" in violation for violation in validation.violations)
-    assert any("thoughts" in violation for violation in validation.violations)
-
-
-def test_awareness_validator_rejects_early_debrief_and_accepts_it_after_turn_10():
-    outcome = Outcome(
-        check_id="awareness-debrief-gate",
-        action_type="feasibility",
-        actor="player",
-        result="success",
-        roll=0,
-        difficulty=0,
-        modifiers={},
-        final_score=0,
-        consequences=[],
-        authoritative_block="AUTHORITATIVE_OUTCOME: training debrief gate.",
-    )
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_gate"  # type: ignore[index]
-    state["meta"]["turn"] = 10  # type: ignore[index]
-    state["player"]["resources"].update(  # type: ignore[index]
-        {
-            "current-turn-window": "ход 10, пятница, 15:00-18:00",
-            "turns-remaining": 0,
-            "awareness-score": 85,
-        }
-    )
-    early = "Ход 10. Пятница, 15:00-18:00.\n\nФинальное саммари и оценка. Итоговый балл: 85 из 100."
-
-    early_validation = OutputValidator().validate(
-        early,
-        outcome,
-        state,
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-
-    assert not early_validation.valid
-    assert any("only after" in violation for violation in early_validation.violations)
-
-    state["meta"]["turn"] = 11  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = "итоговый разбор после хода 10"  # type: ignore[index]
-    debrief = safe_fallback(
-        outcome,
-        state,
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    final_validation = OutputValidator().validate(
-        debrief,
-        outcome,
-        state,
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-
-    assert debrief.startswith("Итоговый разбор.")
-    assert "85 из 100" in debrief
-    assert final_validation.valid
-
-
-@pytest.mark.parametrize(
-    ("turn", "window"),
-    [
-        (2, "ход 2, понедельник, 15:00-18:00"),
-        (7, "ход 7, четверг, 10:00-14:00"),
-    ],
-)
-def test_awareness_scheduled_fallback_keeps_full_scene_template(turn: int, window: str):
-    state = base_state()
-    state["meta"]["campaign_id"] = "party_awareness_fallback"  # type: ignore[index]
-    state["meta"]["turn"] = turn  # type: ignore[index]
-    state["player"]["resources"]["current-turn-window"] = window  # type: ignore[index]
-    outcome = Outcome(
-        check_id=f"awareness-fallback-{turn}",
-        action_type="feasibility",
-        actor="player",
-        result="success",
-        roll=0,
-        difficulty=0,
-        modifiers={},
-        final_score=0,
-        consequences=[],
-        authoritative_block="AUTHORITATIVE_OUTCOME: fallback scene.",
-    )
-
-    fallback = safe_fallback(
-        outcome,
-        state,
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-    validation = OutputValidator().validate(
-        fallback,
-        outcome,
-        state,
-        campaign_id="awareness",
-        scenario_type="training",
-    )
-
-    assert fallback.startswith(f"Ход {turn}.")
-    assert "ПИСЬМО\n" in fallback
-    assert "СООБЩЕНИЕ\n" in fallback
-    assert validation.valid
-
-
 def test_validator_repairs_meta_output_labels(tmp_path: Path):
     c = client(tmp_path, mode="meta-leak")
     response = c.post(
@@ -3280,41 +2931,6 @@ def test_party_message_validation_failure_fails_without_gateway_fallback(tmp_pat
     assert "LLM response failed narrative validation" in status["error"]
 
 
-def test_awareness_one_day_light_gui_start_and_message_use_valid_safe_fallback(tmp_path: Path):
-    write_worldpack(tmp_path, pack_id="awareness-one-day", supported_modes=["training"])
-    c = client(tmp_path, mode="repair-fail")
-    party = create_demo_party(
-        c,
-        title="One-day awareness fallback",
-        scenario_type="training",
-        worldpack_id="awareness-one-day",
-    )
-
-    started = c.post(
-        f"/api/parties/{party['id']}/start",
-        json={"idempotency_key": "awareness-one-day-start"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert started.status_code == 200, started.text
-    assert started.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
-    started_text = started.json()["choices"][0]["message"]["content"]
-    assert "Investigator" in started_text
-    assert "https://" not in started_text
-
-    message = c.post(
-        f"/api/parties/{party['id']}/messages",
-        json={"content": "Проверяю запрос по рабочему каналу.", "idempotency_key": "awareness-one-day-message"},
-        headers={"Authorization": "Bearer test"},
-    )
-    assert message.status_code == 200, message.text
-    assert message.json()["raw"]["choices"][0]["finish_reason"] == "provider_fallback"
-    message_text = message.json()["choices"][0]["message"]["content"]
-    assert "Investigator" in message_text
-    assert "план по этой задаче" in message_text
-    assert "https://" not in message_text
-    assert len(c.get(f"/api/parties/{party['id']}/history").json()["turns"]) == 2
-
-
 def test_party_start_provider_http_error_returns_502(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path, mode="http-503")
@@ -3447,7 +3063,7 @@ def test_training_runtime_party_start_provider_error_uses_world_fallback(
 
 @pytest.mark.parametrize(
     ("failure_kind", "expected_calls", "expected_finish_reason"),
-    [("soft-profile", 2, "stop"), ("hard-sender", 1, "provider_fallback")],
+    [("soft-deadline", 2, "provider_fallback"), ("hard-sender", 1, "provider_fallback")],
 )
 def test_training_runtime_repairs_only_soft_validation_failures(
     tmp_path: Path,
@@ -3462,7 +3078,7 @@ def test_training_runtime_repairs_only_soft_validation_failures(
         nonlocal llm_calls
         llm_calls += 1
         sender = "Посторонний" if failure_kind == "hard-sender" else "Анна Петрова <petrova@ptsecurity.com>"
-        profile_detail = "по текущей задаче" if llm_calls == 1 else "по работе Investigator"
+        deadline = "утром" if failure_kind == "soft-deadline" and llm_calls == 1 else "09:35"
         content = (
             "ПИСЬМО\n"
             "Канал: корпоративная почта\n"
@@ -3473,7 +3089,7 @@ def test_training_runtime_repairs_only_soft_validation_failures(
             "Вложения: нет\n"
             "Ссылки: нет\n"
             "Тело:\n"
-            f"К 09:35 пришли первый результат или конкретный вопрос {profile_detail}.\n"
+            f"К {deadline} пришли первый результат или конкретный вопрос по работе Investigator.\n"
             "Подпись:\nАнна Петрова"
         )
         return {

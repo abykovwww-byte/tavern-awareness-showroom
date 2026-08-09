@@ -1,397 +1,108 @@
-from app.models.schemas import Intent, Outcome
-from app.main import party_start_state_patch
-from app.services.intent_parser import IntentParser
-from app.services.rule_engine import (
-    AWARENESS_ONE_DAY_ID,
-    AWARENESS_ONE_DAY_TURN_WINDOWS,
-    RuleEngine,
-    awareness_turn_window,
-    is_awareness_one_day_campaign,
-)
-from app.services.validator import (
-    AWARENESS_ONE_DAY_SITE_TURNS,
-    OutputValidator,
-    awareness_debrief_fallback,
-    awareness_one_day_safe_fallback,
-    safe_fallback,
-)
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from app.models.schemas import Intent, WorldPackSummary
+from app.services.rule_engine import RuleEngine
+from app.services.state_store import StateStore
+from app.services.training_runtime import TrainingRuntimeService
 
 
-def state_for(turn: int) -> dict:
-    return {
-        "meta": {"campaign_id": AWARENESS_ONE_DAY_ID, "turn": turn},
-        "player": {
-            "name": "Алексей",
-            "description": "Инженер по анализу вредоносного кода и подготовке сигнатур.",
-            "resources": {
-                "current-turn-window": AWARENESS_ONE_DAY_TURN_WINDOWS.get(
-                    turn, "итоговый разбор после хода 10"
-                ),
-                "security-score": 0,
-                "roleplay-score": 0,
-                "communication-score": 0,
-                "total-score": 0,
-                "safe-security-responses": 0,
-                "role-aligned-responses": 0,
-                "professional-responses": 0,
-                "security-score-evidence": "",
-                "roleplay-score-evidence": "",
-                "communication-score-evidence": "",
-                "unsafe-actions": 0,
-                "credential-exposure": 0,
-                "suspicious-artifacts-opened": 0,
-                "confidential-disclosures": 0,
-                "unnecessary-forwarding": 0,
-            }
-        },
-    }
+WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+FROZEN_CONTRACT_HASH = "7011d55c45ebb21594dacb5a62ce451625799ec34a7e4298fc70b65f98660464"
 
 
-def values_for(patch) -> dict:
+def runtime_for(tmp_path: Path) -> TrainingRuntimeService:
+    manifest_path = WORLD_ROOT / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pack = WorldPackSummary(
+        id=str(manifest["id"]),
+        title=str(manifest["title"]),
+        slug=WORLD_ROOT.name,
+        status="playable",
+        manifest_path=str(manifest_path),
+        state_seed_path=str(WORLD_ROOT / "state-seed.json"),
+        manifest=manifest,
+    )
+    store = StateStore(str(tmp_path / "state.db"), "party-one-day", pack.state_seed_path)
+    return TrainingRuntimeService(pack, store)
+
+
+def patch_values(patch) -> dict[str, object]:
     return {operation.path: operation.value for operation in patch.patch}
 
 
-def outcome() -> Outcome:
-    return Outcome(
-        check_id="training-test",
-        action_type="feasibility",
-        actor="player",
-        result="deterministic_resolution",
-        roll=0,
-        difficulty=0,
-        modifiers={},
-        final_score=0,
-        authoritative_block="",
-    )
+def test_one_day_v2_contract_hash_and_schedule_are_unchanged(tmp_path: Path):
+    runtime = runtime_for(tmp_path)
+
+    assert runtime.contract["schema_version"] == "rp-training-runtime.v2"
+    assert runtime.program["schema_version"] == "rp-training-program.v2"
+    assert runtime.contract_hash == FROZEN_CONTRACT_HASH
+    assert [turn["window"] for turn in runtime.program["turns"]] == [
+        "ход 1, понедельник, 09:00-09:30",
+        "ход 2, понедельник, 09:30-10:15",
+        "ход 3, понедельник, 10:15-11:00",
+        "ход 4, понедельник, 11:00-12:00",
+        "ход 5, понедельник, 12:00-13:00",
+        "ход 6, понедельник, 13:00-14:15",
+        "ход 7, понедельник, 14:15-15:15",
+        "ход 8, понедельник, 15:15-16:15",
+        "ход 9, понедельник, 16:15-17:15",
+        "ход 10, понедельник, 17:15-18:00",
+    ]
 
 
-def test_one_day_schedule_uses_ten_windows_from_one_monday():
-    state = state_for(1)
-    assert is_awareness_one_day_campaign(state)
-    assert awareness_turn_window(1, state, AWARENESS_ONE_DAY_ID) == "ход 1, понедельник, 09:00-09:30"
-    assert awareness_turn_window(10, state, AWARENESS_ONE_DAY_ID) == "ход 10, понедельник, 17:15-18:00"
+def test_one_day_v2_fallbacks_validate_for_every_turn_and_debrief(tmp_path: Path):
+    runtime = runtime_for(tmp_path)
+    state = runtime.store.get_state()
+    state["player"]["name"] = "Алексей"
+    state["player"]["description"] = "Инженер по анализу вредоносного кода и подготовке сигнатур."
 
-
-def test_one_day_party_start_uses_one_day_first_window():
-    state = state_for(0)
-    patch = party_start_state_patch(state, "party-test", AWARENESS_ONE_DAY_ID, "training")
-    assert patch is not None
-    values = values_for(patch)
-    assert values["/player/resources/current-turn-window"] == "ход 1, понедельник, 09:00-09:30"
-
-
-def test_one_day_safe_security_response_scores_all_three_components():
-    state = state_for(3)
-    intent = Intent(
-        desired_outcome=(
-            "Отвечаю, что не подтверждаю оплату без владельца задачи, "
-            "проверяю запрос по официальному каналу и сообщаю в SOC адрес отправителя и время."
+    for turn in range(1, 11):
+        state["meta"]["turn"] = turn
+        interaction_contract = (
+            {"site": {"display_url": f"https://training.example.test/turn-{turn}"}}
+            if runtime.turn_definition(turn)["surface"]["links"] == "artifact"
+            else None
         )
+        fallback = runtime.fallback_text(state, interaction_contract)
+        assert runtime.validate_narrative(fallback, state, interaction_contract) == []
+        assert len(runtime.prompt_contract(state)["surfaces"]) == 1
+
+    state["meta"]["turn"] = 11
+    state["player"]["resources"].update(
+        {"security-score": 50, "roleplay-score": 24, "communication-score": 8, "total-score": 82}
     )
+    debrief = runtime.fallback_text(state)
+    assert runtime.validate_narrative(debrief, state) == []
+    assert "82 из 100" in debrief
+    assert "50 из 60" in debrief
+    assert "24 из 30" in debrief
+    assert "8 из 10" in debrief
+
+
+def test_one_day_v2_runtime_preserves_deterministic_scoring(tmp_path: Path):
+    runtime = runtime_for(tmp_path)
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 3
+    state["player"]["description"] = "Инженер по анализу вредоносного кода и подготовке сигнатур."
     _, patch = RuleEngine().resolve(
         state,
-        intent,
-        "safe-turn",
-        campaign_id=AWARENESS_ONE_DAY_ID,
+        Intent(
+            desired_outcome=(
+                "Отказываюсь подтверждать оплату без владельца задачи, проверяю запрос по официальному "
+                "каналу и сообщаю в SOC адрес отправителя и время."
+            )
+        ),
+        "one-day-v2-score",
+        campaign_id="awareness-one-day",
         scenario_type="training",
+        training_runtime=runtime,
     )
-    values = values_for(patch)
+    values = patch_values(patch)
+
     assert values["/player/resources/security-score"] == 10
     assert values["/player/resources/roleplay-score"] == 3
     assert values["/player/resources/communication-score"] == 1
     assert values["/player/resources/total-score"] == 14
-    assert "SOC/ДИБ" in values["/player/resources/security-score-evidence"]
-
-
-def test_one_day_scores_noun_form_refusal_and_service_desk_role_boundary():
-    state = state_for(3)
-    state["player"]["description"] = "Специалист первой линии технической поддержки."
-    intent = Intent(
-        desired_outcome=(
-            "Фиксирую отказ в выдаче прав без согласованной заявки в Service Desk и направляю запрос "
-            "ответственному владельцу доступа."
-        )
-    )
-
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "noun-refusal",
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-    values = values_for(patch)
-
-    assert values["/player/resources/security-score"] == 10
-    assert values["/player/resources/roleplay-score"] == 3
-    assert values["/player/resources/communication-score"] == 1
-    assert "явный отказ" in values["/player/resources/security-score-evidence"]
-
-
-def test_one_day_roleplay_uses_terms_from_stored_position_description():
-    state = state_for(1)
-    state["player"]["description"] = "Инженер по анализу вредоносного кода и подготовке сигнатур."
-    intent = Intent(desired_outcome="Готовлю сигнатуру для обнаруженного образца и вернусь с итогом к 11:00.")
-
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "role-description",
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-    values = values_for(patch)
-
-    assert values["/player/resources/roleplay-score"] == 3
-    assert values["/player/resources/communication-score"] == 1
-    assert "описанием должности" in values["/player/resources/roleplay-score-evidence"]
-
-
-def test_one_day_scoring_reads_safe_action_after_first_500_characters():
-    state = state_for(4)
-    message = ("Контекст обращения без принятия решения. " * 20) + (
-        "По внешней ссылке не перехожу, учетные данные не ввожу и направляю письмо в ДИБ."
-    )
-    intent = IntentParser().parse(message)
-
-    assert len(intent.desired_outcome) > 500
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "long-safe-action",
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-    values = values_for(patch)
-    assert values["/player/resources/security-score"] == 10
-
-
-def test_one_day_credential_disclosure_is_recorded_without_security_points():
-    state = state_for(7)
-    intent = Intent(desired_outcome="Отвечаю службе поддержки и сообщаю им пароль и проверочный код.")
-    _, patch = RuleEngine().resolve(
-        state,
-        intent,
-        "unsafe-turn",
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-    values = values_for(patch)
-    assert "/player/resources/security-score" not in values
-    assert values["/player/resources/unsafe-actions"] == 1
-    assert values["/player/resources/credential-exposure"] == 1
-
-
-def test_one_day_fallback_has_exactly_one_valid_surface_on_every_turn():
-    validator = OutputValidator()
-    expected_email_signatures = {
-        1: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
-        2: "Анна Петрова\nРуководитель команды\nPT Security\nEmail: petrova@ptsecurity.com",
-        4: "Служба уведомлений\nКорпоративный портал\nEmail: notice@ptsecurity-office.com",
-        6: "Роман Иванов\nРуководитель проекта\nPT Security\nEmail: ivanov@ptsecurity.com",
-        9: "Отдел закупок\nPT Security\nEmail: procurement@ptsecurity-billing.com",
-    }
-    for turn in range(1, 11):
-        state = state_for(turn)
-        text = awareness_one_day_safe_fallback(state)
-        assert text.count("\nПИСЬМО\n") + int(text.startswith("ПИСЬМО\n")) + text.count("\nСООБЩЕНИЕ\n") == 1
-        assert "Отправитель указан в поле «От»" not in text
-        assert ("https://" in text) == (turn in AWARENESS_ONE_DAY_SITE_TURNS)
-        if turn not in AWARENESS_ONE_DAY_SITE_TURNS:
-            assert "Ссылки: нет" in text
-        assert "анализу вредоносного кода" in text
-        if turn in expected_email_signatures:
-            assert f"Подпись:\n{expected_email_signatures[turn]}" in text
-        result = validator.validate(
-            text,
-            outcome(),
-            state,
-            campaign_id=AWARENESS_ONE_DAY_ID,
-            latest_user_message="Отвечаю по рабочей задаче.",
-            scenario_type="training",
-        )
-        assert result.valid, result.violations
-
-
-def test_one_day_fallback_orients_before_requesting_a_plan_and_uses_player_profile():
-    first = awareness_one_day_safe_fallback(state_for(1))
-    second = awareness_one_day_safe_fallback(state_for(2))
-
-    assert "Алексей" in first
-    assert "разобрать назначенный образец" in first
-    assert "План на сегодня" not in first
-    assert "план по этой задаче" in second
-
-
-def test_one_day_fallback_changes_the_work_item_for_different_professions():
-    analyst = state_for(1)
-    analyst["player"]["description"] = "Аналитик данных и продуктовых метрик."
-    tester = state_for(1)
-    tester["player"]["description"] = "QA-тестировщик веб-приложений."
-
-    analyst_text = awareness_one_day_safe_fallback(analyst)
-    tester_text = awareness_one_day_safe_fallback(tester)
-
-    assert "аналитическому блоку" in analyst_text
-    assert "воспроизвести назначенный дефект" in tester_text
-    assert analyst_text != tester_text
-
-
-def test_one_day_validator_rejects_link_on_unscheduled_turn():
-    state = state_for(1)
-    text = awareness_one_day_safe_fallback(state).replace(
-        "Ссылки: нет", "Ссылки: https://unexpected.example.test/open"
-    )
-
-    result = OutputValidator().validate(
-        text,
-        outcome(),
-        state,
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        latest_user_message="Приступаю к задаче.",
-        scenario_type="training",
-    )
-
-    assert not result.valid
-    assert "unscheduled turn must not contain a link" in " ".join(result.violations)
-
-
-def test_one_day_validator_rejects_generic_message_that_ignores_player_role():
-    state = state_for(1)
-    text = """Ход 1. Понедельник, 09:00-09:30.
-
-ПИСЬМО
-Канал: корпоративная почта
-От: Анна Петрова <petrova@ptsecurity.com>
-Кому: Алексей
-Дата/время: понедельник, 09:08
-Тема: Общая задача
-Вложения: нет
-Ссылки: нет
-Тело:
-Доброе утро. Возьми любую текущую корпоративную задачу и вернись со статусом к 09:35.
-Подпись:
-Анна Петрова
-Руководитель команды
-PT Security
-Email: petrova@ptsecurity.com
-
-Что ты делаешь и как отвечаешь в рамках своей должности?"""
-
-    result = OutputValidator().validate(
-        text,
-        outcome(),
-        state,
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        latest_user_message="Приступаю к задаче.",
-        scenario_type="training",
-    )
-
-    assert not result.valid
-    assert "stored player profession" in " ".join(result.violations)
-
-
-def test_public_fallback_uses_explicit_one_day_worldpack_for_party_scoped_state():
-    state = state_for(1)
-    state["meta"]["campaign_id"] = "party_test"
-
-    text = safe_fallback(
-        outcome(),
-        state,
-        latest_user_message="Отвечаю по рабочей задаче.",
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-
-    surface_count = (
-        text.count("\nПИСЬМО\n")
-        + int(text.startswith("ПИСЬМО\n"))
-        + text.count("\nСООБЩЕНИЕ\n")
-    )
-    assert surface_count == 1
-    result = OutputValidator().validate(
-        text,
-        outcome(),
-        state,
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        latest_user_message="Отвечаю по рабочей задаче.",
-        scenario_type="training",
-    )
-    assert result.valid, result.violations
-
-
-def test_one_day_debrief_reports_60_30_10_components():
-    state = state_for(11)
-    state["player"]["resources"].update(
-        {
-            "completion-status": "complete",
-            "security-score": 50,
-            "roleplay-score": 24,
-            "communication-score": 8,
-            "total-score": 82,
-        }
-    )
-    text = awareness_debrief_fallback(state)
-    assert text.startswith("Итоговый разбор.")
-    assert "82 из 100" in text
-    assert "50 из 60" in text
-    assert "24 из 30" in text
-    assert "8 из 10" in text
-
-
-def test_one_day_party_scoped_debrief_uses_explicit_worldpack_id():
-    state = state_for(11)
-    state["meta"]["campaign_id"] = "party_ellina"
-    state["player"]["resources"].update(
-        {
-            "completion-status": "complete",
-            "security-score": 50,
-            "roleplay-score": 24,
-            "communication-score": 8,
-            "total-score": 82,
-        }
-    )
-
-    text = safe_fallback(
-        outcome(),
-        state,
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-
-    assert "82 из 100" in text
-    assert "50 из 60" in text
-    assert "24 из 30" in text
-    assert "8 из 10" in text
-    assert "корректных эскалаций" not in text
-
-
-def test_one_day_validator_rejects_debrief_scores_that_disagree_with_state():
-    state = state_for(11)
-    state["player"]["resources"].update(
-        {
-            "completion-status": "complete",
-            "security-score": 50,
-            "roleplay-score": 24,
-            "communication-score": 8,
-            "total-score": 82,
-        }
-    )
-    wrong = """Итоговый разбор.
-
-Итоговый результат: 8 из 100.
-Информационная безопасность: 0 из 60.
-Соблюдение роли и регламентов: 6 из 30.
-Деловая коммуникация: 2 из 10.
-"""
-
-    validation = OutputValidator().validate(
-        wrong,
-        outcome(),
-        state,
-        campaign_id=AWARENESS_ONE_DAY_ID,
-        scenario_type="training",
-    )
-
-    assert not validation.valid
-    assert sum("canonical score" in violation for violation in validation.violations) == 4
