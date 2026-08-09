@@ -230,17 +230,29 @@ class RelationshipExtractionService:
     ) -> dict[str, Any]:
         state = self.store.get_state()
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
-        character_catalog = [
-            {
-                "character_id": character_id,
-                "name": (
-                    str(characters.get(character_id, {}).get("name") or character_id)
-                    if isinstance(characters.get(character_id), dict)
-                    else character_id
-                ),
-            }
-            for character_id in sorted(character_ids)
-        ]
+        character_catalog = []
+        for character_id in sorted(character_ids):
+            character = characters.get(character_id)
+            if not isinstance(character, dict):
+                character = {}
+            knowledge = character.get("knowledge")
+            identity_hint = ""
+            if isinstance(knowledge, list):
+                identity_hint = next(
+                    (
+                        str(item.get("text") or "").strip()[:240]
+                        for item in knowledge
+                        if isinstance(item, dict) and str(item.get("text") or "").strip()
+                    ),
+                    "",
+                )
+            character_catalog.append(
+                {
+                    "character_id": character_id,
+                    "name": str(character.get("name") or character_id),
+                    "identity_hint": identity_hint,
+                }
+            )
         context = {
             "turn": {
                 "player_message": str(turn.get("player_message") or ""),
@@ -261,7 +273,9 @@ class RelationshipExtractionService:
                         "Extract only relationship events that are directly evidenced by this completed RP turn. "
                         "Return strict JSON with exactly one top-level key, events. Each event must contain exactly "
                         "character_id, event_id, and a short verbatim evidence quote from the supplied turn. Use only "
-                        "the supplied identifiers. Return at most five events. Do not output numbers in any field. "
+                        "the supplied identifiers. Match an explicitly named target against character_id, name, and "
+                        "identity_hint; never substitute a different character. Return at most five events. Do not "
+                        "output numbers in any field. "
                         "Do not infer hidden motives, scores, weights, bands, or events not completed in the turn. "
                         "If nothing qualifies, return {\"events\":[]}."
                     ),

@@ -144,6 +144,45 @@ def test_process_turn_accepts_fenced_service_model_evidence_quote_alias(
     assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == -20
 
 
+def test_completion_payload_includes_identity_hint_for_character_targeting(tmp_path: Path) -> None:
+    state_path = tmp_path / "named-target.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "characters": {
+                    "ainz-ooal-gown": {"knowledge": [{"text": "Аинз действует осторожно."}]},
+                    "enri-emmot": {"knowledge": [{"text": "Энри живет в деревне Карн."}]},
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = StateStore(str(tmp_path / "state.db"), "named-target", str(state_path))
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    payload = service._completion_payload(
+        {"player_message": "Я оскорбляю Энри.", "narrative_response": "Энри услышала оскорбление."},
+        {"ainz-ooal-gown", "enri-emmot"},
+        "fixture",
+    )
+    context = json.loads(payload["messages"][1]["content"])
+
+    assert context["characters"] == [
+        {
+            "character_id": "ainz-ooal-gown",
+            "name": "ainz-ooal-gown",
+            "identity_hint": "Аинз действует осторожно.",
+        },
+        {
+            "character_id": "enri-emmot",
+            "name": "enri-emmot",
+            "identity_hint": "Энри живет в деревне Карн.",
+        },
+    ]
+    assert "never substitute a different character" in payload["messages"][0]["content"]
+
+
 def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
