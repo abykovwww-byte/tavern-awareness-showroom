@@ -1,0 +1,55 @@
+{
+  "schema_version": "rp-relationships.v1",
+  "axes": {
+    "loyalty": {
+      "min": -100,
+      "max": 100,
+      "per_turn_cap": 30,
+      "band_deadband": 5,
+      "bands": [
+        {"id": "enmity", "max": -70, "label": "вражда", "opens": "plot", "band_on": "cross"},
+        {"id": "rupture", "max": -40, "label": "разрыв", "opens": "ultimatum", "band_on": "resolution"},
+        {"id": "estranged", "max": -15, "label": "отчуждение", "opens": "crack", "band_on": "cross"},
+        {"id": "neutral", "max": 14, "label": "ровно"},
+        {"id": "favourable", "min": 15, "label": "расположение", "opens": "favour", "band_on": "cross"},
+        {"id": "faithful", "min": 40, "label": "верность"},
+        {"id": "devoted", "min": 70, "label": "преданность"}
+      ]
+    }
+  },
+  "events": {
+    "insult_public": {"axis": "loyalty", "weight": -20, "decay_turns": 40, "wound": "humiliated_publicly"},
+    "broken_promise": {"axis": "loyalty", "weight": -25, "decay_turns": 60, "wound": "deceived"},
+    "abandoned_in_need": {"axis": "loyalty", "weight": -30, "decay_turns": null, "wound": "abandoned"},
+    "physical_assault": {"axis": "loyalty", "weight": -30, "decay_turns": null, "wound": "humiliated_publicly"},
+    "defended_publicly": {"axis": "loyalty", "weight": 15, "decay_turns": 60},
+    "kept_promise": {"axis": "loyalty", "weight": 10, "decay_turns": 40},
+    "shared_risk": {"axis": "loyalty", "weight": 12, "decay_turns": 60}
+  },
+  "character_weights": {
+    "dmitry-lanskoy": {"role": "rival", "multipliers": {"abandoned_in_need": 1.25}},
+    "sergei-ardatov": {"role": "rival", "multipliers": {"insult_public": 1.25}},
+    "nikolai-hvoshtov": {"role": "rival", "multipliers": {"broken_promise": 1.2}},
+    "pavel-ragozin": {"role": "rival", "multipliers": {}},
+    "alexey-mertsalov": {"role": "rival", "multipliers": {}},
+    "varvara-sokolovskaya": {"role": "kin", "multipliers": {"defended_publicly": 1.2}},
+    "pavel-sokolovsky": {"role": "kin", "multipliers": {"abandoned_in_need": 1.2}},
+    "zoya-vyazemskaya": {"role": "mentor", "multipliers": {"insult_public": 1.25}},
+    "anna-ustinova": {"role": "subordinate", "multipliers": {"kept_promise": 1.25}},
+    "maria-ladomirskaya": {"role": "rival", "multipliers": {"shared_risk": 1.2}}
+  },
+  "roles": {
+    "subordinate": {"strike_form": "sabotage"},
+    "rival": {"strike_form": "public_accusation"},
+    "kin": {"strike_form": "disownment"},
+    "debtor": {"strike_form": "flight"},
+    "mentor": {"strike_form": "withdrawn_support"}
+  },
+  "wounds": {
+    "humiliated_publicly": {"negative_multiplier": 1.5, "strike_visibility": "public"},
+    "deceived": {"blocks_natural_growth": true},
+    "abandoned": {"ultimatum_demand": "presence"}
+  },
+  "clocks": {"ultimatum": 4, "plot": 7},
+  "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
+}
