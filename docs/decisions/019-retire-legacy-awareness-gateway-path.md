@@ -80,8 +80,8 @@ Awareness перестаёт быть предметом знания Gateway. W
 мигрирует на WorldPack-owned training runtime по Decision 017, по образцу
 `awareness-one-day`: длина курса, расписание окон, границы полудневных срезов,
 привязка финального разбора и авторские тексты отказа объявляются в
-`program.json` — тексты живут в `turns[].surface.fallback` и `debrief.fallback`,
-рядом с поверхностью, которую они замещают; детекторы и веса — в
+`program.json` — тексты живут в `turns[].fallback` и `debrief.fallback`, рядом с
+ходом, который они замещают; детекторы и веса — в
 `assessment.json`. `fallbacks.json` остаётся метаданными контракта
 (`rp-training-fallbacks.v1`: версия и пояснение) и исполняемых текстов не
 содержит — иначе один и тот же текст имел бы два источника истины. После миграции
@@ -89,6 +89,12 @@ legacy-путь Awareness из Gateway удаляется, а не чинитс�
 константы расписаний, регексы предметной области, course-specific фолбэки,
 функции начисления баллов и предикаты `awareness_final_summary` и
 `awareness_turns_remaining`.
+
+URL-строки при переносе fallback приводятся к capability-safe форме: на ходе с
+`links: artifact` литеральный legacy URL заменяется на `{{artifact.url}}`, а на
+ходе без разрешённого артефакта — на `Ссылки: нет`. Остальной авторский текст и
+структура блоков сохраняются. Это единственное разрешённое содержательное
+расхождение: дословный legacy URL не должен обходить активный site contract.
 
 Курс `awareness` не выражается контрактом `rp-training-program.v2`, и это
 обнаружилось при переносе. В v2 ход несёт ровно одну поверхность — письмо или
@@ -200,6 +206,9 @@ Preflight: `scripts/validate-repository.py` и, поскольку меняет�
 шкалу оценки уже отыгранных ходов молча. Цена принята сознательно — незакрытые
 сессии придётся начать заново, зато в рантайме не остаётся двух ветвей курса, и
 продакшн-разбивка по `training_runtime_contract_hash` не смешивает поколения.
+Для этого Gateway получает общий `POST /api/parties/{party_id}/complete`,
+переводящий партию в статус `completed` без удаления истории. Удаление через
+существующий `DELETE` не считается закрытием.
 RP-нарратор сможет вернуть
 слабый, противоречивый или содержащий служебный текст ответ — этот риск принят в
 пользу непрерывности игры и отсутствия ложных шаблонных успехов, и починка
@@ -302,7 +311,7 @@ skill-документация. Если найдёшь консьюмера в�
 |------|-----------|---------------|------------|------------|
 | S1 | Ввести `rp-training-program.v3` с `surfaces[]`, сохранив v1/v2 | `rp-gateway/app/services/training_runtime.py`, `scripts/validate-training-runtime.py`, `codex-skills/training-world-pack-builder/**` | `worldpacks/**` | Wave 0 |
 | L1 | Мигрировать `awareness` на v3 | `worldpacks/awareness/**` | `worldpacks/awareness-one-day/training/*.json`, `scripts/validate-training-runtime.py` | S1 |
-| L2 | Удалить legacy Awareness из Gateway | `rp-gateway/app/services/validator.py`, `rp-gateway/app/services/rule_engine.py`, `rp-gateway/app/services/adjudicator.py`, `rp-gateway/app/main.py`, `rp-gateway/app/services/party_store.py` | `worldpacks/**` | S1 |
+| L2 | Удалить legacy Awareness из Gateway и добавить штатное завершение партии | `rp-gateway/app/services/validator.py`, `rp-gateway/app/services/rule_engine.py`, `rp-gateway/app/services/adjudicator.py`, `rp-gateway/app/main.py`, `rp-gateway/app/services/party_store.py` | `worldpacks/**` | S1 |
 | L3 | Исключение перекрытых откатом ходов из памяти | `rp-gateway/app/services/state_store.py`, `rp-gateway/app/services/rp_story_memory.py` | — | — |
 | L4 | Тесты под контракты S1 и L1-L3 | `rp-gateway/tests/**` | — | контракты в §B.4 |
 
@@ -429,6 +438,16 @@ WHERE campaign_id = ? AND state_version > ?
 где второй параметр — `target_version`. `rollback` остаётся append-only: ходы
 не удаляются.
 
+Штатное завершение партии (L2) добавляет общий маршрут без удаления данных:
+
+```text
+POST /api/parties/{party_id}/complete
+```
+
+Он переводит `parties.status` из `active` в `completed`, сохраняет state,
+turns, audit и provider keys и идемпотентно возвращает завершённую партию.
+Повторная активация остаётся доступна существующим маршрутом `/activate`.
+
 Транспортный статус RP (Wave 4), ключ в `turns.metadata_json`:
 
 ```json
@@ -469,13 +488,15 @@ WHERE campaign_id = ? AND state_version > ?
    `program.json` на v3: 10 ходов, нечётные 10:00-14:00, чётные 15:00-18:00,
    финальный разбор после ответа на ход 10. Туда же — авторские тексты отказа,
    в `turns[].fallback` и `debrief.fallback`, перенесённые из course-specific
-   фолбэков Gateway дословно, вместе с их многоканальной структурой; ход 1
+   фолбэков Gateway с сохранением авторского текста и многоканальной структуры;
+   только URL-строки адаптируются по capability contract: `{{artifact.url}}`
+   для artifact-ходов и `Ссылки: нет` для остальных. Ход 1
    объявляет `surfaces` с двумя письмами и одним сообщением. Детекторы и веса —
    в `assessment.json`; `fallbacks.json` создаётся как метаданные версии.
    Добавить блок `training_runtime` в `manifest.json`. Проверяемый исход:
    `validate-training-runtime.py` проходит на `awareness`, ни один
-   fallback-текст не остался только в удаляемом коде Gateway, и ни один текст
-   не переписан ради формата — расхождения с legacy показать построчно.
+   fallback-текст не остался только в удаляемом коде Gateway, а построчное
+   расхождение с legacy ограничено URL-строками, разрешёнными этим решением.
 4. **L2.** Удалить из `rp-gateway/app/`: `AWARENESS_TURN_WINDOWS`,
    `AWARENESS_DEBRIEF_WINDOW`, `AWARENESS_ONE_DAY_ID`,
    `AWARENESS_ONE_DAY_TURN_WINDOWS`, `AWARENESS_ONE_DAY_SECURITY_TURNS`,
@@ -485,7 +506,10 @@ WHERE campaign_id = ? AND state_version > ?
    `AWARENESS_PLAYER_ACTION_PATTERNS`, все функции `awareness_*` в
    `validator.py` и `rule_engine.py`, их вызовы в `adjudicator.py`, `main.py` и
    `party_store.py`, включая временный guard из рабочего дерева. Проверяемый
-   исход: `grep -ri awareness rp-gateway/app/` пуст, импорты не сломаны.
+   исход: `grep -ri awareness rp-gateway/app/` пуст, импорты не сломаны. В тех
+   же двух принадлежащих L2 файлах добавить общий идемпотентный
+   `POST /api/parties/{party_id}/complete`; тест подтверждает status=completed и
+   сохранность истории.
 5. **L3.** Реализовать контракт хранилища из §B.4 — часть уже сделана и
    закоммичена шагом 1, доделать остаток. Проверяемый исход: ход, перекрытый
    откатом, не возвращается из `turns_for_memory`.
@@ -529,9 +553,13 @@ WHERE campaign_id = ? AND state_version > ?
 - **Decided by the user 2026-08-09, после остановки первой попытки:** многоканальный ход
   вводится как `rp-training-program.v3` с `surfaces[]`. Вариант «подогнать курс
   под один канал за ход в v2» отклонён — он менял бы сам курс, а не его запись.
-  Инвариант «Training не деградирует» здесь главнее стоимости схемы. Тексты
-  фолбэков не переписывать под формат: если какой-то из них всё же не ложится в
-  v3, это остановка и доклад, а не молчаливая правка текста.
+  Инвариант «Training не деградирует» здесь главнее стоимости схемы.
+- **Decided by the user 2026-08-09 после срабатывания stop-условия:** сохранить
+  весь авторский fallback-текст, но адаптировать URL-строки к capability
+  contract: `{{artifact.url}}` для artifact-ходов и `Ссылки: нет` для остальных.
+  Другие переписывания текста по-прежнему запрещены.
+- **Decided by the user 2026-08-09:** активные legacy-партии завершаются новым
+  общим `POST /api/parties/{party_id}/complete`; `DELETE` не использовать.
 - If a step turns out to contradict an accepted ADR, stop and report — do not
   reverse a decision silently. В частности: шаг 9 отменяет часть поведения,
   описанного в Decision 018, и уточняет его порядок; 018 обновляется в том же

@@ -103,6 +103,9 @@ resource must exist in `state-seed.json`.
   `score_rule_id` applies at most once.
 - Turn and debrief fallback text is copied from the legacy Gateway path before
   that path is deleted; no text may remain available only in Gateway code.
+  The only permitted textual changes are URL lines: artifact turns use
+  `{{artifact.url}}`, while turns without an enabled artifact use
+  `Ссылки: нет`. All other authored text and block structure stay unchanged.
 
 ## SQLite and API signatures
 
@@ -120,8 +123,16 @@ UPDATE turns SET excluded_from_memory = 1
 WHERE campaign_id = ? AND state_version > ?
 ```
 
-The parameters are `(campaign_id, target_version)`. Public method signatures
-and HTTP routes remain unchanged.
+The parameters are `(campaign_id, target_version)`. Existing public method
+signatures and HTTP routes remain unchanged; L2 adds one generic, idempotent
+route without deleting party data:
+
+```text
+POST /api/parties/{party_id}/complete
+```
+
+It sets `parties.status=completed` and preserves state, turns, audit events and
+provider keys. The existing `/activate` route may reactivate the party.
 
 Wave 4 adds `metadata_json.transport_status` with values `ok`,
 `provider_error`, `provider_timeout`, or `invalid_response` for every scenario
