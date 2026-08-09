@@ -1,8 +1,8 @@
 # Decision 019 Wave 0 contract freeze
 
-Frozen on 2026-08-09 before lanes L1-L4. This file records the existing
-contract shape; it does not introduce a schema version or a new runtime
-surface.
+Frozen on 2026-08-09 before S1 and lanes L1/L2/L4. This file records the exact
+v3 contract introduced by Decision 019 and the course values that L1 must
+preserve. S1 changes generic schema handling only; it does not edit WorldPacks.
 
 ## WorldPack runtime declaration
 
@@ -11,14 +11,14 @@ references:
 
 ```json
 {
-  "schema_version": "rp-training-runtime.v2",
+  "schema_version": "rp-training-runtime.v3",
   "program": "training/program.json",
   "assessment": "training/assessment.json",
   "fallbacks": "training/fallbacks.json"
 }
 ```
 
-`program.json` uses `rp-training-program.v2`. Required top-level members are
+`program.json` uses `rp-training-program.v3`. Required top-level members are
 `schema_version`, positive integer `revision`, `progression`, contiguous
 `turns`, and `debrief`. `role_adapters` and `global_validation` use the same
 generic shapes as `awareness-one-day`.
@@ -26,12 +26,48 @@ generic shapes as `awareness-one-day`.
 - `progression` owns `total_turns`, the three canonical resource IDs,
   `complete_value`, and `debrief_window`.
 - Each turn owns `turn`, `window`, `header`, `instruction`, optional
-  `variation_budget` and `visible_state_paths`, `question`, and `surface`.
-- A surface owns `type` (`email` or `messenger`), positive `count`, links policy
-  (`none` or `artifact`), validation fields/patterns, and the complete authored
-  `fallback`. Executable fallback text does not live in `fallbacks.json`.
+  `variation_budget` and `visible_state_paths`, `question`, boolean
+  `require_question`, complete authored `fallback`, and non-empty `surfaces`.
+- Each surface owns a unique `type` (`email` or `messenger`), positive integer
+  `count`, links policy (`none` or `artifact`), and its validation
+  fields/patterns. Executable fallback text does not live in `surfaces` or
+  `fallbacks.json`.
+- Narrative validation requires exactly `count` blocks for every declared
+  surface and rejects every undeclared block marker. Link auto-repair is
+  disabled when a turn mixes link policies; that violation remains hard.
 - `debrief` owns `header`, `instruction`, `scores`, `evidence_resources`, and
   its complete authored `fallback`.
+
+Frozen v3 turn shape:
+
+```json
+{
+  "turn": 1,
+  "window": "Понедельник 10:00-14:00",
+  "header": "Понедельник, 10:00-14:00",
+  "instruction": "...",
+  "question": "Что вы ответите и что сделаете?",
+  "require_question": true,
+  "variation_budget": ["..."],
+  "fallback": "<two email blocks and one messenger block>",
+  "surfaces": [
+    {
+      "type": "email",
+      "count": 2,
+      "links": "none",
+      "must_include": ["..."],
+      "required_patterns": ["..."],
+      "forbidden_patterns": ["..."],
+      "profile_adaptation": false
+    },
+    {
+      "type": "messenger",
+      "count": 1,
+      "links": "artifact"
+    }
+  ]
+}
+```
 
 `assessment.json` uses `rp-training-assessment.v1` and contains
 `schema_version`, positive integer `revision`, `detectors`, `rules`, and
@@ -45,7 +81,7 @@ resource must exist in `state-seed.json`.
 ```json
 {
   "schema_version": "rp-training-fallbacks.v1",
-  "note": "Turn and debrief fallbacks are colocated with their program surfaces so the active contract remains reviewable in one file."
+  "note": "Turn and debrief fallbacks are colocated with their program turns so the active contract remains reviewable in one file."
 }
 ```
 
@@ -87,7 +123,7 @@ WHERE campaign_id = ? AND state_version > ?
 The parameters are `(campaign_id, target_version)`. Public method signatures
 and HTTP routes remain unchanged.
 
-Wave 3 adds `metadata_json.transport_status` with values `ok`,
+Wave 4 adds `metadata_json.transport_status` with values `ok`,
 `provider_error`, `provider_timeout`, or `invalid_response` for every scenario
 type. Existing `validator_valid`, `repaired`, `fallback`, and `fallback_reason`
 keys remain for one release; new RP turns record `fallback=false`.
@@ -109,8 +145,22 @@ The acceptance check is case-insensitive and must return no matches:
 rg -n -i awareness rp-gateway/app
 ```
 
-## Wave 0 scaffold proof
+## Compatibility and scaffold proof
 
-The repository validator accepted a minimal one-turn scaffold with the shapes
-above. The scaffold was temporary and was removed after the proof; it is not a
-second example WorldPack or a shipped artifact.
+Before S1, the canonical `awareness-one-day` v2 contract hash is:
+
+```text
+7011d55c45ebb21594dacb5a62ce451625799ec34a7e4298fc70b65f98660464
+```
+
+The temporary v3 scaffold contains one turn with two declared surfaces
+(`email.count=2`, `messenger.count=1`), turn-level `require_question` and
+turn-level `fallback`. It uses the unchanged assessment and fallbacks schemas.
+The scaffold is not a shipped WorldPack. Acceptance by both validators is the
+Wave 0/S1 boundary check and is recorded after the two schema maps are updated
+in the single S1 commit.
+
+The turn prompt contract is `rp-gateway.training-turn-contract.v2` and always
+emits `surfaces` as a list. For v1/v2 programs the runtime normalizes the
+existing singular `surface` into a one-element list without changing pack
+files or their contract hashes.

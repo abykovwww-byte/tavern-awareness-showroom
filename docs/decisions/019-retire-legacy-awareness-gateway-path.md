@@ -11,8 +11,12 @@ later, after Part B is obsolete.
 Accepted. Decided by the user on 2026-08-09; три вопроса, оставленные открытыми в
 первой редакции — поверхность fallback-текстов, судьба активных legacy-партий и
 срок жизни RP-полей `validator_valid`/`repaired`/`fallback` — закрыты
-пользователем в тот же день и внесены в решение. Implementation is delegated to
-Codex; commit, deployment and live verification are separate delivery states.
+пользователем в тот же день и внесены в решение. Вторая редакция, в тот же день:
+попытка исполнения остановилась на том, что курс `awareness` не выражается
+контрактом `rp-training-program.v2`; решением пользователя вводится v3 с
+`surfaces[]`, и классификация изменения поднята до версионированного изменения
+схемы. Implementation is delegated to Codex; commit, deployment and live
+verification are separate delivery states.
 
 ## Context
 
@@ -86,6 +90,24 @@ legacy-путь Awareness из Gateway удаляется, а не чинитс�
 функции начисления баллов и предикаты `awareness_final_summary` и
 `awareness_turns_remaining`.
 
+Курс `awareness` не выражается контрактом `rp-training-program.v2`, и это
+обнаружилось при переносе. В v2 ход несёт ровно одну поверхность — письмо или
+сообщение, — а блок второго типа считается грубым нарушением. В `awareness` за
+один рабочий блок игроку приходят оба канала сразу, и первый ход по legacy-правилу
+обязан содержать не менее двух писем и не менее одного сообщения. Это не
+особенность фолбэк-текста: правило действует и для обычного ответа модели,
+поэтому «переписать тексты» сохранило бы контракт ценой самого курса.
+
+Многоканальный ход — общий примитив, а не предметное правило Awareness: любой
+курс может ставить игрока перед несколькими каналами в одном временном окне.
+По границе Decision 017 такой примитив есть версионированное изменение схемы, а
+не ветка в Gateway. Поэтому вводится `rp-training-program.v3`, где ход несёт
+список `surfaces[]`, а авторский текст отказа поднимается на уровень хода, к
+которому относится. Версии v1 и v2 остаются поддержаны без правок в паках:
+`awareness-one-day` продолжает работать на v2, и хеш его контракта не меняется.
+Одна живая версия схемы дешевле двух, но дешевле неё только версия, в которой
+курс не искажён.
+
 Ни один предикат Gateway не выводит поведение из номера хода. Номер хода — это
 данные состояния, а не правило; решение о том, что ход десятый и последний,
 принимает контракт рантайма курса. Это обобщение инварианта 1 Decision 017 на
@@ -129,6 +151,9 @@ RP теряет нарративную валидацию — но только 
    на legacy-пути.
 7. **Инварианты Decision 017 сохраняются** — неизменность снапшота контракта,
    минимизация промпта, бюджет вызовов, честные метаданные Training.
+8. **Старые версии схемы не ломаются.** Паки на `rp-training-program.v1` и `.v2`
+   принимаются без правок, а `contract_hash` пака `awareness-one-day` после
+   введения v3 остаётся байт-в-байт прежним.
 
 ## Validation and evidence
 
@@ -140,7 +165,9 @@ RP теряет нарративную валидацию — но только 
 текст. Инвариант 4 — агрегирующим запросом к `turns` до и после изменения.
 Инвариант 5 — тестом, где ход, перекрытый откатом, отсутствует в следующем
 снапшоте реестра. Инвариант 7 — существующими
-`test_training_runtime.py` и `test_training_artifacts.py`.
+`test_training_runtime.py` и `test_training_artifacts.py`. Инвариант 8 — прогоном
+существующих тестов `awareness-one-day` без правок в самом паке и сравнением его
+`contract_hash` до и после введения v3.
 
 Preflight: `scripts/validate-repository.py` и, поскольку меняется runtime JSON,
 `scripts/validate-training-runtime.py`. Полный локальный гейт —
@@ -153,6 +180,13 @@ Preflight: `scripts/validate-repository.py` и, поскольку меняет�
 заявлен намеренно.
 
 ## Consequences
+
+Появляется вторая живая версия program-схемы. Пока существуют паки на v2,
+`training_runtime.py` и `scripts/validate-training-runtime.py` держат обе ветки
+разбора, и каждое следующее изменение контракта надо думать дважды. Плата
+принята: альтернатива — переписать `awareness` под один канал за ход, то есть
+изменить курс ради формата. Взамен многоканальный ход перестаёт быть чужой
+конструкцией и становится доступен любому будущему паку.
 
 Смена длины или расписания курса становится правкой WorldPack, а не релизом
 приложения. Класс ошибки «training-правило сработало в RP» исчезает вместе с
@@ -195,38 +229,50 @@ Non-normative. Written for the implementer, dated, and superseded once the
 change is merged and verified. Do not treat anything below as design history.
 -->
 
-**Written:** 2026-08-09 · **Runner:** Codex `gpt-5.6-sol`,
+**Written:** 2026-08-09, ревизия 2 после остановки первой попытки исполнения ·
+**Runner:** Codex `gpt-5.6-sol`,
 `model_reasoning_effort = "medium"` · **Branch:** `codex/retire-legacy-awareness`
 (изолированный worktree под `codex-worktrees/`) · **Base:** `main` at `8bb5979`
 
 ## B.1 Blast radius
 
-Claude's classification: **common to every training scenario**.
+Classification: **versioned schema change.** Первая редакция ADR ставила
+«common to every training scenario»; условие «если курс не выражается в v2 — это
+становится версионированным изменением» сработало, и классификация повышена
+пользователем 2026-08-09.
 
-Версионированного изменения схемы **нет**: `rp-training-runtime.v2` и
-`rp-training-program.v2` уже существуют, `awareness` переезжает на них как
-данные. Единственное изменение хранилища — добавление колонки в `turns`, это
-миграция таблицы, а не смена версии контракта.
+Что проверено по исходникам, а не по описанию:
 
-Проверено 2026-08-09 по исходникам, а не по описанию: расписание, progression,
-детекторы и веса выражаются существующими v2; авторские fallback-тексты
-контрактом `rp-training-fallbacks.v1` **не** выражаются — он несёт только
-`schema_version` и `note`, грузится как `required=False` и проверяется лишь по
-версии (`training_runtime.py:743`, `:766`), а исполняемые тексты валидатор
-требует и рантайм читает из `program.turns[].surface.fallback` и
-`program.debrief.fallback` (`:516-528`, `:829-838`). Поэтому первая редакция
-этого ADR, требовавшая класть тексты в `fallbacks.json`, потребовала бы новой
-версии контракта. Решение изменено, а не классификация: тексты остаются в
-`program.json`, `fallbacks.json` остаётся метаданными. Schema bump не нужен.
+- Авторские fallback-тексты контрактом `rp-training-fallbacks.v1` не
+  выражаются: он несёт только `schema_version` и `note`, грузится как
+  `required=False`, проверяется лишь по версии
+  (`training_runtime.py:743`, `:766`). Тексты живут в `program`
+  (`:516-528`, `:829-838`). Решение: тексты остаются в `program.json`.
+- v2 допускает ровно одну поверхность на ход, блок второго типа — hard
+  violation (`training_runtime.py:400-408`). Legacy `awareness` требует в первом
+  ходе ≥2 писем и ≥1 сообщения (`validator.py:237-241`), а его фолбэки смешивают
+  оба типа. Мигрированный `awareness-one-day` — один канал на ход во всех
+  десяти ходах, то есть v2 писалась под другую модель курса.
 
-Если по ходу работы окажется, что расписание `awareness` не выражается в v2 без
-нового примитива детектора или новой поверхности — это **становится**
-версионированным изменением схемы, и тогда ripple set: runtime/program schema,
-`scripts/validate-repository.py`, `scripts/validate-training-runtime.py`,
-генератор WorldPack, источники `codex-skills/` и сгенерированные копии в
-`~/.codex/skills/`, а дорожки B.3 становятся последовательными.
-**Report the classification back.** Если не согласен — остановись и скажи до
-того, как писать код.
+**Измеренный ripple set** (grep по репозиторию, не предположение). Ключ
+`surface` читает единственный модуль приложения:
+
+- `rp-gateway/app/services/training_runtime.py` — разбор, промпт-контракт,
+  валидация нарратива, `fallback_text`, карта `RUNTIME_PROGRAM_SCHEMAS`;
+- `roles/apps/files/rp-stack/scripts/validate-training-runtime.py` — та же карта
+  версий и дублирующая проверка формы;
+- `rp-gateway/tests/test_training_runtime.py`;
+- `codex-skills/training-world-pack-builder/SKILL.md` и
+  `references/training-contract.md` плюс сгенерированные копии в
+  `~/.codex/skills/` (`scripts/sync-codex-skills.ps1 -Mode Check`);
+- `docs/wiki/04-worldpacks-and-modes.md`.
+
+**В ripple не входят** — проверено отдельно, чтобы не раздувать объём:
+`rp-light-gui/`, `rp-showcase-gui/`, `ui-shared/` не читают `surface` и
+турн-контракт вовсе; `scripts/validate-repository.py` про training-схемы ничего
+не знает; отдельного «генератора WorldPack» в репозитории нет — есть только
+skill-документация. Если найдёшь консьюмера вне этого списка — остановись и
+доложи, список неверен.
 
 ## B.2 Ground rules
 
@@ -254,43 +300,112 @@ Claude's classification: **common to every training scenario**.
 
 | Lane | Agent task | Owns (writes) | Reads only | Depends on |
 |------|-----------|---------------|------------|------------|
-| L1 | Мигрировать `awareness` на WorldPack-owned runtime | `worldpacks/awareness/**` | `worldpacks/awareness-one-day/training/*.json`, `scripts/validate-training-runtime.py` | Wave 0 |
-| L2 | Удалить legacy Awareness из Gateway | `rp-gateway/app/services/validator.py`, `rp-gateway/app/services/rule_engine.py`, `rp-gateway/app/services/adjudicator.py`, `rp-gateway/app/main.py`, `rp-gateway/app/services/party_store.py` | `worldpacks/**` | Wave 0 |
-| L3 | Исключение перекрытых откатом ходов из памяти | `rp-gateway/app/services/state_store.py`, `rp-gateway/app/services/rp_story_memory.py` | — | Wave 0 |
-| L4 | Тесты под контракты L1-L3 | `rp-gateway/tests/**` | — | контракты в §B.4 |
+| S1 | Ввести `rp-training-program.v3` с `surfaces[]`, сохранив v1/v2 | `rp-gateway/app/services/training_runtime.py`, `scripts/validate-training-runtime.py`, `codex-skills/training-world-pack-builder/**` | `worldpacks/**` | Wave 0 |
+| L1 | Мигрировать `awareness` на v3 | `worldpacks/awareness/**` | `worldpacks/awareness-one-day/training/*.json`, `scripts/validate-training-runtime.py` | S1 |
+| L2 | Удалить legacy Awareness из Gateway | `rp-gateway/app/services/validator.py`, `rp-gateway/app/services/rule_engine.py`, `rp-gateway/app/services/adjudicator.py`, `rp-gateway/app/main.py`, `rp-gateway/app/services/party_store.py` | `worldpacks/**` | S1 |
+| L3 | Исключение перекрытых откатом ходов из памяти | `rp-gateway/app/services/state_store.py`, `rp-gateway/app/services/rp_story_memory.py` | — | — |
+| L4 | Тесты под контракты S1 и L1-L3 | `rp-gateway/tests/**` | — | контракты в §B.4 |
 
-**Wave 0 — contract freeze (sequential, no agents).** Зафиксировать в ветке:
-точную форму `program.json` и `assessment.json` для `awareness`, выведенную из
-`awareness-one-day` и из `scripts/validate-training-runtime.py`, включая
-`turns[].surface.fallback` и `debrief.fallback`; `fallbacks.json` копируется как
+S1 владеет `training_runtime.py` целиком, поэтому не может идти рядом с L1 и L2:
+L1 пишет паки под контракт, которого до S1 нет, а L2 читает `worldpacks/**`,
+чтобы убедиться, что удаляемое поведение уже выражено данными. L3 не касается
+training-контракта вообще и от S1 не зависит.
+
+**Wave 0 — contract freeze (sequential, no agents).** Зафиксировать в ветке
+форму `rp-training-program.v3` из §B.4; форму `program.json` и
+`assessment.json` для `awareness`, выведенную из `awareness-one-day` и из
+`scripts/validate-training-runtime.py`; `fallbacks.json` копируется как
 метаданные `rp-training-fallbacks.v1` и исполняемых текстов не получает; DDL и
-сигнатуры из §B.4; перечень удаляемых символов из §B.5 шаг 3. Ничего ниже не
+сигнатуры из §B.4; перечень удаляемых символов из §B.5. Ничего ниже не
 стартует, пока это не записано.
 
-**Wave 1 — lanes in parallel.** Каждому агенту: его строка таблицы, замороженные
-контракты, инварианты из Part A, запрет трогать что-либо вне колонки `Owns`.
-Каждый агент отчитывается: изменённые файлы, focused-команда теста, какой
-контракт пришлось согнуть.
+Отдельно и первым: закоммитить уже существующие локальные правки L3 в
+`state_store.py` собственным коммитом, до старта S1 — они не зависят ни от
+схемы, ни от миграции, и не должны смешаться с ней в общем diff.
 
-**Wave 2 — integration (sequential, single agent).** Слить дорожки; прогнать
+**Wave 1 — S1, схема v3 (sequential, single agent).** Один агент, потому что
+владеет файлом, который читают обе следующие дорожки. Паки не трогает вовсе.
+Выход: `awareness-one-day` проходит без единой правки в паке, его
+`contract_hash` не изменился, и на пустом каркасе v3 валидатор принимает
+многоканальный ход.
+
+**Wave 2 — L1, L2, L4 in parallel.** Каждому агенту: его строка таблицы,
+замороженные контракты, инварианты из Part A, запрет трогать что-либо вне
+колонки `Owns`. Каждый агент отчитывается: изменённые файлы, focused-команда
+теста, какой контракт пришлось согнуть.
+
+**Wave 3 — integration (sequential, single agent).** Слить дорожки; прогнать
 `scripts/validate-training-runtime.py` и `scripts/validate-repository.py`;
 обновить `docs/wiki/03-turn-lifecycle.md` и `docs/wiki/04-worldpacks-and-modes.md`;
-обновить Status этого ADR; при изменениях в `codex-skills/` прогнать
-`scripts/sync-codex-skills.ps1 -Mode Check`. Закрыть активные legacy-партии
-`awareness` по §B.6 — до деплоя, чтобы ни одна партия не пережила удаление
-legacy-пути.
+обновить Status этого ADR; прогнать `scripts/sync-codex-skills.ps1 -Mode Check`,
+поскольку S1 меняет `codex-skills/`. Закрыть активные legacy-партии `awareness`
+по §B.6 — до деплоя, чтобы ни одна партия не пережила удаление legacy-пути.
 
-**Wave 3 — снятие RP-валидатора (sequential, single agent, только после
-зелёной Wave 2).** Инвариант 3 запрещает делать это параллельно с L2: пока
+**Wave 4 — снятие RP-валидатора (sequential, single agent, только после
+зелёной Wave 3).** Инвариант 3 запрещает делать это параллельно с L2: пока
 legacy-путь не удалён и не доказан тестом, снятие валидации скрывает следующую
-протечку. Шаги 7 и 8 из §B.5.
+протечку.
 
-Do not parallelise: anything that renumbers, rehashes or bumps a version;
-anything editing a file two lanes read; the deploy; Wave 3.
+Do not parallelise: S1; anything that renumbers, rehashes or bumps a version;
+anything editing a file two lanes read; the deploy; Wave 4.
 
 ## B.4 Frozen contracts
 
-Хранилище (L3), SQLite:
+### `rp-training-program.v3` (S1)
+
+Ход несёт список поверхностей вместо одной, а авторский текст отказа
+поднимается на уровень хода — он один на весь ход и покрывает все его блоки:
+
+```json
+{
+  "turn": 1,
+  "window": "...", "header": "...", "instruction": "...",
+  "question": "...", "require_question": true,
+  "variation_budget": ["..."],
+  "fallback": "<авторский текст со всеми блоками этого хода>",
+  "surfaces": [
+    {"type": "email", "count": 2, "links": "none",
+     "must_include": ["..."], "required_patterns": ["..."],
+     "forbidden_patterns": ["..."], "profile_adaptation": false},
+    {"type": "messenger", "count": 1, "links": "artifact"}
+  ]
+}
+```
+
+Правила, которые S1 обязан реализовать явно:
+
+- `surfaces` — непустой список; типы внутри одного хода не повторяются;
+  `count` у каждой поверхности — целое ≥ 1.
+- Валидация нарратива: для каждой поверхности число блоков её маркера равно её
+  `count`; маркер, не заявленный ни одной поверхностью хода, запрещён. Это
+  обобщение текущего правила `other_marker` (`training_runtime.py:400-408`), а
+  не его отмена.
+- `require_question` переезжает с поверхности на ход: вопрос принадлежит ходу,
+  а не каналу.
+- `links` остаётся политикой поверхности. Автоматическая починка «Ссылки: нет»
+  (`training_runtime.py:315-320`) применяется только когда все поверхности хода
+  объявили одну и ту же политику; при смешанной политике нарушение остаётся
+  hard и repair не предлагается — переписывать чужой блок вслепую хуже, чем
+  вернуть ошибку.
+- Карты `RUNTIME_PROGRAM_SCHEMAS` в `training_runtime.py` и в
+  `scripts/validate-training-runtime.py` получают запись
+  `rp-training-runtime.v3` → `rp-training-program.v3`. Обе карты правятся в
+  одном коммите: разошедшиеся карты — это пак, который проходит preflight и
+  падает в рантайме.
+- `rp-training-assessment.v1` и `rp-training-fallbacks.v1` не меняются.
+- Промпт-контракт хода всегда отдаёт `surfaces` списком, в том числе для паков
+  v1/v2, где список одноэлементный; его версия поднимается до
+  `rp-gateway.training-turn-contract.v2`. Консьюмеров вне `training_runtime.py`
+  у него нет — проверено; если появится, это остановка и доклад.
+- `contract_hash` считается по файлам пака, поэтому введение v3 не меняет хеш
+  ни одного существующего пака. Это инвариант 8 и он проверяется, а не
+  предполагается.
+
+Обратная совместимость: ветка разбора v1/v2 остаётся живой, `surface` в
+единственном числе продолжает приниматься, и ни один пак не редактируется ради
+v3, кроме мигрируемого `awareness`.
+
+### Хранилище (L3), SQLite
 
 ```sql
 ALTER TABLE turns ADD COLUMN excluded_from_memory INTEGER NOT NULL DEFAULT 0;
@@ -314,7 +429,7 @@ WHERE campaign_id = ? AND state_version > ?
 где второй параметр — `target_version`. `rollback` остаётся append-only: ходы
 не удаляются.
 
-Транспортный статус RP (Wave 3), ключ в `turns.metadata_json`:
+Транспортный статус RP (Wave 4), ключ в `turns.metadata_json`:
 
 ```json
 {"transport_status": "ok" | "provider_error" | "provider_timeout" | "invalid_response"}
@@ -322,7 +437,7 @@ WHERE campaign_id = ? AND state_version > ?
 
 Пишется для всех `scenario_type`, включая Training, чтобы агрегат был
 сопоставим. Поля `validator_valid`, `repaired`, `fallback`, `fallback_reason`
-для Training сохраняются без изменений. Для RP они после Wave 3 остаются в
+для Training сохраняются без изменений. Для RP они после Wave 4 остаются в
 `metadata_json` ещё один релиз как deprecated — `fallback` фиксирует `false`,
 `validator_valid` и `repaired` перестают меняться, — и служат опорой для
 сравнения «до/после» из §C.4. Их удаление в объём этого изменения не входит.
@@ -338,20 +453,30 @@ WHERE campaign_id = ? AND state_version > ?
 
 ## B.5 Steps
 
-1. **Wave 0.** Вывести и записать в ветку форму runtime-файлов для `awareness`
-   из `awareness-one-day` и preflight-валидатора. Проверяемый исход: в ветке
-   лежит файл с формой, и `validate-training-runtime.py` принимает пустой
-   каркас.
-2. **L1.** Перенести расписание курса из прозы `manifest.json.assumptions` в
-   `program.json`: 10 ходов, нечётные 10:00-14:00, чётные 15:00-18:00,
+1. **Wave 0.** Закоммитить существующие правки L3 отдельным коммитом. Затем
+   вывести и записать в ветку форму v3 из §B.4 и форму runtime-файлов для
+   `awareness`. Проверяемый исход: `git status` чист по `state_store.py`, в
+   ветке лежит файл с формой, и `validate-training-runtime.py` принимает пустой
+   каркас v3.
+2. **S1.** Ввести `rp-training-program.v3` по §B.4 в `training_runtime.py` и
+   `scripts/validate-training-runtime.py` одним коммитом, обновить
+   `codex-skills/training-world-pack-builder/`. Паки не трогать. Проверяемый
+   исход: `test_training_runtime.py` зелёный без правок в
+   `worldpacks/awareness-one-day/`, `contract_hash` этого пака совпадает с
+   зафиксированным до S1, а каркас v3 с двумя поверхностями в одном ходе
+   принимается обоими валидаторами.
+3. **L1.** Перенести расписание курса из прозы `manifest.json.assumptions` в
+   `program.json` на v3: 10 ходов, нечётные 10:00-14:00, чётные 15:00-18:00,
    финальный разбор после ответа на ход 10. Туда же — авторские тексты отказа,
-   в `turns[].surface.fallback` и `debrief.fallback`, перенесённые из
-   course-specific фолбэков Gateway дословно. Детекторы и веса — в
-   `assessment.json`; `fallbacks.json` создаётся как метаданные версии.
+   в `turns[].fallback` и `debrief.fallback`, перенесённые из course-specific
+   фолбэков Gateway дословно, вместе с их многоканальной структурой; ход 1
+   объявляет `surfaces` с двумя письмами и одним сообщением. Детекторы и веса —
+   в `assessment.json`; `fallbacks.json` создаётся как метаданные версии.
    Добавить блок `training_runtime` в `manifest.json`. Проверяемый исход:
-   `validate-training-runtime.py` проходит на `awareness`, и ни один
-   fallback-текст не остался только в удаляемом коде Gateway.
-3. **L2.** Удалить из `rp-gateway/app/`: `AWARENESS_TURN_WINDOWS`,
+   `validate-training-runtime.py` проходит на `awareness`, ни один
+   fallback-текст не остался только в удаляемом коде Gateway, и ни один текст
+   не переписан ради формата — расхождения с legacy показать построчно.
+4. **L2.** Удалить из `rp-gateway/app/`: `AWARENESS_TURN_WINDOWS`,
    `AWARENESS_DEBRIEF_WINDOW`, `AWARENESS_ONE_DAY_ID`,
    `AWARENESS_ONE_DAY_TURN_WINDOWS`, `AWARENESS_ONE_DAY_SECURITY_TURNS`,
    `AWARENESS_ONE_DAY_SITE_TURNS`, `AWARENESS_HINT_RE`,
@@ -361,23 +486,25 @@ WHERE campaign_id = ? AND state_version > ?
    `validator.py` и `rule_engine.py`, их вызовы в `adjudicator.py`, `main.py` и
    `party_store.py`, включая временный guard из рабочего дерева. Проверяемый
    исход: `grep -ri awareness rp-gateway/app/` пуст, импорты не сломаны.
-4. **L3.** Реализовать контракт хранилища из §B.4. Проверяемый исход: ход,
-   перекрытый откатом, не возвращается из `turns_for_memory`.
-5. **L4.** Тесты: полный курс `awareness` через WorldPack-owned runtime с тем же
-   расписанием и той же оценкой; RP-партия длиной 12+ ходов с проверкой
-   `metadata_json`; негативный тест на инвариант 2; тест исключения из памяти.
-   Усилить существующий `test_rp_party_after_turn_10_keeps_narrator_response`
-   проверкой метаданных.
-6. **Wave 2.** Закрыть активные legacy-партии `awareness` — те, у которых нет
+5. **L3.** Реализовать контракт хранилища из §B.4 — часть уже сделана и
+   закоммичена шагом 1, доделать остаток. Проверяемый исход: ход, перекрытый
+   откатом, не возвращается из `turns_for_memory`.
+6. **L4.** Тесты: полный курс `awareness` через WorldPack-owned runtime с тем же
+   расписанием и той же оценкой; ход с двумя поверхностями принимается, а лишний
+   блок незаявленного типа отвергается; паки v2 продолжают проходить; RP-партия
+   длиной 12+ ходов с проверкой `metadata_json`; негативный тест на инвариант 2;
+   тест исключения из памяти. Усилить существующий
+   `test_rp_party_after_turn_10_keeps_narrator_response` проверкой метаданных.
+7. **Wave 3.** Закрыть активные legacy-партии `awareness` — те, у которых нет
    записи в `training_runtime_snapshots`. Сначала read-only запрос: сколько их,
    на каких ходах, когда был последний ход; числа показать пользователю до
    закрытия. Закрытие идёт штатным переводом партии в завершённое состояние
    через Gateway, не правкой строк в SQLite вручную. Проверяемый исход: после
    деплоя ни одна партия `awareness` без снапшота контракта не остаётся
    активной, и приложены числа до/после.
-7. **Wave 3.** Записывать `transport_status` для всех режимов. Проверяемый
+8. **Wave 4.** Записывать `transport_status` для всех режимов. Проверяемый
    исход: агрегирующий запрос к `turns` возвращает распределение по новому полю.
-8. **Wave 3.** Убрать из RP-пути `OutputValidator`, repair-вызов и
+9. **Wave 4.** Убрать из RP-пути `OutputValidator`, repair-вызов и
    `safe_fallback`; оставить непустой ответ, разбор формата и явную ошибку
    провайдера. `validator_valid`, `repaired`, `fallback` при этом **не**
    удалять — по §B.4 они живут ещё релиз. Проверяемый исход: RP-ход делает не
@@ -390,7 +517,7 @@ WHERE campaign_id = ? AND state_version > ?
 - Do not touch: `rp-light-gui/`, `rp-showcase-gui/`, `ui-shared/`,
   `worldpacks/awareness-one-day/`, `plugins/rp-stack-devkit/`.
 - **Decided by the user 2026-08-09, не пересматривать:** активные legacy-партии
-  `awareness` закрываются (шаг 6). Принудительная миграция отклонена — она
+  `awareness` закрываются (шаг 7). Принудительная миграция отклонена — она
   меняла бы шкалу уже отыгранных ходов; доигрывание на замороженной версии
   отклонено — оно оставляет две ветви курса в рантайме. Если запрос покажет
   неожиданно много активных партий, сообщить числа и остановиться до закрытия.
@@ -398,11 +525,15 @@ WHERE campaign_id = ? AND state_version > ?
   остаются в RP-метаданных ещё один релиз как deprecated. Не удалять в этом
   изменении.
 - **Decided by the user 2026-08-09:** авторские fallback-тексты `awareness`
-  живут в `program.json`; `fallbacks.json` остаётся метаданными. Schema bump не
-  делать. Если реализация упрётся в невыразимость — остановиться и доложить,
-  см. §B.1.
+  живут в `program.json`; `fallbacks.json` остаётся метаданными.
+- **Decided by the user 2026-08-09, после остановки первой попытки:** многоканальный ход
+  вводится как `rp-training-program.v3` с `surfaces[]`. Вариант «подогнать курс
+  под один канал за ход в v2» отклонён — он менял бы сам курс, а не его запись.
+  Инвариант «Training не деградирует» здесь главнее стоимости схемы. Тексты
+  фолбэков не переписывать под формат: если какой-то из них всё же не ложится в
+  v3, это остановка и доклад, а не молчаливая правка текста.
 - If a step turns out to contradict an accepted ADR, stop and report — do not
-  reverse a decision silently. В частности: шаг 7 отменяет часть поведения,
+  reverse a decision silently. В частности: шаг 9 отменяет часть поведения,
   описанного в Decision 018, и уточняет его порядок; 018 обновляется в том же
   изменении.
 
@@ -416,6 +547,11 @@ container-tested · HTTP-verified · browser-verified.*
 
 ## C.1 Static and focused
 
+0. Совместимость v2 (S1), до всего остального: `test_training_runtime.py` и
+   `test_awareness_one_day.py` зелёные без единой правки в
+   `worldpacks/awareness-one-day/`, и `contract_hash` этого пака совпадает
+   до и после S1 — привести оба значения. Если хеш изменился, схема тронула
+   данные, и это остановка.
 1. Focused-тесты по дорожкам, названные явно, с использованной командой:
    `test_training_runtime.py` и новый тест курса `awareness` (L1+L4),
    `test_gateway.py` для длинной RP-партии и негативного теста инварианта 2
@@ -439,6 +575,12 @@ container-tested · HTTP-verified · browser-verified.*
 
 Для теста исключения из памяти: показать, что без изменения `turns_for_memory`
 перекрытый ход попадает в батч, а после — нет.
+
+Для правила `surfaces[]`: подать в валидатор ответ, где есть блок типа, не
+заявленного ни одной поверхностью хода, и показать hard violation; затем ответ,
+где число блоков заявленного типа не равно `count`, — тоже hard. Правило,
+которое принимает всё, что угодно, схемы не стоит. Отдельно показать, что ход
+`awareness` с двумя письмами и одним сообщением проходит.
 
 Отдельно указать для каждого позитивного теста, что он реально утверждает. Тест
 курса `awareness` не должен сводиться к сравнению authored fallback с самим
@@ -491,7 +633,8 @@ Read-only, против SQLite внутри контейнера Gateway
 
 ## C.5 Report back
 
-1. Blast-radius classification (agreed or disputed).
+1. Blast-radius classification (agreed or disputed) — включая подтверждение,
+   что консьюмеров `surface` вне списка §B.1 не нашлось.
 2. Per-lane: files changed, tests run, contracts bent.
 3. Guard-fires evidence from C.2.
 4. Delivery state reached, named exactly.
