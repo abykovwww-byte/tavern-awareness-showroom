@@ -50,7 +50,9 @@ server. Never store them in Git or enter them in the browser.
 
 ## Deployment
 
-Commit and push IaC changes, then apply the server checkout through:
+Commit on a `codex/` branch or in an isolated worktree, push only that branch,
+open a non-draft PR, and merge it into `main` after CI is green. Direct pushes
+to `main` are prohibited. Then apply the server checkout through:
 
 ```bash
 sudo systemctl start ansible-local-apply.service

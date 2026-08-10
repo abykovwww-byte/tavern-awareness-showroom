@@ -380,6 +380,7 @@ Runtime implementation touches:
 Delivery remains:
 
 ```text
-local checks -> commit -> push origin/main -> user-run Ansible apply ->
-container tests -> HTTP/API checks -> authenticated/visitor browser acceptance
+local checks in a codex/ branch or worktree -> commit -> push the working branch
+-> non-draft PR -> green CI -> merge into main -> user-run Ansible apply
+-> container tests -> HTTP/API checks -> authenticated/visitor browser acceptance
 ```

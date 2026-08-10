@@ -458,7 +458,9 @@ value(character, axis, at_party_turn) =
 
 ## B.6 Boundaries
 
-- Branch: `codex/rp-relationship-layer`. Do not push to `main`.
+- Branch: `codex/rp-relationship-layer`. Push only that branch, open a
+  non-draft PR, wait for green CI, and let Codex merge it into `main`. Direct
+  pushes to `main` are prohibited.
 - Do not touch: `rp-light-gui/`, `rp-showcase-gui/`, `ui-shared/`,
   `worldpacks/awareness/`, `worldpacks/awareness-one-day/`, всё, что относится к
   training runtime.
@@ -522,10 +524,10 @@ container-tested · HTTP-verified · browser-verified.*
 
 ## C.3 Deploy
 
-`commit -> push -> ansible-local-apply -> runtime verification`.
+`commit in the codex/ branch or worktree -> push the working branch -> non-draft PR -> green CI -> merge into main -> ansible-local-apply -> runtime verification`.
 
 `sudo` требует интерактивного пароля, поэтому Codex останавливается на
-**pushed** и просит пользователя выполнить:
+**merged** и просит пользователя выполнить:
 
 ```bash
 sudo systemctl start ansible-local-apply.service

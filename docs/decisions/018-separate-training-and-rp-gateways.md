@@ -317,9 +317,9 @@ fallback и написан, не доказывает ничего.
 
 Wave A ничего не деплоит — это тесты и документы.
 
-Для Wave B/C: `commit -> push -> ansible-local-apply -> runtime verification`.
+Для Wave B/C: `commit в codex/-ветке или worktree -> push рабочей ветки -> non-draft PR -> зелёный CI -> merge в main -> ansible-local-apply -> runtime verification`. Прямой push в `main` запрещён.
 `sudo` требует интерактивного пароля, поэтому Codex останавливается на стадии
-**pushed** и просит пользователя выполнить:
+**merged** и просит пользователя выполнить:
 
 ```bash
 sudo systemctl start ansible-local-apply.service

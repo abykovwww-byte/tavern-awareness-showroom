@@ -225,8 +225,10 @@ runner credential belongs in `/etc/ansible/local-overrides.yml`, never in Git.
 5. **Light GUI integration.** Add the `Local` filter/category and a compact
    local-ready status. Keep the existing party selector and message endpoint;
    no direct-model JavaScript is introduced.
-6. **Controlled live deployment.** Commit, push, and invoke
-   `ansible-local-apply.service` on `abykovserv`. Test a new local-model party
+6. **Controlled live deployment.** Commit on a `codex/` branch or in an isolated
+   worktree, push only that branch, open a non-draft PR, and merge it after CI is
+   green before invoking `ansible-local-apply.service` on `abykovserv`. Direct
+   pushes to `main` are prohibited. Test a new local-model party
    before switching any existing party.
 7. **Tuning.** Test 32k, 48k, and 64k context separately. Raise the budget only
    when response latency, KV-cache growth, and party memory behavior remain
@@ -255,7 +257,8 @@ turns, not as parallel generation slots.
 Follow the existing pull-based route:
 
 ```text
-local IaC edit -> focused tests -> commit -> push to main
+local IaC edit in a codex/ branch or worktree -> focused tests -> commit
+-> push the working branch -> non-draft PR -> green CI -> merge into main
 -> abykovserv git pull/apply through ansible-local-apply.service
 -> Compose, container, HTTP, Gateway, and browser checks
 ```

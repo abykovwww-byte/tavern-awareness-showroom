@@ -546,7 +546,9 @@ Training fallback-ходы. Поля `validator_valid`, `repaired`, `fallback`, 
 
 ## B.6 Boundaries
 
-- Branch: `codex/retire-legacy-awareness`. Do not push to `main`.
+- Branch: `codex/retire-legacy-awareness`. Push only that branch, open a
+  non-draft PR, wait for green CI, and let Codex merge it into `main`. Direct
+  pushes to `main` are prohibited.
 - Do not touch: `rp-light-gui/`, `rp-showcase-gui/`, `ui-shared/`,
   `worldpacks/awareness-one-day/`, `plugins/rp-stack-devkit/`.
 - **Decided by the user 2026-08-09, не пересматривать:** активные legacy-партии
@@ -627,10 +629,10 @@ container-tested · HTTP-verified · browser-verified.*
 
 ## C.3 Deploy
 
-`commit -> push -> ansible-local-apply -> runtime verification`.
+`commit in the codex/ branch or worktree -> push the working branch -> non-draft PR -> green CI -> merge into main -> ansible-local-apply -> runtime verification`.
 
 `sudo` требует интерактивного пароля, поэтому Codex останавливается на
-**pushed** и просит пользователя выполнить:
+**merged** и просит пользователя выполнить:
 
 ```bash
 sudo systemctl start ansible-local-apply.service
