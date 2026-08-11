@@ -1,0 +1,389 @@
+# Приёмочный корпус — 36 ходов реальной RP-партии, размеченных пользователем.
+# Обезличено: нарративная проза сокращена до сути, идентификатор партии не
+# включён. Метки — ground truth того, каким должен был быть исход сцены; их
+# ставит пользователь (не Codex, не Claude). Служебная модель прогоняется на
+# player_input+scene_summary, её ответ сверяется с label. Пороги — в manifest.yml.
+version: 2
+labeled_by: user
+frozen_at: "2026-08-11"
+source: "derived from a real rp party (starosta), condensed and de-identified; party id withheld"
+service_role: relationship_extraction
+
+# Находки разметки, которые корпус фиксирует как требования:
+notes:
+  - "Тип события — отдельная ошибка от персонажа: модель может дать верного
+     персонажа и знак, но неверный тип (T40: доверие, а не shared_risk)."
+  - "Направление важно: доверие/благодарность может идти ОТ NPC к игроку
+     (from_npc), а обязательство накладывается игроком НА NPC (on_npc)."
+  - "Глюки нарратора и правки игрока (ГМ-режим) НЕ создают связей — они пустые
+     для извлечения отношений, даже когда нарратор драматичен."
+
+# Типы событий, которых миру сейчас не хватает (модель их выразить не может):
+proposed_events:
+  - trust_shown        # игрок доверяет NPC важное/приятное дело (on_npc, +)
+  - trust_gained       # NPC начинает доверять игроку (from_npc, +)
+  - gratitude          # NPC благодарен игроку (from_npc, +)
+  - obligation         # игрок наложил обязательство на NPC (бейдж)
+  - debt_to_player     # NPC в долгу перед игроком (бейдж)
+  - suspicion          # NPC насторожен к игроку (from_npc, -)
+
+examples:
+  - id: starosta-t1
+    party_turn: 1
+    concern: relationship
+    player_input: "Что здесь произошло? Слитки куда делись?"
+    scene_summary: "Игрок осматривает клеть, задаёт вопрос о пропавших слитках."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Вопрос игрока; отношения меняться не должны."
+
+  - id: starosta-t2
+    party_turn: 2
+    concern: relationship
+    player_input: "Отправьте троих по следам, пусть просто проследят. Я к себе, обмозговать."
+    scene_summary: "Игрок отправляет разведку; Фрол вызывается вести."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Рутинный приказ; отношения не меняются."
+
+  - id: starosta-t7
+    party_turn: 7
+    concern: relationship
+    player_input: "ГМ мод. Поясни, что имел в виду Стоян, он же знает, что часть дани украли?"
+    scene_summary: "Мета-вопрос игрока к ведущему о мотивации Стояна."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "ГМ-мета-вопрос; связей не создаёт."
+
+  - id: starosta-t8
+    party_turn: 8
+    concern: relationship
+    player_input: "Стоян, не лезь, когда не просят. Вопрос дани решу с княжеским человеком. Сядь."
+    scene_summary: "Игрок прилюдно осаживает Стояна."
+    label:
+      scene_type: significant
+      expected_events: [{character: stoyan, event: insult_public, sign: "-", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верное событие и персонаж — положительный контроль."
+
+  - id: starosta-t9
+    party_turn: 9
+    concern: relationship
+    player_input: "Дань выдать пока не можем. Побудьте нашими гостями, отдохните на харчах, дождитесь."
+    scene_summary: "Игрок задерживает Ратибора 'гостем'; тот насторожен."
+    label:
+      scene_type: significant
+      expected_events: [{character: ratibor, event: suspicion, sign: "-", direction: from_npc}]
+      expected_badges: [{character: ratibor, badge: wary}]
+      world_rule_ok: true
+      correction: none
+    note: "Ратибор насторожен — шкалой ИЛИ бейджем, приемлемо любое."
+
+  - id: starosta-t16
+    party_turn: 16
+    concern: relationship
+    player_input: "ГМ мод. Кого из деревенских посмышлёней взять на смолокурню?"
+    scene_summary: "Мета-вопрос игрока о выборе спутника."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "ГМ-мета-вопрос; связей не создаёт."
+
+  - id: starosta-t18
+    party_turn: 18
+    concern: relationship
+    player_input: "Мы с Вакулой их задерживаем, а ты беги за подмогой, Лука."
+    scene_summary: "Игрок делит риск с Лукой в стычке."
+    label:
+      scene_type: significant
+      expected_events: [{character: luka, event: shared_risk, sign: "+", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верно — контроль shared_risk."
+
+  - id: starosta-t19
+    party_turn: 19
+    concern: relationship
+    player_input: "Лука, бери слиток и неси Любаве — она с кузнецом за него животом отвечают."
+    scene_summary: "Игрок доверяет Любаве важный ресурс под ответственность."
+    label:
+      scene_type: significant
+      expected_events: [{character: lyubava, event: trust_shown, sign: "+", direction: on_npc}]
+      expected_badges: [{character: lyubava, badge: obligation}]
+      world_rule_ok: true
+      correction: none
+    note: "Доверие + наложенное обязательство. На Любаву не срабатывает НИЧЕГО за всю партию."
+
+  - id: starosta-t23
+    party_turn: 23
+    concern: relationship
+    player_input: "(разбор засады) Хлуд обманул, завёл в болото, ударил Варяжка по голове."
+    scene_summary: "Конфликт двух NPC (Хлуд↔Варяжко); к игроку не обращён."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "NPC↔NPC не трогает отношения игрока. Система выдумала событие и повесила на Фрола — ложное срабатывание."
+
+  - id: starosta-t27
+    party_turn: 27
+    concern: relationship
+    player_input: "Сталкиваю ближнего в колодец, эффект неожиданности и своя масса."
+    scene_summary: "Игрок сталкивает Хлуда в колодец."
+    label:
+      scene_type: significant
+      expected_events: [{character: khlud, event: physical_assault, sign: "-", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Урон Хлуду. Система записала на Фрола — ошибка character_id."
+
+  - id: starosta-t31
+    party_turn: 31
+    concern: relationship
+    player_input: "Доставайте, вяжите. В деревню, там допросим."
+    scene_summary: "Игрок распоряжается вытащить и связать пленника."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Рутинный приказ."
+
+  - id: starosta-t33
+    party_turn: 33
+    concern: relationship
+    player_input: "Дань — Лука, всю сюда. Фрол за пленниками. Варяжко, раны подлатай."
+    scene_summary: "Игрок раздаёт задачи; дань собрана, обещание перед князем выполнено."
+    label:
+      scene_type: significant
+      expected_events: [{character: ratibor, event: kept_promise, sign: "+", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верно — контроль kept_promise."
+
+  - id: starosta-t40
+    party_turn: 40
+    concern: relationship
+    player_input: "Вам я доверяю. Лука, вот 4 дирхама, собери снеди, поставьте столы, пусть деревня гуляет."
+    scene_summary: "Игрок доверяет Луке важное и приятное дело (не рискованное)."
+    label:
+      scene_type: significant
+      expected_events: [{character: luka, event: trust_shown, sign: "+", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верный персонаж и знак, но система дала shared_risk — НЕВЕРНЫЙ ТИП. Это доверие, не риск."
+
+  - id: starosta-t42
+    party_turn: 42
+    concern: world_rule
+    player_input: "Наратор, ты нарушил правила силы. Сила абсолютна, прочитай вводные. Переиграй ход!"
+    scene_summary: "Игрок через ГМ-режим требует вернуть нарратора к правилу абсолютной силы."
+    label: {scene_type: significant, expected_events: [], expected_badges: [], world_rule_ok: false, correction: attempted}
+    note: "Нарратор нарушил правило абсолютной силы; игрок явно исправляет."
+
+  - id: starosta-t45
+    party_turn: 45
+    concern: relationship
+    player_input: "Продолжить спектакль. Позвать своих купаться, самим отойти и спрятаться."
+    scene_summary: "Игрок продолжает отвлекающий манёвр."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Тактический ход; связей не создаёт."
+
+  - id: starosta-t48
+    party_turn: 48
+    concern: relationship
+    player_input: "Переиграй, тупой ход. Человек нырял в одежде — в деревне таких нет, мы бы его вычислили."
+    scene_summary: "Игрок правит нелогичный ход нарратора."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка игрока — связей не создаёт."
+
+  - id: starosta-t53
+    party_turn: 53
+    concern: relationship
+    player_input: "ГМ мод. Переиграй, Луку и Стояна я звал."
+    scene_summary: "Игрок исправляет собственную неточность в приказе."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Правка самого игрока — связей не создаёт."
+
+  - id: starosta-t54
+    party_turn: 54
+    concern: relationship
+    player_input: "Переиграй, не Тихомира я звал, а Луку и Стояна, оставь кузнеца в покое."
+    scene_summary: "Игрок повторно уточняет, кого звал."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Правка самого игрока — связей не создаёт."
+
+  - id: starosta-t57
+    party_turn: 57
+    concern: relationship
+    player_input: "Если знаете — говорите. Мы вам сегодня еле шкуру спасли, в ваших интересах всё рассказать."
+    scene_summary: "Игрок напоминает пленникам, что спас их; давит на долг."
+    label:
+      scene_type: significant
+      expected_events: [{character: khlud, event: debt_to_player, sign: "+", direction: from_npc}]
+      expected_badges: [{character: khlud, badge: debt}]
+      world_rule_ok: true
+      correction: none
+    note: "Доверие/долг пленников перед игроком — шкалой ИЛИ бейджем. Относится к захваченным пленникам."
+
+  - id: starosta-t60
+    party_turn: 60
+    concern: relationship
+    player_input: "Пойдём к дому матери сначала."
+    scene_summary: "Игрок идёт через деревню к дому матери."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Перемещение; связей не создаёт."
+
+  - id: starosta-t64
+    party_turn: 64
+    concern: relationship
+    player_input: "ГМ мод. Хлуд давно под замком, он пленник. Мотивации участвовать в краже ты персонажу не создал."
+    scene_summary: "Игрок указывает на логическую дыру в допросной ветке."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка. Система ЗРЯ начислила luka/broken_promise — ложное срабатывание."
+
+  - id: starosta-t66
+    party_turn: 66
+    concern: relationship
+    player_input: "ГМ мод. Как Хлуд его убьёт, если он в цепях сидит как пленник?"
+    scene_summary: "Игрок указывает на несостыковку; нарратор соглашается."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка — связей не создаёт."
+
+  - id: starosta-t74
+    party_turn: 74
+    concern: relationship
+    player_input: "Наратор, кончай детектив. У Фрола нет мотивации молчать, разыгрывай персонажей как в жизни."
+    scene_summary: "Игрок правит нелогичное поведение NPC."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / кривой ход — связей не создаёт."
+
+  - id: starosta-t76
+    party_turn: 76
+    concern: relationship
+    player_input: "Использую силу. Призываю его коленям и костям в ногах деформироваться, сломаться."
+    scene_summary: "Игрок силой ломает ноги Жиле, который перед ним."
+    label:
+      scene_type: significant
+      expected_events: [{character: zhila, event: physical_assault, sign: "-", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Увечье получает Жила. Система записала на Ждана — ошибка character_id."
+
+  - id: starosta-t77
+    party_turn: 77
+    concern: world_rule
+    player_input: "ГМ мод. Помнишь про правило абсолютности силы? Прочитай правила мира."
+    scene_summary: "Нарратор соглашается ('Ты прав'), но тут же вводит новое ограничение."
+    label: {scene_type: significant, expected_events: [], expected_badges: [], world_rule_ok: false, correction: not_retained}
+    note: "Исправление правила НЕ удержалось. Прямой кейс correction_retention."
+
+  - id: starosta-t78
+    party_turn: 78
+    concern: relationship
+    player_input: "Я уже умею менять форму, кость — материя. Не выдумывай и не ломай правила мира."
+    scene_summary: "Игрок настаивает на правиле силы; нарратор соглашается."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка правила — связей не создаёт."
+
+  - id: starosta-t80
+    party_turn: 80
+    concern: relationship
+    player_input: "Наратор, опять жители просто открывают клеть, просто дают одежду. Так люди себя не ведут."
+    scene_summary: "Игрок правит неправдоподобное поведение NPC."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка — связей не создаёт."
+
+  - id: starosta-t83
+    party_turn: 83
+    concern: relationship
+    player_input: "В чём смысл детективной ветки? Ты зацикливаешь. Перепиши, не держись за прошлые тупые ветки."
+    scene_summary: "Игрок требует переписать зациклившуюся ветку; нарратор соглашается."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: attempted}
+    note: "Глюк нарратора / правка — связей не создаёт."
+
+  - id: starosta-t87
+    party_turn: 87
+    concern: relationship
+    player_input: "Я задержал татя. Он при задержании пострадал."
+    scene_summary: "Игрок объясняется перед Стояном за увечье пленника."
+    label:
+      scene_type: significant
+      expected_events: [{character: stoyan, event: insult_public, sign: "-", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верно — контроль."
+
+  - id: starosta-t91
+    party_turn: 91
+    concern: relationship
+    player_input: "Хорошо, если кто ношу возьмёт. Я согласен, но и сам пойду. Приговор народа исполнить до конца."
+    scene_summary: "Игрок делит с Фролом тяжёлую совместную задачу."
+    label:
+      scene_type: significant
+      expected_events: [{character: frol, event: shared_risk, sign: "+", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верно — контроль."
+
+  - id: starosta-t94
+    party_turn: 94
+    concern: relationship
+    player_input: "Хорошо. Главное чтобы на ноги встал."
+    scene_summary: "Ведана лечит Жилу по поручению игрока; Жила выживает."
+    label:
+      scene_type: significant
+      expected_events: [{character: zhila, event: gratitude, sign: "+", direction: from_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Благодарность/доверие Жилы к игроку — направление from_npc."
+
+  - id: starosta-t103
+    party_turn: 103
+    concern: relationship
+    player_input: "Договор. Стража и ополчение. Тихомир, надо снаряжение — копья, щиты, броню. Сколько стоит?"
+    scene_summary: "Игрок обсуждает с Тихомиром заказ снаряжения; сделка ещё не исполнена."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Намерение сделки без исполнения; отношения не меняются (подтверждено пользователем)."
+
+  - id: starosta-t107
+    party_turn: 107
+    concern: relationship
+    player_input: "Отложить 10 дирхемов отдельно. Выйти к Тихомиру."
+    scene_summary: "Игрок готовит оплату Тихомиру; уговор соблюдён."
+    label:
+      scene_type: significant
+      expected_events: [{character: tikhomir, event: kept_promise, sign: "+", direction: on_npc}]
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Верно — контроль kept_promise."
+
+  - id: starosta-t114
+    party_turn: 114
+    concern: relationship
+    player_input: "Потратить день на дирхамы. Нужно ещё минимум 100."
+    scene_summary: "Игрок в одиночку кует монеты за околицей."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Одиночное действие; связей не создаёт."
+
+  - id: starosta-t117
+    party_turn: 117
+    concern: relationship
+    player_input: "Жиле уход нужен, обмыть, костыли. Любава, займись, пожалуйста, я денег дам на это."
+    scene_summary: "Игрок поручает Любаве заботу о Жиле и даёт деньги; помогает Жиле."
+    label:
+      scene_type: significant
+      expected_events:
+        - {character: lyubava, event: trust_gained, sign: "+", direction: from_npc}
+        - {character: zhila, event: trust_gained, sign: "+", direction: from_npc}
+      expected_badges: []
+      world_rule_ok: true
+      correction: none
+    note: "Мультиперсонаж: доверие к игроку и от Любавы, и от Жилы."
+
+  - id: starosta-t134
+    party_turn: 134
+    concern: relationship
+    player_input: "Любава. Позови Фрола ко мне."
+    scene_summary: "Игрок поручает Любаве позвать Фрола; бытовая задача."
+    label: {scene_type: empty, expected_events: [], expected_badges: [], world_rule_ok: true, correction: none}
+    note: "Упоминание Любавы — задача, не событие. Упоминание != событие."
