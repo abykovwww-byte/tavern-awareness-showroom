@@ -7,13 +7,13 @@
   expected: null
   waiver: "Repository guards are locally tested; the merged policy has not yet accumulated delivery history."
 - requirement: "Every global service-model completion has an exact redacted diagnostic trace"
-  level: каркас
+  level: подключено
   store: "service_call_log"
   assertion: projection
   expectation: service_model_trace_is_complete
   probe_command: null
   expected: null
-  waiver: "The client and routing are locally tested, but live logging is paused pending the user's retention decision."
+  waiver: "A live canary recorded nonempty ordered prompts and raw responses through service_prompt_text; retention remains an explicit open decision."
 - requirement: "Seeded trust reaches a durable event and a later relationship-pressure prompt"
   level: каркас
   store: "relationship projection"

@@ -23,9 +23,10 @@ later, after Part B is obsolete.
 отдельно.
 
 После исполнения Part B ступень остаётся `каркас` до применения revision на
-сервере: offline-гейты не повышают её до `подключено`, а live-запись
-`service_call_log` отдельно остановлена до решения пользователя по retention и
-глубине редактирования.
+сервере: offline-гейты не повышают её до `подключено`. Live-canary подтвердил
+маршрутизацию полных ordered messages через `service_prompt_text` в
+`service_call_log`; вопрос верности лога закрыт, а retention остаётся отдельным
+открытым решением пользователя.
 
 Commit, deployment and live verification are separate delivery states.
 
@@ -429,6 +430,21 @@ Do not parallelise: правку `AGENTS.md`, маршрутизацию `main.p
 input: { party_id: string, expectation: string }   # expectation — ключ из реестра/манифеста
 ```
 
+Зарегистрированные цепочки первого расширенного среза:
+
+```text
+seed_trust_influences_plot
+relationship_pressure_reaches_next_turn_prompt
+relationship_event_has_canonical_character_attribution
+relationship_badge_has_canonical_character_attribution
+trust_gained_reaches_next_turn_prompt
+```
+
+Первые две и `trust_gained` доходят до проверки более позднего
+`RELATIONSHIP_PRESSURE`; атрибуция события и бейджа завершаются в объявленной
+durable-проекции. Отсутствующая runtime-проекция остаётся честным местом обрыва,
+а не подменяется успехом offline-корпуса.
+
 Ожидание объявляет один из четырёх родов утверждения и ожидаемое значение:
 
 ```text
@@ -490,6 +506,10 @@ class ServiceModelClient:
 `main.py`) плюс задеплоенный relationship extractor — Codex перечисляет их поиском
 и маршрутизирует все. Guard-тест: поиск прямого низкоуровневого служебного вызова
 мимо `ServiceModelClient` возвращает пусто.
+
+Каждый потребитель передаёт полные ordered messages через
+`service_prompt_text(payload)`. Редактирование секретов выполняется только при
+записи диагностической копии и не сокращает содержательные сообщения.
 
 ### Корпус приёмки и манифест (L4)
 
@@ -570,10 +590,12 @@ production endurance          длинная живая партия, causal_pro
   и предрегистрированные пороги в манифесте. Codex не размечает и не выбирает
   пороги — это и есть независимость оракула. Если манифест пуст — остановись и
   попроси.
-- **Needs the user's decision, not Codex's:** срок хранения и глубина редактирования
-  `service_call_log` (публичный репозиторий, нарративный текст игрока). Реализуй
-  запись за коротким конфигурируемым сроком по умолчанию и остановись за
-  подтверждением перед деплоем на живые данные.
+- **Decided by the user:** для верности `service_call_log` сохраняет полные
+  ordered messages каждого вызова через `service_prompt_text`; секреты
+  редактируются на записи.
+- **Needs the user's decision, not Codex's:** срок хранения `service_call_log`
+  (нарративный текст игрока). Короткий конфигурируемый срок реализован, но его
+  окончательное значение остаётся открытым и не выводится Codex самостоятельно.
 - **Needs the user's decision, not Codex's:** число N ходов для `держится`.
   Предложи, но не зашивай без ответа.
 - If a step contradicts an accepted ADR, stop and report — не разворачивай решение

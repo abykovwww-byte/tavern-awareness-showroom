@@ -6,3 +6,11 @@
   probe_command: null
   expected: null
   waiver: "Source and focused tests do not prove the registered causal chain on a real party."
+- requirement: "Relationship badges remain attributed to a canonical character in durable projection"
+  level: каркас
+  store: "character_badges"
+  assertion: projection
+  expectation: relationship_badge_has_canonical_character_attribution
+  probe_command: null
+  expected: null
+  waiver: "The probe contract exists, but no real-party badge projection has been registered as evidence."

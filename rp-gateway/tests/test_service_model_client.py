@@ -181,10 +181,12 @@ def test_retention_uses_environment_default_and_removes_expired_rows(
     assert [trace["party_id"] for trace in traces] == ["party_new"]
 
 
-def test_owned_service_consumers_have_no_direct_httpx_completion_calls() -> None:
-    services = Path(__file__).parents[1] / "app" / "services"
-    for name in ("memory.py", "rp_story_memory.py", "world_instructor.py"):
-        source = (services / name).read_text(encoding="utf-8")
-        assert "ServiceModelClient" in source
-        assert "httpx.AsyncClient" not in source
-        assert "/chat/completions" not in source
+def test_global_service_model_consumers_do_not_bypass_service_model_client() -> None:
+    app_root = Path(__file__).parents[1] / "app"
+    bypasses = []
+    for path in app_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if "service_model_settings" in source and "httpx.AsyncClient" in source:
+            bypasses.append(path.relative_to(app_root).as_posix())
+
+    assert bypasses == []

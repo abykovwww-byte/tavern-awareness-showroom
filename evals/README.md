@@ -49,6 +49,12 @@ registered expectation through authoritative storage, the next-turn prompt,
 and repeated later scene consequences. This is the only layer that can reach
 `держится`; healthy containers, a provider canary, and green CI cannot.
 
+The registered production expectations cover seeded trust, generic
+relationship pressure, canonical event attribution, canonical badge
+attribution, and positive `trust_gained` projection. A probe reports the first
+failed step; the presence of a label in the frozen acceptance corpus is not a
+substitute for a runtime projection.
+
 ## Browser smoke
 
 Use the Codex Browser skill against the deployed Light GUI and complete the plugin checklist at `plugins/rp-stack-devkit/assets/browser-smoke-checklist.md`. HTTP-only checks do not count as browser verification.
