@@ -3,11 +3,13 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 
 const source = fs.readFileSync(require.resolve("./app.js"), "utf8");
-const start = source.indexOf("const MODEL_PRICE_REFERENCE_INPUT_TOKENS");
+const start = source.indexOf("function modelOptionHtml");
 const end = source.indexOf("function selectedRadioValue", start);
 assert.ok(start >= 0 && end > start, "model pricing helpers must remain testable");
 
 const context = {
+  escapeHtml: (value) => String(value),
+  featuredOpenRouterRank: (profile) => profile.featured_rank || null,
   normalizeProvider: (value) => String(value || "").trim().toLowerCase(),
 };
 vm.runInNewContext(source.slice(start, end), context);
@@ -25,6 +27,15 @@ assert.equal(context.modelCostTier(deepSeek), "$");
 assert.equal(context.modelCostTierLabel(deepSeek), "$ · ≈ $0.017/ход (80% cached input)");
 assert.match(context.modelPricingLabel(deepSeek), /\$0\.0533\/M cached input/);
 assert.match(context.modelPricingLabel(deepSeek), /cold \$0\.061 · warm 80% \$0\.017/);
+assert.equal(
+  context.modelOptionHtml({
+    ...deepSeek,
+    id: "openrouter-deepseek-deepseek-v4-pro",
+    title: "DeepSeek V4 Pro",
+    featured_rank: 2,
+  }),
+  '<option value="openrouter-deepseek-deepseek-v4-pro">[TOP · $ · ≈$0.017 warm] DeepSeek V4 Pro</option>',
+);
 
 const withoutCacheDiscount = {
   provider: "openrouter",
@@ -36,6 +47,10 @@ assert.equal(
   context.modelReferenceTurnCost(withoutCacheDiscount, 0),
 );
 assert.equal(context.modelCostTier(withoutCacheDiscount), "$$$");
+assert.match(
+  context.modelOptionHtml({ ...withoutCacheDiscount, id: "uncached", title: "Uncached" }),
+  /\[\$\$\$ · ≈\$0\.061\] Uncached/,
+);
 assert.match(context.modelCostTierLabel(withoutCacheDiscount), /без скидки кэша/);
 assert.match(context.modelPricingLabel(withoutCacheDiscount), /скидка cached input не заявлена/);
 

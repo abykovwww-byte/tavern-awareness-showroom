@@ -3272,9 +3272,16 @@ function renderProviderOptions(select, preferred) {
 }
 
 function modelOptionHtml(profile) {
+  const referenceCost = normalizeProvider(profile?.provider || "") === "openrouter" && !profile?.is_free
+    ? modelReferenceTurnCost(profile, MODEL_PRICE_WARM_CACHE_RATIO)
+    : null;
+  const costEstimate = referenceCost === null
+    ? ""
+    : `≈${formatTurnCost(referenceCost)}${perMillionPriceValue(profile?.pricing_input_cache_read) === null ? "" : " warm"}`;
   const markers = [
     featuredOpenRouterRank(profile) ? "TOP" : "",
     profile.is_free ? "FREE" : modelCostTier(profile),
+    costEstimate,
     profile.rp_specialized ? "RP" : "",
   ].filter(Boolean);
   const prefix = markers.length ? `[${markers.join(" · ")}] ` : "";
