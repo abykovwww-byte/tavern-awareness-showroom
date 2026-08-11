@@ -373,7 +373,9 @@ class RelationshipStore:
         result: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            item["events"] = events_by_character.get((str(row["character_id"]), str(row["axis"])), [])
+            key = (str(row["character_id"]), str(row["axis"]))
+            item["events"] = events_by_character.get(key, [])
+            item["causes"] = self.cause_rows(key[0], key[1], at_party_turn)
             result.append(item)
         return result
 

@@ -1,16 +1,16 @@
 - requirement: "Relationship extraction attributes an event to one unambiguous canonical character"
-  level: каркас
+  level: наблюдается
   store: "relationship_causes"
   assertion: projection
   expectation: relationship_event_has_canonical_character_attribution
-  probe_command: null
-  expected: null
-  waiver: "Decision 021 source is absent from updated main; this registry records no inferred Decision status or live readiness."
+  probe_command: "rp-stack-ops causal_probe --party party_16c210a8a099 --expectation relationship_event_has_canonical_character_attribution"
+  expected: "chain passes through projection"
+  waiver: null
 - requirement: "A positive trust_gained event reaches canonical relationship projection and a later RP prompt"
-  level: каркас
+  level: подключено
   store: "relationship_causes and later turn prompts"
   assertion: prompt_presence
   expectation: trust_gained_reaches_next_turn_prompt
   probe_command: null
   expected: null
-  waiver: "The acceptance taxonomy contains trust_gained, but the current runtime relationship model does not project that event class."
+  waiver: "Starosta now projects trust_gained and an end-to-end test reaches a later prompt; fresh deployed evidence is pending."

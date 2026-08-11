@@ -5,12 +5,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY rp-gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
-COPY tests ./tests
-COPY pyproject.toml README.md ./
+COPY rp-gateway/app ./app
+COPY rp-gateway/tests ./tests
+COPY rp-gateway/pyproject.toml rp-gateway/README.md ./
+COPY evals /evals
+COPY scripts /scripts
+COPY worldpacks /worldpacks
 
 EXPOSE 8088
 

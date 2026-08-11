@@ -777,17 +777,17 @@ def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tm
     assert any(job["job_type"] == "relationship_extraction" for job in store.service_jobs(limit=10))
 
 
-def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
+def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_end(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Proves turn -> extraction -> cause -> band -> next prompt uses party-local time."""
+    """Proves trust_gained -> cause -> next prompt without requiring a band crossing."""
     pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
     model = json.loads(
         (
             Path(__file__).resolve().parents[2]
             / "worldpacks"
-            / "mechanist-new-world"
+            / "starosta"
             / "relationships"
             / "model.json"
         ).read_text(encoding="utf-8")
@@ -814,8 +814,8 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
         if service.store.campaign_id == target_party_id:
             events = [{
                 "character_mention": "King",
-                "event_id": "insult_public",
-                "evidence": "I insult the king before the court.",
+                "event_id": "trust_gained",
+                "evidence": "The king now trusts me after I kept my word.",
             }]
         return {
             "model": "fixture",
@@ -836,7 +836,7 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
     target_party_id = str(target["id"])
     first = c.post(
         f"/api/parties/{target_party_id}/messages",
-        json={"content": "I insult the king before the court.", "idempotency_key": "relationship-negative"},
+        json={"content": "The king now trusts me after I kept my word.", "idempotency_key": "relationship-positive"},
     )
     assert first.status_code == 200, first.text
     second = c.post(
@@ -847,9 +847,14 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
 
     store = c.app.state.party_store.store_for_party(target_party_id)
     prompt = json.loads(store.latest_turn(include_prompt=True)["prompt_json"])
-    assert any(item["content"].startswith("RELATIONSHIP_PRESSURE") for item in prompt), (
-        "RELATIONSHIP_PRESSURE did not appear after a party-local relationship crossing"
+    pressure = next(
+        (item["content"] for item in prompt if item["content"].startswith("RELATIONSHIP_PRESSURE")),
+        None,
     )
+    assert pressure is not None, "RELATIONSHIP_PRESSURE did not appear after trust_gained"
+    assert "King" in pressure and "Недавние поступки укрепили доверие" in pressure
+    causes = RelationshipStore(store, model).cause_rows("king", "loyalty", 2)
+    assert any(row["event_id"] == "trust_gained" and row["weight"] > 0 for row in causes)
     with store.connect() as connection:
         cause = connection.execute(
             "SELECT turn_id, party_turn, expires_turn FROM relationship_causes "
@@ -863,12 +868,11 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
         "campaign_id": target_party_id,
         "character_id": "king",
         "axis": "loyalty",
-        "band": "estranged",
-        "band_since_turn": 1,
+        "band": "neutral",
+        "band_since_turn": 0,
         "updated_at": RelationshipStore(store, model).axis_state("king", "loyalty")["updated_at"],
     }
-    crack = RelationshipStore(store, model).event_rows("king", "crack")
-    assert crack and crack[0]["opened_turn"] == 1
+    assert RelationshipStore(store, model).event_rows("king", "favour") == []
 
 
 def test_training_party_ignores_relationship_declaration_and_writes_no_relationship_rows(tmp_path: Path):

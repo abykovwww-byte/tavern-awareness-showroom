@@ -268,6 +268,27 @@ def test_trust_seed_maps_once_without_mutating_canonical_state(tmp_path: Path) -
     assert seed_rows[0]["weight"] == 20
     assert mechanics.store.cause_rows("ivan", "loyalty", 0)[0]["event_id"] == "seed_trust"
     assert store.get_state()["characters"]["ivan"]["trust"] == 5
+    pressure = mechanics.pressure_block(1, {"ivan": "Иван"})
+    assert pressure is not None
+    assert "Иван" in pressure and "Исходное доверие" in pressure
+    assert "seed_trust" not in pressure and "20" not in pressure
+
+
+def test_non_boundary_cause_reaches_qualitative_pressure(tmp_path: Path) -> None:
+    """Proves a durable cause affects the next prompt without a threshold event."""
+    mechanics = RelationshipMechanics(make_store(tmp_path, "cause-pressure"), relationship_model())
+
+    changes = mechanics.apply_events(
+        turn_id=1,
+        party_turn=1,
+        events=[event("ivan", "loss_10_a")],
+    )
+    pressure = mechanics.pressure_block(2, {"ivan": "Иван"})
+
+    assert changes == []
+    assert pressure is not None
+    assert "Иван" in pressure and "Недавние поступки ослабили доверие" in pressure
+    assert "loss_10_a" not in pressure and "-10" not in pressure
 
 
 def test_legacy_active_event_deadline_is_repaired_before_advance(tmp_path: Path) -> None:

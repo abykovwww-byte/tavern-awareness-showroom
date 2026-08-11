@@ -1,11 +1,11 @@
 - requirement: "Readiness claims use the registered four-level dictionary and remain separate from Decision status"
-  level: каркас
+  level: подключено
   store: "Decision requirement registry"
   assertion: absence
   expectation: no_bare_readiness_claims
   probe_command: null
   expected: null
-  waiver: "Repository guards are locally tested; the merged policy has not yet accumulated delivery history."
+  waiver: "Repository guards are active and have passed merged CI; endurance evidence is not yet accumulated."
 - requirement: "Every global service-model completion has an exact redacted diagnostic trace"
   level: подключено
   store: "service_call_log"
@@ -13,20 +13,20 @@
   expectation: service_model_trace_is_complete
   probe_command: null
   expected: null
-  waiver: "A live canary recorded nonempty ordered prompts and raw responses through service_prompt_text; retention remains an explicit open decision."
+  waiver: "A live canary recorded 19 completed calls with nonempty ordered prompts and raw responses; retention remains a separate policy decision."
 - requirement: "Seeded trust reaches a durable event and a later relationship-pressure prompt"
-  level: каркас
+  level: подключено
   store: "relationship projection"
   assertion: prompt_presence
   expectation: seed_trust_influences_plot
   probe_command: null
   expected: null
-  waiver: "The known Starosta party must fail this chain; no fresh deployed party has passed through prompt_presence."
+  waiver: "Seed causes now enter qualitative relationship pressure; a fresh deployed Starosta party has not yet passed through prompt_presence."
 - requirement: "Semantic acceptance reports independent thresholds and per-class metrics"
-  level: каркас
+  level: подключено
   store: "semantic acceptance report"
   assertion: projection
   expectation: semantic_acceptance_thresholds_hold
   probe_command: null
   expected: null
-  waiver: "Saved-response offline acceptance is green; provider-canary repeats and production endurance are not yet run."
+  waiver: "Saved-response offline acceptance is green and the Gateway image carries the evaluator; provider-canary repeats and production endurance are pending."

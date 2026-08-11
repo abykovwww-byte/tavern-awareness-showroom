@@ -141,7 +141,8 @@ class RelationshipMechanics:
             band = self._band(str(row["axis"]), str(row["band"]))
             if band is None:
                 continue
-            if not row.get("events"):
+            causes = [cause for cause in row.get("causes", []) if int(cause.get("weight", 0)) != 0]
+            if not row.get("events") and not causes:
                 continue
             pressures = [
                 self._qualitative_pressure(
@@ -152,6 +153,9 @@ class RelationshipMechanics:
                 for event in row.get("events", [])
             ]
             pressures = [pressure for pressure in pressures if pressure]
+            cause_pressure = self._qualitative_cause_pressure(causes)
+            if cause_pressure:
+                pressures.insert(0, cause_pressure)
             suffix = f" {' '.join(pressures)}" if pressures else ""
             rendered.append(f"- {name} — {band['label']}.{suffix}")
 
@@ -730,6 +734,21 @@ class RelationshipMechanics:
         }
         result.update(extra)
         return result
+
+    @staticmethod
+    def _qualitative_cause_pressure(causes: list[dict[str, Any]]) -> str:
+        seed_weight = sum(int(cause.get("weight", 0)) for cause in causes if cause.get("source") == "seed")
+        recent_weight = sum(int(cause.get("weight", 0)) for cause in causes if cause.get("source") != "seed")
+        parts: list[str] = []
+        if seed_weight > 0:
+            parts.append("Исходное доверие уже влияет на выбор и реакцию персонажа.")
+        elif seed_weight < 0:
+            parts.append("Исходное недоверие уже влияет на выбор и реакцию персонажа.")
+        if recent_weight > 0:
+            parts.append("Недавние поступки укрепили доверие; прояви это в текущей сцене.")
+        elif recent_weight < 0:
+            parts.append("Недавние поступки ослабили доверие; прояви это в текущей сцене.")
+        return " ".join(parts)
 
     @staticmethod
     def _qualitative_pressure(event_id: str, *, party_turn: int, event: dict[str, Any]) -> str:
