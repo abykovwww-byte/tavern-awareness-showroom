@@ -762,12 +762,12 @@ function renderState() {
   const relationships = state.relationships || {};
   const relRows = Object.entries(relationships)
     .slice(0, 5)
-    .map(([key, value]) => `${escapeHtml(key)}: доверие ${escapeHtml(value.trust ?? "-")}, подозрение ${escapeHtml(value.suspicion ?? "-")}`);
+    .map(([key, value]) => `${escapeHtml(key)}: подозрение ${escapeHtml(value.suspicion ?? "-")}`);
   els.stateSummary.innerHTML = [
     stateItem("Версия", `v${meta.state_version ?? "-"} · ход ${meta.turn ?? "-"}`, "Номер сохраненного state и текущий ход партии."),
     stateItem("Локация", playerLocation, "Где сейчас находится персонаж."),
     stateItem("Ресурсы", resources, "Подтвержденные ресурсы игрока; их нельзя выдумывать в ходе."),
-    stateItem("Отношения", relRows.length ? relRows.join("<br>") : "нет записей", "Доверие/подозрение NPC и фракций к игроку."),
+    stateItem("Отношения", relRows.length ? relRows.join("<br>") : "нет записей", "Подозрение NPC и фракций к игроку."),
     stateItem(
       "Нити",
       threads.length ? threads.map((thread) => escapeHtml(thread.description || thread.id)).join("<br>") : "нет активных",
@@ -3479,7 +3479,6 @@ function memoryItemText(item) {
 function relationshipText(relationship) {
   if (!relationship || typeof relationship !== "object") return "";
   const bits = [];
-  if (relationship.trust !== undefined) bits.push(`доверие ${relationship.trust}`);
   if (relationship.suspicion !== undefined) bits.push(`подозрение ${relationship.suspicion}`);
   if (relationship.fear !== undefined) bits.push(`страх ${relationship.fear}`);
   return bits.join(" · ");

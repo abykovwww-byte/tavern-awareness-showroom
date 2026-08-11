@@ -219,9 +219,11 @@ class RelationshipStore:
         axis: str,
         event_id: str,
         opened_turn: int,
-        due_turn: int | None,
+        due_turn: int,
         payload: dict[str, Any] | None = None,
     ) -> int | None:
+        if isinstance(due_turn, bool) or not isinstance(due_turn, int) or due_turn <= opened_turn:
+            raise ValueError("relationship event requires a finite due_turn after opened_turn")
         with self.state_store.connect() as connection:
             existing = connection.execute(
                 """

@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS narrative_events (
     event_id TEXT NOT NULL,                  -- 'crack' | 'ultimatum' | 'plot' | 'strike' | 'favour'
     status TEXT NOT NULL,                    -- 'active' | 'resolved' | 'expired' | 'cancelled'
     opened_turn INTEGER NOT NULL,
-    due_turn INTEGER,                        -- NULL для событий без срока
+    due_turn INTEGER NOT NULL,               -- у каждого boundary event есть конечный срок
     payload_json TEXT NOT NULL,              -- форма, сообщник, мишень, требование
     resolution TEXT,
     resolved_turn INTEGER,
@@ -349,26 +349,40 @@ value(character, axis, at_party_turn) =
 Причина никогда не удаляется и не изменяется. Снятие из ГМ-мода — установка
 `expires_turn` в текущий ход.
 
-### Ответ служебной модели (L3)
+### Ответ служебной модели (L3, superseded by ADR 021)
 
 ```json
-{"events": [{"character_id": "ivan", "event_id": "insult_public", "evidence": "..."}]}
+{"events": [{"character_mention": "Иван", "event_id": "insult_public", "evidence": "Иван публично оскорбил цель"}]}
 ```
 
-Отбраковка без ретрая, с записью в audit: `unknown_event_id`,
-`unknown_character_id`, `missing_evidence`, `numeric_field_present`,
-`too_many_events` (потолок — 5 на ход). Отбракованная запись не начисляется.
-Никаких чисел в ответе не принимается ни в каком поле.
+Ответ допускает транспортную Markdown-обёртку одного JSON-объекта, но после её
+снятия обязан иметь только `events`, а каждый элемент — ровно
+`character_mention`, `event_id`, `evidence`. `character_mention` не является
+ID: Gateway нормализует Unicode NFKC/casefold/whitespace и разрешает его только
+по точной alias-таблице WorldPack. `evidence` обязан быть точной
+нормализованной подстрокой конкатенации `player_message` и
+`narrative_response`, а mention — подстрокой evidence.
+
+Отбраковка без ретрая, с записью в audit: `malformed_response`,
+`missing_evidence`, `evidence_not_verbatim`, `mention_missing`,
+`mention_not_in_evidence`, `unresolved_mention`, `ambiguous_mention`,
+`unknown_event_id`, `numeric_field_present`, `too_many_events`,
+`character_id_present`. Отбракованная запись не начисляется; для unresolved и
+ambiguous в audit сохраняется исходный mention. `evidence_quote` и
+`character_id` не являются совместимыми alias-полями.
 
 ### Модель отношений в WorldPack (L4)
 
 `worldpacks/<pack>/relationships/model.json`, объявляется в манифесте блоком
-`"relationships": {"schema_version": "rp-relationships.v1", "model":
+`"relationships": {"schema_version": "rp-relationships.v2", "model":
 "relationships/model.json"}`.
 
 ```json
 {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
+  "characters": {
+    "ivan": {"aliases": ["Иван", "Ивана", "Ивану", "Иваном"]}
+  },
   "axes": {
     "loyalty": {
       "min": -100, "max": 100,
@@ -409,7 +423,8 @@ value(character, axis, at_party_turn) =
     "deceived":            {"blocks_natural_growth": true},
     "abandoned":           {"ultimatum_demand": "presence"}
   },
-  "clocks": {"ultimatum": 4, "plot": 7},
+  "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+  "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
   "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
 }
 ```

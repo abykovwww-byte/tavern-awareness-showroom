@@ -695,12 +695,17 @@ def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tm
     manifest_path = pack_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["relationships"] = {
-        "schema_version": "rp-relationships.v1",
+        "schema_version": "rp-relationships.v2",
         "model": "relationships/model.json",
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     relationship_dir = pack_dir / "relationships"
     relationship_dir.mkdir()
+    model["characters"] = {
+        "king": {"aliases": ["King", "the king"]},
+        "advisor": {"aliases": ["Advisor"]},
+    }
+    model["plot"]["discovery_chance_per_turn"] = 0
     (relationship_dir / "model.json").write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
 
     c = client(tmp_path)
@@ -708,6 +713,17 @@ def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tm
     party_id = str(party["id"])
     store = c.app.state.party_store.store_for_party(party_id)
     relationships = RelationshipStore(store, model)
+    relationships.add_cause(
+        character_id="king",
+        axis="loyalty",
+        event_id="fixture_seed",
+        weight=-80,
+        turn_id=0,
+        party_turn=0,
+        expires_turn=None,
+        evidence="fixture relationship seed",
+        source="fixture",
+    )
     relationships.set_axis_state(character_id="king", axis="loyalty", band="enmity", band_since_turn=0)
     relationships.open_event(
         character_id="king",
@@ -778,12 +794,16 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
     manifest_path = pack_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["relationships"] = {
-        "schema_version": "rp-relationships.v1",
+        "schema_version": "rp-relationships.v2",
         "model": "relationships/model.json",
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     relationship_dir = pack_dir / "relationships"
     relationship_dir.mkdir()
+    model["characters"] = {
+        "king": {"aliases": ["King", "the king"]},
+        "advisor": {"aliases": ["Advisor"]},
+    }
     (relationship_dir / "model.json").write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
 
     target_party_id: str | None = None
@@ -792,9 +812,9 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
         events = []
         if service.store.campaign_id == target_party_id:
             events = [{
-                "character_id": "king",
+                "character_mention": "King",
                 "event_id": "insult_public",
-                "evidence": "the king was insulted in public",
+                "evidence": "I insult the king before the court.",
             }]
         return {
             "model": "fixture",
@@ -832,7 +852,7 @@ def test_relationship_turn_clock_survives_global_turn_id_offset_end_to_end(
     with store.connect() as connection:
         cause = connection.execute(
             "SELECT turn_id, party_turn, expires_turn FROM relationship_causes "
-            "WHERE campaign_id = ? ORDER BY id ASC LIMIT 1",
+            "WHERE campaign_id = ? AND source = 'extraction' ORDER BY id ASC LIMIT 1",
             (target_party_id,),
         ).fetchone()
     assert cause is not None
@@ -865,7 +885,7 @@ def test_training_party_ignores_relationship_declaration_and_writes_no_relations
     manifest_path = target / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["relationships"] = {
-        "schema_version": "rp-relationships.v1",
+        "schema_version": "rp-relationships.v2",
         "model": "relationships/model.json",
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")

@@ -10,7 +10,7 @@
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "training", "supported": ["training", "rp"]},
   "relationships": {
-    "schema_version": "rp-relationships.v1",
+    "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"
   },
   "assumptions": [

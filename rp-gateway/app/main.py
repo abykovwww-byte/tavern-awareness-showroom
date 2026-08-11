@@ -2334,7 +2334,7 @@ def relationship_model_for_party(party: Any) -> dict[str, Any] | None:
     declaration = world.manifest.get("relationships")
     if declaration is None:
         return None
-    if not isinstance(declaration, dict) or declaration.get("schema_version") != "rp-relationships.v1":
+    if not isinstance(declaration, dict) or declaration.get("schema_version") != "rp-relationships.v2":
         raise ValueError("invalid WorldPack relationship declaration")
     relative_path = declaration.get("model")
     if not isinstance(relative_path, str) or not relative_path.strip():
@@ -2347,7 +2347,7 @@ def relationship_model_for_party(party: Any) -> dict[str, Any] | None:
         model = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("cannot load WorldPack relationship model") from exc
-    if not isinstance(model, dict) or model.get("schema_version") != "rp-relationships.v1":
+    if not isinstance(model, dict) or model.get("schema_version") != "rp-relationships.v2":
         raise ValueError("invalid WorldPack relationship model")
     return model
 

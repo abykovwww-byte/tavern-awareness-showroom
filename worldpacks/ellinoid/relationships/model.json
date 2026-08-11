@@ -1,5 +1,17 @@
 {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
+  "characters": {
+    "dmitry-lanskoy": {"aliases": ["Дмитрий Алексеевич Ланской"]},
+    "sergei-ardatov": {"aliases": ["князь Сергей Николаевич Ардатов"]},
+    "nikolai-hvoshtov": {"aliases": ["Николай Петрович Хвостов"]},
+    "pavel-ragozin": {"aliases": ["Павел Ильич Рагозин"]},
+    "alexey-mertsalov": {"aliases": ["Алексей Андреевич Мерцалов"]},
+    "varvara-sokolovskaya": {"aliases": ["Варвара Петровна Соколовская"]},
+    "pavel-sokolovsky": {"aliases": ["Павел Андреевич Соколовский"]},
+    "zoya-vyazemskaya": {"aliases": ["княгиня Зоя Платоновна Вяземская"]},
+    "anna-ustinova": {"aliases": ["Анна Устинова"]},
+    "maria-ladomirskaya": {"aliases": ["Мария Кирилловна Ладомирская"]}
+  },
   "axes": {
     "loyalty": {
       "min": -100,
@@ -50,6 +62,7 @@
     "deceived": {"blocks_natural_growth": true},
     "abandoned": {"ultimatum_demand": "presence"}
   },
-  "clocks": {"ultimatum": 4, "plot": 7},
+  "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+  "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
   "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
 }

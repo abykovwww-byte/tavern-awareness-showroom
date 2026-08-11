@@ -1,5 +1,17 @@
 {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
+  "characters": {
+    "marina-vorontsova": {"aliases": ["Марина Воронцова"]},
+    "ilya-safonov": {"aliases": ["Илья Сафонов"]},
+    "oleg-shumilov": {"aliases": ["Олег Шумилов"]},
+    "ksenia-lebedeva": {"aliases": ["Ксения Лебедева"]},
+    "artem-pavlov": {"aliases": ["Артем Павлов"]},
+    "stanislav-kireev": {"aliases": ["Станислав Киреев"]},
+    "alina-reznikova": {"aliases": ["Алина Резникова"]},
+    "nika-belyaeva": {"aliases": ["Ника Беляева"]},
+    "pavel-menshov": {"aliases": ["Павел Меньшов"]},
+    "operator-rubin": {"aliases": ["«Рубин»", "Рубин"]}
+  },
   "axes": {
     "loyalty": {
       "min": -100,
@@ -50,6 +62,7 @@
     "deceived": {"blocks_natural_growth": true},
     "abandoned": {"ultimatum_demand": "presence"}
   },
-  "clocks": {"ultimatum": 4, "plot": 7},
+  "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+  "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
   "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
 }
