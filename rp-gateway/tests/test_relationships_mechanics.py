@@ -11,7 +11,11 @@ from app.services.state_store import StateStore
 
 def relationship_model() -> dict:
     return {
-        "schema_version": "rp-relationships.v1",
+        "schema_version": "rp-relationships.v2",
+        "characters": {
+            "ivan": {"aliases": ["Иван"]},
+            "maria": {"aliases": ["Мария"]},
+        },
         "axes": {
             "loyalty": {
                 "min": -100,
@@ -40,7 +44,8 @@ def relationship_model() -> dict:
         "character_weights": {"ivan": {"role": "subordinate", "multipliers": {}}},
         "roles": {"subordinate": {"strike_form": "sabotage"}},
         "wounds": {},
-        "clocks": {"ultimatum": 4, "plot": 7},
+        "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+        "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
         "plot": {"tell_required_every_turn": True, "discovery_chance_per_turn": 0.2},
     }
 
@@ -94,7 +99,7 @@ def test_per_turn_cap_limits_combined_events(tmp_path: Path) -> None:
         events=[event("ivan", "loss_20_a"), event("ivan", "loss_20_b")],
     )
 
-    rows = mechanics.store.cause_rows("ivan", "loyalty", 1)
+    rows = [row for row in mechanics.store.cause_rows("ivan", "loyalty", 1) if row["source"] != "seed"]
     assert [row["weight"] for row in rows] == [-20, -10]
     assert mechanics.store.value("ivan", "loyalty", 1) == -30
 
@@ -202,6 +207,28 @@ def test_pressure_block_exposes_only_name_band_and_qualitative_pressure(tmp_path
     for forbidden in ("ivan", "maria-secret-id", "target-secret-id", "sabotage", "42", "-42", "plot"):
         assert forbidden not in block
 
+    later_block = RelationshipMechanics(store, model).pressure_block(2, {"ivan": "Иван"})
+    assert later_block is not None and later_block != block
+
+
+def test_trust_seed_maps_once_without_mutating_canonical_state(tmp_path: Path) -> None:
+    store = make_store(tmp_path, "trust-seed")
+    state = store.get_state()
+    state["characters"]["ivan"]["trust"] = 5
+    state.setdefault("meta", {})["state_version"] = int(store.current_version() or 1) + 1
+    store.insert_state_version(state, "test:trust-seed")
+    store.write_state_file(state)
+    mechanics = RelationshipMechanics(store, relationship_model())
+
+    mechanics.advance_turn(0)
+
+    seed_rows = [row for row in mechanics.store.cause_rows("ivan", "loyalty", 0) if row["source"] == "seed"]
+    assert len(seed_rows) == 1
+    assert seed_rows[0]["party_turn"] == 0
+    assert seed_rows[0]["weight"] == 20
+    assert mechanics.store.cause_rows("ivan", "loyalty", 0)[0]["event_id"] == "seed_trust"
+    assert store.get_state()["characters"]["ivan"]["trust"] == 5
+
 
 def test_crack_cascades_the_trigger_cause_to_connected_witness(tmp_path: Path) -> None:
     """Proves a boundary event creates a party-scoped cascade cause for a connected witness."""
@@ -219,7 +246,7 @@ def test_crack_cascades_the_trigger_cause_to_connected_witness(tmp_path: Path) -
     changes = mechanics.apply_events(turn_id=2, party_turn=2, events=[event("ivan", "loss_10_b")])
 
     assert [change["event_id"] for change in changes] == ["crack"]
-    witness_rows = mechanics.store.cause_rows("maria", "loyalty", 2)
+    witness_rows = [row for row in mechanics.store.cause_rows("maria", "loyalty", 2) if row["source"] != "seed"]
     assert [(row["event_id"], row["source"], row["weight"]) for row in witness_rows] == [
         ("loss_10_b", "cascade", -10)
     ]
@@ -247,6 +274,17 @@ def test_plot_discovery_and_missed_deadline_have_distinct_deterministic_outcomes
     discovered_model = copy.deepcopy(relationship_model())
     discovered_model["plot"]["discovery_chance_per_turn"] = 1
     discovered = RelationshipMechanics(make_store(tmp_path, "plot-discovered"), discovered_model)
+    discovered.store.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="plot-basis",
+        weight=-80,
+        turn_id=0,
+        party_turn=0,
+        expires_turn=None,
+        evidence="plot basis",
+        source="fixture",
+    )
     discovered.store.open_event(
         character_id="ivan",
         axis="loyalty",
@@ -262,6 +300,17 @@ def test_plot_discovery_and_missed_deadline_have_distinct_deterministic_outcomes
     missed_model = copy.deepcopy(relationship_model())
     missed_model["plot"]["discovery_chance_per_turn"] = 0
     missed = RelationshipMechanics(make_store(tmp_path, "plot-missed"), missed_model)
+    missed.store.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="plot-basis",
+        weight=-80,
+        turn_id=0,
+        party_turn=0,
+        expires_turn=None,
+        evidence="plot basis",
+        source="fixture",
+    )
     missed.store.open_event(
         character_id="ivan",
         axis="loyalty",
@@ -272,4 +321,39 @@ def test_plot_discovery_and_missed_deadline_have_distinct_deterministic_outcomes
     )
     missed.advance_turn(1)
     assert missed.store.event_rows("ivan", "plot")[0]["resolution"] == "not_discovered"
-    assert missed.store.event_rows("ivan", "strike")[0]["status"] == "active"
+    strike = missed.store.event_rows("ivan", "strike")[0]
+    assert strike["status"] == "active"
+    assert strike["due_turn"] == 7
+
+
+def test_active_event_closes_when_its_basis_is_gone(tmp_path: Path) -> None:
+    model = relationship_model()
+    store = make_store(tmp_path, "basis-gone")
+    relationships = RelationshipStore(store, model)
+    relationships.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="temporary-crack-basis",
+        weight=-30,
+        turn_id=1,
+        party_turn=1,
+        expires_turn=2,
+        evidence="temporary basis",
+        source="fixture",
+    )
+    relationships.set_axis_state(character_id="ivan", axis="loyalty", band="estranged", band_since_turn=1)
+    relationships.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="crack",
+        opened_turn=1,
+        due_turn=7,
+        payload={},
+    )
+
+    changes = RelationshipMechanics(store, model).advance_turn(2)
+
+    event_row = relationships.event_rows("ivan", "crack")[0]
+    assert event_row["status"] == "resolved"
+    assert event_row["resolution"] == "basis_gone"
+    assert any(change["resolution"] == "basis_gone" for change in changes)

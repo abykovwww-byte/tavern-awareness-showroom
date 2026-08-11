@@ -1,5 +1,15 @@
 {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
+  "characters": {
+    "tikhomir": {"aliases": ["Тихомир", "Тихомира", "Тихомиру", "Тихомиром"]},
+    "lyubava": {"aliases": ["Любава", "Любавы", "Любаве", "Любавой"]},
+    "frol": {"aliases": ["Фрол", "Фрола", "Фролу", "Фролом"]},
+    "stoyan": {"aliases": ["Стоян", "Стояна", "Стояну", "Стояном"]},
+    "luka": {"aliases": ["Лука", "Луки", "Луке", "Лукой"]},
+    "ratibor": {"aliases": ["Ратибор", "Ратибора", "Ратибору", "Ратибором"]},
+    "zhdan": {"aliases": ["Ждан", "Ждана", "Ждану", "Жданом"]},
+    "radoslav": {"aliases": ["Радослав", "Радослава", "Радославу", "Радославом"]}
+  },
   "axes": {
     "loyalty": {
       "min": -100,
@@ -48,6 +58,7 @@
     "deceived": {"blocks_natural_growth": true},
     "abandoned": {"ultimatum_demand": "presence"}
   },
-  "clocks": {"ultimatum": 4, "plot": 7},
+  "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+  "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
   "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
 }

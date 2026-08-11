@@ -44,8 +44,33 @@ def valid_model() -> dict:
             lambda model: model["events"]["defended_publicly"].__setitem__("weight", 16),
             "weight must be between -30 and 15",
         ),
+        (
+            lambda model: model["characters"]["enri-emmot"].__setitem__("aliases", []),
+            "aliases must contain at least one form",
+        ),
+        (
+            lambda model: model["characters"]["albedo"].__setitem__("aliases", ["Аинз Оал Гоун"]),
+            "duplicate normalized alias",
+        ),
+        (
+            lambda model: model["clocks"].pop("strike"),
+            "clocks.strike must be a positive integer",
+        ),
+        (
+            lambda model: model.pop("trust_mapping"),
+            "trust_mapping.kind must be linear",
+        ),
     ],
-    ids=["unknown-role", "unknown-wound", "overlapping-boundaries", "out-of-range-weight"],
+    ids=[
+        "unknown-role",
+        "unknown-wound",
+        "overlapping-boundaries",
+        "out-of-range-weight",
+        "missing-alias",
+        "duplicate-alias",
+        "missing-clock",
+        "missing-trust-mapping",
+    ],
 )
 def test_validate_model_rejects_frozen_contract_violations(mutate, expected: str) -> None:
     """Each case proves one named preflight guard rejects its mutation with a useful error."""

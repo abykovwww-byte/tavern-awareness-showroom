@@ -1,5 +1,14 @@
 {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
+  "characters": {
+    "mara-vey": {"aliases": ["Mara Vey"]},
+    "ilya-sorn": {"aliases": ["Ilya Sorn"]},
+    "tamar-arel": {"aliases": ["Tamar Arel"]},
+    "radan-ost": {"aliases": ["Radan Ost"]},
+    "sava-nine-marks": {"aliases": ["Sava Nine-Marks"]},
+    "nera-kol": {"aliases": ["Nera Kol"]},
+    "orban-sele": {"aliases": ["Orban Sele"]}
+  },
   "axes": {
     "loyalty": {
       "min": -100,
@@ -47,6 +56,7 @@
     "deceived": {"blocks_natural_growth": true},
     "abandoned": {"ultimatum_demand": "presence"}
   },
-  "clocks": {"ultimatum": 4, "plot": 7},
+  "clocks": {"crack": 6, "ultimatum": 4, "plot": 7, "favour": 10, "strike": 6},
+  "trust_mapping": {"kind": "linear", "in": [-10, 10], "out": [-40, 40]},
   "plot": {"tell_required_every_turn": true, "discovery_chance_per_turn": 0.2}
 }

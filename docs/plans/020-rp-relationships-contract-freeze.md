@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS narrative_events (
     event_id TEXT NOT NULL,
     status TEXT NOT NULL,
     opened_turn INTEGER NOT NULL,
-    due_turn INTEGER,
+    due_turn INTEGER NOT NULL,
     payload_json TEXT NOT NULL,
     resolution TEXT,
     resolved_turn INTEGER,
@@ -101,7 +101,7 @@ class RelationshipMechanics:
 
 class RelationshipExtractionService:
     async def process_turn(self, turn_id: int, authorization: str | None = None) -> dict: ...
-    def parse_response(self, payload: object, *, character_ids: set[str]) -> dict: ...
+    def parse_response(self, payload: object, *, aliases: dict[str, list[str]], turn_text: str) -> dict: ...
 ```
 
 The three services receive the party-scoped `StateStore` and the validated
@@ -120,14 +120,17 @@ failure, not as a model-response rejection.
 ## Extraction response
 
 ```json
-{"events": [{"character_id": "ivan", "event_id": "insult_public", "evidence": "..."}]}
+{"events": [{"character_mention": "Иван", "event_id": "insult_public", "evidence": "..."}]}
 ```
 
 The complete response is rejected without retry when it contains any numeric
-value, more than five events, an unknown character or event identifier, or an
-event without non-empty evidence. Audit rejection codes are exactly:
-`unknown_event_id`, `unknown_character_id`, `missing_evidence`,
-`numeric_field_present`, `too_many_events`.
+value, more than five events, a malformed shape, an unknown or ambiguous alias,
+non-verbatim evidence, an unknown event identifier, or an event without
+non-empty evidence. Audit rejection codes are exactly:
+`malformed_response`, `missing_evidence`, `evidence_not_verbatim`,
+`mention_missing`, `mention_not_in_evidence`, `unresolved_mention`,
+`ambiguous_mention`, `unknown_event_id`, `numeric_field_present`,
+`too_many_events`, `character_id_present`.
 
 ## WorldPack manifest and model
 
@@ -135,7 +138,7 @@ The manifest entry is:
 
 ```json
 "relationships": {
-  "schema_version": "rp-relationships.v1",
+  "schema_version": "rp-relationships.v2",
   "model": "relationships/model.json"
 }
 ```

@@ -134,7 +134,6 @@ def compact_character(character_id: str, character: dict[str, Any]) -> dict[str,
         "status",
         "location",
         "attitude_to_player",
-        "trust",
         "fear",
         "loyalty",
         "current_goal",
@@ -152,7 +151,7 @@ def compact_character(character_id: str, character: dict[str, Any]) -> dict[str,
 
 def compact_relationship(relationship: dict[str, Any]) -> dict[str, Any]:
     compact: dict[str, Any] = {}
-    for key in ("from", "to", "trust", "suspicion", "fear", "loyalty"):
+    for key in ("from", "to", "suspicion", "fear", "loyalty"):
         value = relationship.get(key)
         if value not in (None, "", [], {}):
             compact[key] = value

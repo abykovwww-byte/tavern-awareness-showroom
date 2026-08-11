@@ -12,6 +12,12 @@ import httpx
 from app.core.config import Settings
 from app.services.narrative import NarrativeClient, json_object_content, response_text
 from app.services.provider_auth import outbound_headers
+from app.services.relationship_attribution import (
+    REJECTION_CODES,
+    RelationshipExtractionRejected,
+    normalized_aliases,
+    resolve_mention,
+)
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
 from app.services.service_models import service_model_settings
@@ -20,26 +26,7 @@ from app.services.state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
-REJECTION_CODES = frozenset(
-    {
-        "unknown_event_id",
-        "unknown_character_id",
-        "missing_evidence",
-        "numeric_field_present",
-        "too_many_events",
-    }
-)
 MAX_EVENTS_PER_TURN = 5
-
-
-class RelationshipExtractionRejected(ValueError):
-    """A complete, syntactically valid model response rejected by contract."""
-
-    def __init__(self, code: str):
-        if code not in REJECTION_CODES:
-            raise ValueError(f"unsupported relationship extraction rejection code: {code}")
-        self.code = code
-        super().__init__(code)
 
 
 class RelationshipExtractionService:
@@ -72,15 +59,23 @@ class RelationshipExtractionService:
                 request_id,
             )
             raise RuntimeError(f"relationship extraction missing party_turn for turn_id={turn_id}")
-        character_ids = self._character_ids()
+        aliases = self._aliases()
+        turn_text = self._turn_text(turn)
 
         try:
-            raw_response = await self._complete(turn, character_ids, authorization)
-            parsed = self.parse_response(response_text(raw_response), character_ids=character_ids)
+            raw_response = await self._complete(turn, aliases, authorization)
+            parsed = self.parse_response(
+                response_text(raw_response),
+                aliases=aliases,
+                turn_text=turn_text,
+            )
         except RelationshipExtractionRejected as exc:
+            audit_payload = {"turn_id": int(turn_id), "code": exc.code}
+            if exc.mention is not None:
+                audit_payload["mention"] = exc.mention
             self.store.audit(
                 "relationship_extraction_rejected",
-                {"turn_id": int(turn_id), "code": exc.code},
+                audit_payload,
                 request_id,
             )
             return {
@@ -115,7 +110,13 @@ class RelationshipExtractionService:
             "events": applied,
         }
 
-    def parse_response(self, payload: object, *, character_ids: set[str]) -> dict[str, Any]:
+    def parse_response(
+        self,
+        payload: object,
+        *,
+        aliases: dict[str, list[str]] | None = None,
+        turn_text: str = "",
+    ) -> dict[str, Any]:
         """Parse and validate the all-or-nothing qualitative extraction payload."""
         try:
             if isinstance(payload, str):
@@ -125,14 +126,14 @@ class RelationshipExtractionService:
             else:
                 data = payload
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise RelationshipExtractionRejected("missing_evidence") from exc
+            raise RelationshipExtractionRejected("malformed_response") from exc
 
         # Scan the complete decoded document before inspecting its expected shape.
         # bool is a JSON boolean, not a numeric relationship value.
         if self._contains_number(data):
             raise RelationshipExtractionRejected("numeric_field_present")
         if not isinstance(data, dict) or set(data) != {"events"} or not isinstance(data["events"], list):
-            raise RelationshipExtractionRejected("missing_evidence")
+            raise RelationshipExtractionRejected("malformed_response")
 
         events = data["events"]
         if len(events) > MAX_EVENTS_PER_TURN:
@@ -142,27 +143,32 @@ class RelationshipExtractionService:
         normalized: list[dict[str, str]] = []
         for event in events:
             if not isinstance(event, dict):
+                raise RelationshipExtractionRejected("malformed_response")
+            if "character_id" in event:
+                raise RelationshipExtractionRejected("character_id_present")
+            if "evidence_quote" in event:
+                raise RelationshipExtractionRejected("malformed_response")
+            if "evidence" not in event or not isinstance(event.get("evidence"), str) or not event["evidence"].strip():
                 raise RelationshipExtractionRejected("missing_evidence")
-            if set(event) == {"character_id", "event_id", "evidence_quote"}:
-                event = {
-                    "character_id": event.get("character_id"),
-                    "event_id": event.get("event_id"),
-                    "evidence": event.get("evidence_quote"),
-                }
-            character_id = event.get("character_id")
+            if "character_mention" not in event or not isinstance(event.get("character_mention"), str) or not event["character_mention"].strip():
+                raise RelationshipExtractionRejected("mention_missing")
+            if set(event) != {"character_mention", "event_id", "evidence"}:
+                raise RelationshipExtractionRejected("malformed_response")
+            character_mention = event.get("character_mention")
             event_id = event.get("event_id")
             evidence = event.get("evidence")
-            if not isinstance(character_id, str) or character_id not in character_ids:
-                raise RelationshipExtractionRejected("unknown_character_id")
             if not isinstance(event_id, str) or event_id not in event_ids:
                 raise RelationshipExtractionRejected("unknown_event_id")
-            if not isinstance(evidence, str) or not evidence.strip():
-                raise RelationshipExtractionRejected("missing_evidence")
-            if set(event) != {"character_id", "event_id", "evidence"}:
-                raise RelationshipExtractionRejected("missing_evidence")
+            character_id = resolve_mention(
+                character_mention,
+                evidence=evidence,
+                turn_text=turn_text,
+                aliases=aliases or {},
+            )
             normalized.append(
                 {
                     "character_id": character_id,
+                    "character_mention": character_mention.strip(),
                     "event_id": event_id,
                     "evidence": evidence.strip(),
                 }
@@ -172,7 +178,7 @@ class RelationshipExtractionService:
     async def _complete(
         self,
         turn: dict[str, Any],
-        character_ids: set[str],
+        aliases: dict[str, list[str]],
         authorization: str | None,
     ) -> dict[str, Any]:
         # The global service model has its own credentials. Party BYOK is never
@@ -182,7 +188,7 @@ class RelationshipExtractionService:
         if settings.nvidia_api_base.startswith("mock://"):
             return self._mock_response(settings.narrative_model)
 
-        payload = self._completion_payload(turn, character_ids, settings.narrative_model)
+        payload = self._completion_payload(turn, aliases, settings.narrative_model)
         client_policy = NarrativeClient(settings)
         client_policy.apply_prompt_cache_policy(payload)
         timeout = httpx.Timeout(settings.model_attempt_timeout_seconds, connect=15.0)
@@ -225,13 +231,13 @@ class RelationshipExtractionService:
     def _completion_payload(
         self,
         turn: dict[str, Any],
-        character_ids: set[str],
+        aliases: dict[str, list[str]],
         model_name: str,
     ) -> dict[str, Any]:
         state = self.store.get_state()
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
         character_catalog = []
-        for character_id in sorted(character_ids):
+        for character_id in sorted(aliases):
             character = characters.get(character_id)
             if not isinstance(character, dict):
                 character = {}
@@ -248,8 +254,8 @@ class RelationshipExtractionService:
                 )
             character_catalog.append(
                 {
-                    "character_id": character_id,
-                    "name": str(character.get("name") or character_id),
+                    "name": aliases[character_id][0] if aliases[character_id] else character_id,
+                    "aliases": aliases[character_id],
                     "identity_hint": identity_hint,
                 }
             )
@@ -272,9 +278,9 @@ class RelationshipExtractionService:
                     "content": (
                         "Extract only relationship events that are directly evidenced by this completed RP turn. "
                         "Return strict JSON with exactly one top-level key, events. Each event must contain exactly "
-                        "character_id, event_id, and a short verbatim evidence quote from the supplied turn. Use only "
-                        "the supplied identifiers. Match an explicitly named target against character_id, name, and "
-                        "identity_hint; never substitute a different character. Return at most five events. Do not "
+                        "character_mention, event_id, and a short verbatim evidence quote from the supplied turn. "
+                        "Use only the supplied alias forms for character_mention; never output an internal character "
+                        "ID. Return at most five events. Do not "
                         "output numbers in any field. "
                         "Do not infer hidden motives, scores, weights, bands, or events not completed in the turn. "
                         "If nothing qualifies, return {\"events\":[]}."
@@ -295,11 +301,12 @@ class RelationshipExtractionService:
             raise ValueError(f"turn not found: {turn_id}")
         return rows[0]
 
-    def _character_ids(self) -> set[str]:
-        characters = self.store.get_state().get("characters")
-        if not isinstance(characters, dict):
-            return set()
-        return {character_id for character_id in characters if isinstance(character_id, str)}
+    def _aliases(self) -> dict[str, list[str]]:
+        return normalized_aliases(self.model)
+
+    @staticmethod
+    def _turn_text(turn: dict[str, Any]) -> str:
+        return f"{str(turn.get('player_message') or '')}\n{str(turn.get('narrative_response') or '')}"
 
     def _event_models(self) -> dict[str, Any]:
         events = self.model.get("events")

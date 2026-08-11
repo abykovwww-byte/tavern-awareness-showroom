@@ -13,6 +13,7 @@ from app.services.state_store import StateStore
 
 _DEFAULT_AXIS = "loyalty"
 _DEFAULT_ROLE = "subordinate"
+_BOUNDARY_EVENTS = frozenset({"crack", "ultimatum", "plot", "favour", "strike"})
 _CASCADE_EVENTS = frozenset({"crack", "ultimatum", "favour", "strike"})
 _FAVOURABLE_ULTIMATUM_RESOLUTIONS = frozenset(
     {"paid", "problem_removed", "resolved_favourably", "accepted"}
@@ -36,6 +37,7 @@ class RelationshipMechanics:
         if not isinstance(events, list):
             raise TypeError("events must be a list")
 
+        self._ensure_seed_state()
         queued: deque[tuple[dict[str, Any], str]] = deque()
         for event in events:
             if not isinstance(event, dict):
@@ -48,53 +50,64 @@ class RelationshipMechanics:
         if party_turn < 0:
             raise ValueError("party_turn must be non-negative")
 
+        self._ensure_seed_state()
         changes: list[dict[str, Any]] = []
         self._apply_resolved_ultimatums(party_turn=party_turn, changes=changes)
 
         # Work on a snapshot: events opened below start advancing on a later turn.
         for event in self.store.active_events(party_turn):
             event_id = str(event["event_id"])
-            due_turn = event.get("due_turn")
-            if event_id == "ultimatum" and due_turn is not None and int(due_turn) <= party_turn:
-                if self.store.resolve_event(
-                    int(event["id"]),
-                    status="expired",
-                    resolution="deadline_missed",
-                    resolved_turn=party_turn,
-                ):
-                    changes.append(self._event_change("resolved", event, resolution="deadline_missed"))
-                    self._set_ultimatum_band(event=event, party_turn=party_turn, changes=changes)
-                continue
-
-            if event_id != "plot" or int(event["opened_turn"]) >= party_turn:
-                continue
-
-            discovered = self._plot_discovered(event=event, party_turn=party_turn)
-            if discovered:
-                resolution = "discovered_late" if due_turn is not None and int(due_turn) <= party_turn else "discovered_early"
+            due_turn = int(event["due_turn"])
+            if not self._event_basis_active(event, party_turn):
                 if self.store.resolve_event(
                     int(event["id"]),
                     status="resolved",
-                    resolution=resolution,
+                    resolution="basis_gone",
                     resolved_turn=party_turn,
                 ):
-                    changes.append(self._event_change("resolved", event, resolution=resolution))
+                    changes.append(self._event_change("resolved", event, resolution="basis_gone"))
                 continue
 
-            if due_turn is None or int(due_turn) > party_turn:
+            if event_id == "plot" and int(event["opened_turn"]) < party_turn:
+                discovered = self._plot_discovered(event=event, party_turn=party_turn)
+                if discovered:
+                    resolution = "discovered_late" if due_turn <= party_turn else "discovered_early"
+                    if self.store.resolve_event(
+                        int(event["id"]),
+                        status="resolved",
+                        resolution=resolution,
+                        resolved_turn=party_turn,
+                    ):
+                        changes.append(self._event_change("resolved", event, resolution=resolution))
+                    continue
+
+                if due_turn > party_turn:
+                    continue
+                if not self.store.resolve_event(
+                    int(event["id"]),
+                    status="expired",
+                    resolution="not_discovered",
+                    resolved_turn=party_turn,
+                ):
+                    continue
+                changes.append(self._event_change("resolved", event, resolution="not_discovered"))
+                strike = self._open_strike_from_plot(event=event, party_turn=party_turn)
+                if strike is not None:
+                    changes.append(strike)
+                    changes.extend(self._cascade_from_payload(event=strike, party_turn=party_turn))
                 continue
-            if not self.store.resolve_event(
+
+            if due_turn > party_turn:
+                continue
+            if self.store.resolve_event(
                 int(event["id"]),
                 status="expired",
-                resolution="not_discovered",
+                resolution="deadline_missed",
                 resolved_turn=party_turn,
             ):
-                continue
-            changes.append(self._event_change("resolved", event, resolution="not_discovered"))
-            strike = self._open_strike_from_plot(event=event, party_turn=party_turn)
-            if strike is not None:
-                changes.append(strike)
-                changes.extend(self._cascade_from_payload(event=strike, party_turn=party_turn))
+                changes.append(self._event_change("resolved", event, resolution="deadline_missed"))
+                if event_id == "ultimatum":
+                    self._set_ultimatum_band(event=event, party_turn=party_turn, changes=changes)
 
         # Expiring causes can move an axis upward even when extraction produced no event.
         seen: set[tuple[str, str]] = set()
@@ -116,6 +129,7 @@ class RelationshipMechanics:
 
     def pressure_block(self, party_turn: int, character_names: dict[str, str]) -> str | None:
         """Return the deliberately non-numeric narrator pressure block."""
+        self._ensure_seed_state()
         rows = self.store.pressure_rows(party_turn)
         rendered: list[str] = []
         for row in rows:
@@ -127,8 +141,14 @@ class RelationshipMechanics:
             band = self._band(str(row["axis"]), str(row["band"]))
             if band is None:
                 continue
+            if not row.get("events"):
+                continue
             pressures = [
-                self._qualitative_pressure(str(event["event_id"]))
+                self._qualitative_pressure(
+                    str(event["event_id"]),
+                    party_turn=party_turn,
+                    event=event,
+                )
                 for event in row.get("events", [])
             ]
             pressures = [pressure for pressure in pressures if pressure]
@@ -138,6 +158,98 @@ class RelationshipMechanics:
         if not rendered:
             return None
         return "RELATIONSHIP_PRESSURE\n" + "\n".join(rendered)
+
+    def _ensure_seed_state(self) -> None:
+        """Materialize the WorldPack trust seed once in the derived relationship tables."""
+        state = self.state_store.get_state()
+        characters = state.get("characters")
+        if not isinstance(characters, dict):
+            return
+        axis = str(self.model.get("trust_mapping", {}).get("axis", _DEFAULT_AXIS))
+        if axis not in self.model.get("axes", {}):
+            axis = _DEFAULT_AXIS
+        for character_id, character in characters.items():
+            if not isinstance(character_id, str) or not isinstance(character, dict):
+                continue
+            mapped_trust = self._map_trust(self._seed_trust(state, character_id, character))
+            self.store.add_cause(
+                character_id=character_id,
+                axis=axis,
+                event_id="seed_trust",
+                weight=mapped_trust,
+                turn_id=0,
+                party_turn=0,
+                expires_turn=None,
+                evidence="WorldPack trust seed",
+                source="seed",
+            )
+            if self.store.axis_state(character_id, axis) is None:
+                self.store.set_axis_state(
+                    character_id=character_id,
+                    axis=axis,
+                    band=str(self._band_for_value(axis, mapped_trust)["id"]),
+                    band_since_turn=0,
+                )
+
+    def _seed_trust(self, state: dict[str, Any], character_id: str, character: dict[str, Any]) -> int:
+        value = character.get("trust")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        relationships = state.get("relationships")
+        if isinstance(relationships, dict):
+            for relationship in relationships.values():
+                if not isinstance(relationship, dict):
+                    continue
+                endpoints = {relationship.get("from"), relationship.get("to")}
+                if "player" in endpoints and character_id in endpoints:
+                    value = relationship.get("trust")
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        return value
+        return 0
+
+    def _map_trust(self, trust: int) -> int:
+        mapping = self.model.get("trust_mapping")
+        if not isinstance(mapping, dict) or mapping.get("kind") != "linear":
+            raise ValueError("relationship trust_mapping must be linear")
+        input_range = mapping.get("in")
+        output_range = mapping.get("out")
+        if (
+            not isinstance(input_range, list)
+            or len(input_range) != 2
+            or not isinstance(output_range, list)
+            or len(output_range) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in input_range + output_range)
+            or input_range[0] >= input_range[1]
+        ):
+            raise ValueError("relationship trust_mapping ranges are invalid")
+        bounded = max(input_range[0], min(input_range[1], int(trust)))
+        ratio = Decimal(bounded - input_range[0]) / Decimal(input_range[1] - input_range[0])
+        mapped = Decimal(output_range[0]) + ratio * Decimal(output_range[1] - output_range[0])
+        return int(mapped.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    def _event_basis_active(self, event: dict[str, Any], party_turn: int) -> bool:
+        event_id = str(event["event_id"])
+        if event_id not in _BOUNDARY_EVENTS:
+            return True
+        character_id = str(event["character_id"])
+        axis = str(event["axis"])
+        value = self.store.value(character_id, axis, party_turn)
+        if event_id == "ultimatum":
+            rupture = self._band(axis, "rupture")
+            if rupture is None:
+                return False
+            threshold = int(rupture["max"]) - int(self.model["axes"][axis].get("band_deadband", 0))
+            return value <= threshold
+        axis_rule = self.model["axes"][axis]
+        deadband = int(axis_rule.get("band_deadband", 0))
+        if event_id == "crack":
+            band = self._band(axis, "estranged")
+            return band is not None and value <= int(band["max"]) - deadband
+        if event_id == "favour":
+            band = self._band(axis, "favourable")
+            return band is not None and value >= int(band["min"]) + deadband
+        band = self._band(axis, "enmity")
+        return band is not None and value <= int(band["max"]) - deadband
 
     def _apply_queue(
         self,
@@ -480,7 +592,7 @@ class RelationshipMechanics:
             axis=str(event["axis"]),
             event_id="strike",
             opened_turn=party_turn,
-            due_turn=None,
+            due_turn=self._due_turn("strike", party_turn),
             payload=payload,
         )
         if event_row_id is None:
@@ -492,7 +604,7 @@ class RelationshipMechanics:
             "axis": str(event["axis"]),
             "event_id": "strike",
             "opened_turn": party_turn,
-            "due_turn": None,
+            "due_turn": self._due_turn("strike", party_turn),
             "payload": payload,
         }
 
@@ -551,9 +663,11 @@ class RelationshipMechanics:
         roll = Decimal(int.from_bytes(digest[:8], "big")) / Decimal(2**64)
         return roll < chance
 
-    def _due_turn(self, event_id: str, opened_turn: int) -> int | None:
+    def _due_turn(self, event_id: str, opened_turn: int) -> int:
         clock = self.model.get("clocks", {}).get(event_id)
-        return opened_turn + int(clock) if clock is not None else None
+        if isinstance(clock, bool) or not isinstance(clock, int) or clock <= 0:
+            raise ValueError(f"relationship clock is missing or invalid: {event_id}")
+        return opened_turn + clock
 
     def _band_for_value(self, axis: str, value: int) -> dict[str, Any]:
         bands = list(self.model["axes"][axis]["bands"])
@@ -617,14 +731,23 @@ class RelationshipMechanics:
         return result
 
     @staticmethod
-    def _qualitative_pressure(event_id: str) -> str:
+    def _qualitative_pressure(event_id: str, *, party_turn: int, event: dict[str, Any]) -> str:
+        opened_turn = int(event.get("opened_turn", party_turn))
+        phase = max(0, party_turn - opened_turn) % 3
+        if event.get("due_turn") is not None and int(event["due_turn"]) - party_turn <= 1:
+            timing = "Срок близок, и напряжение требует ответа в текущей сцене."
+        else:
+            timing = (
+                "Линия только обозначилась и ищет первый жест."
+                if phase == 0
+                else "Напряжение удерживается, но уже меняет поведение участников."
+                if phase == 1
+                else "Невысказанное давление возвращается в сцену через детали и паузы."
+            )
         return {
-            "crack": "В отношениях появилось третье лицо, способное слушать.",
-            "ultimatum": "Требование ждёт ответа и может привести к разрыву.",
-            "plot": (
-                "Заговор развивается скрытно. В этой сцене должен быть один незаметный след; "
-                "не раскрывай, что именно."
-            ),
-            "strike": "Удар должен открыть новые последствия, а не закрыть линию.",
-            "favour": "Персонаж сам приносит услугу или возможность.",
-        }.get(event_id, "")
+            "crack": f"Появился скрытый канал для разговора. {timing}",
+            "ultimatum": f"Требование ждёт ответа и может привести к разрыву. {timing}",
+            "plot": f"Скрытая линия развивается; оставь в сцене один ненавязчивый след. {timing}",
+            "strike": f"Последствие готовится проявиться открыто. {timing}",
+            "favour": f"Персонаж сам создаёт возможность для сближения. {timing}",
+        }.get(event_id, timing)

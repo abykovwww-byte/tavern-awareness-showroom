@@ -5,15 +5,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "rp-relationships.v1"
+SCHEMA_VERSION = "rp-relationships.v2"
 TOP_LEVEL_KEYS = {
     "schema_version", "axes", "events", "character_weights", "roles",
-    "wounds", "clocks", "plot",
+    "wounds", "clocks", "plot", "characters", "trust_mapping",
 }
 BOUNDARY_EVENTS = {"crack", "ultimatum", "plot", "strike", "favour"}
 
@@ -27,6 +29,66 @@ def object_value(value: Any, errors: list[str], path: Path, label: str) -> dict[
         error(errors, path, f"{label} must be an object")
         return {}
     return value
+
+
+def normalize_alias(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def validate_characters(
+    characters: dict[str, Any],
+    errors: list[str],
+    path: Path,
+    character_ids: set[str] | None,
+) -> None:
+    seen_aliases: dict[str, str] = {}
+    for character_id, raw_character in characters.items():
+        character = object_value(raw_character, errors, path, f"characters.{character_id}")
+        aliases = character.get("aliases")
+        if not isinstance(aliases, list) or not aliases:
+            error(errors, path, f"characters.{character_id}.aliases must contain at least one form")
+            continue
+        for index, alias in enumerate(aliases):
+            if not isinstance(alias, str) or not alias.strip() or len(alias) > 120:
+                error(errors, path, f"characters.{character_id}.aliases[{index}] must be a non-empty string of at most 120 characters")
+                continue
+            normalized = normalize_alias(alias)
+            if not normalized:
+                error(errors, path, f"characters.{character_id}.aliases[{index}] is empty after normalization")
+                continue
+            previous = seen_aliases.get(normalized)
+            if previous is not None and previous != character_id:
+                error(errors, path, f"duplicate normalized alias {alias!r} for {previous} and {character_id}")
+            else:
+                seen_aliases[normalized] = character_id
+        if character_ids is not None and character_id not in character_ids:
+            error(errors, path, f"characters references unknown state character: {character_id}")
+    if character_ids is not None:
+        for character_id in sorted(character_ids - set(characters)):
+            error(errors, path, f"state character has no relationship aliases: {character_id}")
+
+
+def validate_trust_mapping(mapping: dict[str, Any], errors: list[str], path: Path) -> None:
+    if mapping.get("kind") != "linear":
+        error(errors, path, "trust_mapping.kind must be linear")
+    input_range = mapping.get("in")
+    output_range = mapping.get("out")
+    for label, value in (("in", input_range), ("out", output_range)):
+        if (
+            not isinstance(value, list)
+            or len(value) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
+            or value[0] >= value[1]
+        ):
+            error(errors, path, f"trust_mapping.{label} must be two increasing integers")
+    if (
+        isinstance(output_range, list)
+        and len(output_range) == 2
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in output_range)
+        and output_range[0] >= output_range[1]
+    ):
+        error(errors, path, "trust_mapping.out must be monotonic increasing")
 
 
 def validate_bands(axis: dict[str, Any], errors: list[str], path: Path) -> None:
@@ -106,6 +168,11 @@ def validate_model(model: Any, path: Path, character_ids: set[str] | None = None
             error(errors, path, f"axes.loyalty.{field} must be a non-negative integer")
     validate_bands(loyalty, errors, path)
 
+    characters = object_value(model.get("characters"), errors, path, "characters")
+    validate_characters(characters, errors, path, character_ids)
+    trust_mapping = object_value(model.get("trust_mapping"), errors, path, "trust_mapping")
+    validate_trust_mapping(trust_mapping, errors, path)
+
     roles = object_value(model.get("roles"), errors, path, "roles")
     wounds = object_value(model.get("wounds"), errors, path, "wounds")
     events = object_value(model.get("events"), errors, path, "events")
@@ -139,7 +206,7 @@ def validate_model(model: Any, path: Path, character_ids: set[str] | None = None
                 error(errors, path, f"character {character_id} multiplier for {event_id} must be positive")
 
     clocks = object_value(model.get("clocks"), errors, path, "clocks")
-    for clock in ("ultimatum", "plot"):
+    for clock in sorted(BOUNDARY_EVENTS):
         if not isinstance(clocks.get(clock), int) or isinstance(clocks.get(clock), bool) or clocks[clock] <= 0:
             error(errors, path, f"clocks.{clock} must be a positive integer")
     plot = object_value(model.get("plot"), errors, path, "plot")
