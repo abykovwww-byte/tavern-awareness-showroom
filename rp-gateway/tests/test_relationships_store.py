@@ -16,6 +16,46 @@ def make_store(tmp_path: Path, campaign_id: str = "relationship-store") -> State
     return StateStore(str(tmp_path / "state.db"), campaign_id, str(state_path))
 
 
+def make_legacy_deadline_nullable(store: StateStore) -> None:
+    with store.connect() as connection:
+        connection.execute("DROP INDEX idx_narrative_events_active")
+        connection.execute("ALTER TABLE narrative_events RENAME TO narrative_events_current")
+        connection.execute(
+            """
+            CREATE TABLE narrative_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                axis TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                opened_turn INTEGER NOT NULL,
+                due_turn INTEGER,
+                payload_json TEXT NOT NULL,
+                resolution TEXT,
+                resolved_turn INTEGER,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO narrative_events(
+                id, campaign_id, character_id, axis, event_id, status, opened_turn,
+                due_turn, payload_json, resolution, resolved_turn, created_at
+            )
+            SELECT id, campaign_id, character_id, axis, event_id, status, opened_turn,
+                   due_turn, payload_json, resolution, resolved_turn, created_at
+            FROM narrative_events_current
+            """
+        )
+        connection.execute("DROP TABLE narrative_events_current")
+        connection.execute(
+            "CREATE INDEX idx_narrative_events_active "
+            "ON narrative_events(campaign_id, status, due_turn)"
+        )
+
+
 def record_turns(store: StateStore, count: int) -> list[int]:
     turn_ids: list[int] = []
     for number in range(1, count + 1):
@@ -160,12 +200,40 @@ def test_empty_legacy_relationship_tables_migrate_to_two_clock_ddl(tmp_path: Pat
     with migrated.connect() as connection:
         cause_columns = {row["name"] for row in connection.execute("PRAGMA table_info(relationship_causes)")}
         badge_columns = {row["name"] for row in connection.execute("PRAGMA table_info(character_badges)")}
+        event_columns = {
+            row["name"]: row["notnull"] for row in connection.execute("PRAGMA table_info(narrative_events)")
+        }
         index_columns = [
             row["name"] for row in connection.execute("PRAGMA index_info(idx_relationship_causes_lookup)")
         ]
     assert {"turn_id", "party_turn"} <= cause_columns
     assert "party_turn" in badge_columns and "turn_id" not in badge_columns
+    assert event_columns["due_turn"] == 1
     assert index_columns == ["campaign_id", "character_id", "axis", "party_turn"]
+
+
+def test_active_event_deadline_backfill_is_idempotent(tmp_path: Path) -> None:
+    store = make_store(tmp_path, "deadline-backfill")
+    relationships = RelationshipStore(store, {})
+    relationships.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="crack",
+        opened_turn=8,
+        due_turn=14,
+        payload={"source": "legacy"},
+    )
+    make_legacy_deadline_nullable(store)
+
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE narrative_events SET due_turn = NULL WHERE campaign_id = ?",
+            (store.campaign_id,),
+        )
+
+    assert relationships.backfill_active_event_deadlines({"crack": 6}) == 1
+    assert relationships.active_events(8)[0]["due_turn"] == 14
+    assert relationships.backfill_active_event_deadlines({"crack": 6}) == 0
 
 
 def test_add_cause_is_idempotent_and_value_is_clamped(tmp_path: Path) -> None:

@@ -68,6 +68,46 @@ def make_store(tmp_path: Path, campaign_id: str = "relationship-mechanics") -> S
     return StateStore(str(tmp_path / "state.db"), campaign_id, str(state_path))
 
 
+def make_legacy_deadline_nullable(store: StateStore) -> None:
+    with store.connect() as connection:
+        connection.execute("DROP INDEX idx_narrative_events_active")
+        connection.execute("ALTER TABLE narrative_events RENAME TO narrative_events_current")
+        connection.execute(
+            """
+            CREATE TABLE narrative_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                axis TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                opened_turn INTEGER NOT NULL,
+                due_turn INTEGER,
+                payload_json TEXT NOT NULL,
+                resolution TEXT,
+                resolved_turn INTEGER,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO narrative_events(
+                id, campaign_id, character_id, axis, event_id, status, opened_turn,
+                due_turn, payload_json, resolution, resolved_turn, created_at
+            )
+            SELECT id, campaign_id, character_id, axis, event_id, status, opened_turn,
+                   due_turn, payload_json, resolution, resolved_turn, created_at
+            FROM narrative_events_current
+            """
+        )
+        connection.execute("DROP TABLE narrative_events_current")
+        connection.execute(
+            "CREATE INDEX idx_narrative_events_active "
+            "ON narrative_events(campaign_id, status, due_turn)"
+        )
+
+
 def event(character_id: str, event_id: str) -> dict[str, str]:
     return {"character_id": character_id, "event_id": event_id, "evidence": f"evidence-{event_id}"}
 
@@ -228,6 +268,49 @@ def test_trust_seed_maps_once_without_mutating_canonical_state(tmp_path: Path) -
     assert seed_rows[0]["weight"] == 20
     assert mechanics.store.cause_rows("ivan", "loyalty", 0)[0]["event_id"] == "seed_trust"
     assert store.get_state()["characters"]["ivan"]["trust"] == 5
+
+
+def test_legacy_active_event_deadline_is_repaired_before_advance(tmp_path: Path) -> None:
+    model = relationship_model()
+    store = make_store(tmp_path, "legacy-deadline")
+    relationships = RelationshipStore(store, model)
+    relationships.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="crack",
+        weight=-30,
+        turn_id=1,
+        party_turn=1,
+        expires_turn=None,
+        evidence="legacy basis",
+        source="fixture",
+    )
+    relationships.set_axis_state(
+        character_id="ivan",
+        axis="loyalty",
+        band="estranged",
+        band_since_turn=1,
+    )
+    relationships.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="crack",
+        opened_turn=1,
+        due_turn=7,
+        payload={"source": "legacy"},
+    )
+    make_legacy_deadline_nullable(store)
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE narrative_events SET due_turn = NULL WHERE campaign_id = ?",
+            (store.campaign_id,),
+        )
+
+    mechanics = RelationshipMechanics(store, model)
+    assert mechanics.advance_turn(2) == []
+    row = relationships.active_events(2)[0]
+    assert row["due_turn"] == 7
+    assert row["status"] == "active"
 
 
 def test_crack_cascades_the_trigger_cause_to_connected_witness(tmp_path: Path) -> None:

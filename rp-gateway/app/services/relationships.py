@@ -161,6 +161,7 @@ class RelationshipMechanics:
 
     def _ensure_seed_state(self) -> None:
         """Materialize the WorldPack trust seed once in the derived relationship tables."""
+        self.store.backfill_active_event_deadlines(self.model.get("clocks", {}))
         state = self.state_store.get_state()
         characters = state.get("characters")
         if not isinstance(characters, dict):

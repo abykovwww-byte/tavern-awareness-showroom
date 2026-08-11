@@ -181,6 +181,36 @@ class RelationshipStore:
             )
         return cursor.rowcount == 1
 
+    def backfill_active_event_deadlines(self, clocks: dict[str, Any]) -> int:
+        """Repair deadlines for active legacy events exactly once."""
+        with self.state_store.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, event_id, opened_turn
+                FROM narrative_events
+                WHERE campaign_id = ? AND status = 'active' AND due_turn IS NULL
+                ORDER BY opened_turn ASC, id ASC
+                """,
+                (self.campaign_id,),
+            ).fetchall()
+            updated = 0
+            for row in rows:
+                event_id = str(row["event_id"])
+                clock = clocks.get(event_id)
+                if isinstance(clock, bool) or not isinstance(clock, int) or clock <= 0:
+                    raise ValueError(f"relationship clock is missing or invalid: {event_id}")
+                due_turn = int(row["opened_turn"]) + clock
+                cursor = connection.execute(
+                    """
+                    UPDATE narrative_events
+                    SET due_turn = ?
+                    WHERE id = ? AND campaign_id = ? AND status = 'active' AND due_turn IS NULL
+                    """,
+                    (due_turn, int(row["id"]), self.campaign_id),
+                )
+                updated += cursor.rowcount
+        return updated
+
     def active_events(self, at_party_turn: int) -> list[dict[str, Any]]:
         with self.state_store.connect() as connection:
             rows = connection.execute(
