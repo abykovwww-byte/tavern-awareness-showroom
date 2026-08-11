@@ -873,6 +873,9 @@ class PartyStore:
             is_free=bool(params.get("is_free", False)),
             pricing_prompt=str(params.get("pricing_prompt") or ""),
             pricing_completion=str(params.get("pricing_completion") or ""),
+            pricing_input_cache_read=str(params.get("pricing_input_cache_read") or ""),
+            pricing_input_cache_write=str(params.get("pricing_input_cache_write") or ""),
+            pricing_input_cache_write_1h=str(params.get("pricing_input_cache_write_1h") or ""),
             rp_specialized=bool(params.get("rp_specialized", False)),
         )
 

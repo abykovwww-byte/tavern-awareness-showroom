@@ -31,6 +31,7 @@ from app.services.narrative import NarrativeClient, provider_rate_limit_error
 from app.services.nvidia_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
+    fetch_provider_api_profiles,
     parse_build_catalog,
     prices_are_free,
     provider_model_is_suitable,
@@ -1602,6 +1603,60 @@ def test_featured_openrouter_models_enrich_cached_catalog_profiles():
     assert enriched["title_override"] == "GLM 5.2"
     assert enriched["rp_fit"] != "stale description"
     assert enriched["tags"][:2] == ["Избранное", "длинная кампания"]
+
+
+def test_openrouter_catalog_preserves_prompt_cache_prices(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "data": [
+                    {
+                        "id": "deepseek/deepseek-v4-pro",
+                        "name": "DeepSeek V4 Pro",
+                        "description": "Long-context reasoning and roleplay model.",
+                        "context_length": 1_048_576,
+                        "architecture": {"output_modalities": ["text"]},
+                        "pricing": {
+                            "prompt": "0.00000063168",
+                            "completion": "0.00000126336",
+                            "input_cache_read": "0.000000053298",
+                            "input_cache_write": "0.0000008",
+                            "input_cache_write_1h": "0.000001",
+                        },
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def get(self, url, headers):
+            assert url == "https://openrouter.test/api/v1/models"
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.nvidia_catalog.httpx.Client", FakeClient)
+
+    profiles = fetch_provider_api_profiles(
+        Settings(openrouter_api_base="https://openrouter.test/api/v1"),
+        "openrouter",
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0]["params"]["pricing_prompt"] == "0.00000063168"
+    assert profiles[0]["params"]["pricing_completion"] == "0.00000126336"
+    assert profiles[0]["params"]["pricing_input_cache_read"] == "0.000000053298"
+    assert profiles[0]["params"]["pricing_input_cache_write"] == "0.0000008"
+    assert profiles[0]["params"]["pricing_input_cache_write_1h"] == "0.000001"
 
 
 def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks():

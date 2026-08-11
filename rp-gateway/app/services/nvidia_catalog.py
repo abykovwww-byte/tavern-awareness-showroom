@@ -654,6 +654,9 @@ def profile_payload(
         "is_free": bool(item.get("is_free", False)),
         "pricing_prompt": str(item.get("pricing_prompt", "")),
         "pricing_completion": str(item.get("pricing_completion", "")),
+        "pricing_input_cache_read": str(item.get("pricing_input_cache_read", "")),
+        "pricing_input_cache_write": str(item.get("pricing_input_cache_write", "")),
+        "pricing_input_cache_write_1h": str(item.get("pricing_input_cache_write_1h", "")),
         "rp_specialized": bool(item.get("rp_specialized", False)),
     }
     return {
@@ -795,6 +798,9 @@ def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, 
             "is_free": is_free,
             "pricing_prompt": prompt_price,
             "pricing_completion": completion_price,
+            "pricing_input_cache_read": str(pricing.get("input_cache_read") or ""),
+            "pricing_input_cache_write": str(pricing.get("input_cache_write") or ""),
+            "pricing_input_cache_write_1h": str(pricing.get("input_cache_write_1h") or ""),
             "rp_specialized": rp_specialized,
         }
         profiles.append(
