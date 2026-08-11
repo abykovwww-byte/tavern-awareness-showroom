@@ -3281,32 +3281,39 @@ function modelOptionHtml(profile) {
   return `<option value="${escapeHtml(profile.id)}">${escapeHtml(prefix + profile.title)}</option>`;
 }
 
+const MODEL_PRICE_REFERENCE_INPUT_TOKENS = 95_000;
+const MODEL_PRICE_REFERENCE_OUTPUT_TOKENS = 650;
+const MODEL_PRICE_WARM_CACHE_RATIO = 0.8;
+const MODEL_PRICE_TIER_LIMITS = [0.02, 0.05, 0.1, 0.25];
+
 function modelCostTierLabel(profile) {
   if (profile.is_free) return "FREE";
   const tier = modelCostTier(profile);
-  return tier || "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d";
+  if (!tier) return "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d";
+  const warmCost = modelReferenceTurnCost(profile, MODEL_PRICE_WARM_CACHE_RATIO);
+  const hasCacheDiscount = perMillionPriceValue(profile?.pricing_input_cache_read) !== null;
+  const cacheNote = hasCacheDiscount ? "80% cached input" : "\u0431\u0435\u0437 \u0441\u043a\u0438\u0434\u043a\u0438 \u043a\u044d\u0448\u0430";
+  return `${tier} \u00b7 \u2248 ${formatTurnCost(warmCost)}/\u0445\u043e\u0434 (${cacheNote})`;
 }
 
 function modelCostTier(profile) {
   if (normalizeProvider(profile?.provider || "") !== "openrouter" || profile?.is_free) return "";
-  const cost = modelCostPerMillion(profile);
+  const cost = modelReferenceTurnCost(profile, MODEL_PRICE_WARM_CACHE_RATIO);
   if (cost === null) return "";
-  const costs = profilesForProvider("openrouter")
-    .filter((candidate) => !candidate.is_free)
-    .map(modelCostPerMillion)
-    .filter((candidate) => candidate !== null)
-    .sort((left, right) => left - right);
-  if (!costs.length) return "";
-  const position = costs.filter((candidate) => candidate <= cost).length;
-  const tier = Math.min(5, Math.max(1, Math.ceil((position / costs.length) * 5)));
+  const tierIndex = MODEL_PRICE_TIER_LIMITS.findIndex((limit) => cost <= limit);
+  const tier = tierIndex < 0 ? 5 : tierIndex + 1;
   return "$".repeat(tier);
 }
 
-function modelCostPerMillion(profile) {
+function modelReferenceTurnCost(profile, cacheRatio = 0) {
   const prompt = perMillionPriceValue(profile?.pricing_prompt);
   const completion = perMillionPriceValue(profile?.pricing_completion);
-  if (prompt === null && completion === null) return null;
-  return (prompt || 0) + (completion || 0);
+  if (prompt === null || completion === null) return null;
+  const cacheRead = perMillionPriceValue(profile?.pricing_input_cache_read);
+  const ratio = cacheRead === null ? 0 : Math.min(1, Math.max(0, Number(cacheRatio) || 0));
+  const inputCost = MODEL_PRICE_REFERENCE_INPUT_TOKENS * (prompt * (1 - ratio) + (cacheRead || 0) * ratio);
+  const outputCost = MODEL_PRICE_REFERENCE_OUTPUT_TOKENS * completion;
+  return (inputCost + outputCost) / 1_000_000;
 }
 
 function modelPricingLabel(profile) {
@@ -3314,7 +3321,22 @@ function modelPricingLabel(profile) {
   const prompt = perMillionPrice(profile.pricing_prompt);
   const completion = perMillionPrice(profile.pricing_completion);
   if (!prompt && !completion) return "не указана каталогом";
-  return `$${prompt || "?"}/M input · $${completion || "?"}/M output`;
+  const tokenPrices = `$${prompt || "?"}/M input · $${completion || "?"}/M output`;
+  if (normalizeProvider(profile?.provider || "") !== "openrouter") return tokenPrices;
+  const cacheRead = perMillionPrice(profile.pricing_input_cache_read);
+  const coldCost = modelReferenceTurnCost(profile, 0);
+  const warmCost = modelReferenceTurnCost(profile, MODEL_PRICE_WARM_CACHE_RATIO);
+  const cachePrice = cacheRead ? ` · $${cacheRead}/M cached input` : "";
+  const warmLabel = cacheRead
+    ? `warm 80% ${formatTurnCost(warmCost)}`
+    : "скидка cached input не заявлена";
+  return `${tokenPrices}${cachePrice} · ход 95k/650: cold ${formatTurnCost(coldCost)} · ${warmLabel}`;
+}
+
+function formatTurnCost(value) {
+  if (value === null || !Number.isFinite(value)) return "?";
+  const digits = value < 0.01 ? 4 : value < 1 ? 3 : 2;
+  return `$${value.toFixed(digits)}`;
 }
 
 function perMillionPrice(value) {

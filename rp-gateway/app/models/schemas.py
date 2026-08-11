@@ -221,6 +221,9 @@ class ModelProfileSummary(BaseModel):
     is_free: bool = False
     pricing_prompt: str = ""
     pricing_completion: str = ""
+    pricing_input_cache_read: str = ""
+    pricing_input_cache_write: str = ""
+    pricing_input_cache_write_1h: str = ""
     rp_specialized: bool = False
 
 
