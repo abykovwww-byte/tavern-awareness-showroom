@@ -12,7 +12,7 @@ import httpx
 
 from app.core.config import Settings
 from app.services.context_budget import oldest_turns_within_token_budget, turns_token_count
-from app.services.provider_auth import outbound_headers
+from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
 
@@ -177,38 +177,35 @@ class RPStoryMemoryUpdater:
         if runtime.nvidia_api_base.startswith("mock://"):
             return {"memory": self.mock_memory(plan), "model": plan.model}
         payload = self.update_payload(plan)
-        headers = outbound_headers(runtime, None)
-        timeout = httpx.Timeout(runtime.model_attempt_timeout_seconds, connect=15.0)
         attempts = self.model_attempts(plan.model, runtime)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for index, model in enumerate(attempts):
-                payload["model"] = model
-                started = time.perf_counter()
-                try:
-                    response = await client.post(
-                        f"{runtime.nvidia_api_base.rstrip('/')}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    )
-                    if response.status_code == 429:
-                        raise RuntimeError(f"{runtime.llm_provider} API returned 429 rate limit")
-                    response.raise_for_status()
-                    data = response.json()
-                    memory = self.parse_memory(completion_text(data))
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                    logger.info(
-                        "rp_story_memory_success campaign_id=%s model=%s turns=%s-%s elapsed_ms=%s",
-                        self.store.campaign_id,
-                        data.get("model") or model,
-                        plan.from_turn_id,
-                        plan.to_turn_id,
-                        elapsed_ms,
-                    )
-                    return {"memory": memory, "model": data.get("model") or model}
-                except (httpx.TimeoutException, httpx.HTTPStatusError, RuntimeError):
-                    if index < len(attempts) - 1:
-                        continue
-                    raise
+        client = ServiceModelClient(runtime)
+        for index, model in enumerate(attempts):
+            payload["model"] = model
+            started = time.perf_counter()
+            try:
+                completion = await client.complete(
+                    role="rp_story_memory",
+                    party_id=self.store.campaign_id,
+                    turn_id=plan.to_turn_id,
+                    prompt=service_prompt_text(payload),
+                    payload=payload,
+                )
+                data = completion.data
+                memory = self.parse_memory(completion_text(data))
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "rp_story_memory_success campaign_id=%s model=%s turns=%s-%s elapsed_ms=%s",
+                    self.store.campaign_id,
+                    data.get("model") or model,
+                    plan.from_turn_id,
+                    plan.to_turn_id,
+                    elapsed_ms,
+                )
+                return {"memory": memory, "model": data.get("model") or model}
+            except (httpx.TimeoutException, httpx.HTTPStatusError, RuntimeError):
+                if index < len(attempts) - 1:
+                    continue
+                raise
         raise RuntimeError("No model attempts configured for RP story memory")
 
     def update_payload(self, plan: RPStoryMemoryPlan) -> dict[str, Any]:

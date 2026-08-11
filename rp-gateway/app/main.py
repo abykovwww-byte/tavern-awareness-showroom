@@ -79,7 +79,7 @@ from app.services.narrative import (
     uncompacted_archive_fallback_block,
 )
 from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
-from app.services.provider_auth import outbound_headers
+from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import (
     SERVICE_MODEL_SETTING_KEY,
     service_model_choice,
@@ -2512,8 +2512,6 @@ async def generate_character_edit(
     if runtime.nvidia_api_base.startswith("mock://"):
         return mock_generated_character_edit(settings, state, request)
 
-    headers = outbound_headers(runtime, None)
-
     world = WorldInstructor(settings, store)
     payload: dict[str, Any] = {
         "model": runtime.intent_model,
@@ -2534,94 +2532,94 @@ async def generate_character_edit(
             },
         ],
     }
-    timeout = httpx.Timeout(runtime.model_attempt_timeout_seconds, connect=15.0)
     attempts = world.model_attempts(runtime.intent_model, runtime)
+    service_client = ServiceModelClient(runtime)
     last_timeout: httpx.TimeoutException | None = None
     last_status: httpx.HTTPStatusError | None = None
     last_parse_error: ValueError | None = None
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for index, model in enumerate(attempts):
-            payload["model"] = model
-            started = time.perf_counter()
-            logger.info(
-                "character_llm_attempt_start request_id=%s model=%s attempt=%s/%s timeout_seconds=%s",
+    for index, model in enumerate(attempts):
+        payload["model"] = model
+        started = time.perf_counter()
+        logger.info(
+            "character_llm_attempt_start request_id=%s model=%s attempt=%s/%s timeout_seconds=%s",
+            request_id,
+            model,
+            index + 1,
+            len(attempts),
+            runtime.model_attempt_timeout_seconds,
+        )
+        try:
+            completion = await service_client.complete(
+                role="character_generation",
+                party_id=store.campaign_id,
+                turn_id=int(state.get("meta", {}).get("turn", 0)) + 1,
+                prompt=service_prompt_text(payload),
+                payload=payload,
+            )
+        except httpx.TimeoutException as exc:
+            last_timeout = exc
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            logger.warning(
+                "character_llm_attempt_timeout request_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
                 request_id,
                 model,
                 index + 1,
                 len(attempts),
-                runtime.model_attempt_timeout_seconds,
+                elapsed_ms,
+                index < len(attempts) - 1,
             )
-            try:
-                response = await client.post(
-                    f"{runtime.nvidia_api_base.rstrip('/')}/chat/completions",
-                    json=payload,
-                    headers=headers,
-                )
-            except httpx.TimeoutException as exc:
-                last_timeout = exc
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                logger.warning(
-                    "character_llm_attempt_timeout request_id=%s model=%s attempt=%s/%s elapsed_ms=%s fallback=%s",
-                    request_id,
-                    model,
-                    index + 1,
-                    len(attempts),
-                    elapsed_ms,
-                    index < len(attempts) - 1,
-                )
-                if index < len(attempts) - 1:
-                    continue
-                raise
-            if response.status_code == 429:
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                logger.warning(
-                    "character_llm_attempt_rate_limited request_id=%s model=%s elapsed_ms=%s",
-                    request_id,
-                    model,
-                    elapsed_ms,
-                )
-                raise RuntimeError(f"{runtime.llm_provider} API returned 429 rate limit")
-            try:
-                response.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                last_status = exc
-                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                logger.warning(
-                    "character_llm_attempt_http_error request_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
-                    request_id,
-                    model,
-                    response.status_code,
-                    elapsed_ms,
-                    index < len(attempts) - 1,
-                )
-                if index < len(attempts) - 1 and response.status_code in {400, 404, 408, 500, 502, 503, 504}:
-                    continue
-                raise
-            try:
-                data = world.extract_json(response_text(response.json()))
-            except ValueError as exc:
-                last_parse_error = exc
-                logger.warning(
-                    "character_llm_attempt_parse_error request_id=%s model=%s attempt=%s/%s fallback=%s error=%s",
-                    request_id,
-                    model,
-                    index + 1,
-                    len(attempts),
-                    index < len(attempts) - 1,
-                    exc,
-                )
-                if index < len(attempts) - 1:
-                    continue
-                raise RuntimeError("LLM did not return character JSON") from exc
+            if index < len(attempts) - 1:
+                continue
+            raise
+        except httpx.HTTPStatusError as exc:
+            last_status = exc
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-            logger.info(
-                "character_llm_attempt_success request_id=%s model=%s elapsed_ms=%s fallback_used=%s",
+            status_code = exc.response.status_code
+            logger.warning(
+                "character_llm_attempt_http_error request_id=%s model=%s status=%s elapsed_ms=%s fallback=%s",
+                request_id,
+                model,
+                status_code,
+                elapsed_ms,
+                index < len(attempts) - 1,
+            )
+            if index < len(attempts) - 1 and status_code in {400, 404, 408, 500, 502, 503, 504}:
+                continue
+            raise
+        except RuntimeError:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            logger.warning(
+                "character_llm_attempt_rate_limited request_id=%s model=%s elapsed_ms=%s",
                 request_id,
                 model,
                 elapsed_ms,
-                index > 0 or model != runtime.intent_model,
             )
-            return coerce_generated_character_edit(data, request, state)
+            raise
+        try:
+            data = world.extract_json(response_text(completion.data))
+        except ValueError as exc:
+            last_parse_error = exc
+            logger.warning(
+                "character_llm_attempt_parse_error request_id=%s model=%s attempt=%s/%s fallback=%s error=%s",
+                request_id,
+                model,
+                index + 1,
+                len(attempts),
+                index < len(attempts) - 1,
+                exc,
+            )
+            if index < len(attempts) - 1:
+                continue
+            raise RuntimeError("LLM did not return character JSON") from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.info(
+            "character_llm_attempt_success request_id=%s model=%s elapsed_ms=%s fallback_used=%s",
+            request_id,
+            model,
+            elapsed_ms,
+            index > 0 or model != runtime.intent_model,
+        )
+        return coerce_generated_character_edit(data, request, state)
     if last_status:
         raise last_status
     if last_timeout:

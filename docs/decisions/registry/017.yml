@@ -1,0 +1,8 @@
+- requirement: "WorldPack training runtime controls deterministic turn progression and scoring"
+  level: каркас
+  store: "training_runtime_snapshots and canonical training state"
+  assertion: state_change
+  expectation: worldpack_training_runtime_controls_progression
+  probe_command: null
+  expected: null
+  waiver: "The IaC source and focused tests exist, but Decision 022 causal evidence has not been registered."

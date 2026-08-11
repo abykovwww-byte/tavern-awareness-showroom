@@ -11,7 +11,6 @@ import httpx
 
 from app.core.config import Settings
 from app.services.narrative import NarrativeClient, json_object_content, response_text
-from app.services.provider_auth import outbound_headers
 from app.services.relationship_attribution import (
     REJECTION_CODES,
     RelationshipExtractionRejected,
@@ -20,6 +19,7 @@ from app.services.relationship_attribution import (
 )
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
+from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
 
@@ -191,39 +191,37 @@ class RelationshipExtractionService:
         payload = self._completion_payload(turn, aliases, settings.narrative_model)
         client_policy = NarrativeClient(settings)
         client_policy.apply_prompt_cache_policy(payload)
-        timeout = httpx.Timeout(settings.model_attempt_timeout_seconds, connect=15.0)
         attempts = client_policy.model_attempts(settings.narrative_model)
+        service_client = ServiceModelClient(settings)
         last_error: Exception | None = None
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for index, model_name in enumerate(attempts):
-                request_payload = dict(payload)
-                request_payload["model"] = model_name
-                client_policy.apply_model_policy(request_payload, model_name)
-                started = time.perf_counter()
-                try:
-                    response = await client.post(
-                        f"{settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                        json=request_payload,
-                        headers=outbound_headers(settings, None),
-                    )
-                    response.raise_for_status()
-                    result = response.json()
-                    if not isinstance(result, dict):
-                        raise ValueError("relationship extraction provider returned a non-object response")
-                    result.setdefault("model", model_name)
-                    logger.info(
-                        "relationship_extraction_success campaign_id=%s turn_id=%s model=%s elapsed_ms=%s",
-                        self.store.campaign_id,
-                        turn["id"],
-                        result.get("model"),
-                        round((time.perf_counter() - started) * 1000, 2),
-                    )
-                    return result
-                except (httpx.TimeoutException, httpx.HTTPStatusError, ValueError) as exc:
-                    last_error = exc
-                    if index >= len(attempts) - 1:
-                        raise
+        for index, model_name in enumerate(attempts):
+            request_payload = dict(payload)
+            request_payload["model"] = model_name
+            client_policy.apply_model_policy(request_payload, model_name)
+            started = time.perf_counter()
+            try:
+                completion = await service_client.complete(
+                    role="relationship_extraction",
+                    party_id=self.store.campaign_id,
+                    turn_id=int(turn["id"]),
+                    prompt=service_prompt_text(request_payload),
+                    payload=request_payload,
+                )
+                result = completion.data
+                result.setdefault("model", model_name)
+                logger.info(
+                    "relationship_extraction_success campaign_id=%s turn_id=%s model=%s elapsed_ms=%s",
+                    self.store.campaign_id,
+                    turn["id"],
+                    result.get("model"),
+                    round((time.perf_counter() - started) * 1000, 2),
+                )
+                return result
+            except (httpx.TimeoutException, httpx.HTTPStatusError, RuntimeError, ValueError) as exc:
+                last_error = exc
+                if index >= len(attempts) - 1:
+                    raise
         if last_error is not None:
             raise last_error
         raise RuntimeError("No service-model attempts configured for relationship extraction")

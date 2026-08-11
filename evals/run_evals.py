@@ -19,9 +19,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from acceptance.evaluator import evaluate_files
+
 
 RP_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[5]
+ACCEPTANCE_ROOT = Path(__file__).resolve().parent / "acceptance"
+ACCEPTANCE_MANIFEST = ACCEPTANCE_ROOT / "manifest.yml"
+ACCEPTANCE_SAVED_RESPONSES = ACCEPTANCE_ROOT / "fixtures" / "saved-responses-passing.json"
 SECRET_RE = re.compile(
     r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+=*|\bsk-[A-Za-z0-9_-]{8,}\b|"
     r"\b(api[_-]?key|authorization|cookie|password|secret|token)\b(\s*[:=]\s*)([^\s,;]+)"
@@ -123,7 +128,15 @@ def offline_eval() -> dict[str, Any]:
     else:
         commands.append(("node-runtime", [python, "-c", "raise SystemExit('Node.js runtime not found')"], REPO_ROOT))
 
-    checks = [run_command(name, command, cwd) for name, command, cwd in commands]
+    semantic_acceptance = evaluate_files(ACCEPTANCE_MANIFEST, ACCEPTANCE_SAVED_RESPONSES)
+    checks = [
+        {
+            "name": "semantic-acceptance",
+            "passed": semantic_acceptance["passed"],
+            "report": semantic_acceptance,
+        },
+        *[run_command(name, command, cwd) for name, command, cwd in commands],
+    ]
     return {
         "schema_version": "rp-stack.eval-report.v1",
         "mode": "offline",
@@ -169,6 +182,13 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("provider canary turn count must be between 1 and 5")
     if len(args.player_prompt.strip()) < 1 or len(args.player_prompt) > 12_000:
         raise ValueError("player prompt must contain between 1 and 12000 characters")
+
+    semantic_runs = []
+    for response_path in args.semantic_responses:
+        source = json.loads(response_path.read_text(encoding="utf-8")).get("source", {})
+        if source.get("producer") != "provider-canary":
+            raise ValueError(f"{response_path}: source.producer must be provider-canary")
+        semantic_runs.append(evaluate_files(ACCEPTANCE_MANIFEST, response_path))
 
     client = ApiClient(args.base_url)
     party_id = urllib.parse.quote(args.source_party_id, safe="")
@@ -230,7 +250,15 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
         and run.get("status") == "completed"
         and run.get("completed_turns") == args.turn_count
         and source_unchanged
+        and all(report["passed"] for report in semantic_runs)
     )
+    metric_spread = {
+        name: {
+            "min": min(report["metrics"][name]["value"] for report in semantic_runs),
+            "max": max(report["metrics"][name]["value"] for report in semantic_runs),
+        }
+        for name in semantic_runs[0]["metrics"]
+    }
     return {
         "schema_version": "rp-stack.eval-report.v1",
         "mode": "provider-canary",
@@ -244,6 +272,11 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
         "source_state_hash_after": state_hash_after,
         "branch_id": branch_id,
         "run": selected_run,
+        "semantic_acceptance": {
+            "repeat_count": len(semantic_runs),
+            "runs": semantic_runs,
+            "metric_spread": metric_spread,
+        },
     }
 
 
@@ -310,6 +343,11 @@ def parse_args() -> argparse.Namespace:
     offline = subparsers.add_parser("offline")
     offline.add_argument("--output", type=Path)
 
+    semantic = subparsers.add_parser("semantic-acceptance")
+    semantic.add_argument("--manifest", type=Path, default=ACCEPTANCE_MANIFEST)
+    semantic.add_argument("--saved-responses", type=Path, default=ACCEPTANCE_SAVED_RESPONSES)
+    semantic.add_argument("--output", type=Path)
+
     canary = subparsers.add_parser("provider-canary")
     canary.add_argument("--base-url", required=True)
     canary.add_argument("--source-party-id", required=True)
@@ -319,6 +357,7 @@ def parse_args() -> argparse.Namespace:
     canary.add_argument("--timeout-seconds", type=int, choices=range(30, 901), default=300)
     canary.add_argument("--poll-seconds", type=float, default=2.0)
     canary.add_argument("--confirm-provider-run", action="store_true")
+    canary.add_argument("--semantic-responses", type=Path, action="append", required=True)
     canary.add_argument("--output", type=Path)
 
     browser = subparsers.add_parser("browser-report")
@@ -332,6 +371,8 @@ def main() -> int:
     try:
         if args.mode == "offline":
             report = offline_eval()
+        elif args.mode == "semantic-acceptance":
+            report = evaluate_files(args.manifest, args.saved_responses)
         elif args.mode == "provider-canary":
             report = provider_canary(args)
         else:

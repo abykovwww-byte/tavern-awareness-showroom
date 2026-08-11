@@ -1,0 +1,32 @@
+- requirement: "Readiness claims use the registered four-level dictionary and remain separate from Decision status"
+  level: каркас
+  store: "Decision requirement registry"
+  assertion: absence
+  expectation: no_bare_readiness_claims
+  probe_command: null
+  expected: null
+  waiver: "Repository guards are locally tested; the merged policy has not yet accumulated delivery history."
+- requirement: "Every global service-model completion has an exact redacted diagnostic trace"
+  level: каркас
+  store: "service_call_log"
+  assertion: projection
+  expectation: service_model_trace_is_complete
+  probe_command: null
+  expected: null
+  waiver: "The client and routing are locally tested, but live logging is paused pending the user's retention decision."
+- requirement: "Seeded trust reaches a durable event and a later relationship-pressure prompt"
+  level: каркас
+  store: "relationship projection"
+  assertion: prompt_presence
+  expectation: seed_trust_influences_plot
+  probe_command: null
+  expected: null
+  waiver: "The known Starosta party must fail this chain; no fresh deployed party has passed through prompt_presence."
+- requirement: "Semantic acceptance reports independent thresholds and per-class metrics"
+  level: каркас
+  store: "semantic acceptance report"
+  assertion: projection
+  expectation: semantic_acceptance_thresholds_hold
+  probe_command: null
+  expected: null
+  waiver: "Saved-response offline acceptance is green; provider-canary repeats and production endurance are not yet run."

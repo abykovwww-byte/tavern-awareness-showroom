@@ -1,0 +1,8 @@
+- requirement: "Relationship extraction attributes an event to one unambiguous canonical character"
+  level: каркас
+  store: "relationship_causes"
+  assertion: projection
+  expectation: relationship_event_has_canonical_character_attribution
+  probe_command: null
+  expected: null
+  waiver: "Decision 021 source is absent from updated main; this registry records no inferred Decision status or live readiness."

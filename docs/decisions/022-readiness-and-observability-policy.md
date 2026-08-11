@@ -22,6 +22,11 @@ later, after Part B is obsolete.
 непринятое продуктовое решение: здесь решение принято, а delivery измеряется
 отдельно.
 
+После исполнения Part B ступень остаётся `каркас` до применения revision на
+сервере: offline-гейты не повышают её до `подключено`, а live-запись
+`service_call_log` отдельно остановлена до решения пользователя по retention и
+глубине редактирования.
+
 Commit, deployment and live verification are separate delivery states.
 
 ## Context

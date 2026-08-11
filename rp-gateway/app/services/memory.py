@@ -11,13 +11,13 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.services.provider_auth import outbound_headers
 from app.services.context_budget import (
     oldest_turns_within_token_budget,
     split_turns_by_token_budget,
     turns_token_count,
 )
 from app.services.narrative import response_text
+from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
 
@@ -179,41 +179,37 @@ class MemorySummarizer:
         service_settings = self.memory_service_settings()
         if service_settings.nvidia_api_base.startswith("mock://"):
             return self.mock_summary(plan)
-        headers = outbound_headers(service_settings, None)
-
         payload = self.summary_payload(plan)
-        timeout = httpx.Timeout(service_settings.model_attempt_timeout_seconds, connect=15.0)
         attempts = self.model_attempts(plan.model, service_settings)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for index, model in enumerate(attempts):
-                payload["model"] = model
-                started = time.perf_counter()
-                try:
-                    response = await client.post(
-                        f"{service_settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    )
-                    if response.status_code == 429:
-                        raise RuntimeError(f"{service_settings.llm_provider} API returned 429 rate limit")
-                    response.raise_for_status()
-                    data = response.json()
-                    parsed = self.parse_summary(response_text(data))
-                    parsed["model"] = data.get("model") or model
-                    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
-                    logger.info(
-                        "memory_summary_success campaign_id=%s model=%s turns=%s-%s elapsed_ms=%s",
-                        self.store.campaign_id,
-                        parsed["model"],
-                        plan.turns[0]["id"],
-                        plan.turns[-1]["id"],
-                        elapsed_ms,
-                    )
-                    return parsed
-                except (httpx.TimeoutException, httpx.HTTPStatusError, RuntimeError):
-                    if index < len(attempts) - 1:
-                        continue
-                    raise
+        client = ServiceModelClient(service_settings)
+        for index, model in enumerate(attempts):
+            payload["model"] = model
+            started = time.perf_counter()
+            try:
+                completion = await client.complete(
+                    role="memory_summary",
+                    party_id=self.store.campaign_id,
+                    turn_id=plan.to_turn_id,
+                    prompt=service_prompt_text(payload),
+                    payload=payload,
+                )
+                data = completion.data
+                parsed = self.parse_summary(response_text(data))
+                parsed["model"] = data.get("model") or model
+                elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "memory_summary_success campaign_id=%s model=%s turns=%s-%s elapsed_ms=%s",
+                    self.store.campaign_id,
+                    parsed["model"],
+                    plan.turns[0]["id"],
+                    plan.turns[-1]["id"],
+                    elapsed_ms,
+                )
+                return parsed
+            except (httpx.TimeoutException, httpx.HTTPStatusError, RuntimeError):
+                if index < len(attempts) - 1:
+                    continue
+                raise
         raise RuntimeError(f"No model attempts configured for {self.settings.llm_provider} memory summarization")
 
     def summary_payload(self, plan: SummaryPlan) -> dict[str, Any]:
