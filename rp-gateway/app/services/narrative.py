@@ -554,7 +554,19 @@ class NarrativeClient:
         if request_messages:
             current_action = request_messages[-1]
             messages.append({"role": current_action.role, "content": current_action.content})
-        return fit_messages_to_context(messages, self.input_token_budget(request))
+        max_prompt_chars = None
+        raw_transcript_chars = request._raw_transcript_chars
+        if (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 6
+            and raw_transcript_chars
+        ):
+            max_prompt_chars = raw_transcript_chars // 2
+        return fit_messages_to_context(
+            messages,
+            self.input_token_budget(request),
+            max_prompt_chars=max_prompt_chars,
+        )
 
     def apply_prompt_cache_policy(self, payload: dict[str, Any]) -> None:
         """Add only provider-documented cache controls; other providers use the stable prefix implicitly."""
@@ -797,17 +809,36 @@ def parse_retry_after(value: str | None) -> float | None:
     return seconds if seconds > 0 else None
 
 
-def fit_messages_to_context(messages: list[dict[str, str]], token_budget: int) -> list[dict[str, str]]:
+def fit_messages_to_context(
+    messages: list[dict[str, str]],
+    token_budget: int,
+    *,
+    max_prompt_chars: int | None = None,
+) -> list[dict[str, str]]:
     """Keep the latest action and mandatory instructions inside the real provider input budget."""
     fitted = [dict(message) for message in messages]
-    while fitted and estimate_tokens("\n".join(message["content"] for message in fitted)) > token_budget:
+    while fitted:
+        prompt_text = "\n".join(message["content"] for message in fitted)
+        over_token_budget = estimate_tokens(prompt_text) > token_budget
+        over_prompt_chars = max_prompt_chars is not None and len(prompt_text) > max_prompt_chars
+        if not over_token_budget and not over_prompt_chars:
+            break
         oldest_history = next(
             (index for index, message in enumerate(fitted[:-1]) if message.get("role") != "system"),
             None,
         )
         if oldest_history is not None:
+            if (
+                over_prompt_chars
+                and fitted[oldest_history].get("role") == "user"
+                and oldest_history + 1 < len(fitted) - 1
+                and fitted[oldest_history + 1].get("role") == "assistant"
+            ):
+                fitted.pop(oldest_history + 1)
             fitted.pop(oldest_history)
             continue
+        if over_prompt_chars and not over_token_budget:
+            break
         has_rp_story_memory = any(
             message.get("content", "").startswith("RP_STORY_MEMORY") for message in fitted
         )
@@ -836,7 +867,7 @@ def fit_messages_to_context(messages: list[dict[str, str]], token_budget: int) -
         if trim_index is None:
             trim_index = len(fitted) - 1
         content = fitted[trim_index].get("content", "")
-        excess_chars = max((estimate_tokens("\n".join(message["content"] for message in fitted)) - token_budget) * 3, 1)
+        excess_chars = max((estimate_tokens(prompt_text) - token_budget) * 3, 1)
         retained = max(len(content) - excess_chars, 0)
         if retained == 0:
             fitted.pop(trim_index)

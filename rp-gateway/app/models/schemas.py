@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 WORLD_PROMPT_MAX_CHARS = 6_000
@@ -52,6 +52,8 @@ class ChatMessage(BaseModel):
 
 class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
+
+    _raw_transcript_chars: int | None = PrivateAttr(default=None)
 
     model: str | None = None
     messages: list[ChatMessage]

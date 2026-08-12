@@ -1127,12 +1127,6 @@ def test_revision_six_prompt_is_at_most_half_of_long_raw_transcript_without_muta
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=6,
-        party_context_max_tokens=512,
-        party_context_limit_tokens=512,
-        party_context_completion_reserve_tokens=64,
-        party_context_system_reserve_tokens=64,
-        party_context_min_history_tokens=64,
-        rp_story_memory_reserve_tokens=64,
         party_memory_fallback_max_chars=400,
         party_memory_retrieval_enabled=False,
     )
@@ -1142,6 +1136,8 @@ def test_revision_six_prompt_is_at_most_half_of_long_raw_transcript_without_muta
         PartyMessageRequest(content="Текущее действие игрока"),
         settings,
     )
+    assert request._raw_transcript_chars == full_transcript_chars
+    assert "_raw_transcript_chars" not in request.model_dump()
     outcome_value = RuleEngine().resolve(
         store.get_state(),
         Intent(action_type="narrative", desired_outcome="Текущее действие игрока"),
@@ -1163,6 +1159,8 @@ def test_revision_six_prompt_is_at_most_half_of_long_raw_transcript_without_muta
 
     assert prompt_chars <= full_transcript_chars * 0.5
     assert messages[-1]["content"] == "Текущее действие игрока"
+    transcript_roles = [message["role"] for message in messages if message["role"] != "system"]
+    assert transcript_roles[:-1] == ["user", "assistant"] * ((len(transcript_roles) - 1) // 2)
     assert len(raw_after) == 80
     assert raw_hash_after == raw_hash_before
 

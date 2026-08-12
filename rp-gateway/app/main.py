@@ -2738,7 +2738,8 @@ def party_chat_request(
 ) -> ChatCompletionRequest:
     memory = store.latest_memory_coverage()
     covered_through = int(memory["to_turn_id"]) if memory else 0
-    turns = store.turns_for_memory(after_turn_id=covered_through)
+    all_turns = store.turns_for_memory()
+    turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
     current_message_tokens = estimate_tokens(request.content)
     history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
     overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
@@ -2771,13 +2772,18 @@ def party_chat_request(
         if retrieval_block:
             messages.append(ChatMessage(role="system", content=retrieval_block))
     messages.append(ChatMessage(role="user", content=request.content))
-    return ChatCompletionRequest(
+    chat_request = ChatCompletionRequest(
         model=model,
         messages=messages,
         temperature=request.temperature,
         max_tokens=request.max_tokens,
         stream=False,
     )
+    chat_request._raw_transcript_chars = sum(
+        len(str(turn.get("player_message") or "")) + len(str(turn.get("narrative_response") or ""))
+        for turn in all_turns
+    )
+    return chat_request
 
 
 async def generate_character_edit(
