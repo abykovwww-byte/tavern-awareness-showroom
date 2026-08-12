@@ -79,6 +79,7 @@ def test_story_memory_updater_is_rp_only_and_cumulative(tmp_path: Path) -> None:
     rp_settings = Settings(
         scenario_type="rp",
         service_nvidia_api_base="mock://success",
+        local_llm_enabled=False,
         rp_story_memory_update_turns=4,
     )
     updater = RPStoryMemoryUpdater(rp_settings, store)
