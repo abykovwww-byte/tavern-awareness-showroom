@@ -1406,11 +1406,20 @@ class PartyStore:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         branches = self.list_party_branches(party_id, owner_user_id=owner_user_id, limit=200)
         with self.connect() as connection:
+            available_tables = {
+                str(row["name"])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
             campaign_ids = [party.state_campaign_id, *[branch["state_campaign_id"] for branch in branches]]
             for campaign_id in campaign_ids:
                 connection.execute("DELETE FROM dataset_turn_labels WHERE campaign_id = ?", (campaign_id,))
                 connection.execute("DELETE FROM turn_feedback WHERE campaign_id = ?", (campaign_id,))
+                if "service_call_log" in available_tables:
+                    connection.execute("DELETE FROM service_call_log WHERE party_id = ?", (campaign_id,))
                 for table in (
+                    "turn_phase_annotations",
+                    "turn_state_mutations",
+                    "turn_trace_events",
                     "turns",
                     "turn_requests",
                     "checks",

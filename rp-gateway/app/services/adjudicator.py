@@ -23,6 +23,7 @@ from app.services.state_store import StateStore
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService, WorkspaceMaterialization
+from app.services.trace_redaction import redact_trace_value
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -55,7 +56,7 @@ class Adjudicator:
         self.intent_parser = IntentParser()
         self.rule_engine = RuleEngine()
         self.validator = OutputValidator()
-        self.narrative = NarrativeClient(settings)
+        self.narrative = NarrativeClient(settings, trace_recorder=store.record_narrative_attempt)
         self.memory = MemorySummarizer(settings, store)
         self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
         self.world = WorldInstructor(settings, store)
@@ -78,6 +79,56 @@ class Adjudicator:
             else None
         )
 
+    def record_trace_event(self, **event: Any) -> None:
+        """Trace capture is best-effort and can never decide a game turn."""
+
+        try:
+            safe_event = dict(event)
+            safe_event["payload"] = redact_trace_value(
+                event.get("payload", {}),
+                self.narrative.trace_secrets(),
+            )
+            self.store.record_trace_event(**safe_event)
+        except Exception as exc:  # noqa: BLE001 - diagnostics are deliberately fail-open
+            logger.warning(
+                "turn_trace_event_failed request_id=%s phase=%s error=%s",
+                event.get("request_id"),
+                event.get("phase_key"),
+                f"{type(exc).__name__}: {exc}",
+            )
+
+    def trace_projection_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        try:
+            return self.store.trace_projection_snapshot()
+        except Exception as exc:  # noqa: BLE001 - diagnostics are deliberately fail-open
+            logger.warning("turn_trace_projection_snapshot_failed error=%s", f"{type(exc).__name__}: {exc}")
+            return {}
+
+    def capture_projection_changes(
+        self,
+        request_id: str,
+        before: dict[str, dict[str, dict[str, Any]]],
+        *,
+        source: str,
+        reason: str,
+        lane: str = "background",
+    ) -> None:
+        try:
+            self.store.capture_projection_changes(
+                request_id,
+                before,
+                source=source,
+                reason=reason,
+                lane=lane,
+            )
+        except Exception as exc:  # noqa: BLE001 - diagnostics are deliberately fail-open
+            logger.warning(
+                "turn_trace_projection_capture_failed request_id=%s source=%s error=%s",
+                request_id,
+                source,
+                f"{type(exc).__name__}: {exc}",
+            )
+
     async def handle_chat(
         self,
         request: ChatCompletionRequest,
@@ -92,6 +143,7 @@ class Adjudicator:
         if existing:
             return existing
         request_status = self.store.begin_turn_request(idempotency_key, request_id)
+        request_id = str(request_status.get("request_id") or request_id)
         if not request_status.get("acquired"):
             if request_status.get("status") == "completed" and request_status.get("response"):
                 return request_status["response"]
@@ -104,7 +156,32 @@ class Adjudicator:
         started = time.perf_counter()
         try:
             latest = self.latest_user_message(request)
+            expected_party_turn = int(self.store.get_state().get("meta", {}).get("turn", 0)) + 1
+            self.record_trace_event(
+                request_id=request_id,
+                phase_key="player_input",
+                alignment_key="player_input",
+                lane="main",
+                event_type="player_input",
+                status="completed",
+                payload={"input": {"content": latest}},
+                party_turn=expected_party_turn,
+            )
             if self.world.is_world_command(latest):
+                self.record_trace_event(
+                    request_id=request_id,
+                    phase_key="gateway_assembly",
+                    alignment_key="gateway_assembly",
+                    lane="main",
+                    event_type="gateway_assembly",
+                    status="skipped",
+                    payload={
+                        "capture_status": "complete",
+                        "reason": "not_applicable_world_command",
+                        "input": {"messages": []},
+                    },
+                    party_turn=expected_party_turn,
+                )
                 response = await self.world.handle_chat_command(
                     latest,
                     authorization,
@@ -120,6 +197,7 @@ class Adjudicator:
                     text,
                     response,
                     state_version,
+                    prompt_messages=[],
                     party_turn=int(self.store.get_state().get("meta", {}).get("turn", 0)),
                     metadata=self.turn_metadata(
                         turn_kind="world_command",
@@ -184,7 +262,15 @@ class Adjudicator:
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
             try:
+                relationship_projection_before = self.trace_projection_snapshot()
                 relationship_pressure = self.relationship_pressure(narrative_state)
+                self.capture_projection_changes(
+                    request_id,
+                    relationship_projection_before,
+                    source="relationship_turn_advance",
+                    reason="prepare_relationship_pressure",
+                    lane="main",
+                )
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
                 rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
                 prompt_messages = self.narrative.narrative_messages(
@@ -197,6 +283,26 @@ class Adjudicator:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
+                )
+                self.record_trace_event(
+                    request_id=request_id,
+                    phase_key="gateway_assembly",
+                    alignment_key="gateway_assembly",
+                    lane="main",
+                    event_type="gateway_assembly",
+                    status="completed",
+                    payload={
+                        "capture_status": "complete",
+                        "input": {"messages": prompt_messages},
+                        "details": {
+                            "message_count": len(prompt_messages),
+                            "relationship_pressure_included": bool(relationship_pressure),
+                            "training_turn_contract_included": bool(training_turn_contract),
+                            "interaction_contract_included": bool(interaction_contract),
+                            "assembly_trace": self.prompt_assembly_trace(prompt_messages, latest),
+                        },
+                    },
+                    party_turn=expected_party_turn,
                 )
                 llm_calls += 1
                 raw = await self.narrative.complete(
@@ -250,6 +356,28 @@ class Adjudicator:
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
+                if validation is not None:
+                    self.record_trace_event(
+                        request_id=request_id,
+                        phase_key="validation:initial",
+                        alignment_key="validation",
+                        lane="main",
+                        event_type="validation",
+                        status="completed" if validation.valid and interaction_valid else "failed",
+                        payload={
+                            "input": {"response": text},
+                            "output": {
+                                "valid": validation.valid and interaction_valid,
+                                "violations": [
+                                    *validation.violations,
+                                    *(artifact_result.violations if artifact_result else []),
+                                    *(workspace_result.violations if workspace_result else []),
+                                ],
+                            },
+                            "metadata": {"repair": False},
+                        },
+                        party_turn=expected_party_turn,
+                    )
                 training_runtime_enabled = bool(self.training_runtime and self.training_runtime.enabled)
                 repair_attempts = (
                     self.settings.training_repair_attempts
@@ -305,6 +433,7 @@ class Adjudicator:
                         request_id=request_id,
                         artifact_contract=interaction_contract,
                         training_turn_contract=training_turn_contract,
+                        relationship_pressure=relationship_pressure,
                     )
                     text = response_text(raw)
                     if self.training_artifacts:
@@ -328,6 +457,23 @@ class Adjudicator:
                         scenario_type=self.settings.scenario_type,
                         training_runtime=self.training_runtime,
                         interaction_contract=interaction_contract,
+                    )
+                    self.record_trace_event(
+                        request_id=request_id,
+                        phase_key="validation:repair",
+                        alignment_key="validation",
+                        lane="main",
+                        event_type="validation",
+                        status="completed" if validation.valid else "failed",
+                        payload={
+                            "input": {"response": text},
+                            "output": {
+                                "valid": validation.valid,
+                                "violations": validation.violations,
+                            },
+                            "metadata": {"repair": True},
+                        },
+                        party_turn=expected_party_turn,
                     )
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
@@ -438,6 +584,31 @@ class Adjudicator:
                 training_runtime=self.training_runtime,
                 interaction_contract=interaction_contract,
             )
+            self.record_trace_event(
+                request_id=request_id,
+                phase_key="validation:final",
+                alignment_key="validation",
+                lane="main",
+                event_type="validation",
+                status=(
+                    "completed"
+                    if final_validation is None or final_validation.valid
+                    else "failed"
+                ),
+                payload={
+                    "input": {"response": text},
+                    "output": (
+                        {
+                            "valid": final_validation.valid,
+                            "violations": final_validation.violations,
+                        }
+                        if final_validation is not None
+                        else {"valid": None, "reason": "not_applicable"}
+                    ),
+                    "metadata": {"repair": repaired},
+                },
+                party_turn=int(updated_state["meta"]["turn"]),
+            )
             turn_id = self.store.record_turn(
                 idempotency_key,
                 request_id,
@@ -462,8 +633,33 @@ class Adjudicator:
                 consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
                 party_turn=int(updated_state["meta"]["turn"]),
             )
+            self.record_trace_event(
+                request_id=request_id,
+                phase_key="turn_commit",
+                alignment_key="turn_commit",
+                lane="main",
+                event_type="turn_commit",
+                status="completed",
+                payload={
+                    "output": {
+                        "turn_id": turn_id,
+                        "state_version": version,
+                        "party_turn": int(updated_state["meta"]["turn"]),
+                    }
+                },
+                party_turn=int(updated_state["meta"]["turn"]),
+                turn_id=turn_id,
+            )
             if self.relationship_mechanics is not None and self.settings.rp_contract_revision >= 4:
+                relationship_projection_before = self.trace_projection_snapshot()
                 self.relationship_mechanics.advance_turn(int(updated_state["meta"]["turn"]))
+                self.capture_projection_changes(
+                    request_id,
+                    relationship_projection_before,
+                    source="relationship_turn_advance",
+                    reason="post_commit_relationship_advance",
+                    lane="main",
+                )
             self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp" and not rp_no_checks:
                 self.store.record_check(turn_id, outcome)
@@ -490,6 +686,23 @@ class Adjudicator:
             return response
         except Exception as exc:
             self.store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            try:
+                self.record_trace_event(
+                    request_id=request_id,
+                    phase_key="request_failed",
+                    alignment_key="request_terminal",
+                    lane="main",
+                    event_type="request_failed",
+                    status="failed",
+                    payload={
+                        "error": {
+                            "type": type(exc).__name__,
+                            "message": str(exc)[:1000],
+                        }
+                    },
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must not mask the primary error
+                logger.exception("turn_trace_terminal_capture_failed request_id=%s", request_id)
             raise
 
     def turn_metadata(
@@ -508,7 +721,8 @@ class Adjudicator:
             "schema_version": "rp-gateway.turn.v1",
             "turn_kind": turn_kind,
             "scenario_type": self.settings.scenario_type,
-            "rp_contract_revision": self.settings.rp_contract_revision,
+            "rp_contract_version": self.settings.rp_contract_version,
+            "rp_contract_revision": int(getattr(self.settings, "rp_contract_revision", 0) or 0),
             "worldpack_id": self.settings.campaign_id,
             "state_campaign_id": self.store.campaign_id,
             "narrative_provider": self.settings.llm_provider,
@@ -643,6 +857,8 @@ class Adjudicator:
                 )
 
     async def run_service_job(self, job: dict[str, Any], authorization: str | None) -> None:
+        request_id = str(job.get("request_id") or "")
+        projection_before = self.trace_projection_snapshot()
         for _ in range(64):
             if job["job_type"] == "memory":
                 result = await self.memory.summarize(
@@ -674,6 +890,13 @@ class Adjudicator:
                 continue
             if result.get("reason") == "summary_failed" or result.get("error"):
                 raise RuntimeError(str(result.get("reason") or result.get("error") or "service job failed"))
+            if request_id:
+                self.capture_projection_changes(
+                    request_id,
+                    projection_before,
+                    source=str(job["job_type"]),
+                    reason=f"service_job:{job['id']}",
+                )
             return
         raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")
 
@@ -694,6 +917,58 @@ class Adjudicator:
             pressure = self.relationship_mechanics.pressure_block(party_turn, names)
             resolution = self.relationship_mechanics.resolved_event_block(changes, names)
         return "\n\n".join(block for block in (pressure, resolution) if block) or None
+
+    @staticmethod
+    def prompt_assembly_trace(messages: list[dict[str, str]], latest: str) -> list[dict[str, Any]]:
+        """Describe the exact assembled messages without becoming a prompt authority."""
+
+        prefixes = {
+            "LONG_TERM_PARTY_MEMORY": "long_term_memory",
+            "RP_STORY_MEMORY": "rp_story_memory",
+            "WORLD_SYSTEM_PROMPT": "world_system_prompt",
+            "WORLD_AUTHORS_NOTE": "world_authors_note",
+            "RELEVANT_CHARACTERS": "relevant_characters",
+            "RETRIEVED_ARCHIVE_SCENES": "retrieved_archive_scenes",
+            "UNCOMPACTED_ARCHIVE_FALLBACK": "uncompacted_archive_fallback",
+            "PARTY_LORE_CARDS": "party_lore_cards",
+            "RELATIONSHIP_PRESSURE": "relationship_pressure",
+            "ACTIVE_TRAINING_TURN_CONTRACT": "training_turn_contract",
+            "TRAINING_INTERACTION_CONTRACT": "training_interaction_contract",
+            "WORLD_ABSOLUTE_RULES": "world_absolute_rules",
+        }
+        result: list[dict[str, Any]] = []
+        for index, message in enumerate(messages):
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "")
+            source = "conversation_history"
+            reason = "Selected by the active history/context budget."
+            if role == "system":
+                source = "gateway_system"
+                reason = "Added by Gateway for the active runtime contract."
+                for prefix, label in prefixes.items():
+                    if content.startswith(prefix) or (prefix == "WORLD_ABSOLUTE_RULES" and prefix in content):
+                        source = label
+                        break
+                else:
+                    if content.startswith("Relevant state summary:"):
+                        source = "state_summary"
+                    elif "AUTHORITATIVE_OUTCOME" in content:
+                        source = "authoritative_outcome"
+                    else:
+                        source = "scenario_rules"
+            elif role == "user" and content == latest and index == len(messages) - 1:
+                source = "player_input"
+                reason = "Latest player message."
+            result.append(
+                {
+                    "index": index,
+                    "role": role,
+                    "source": source,
+                    "reason": reason,
+                    "content": content,
+                }
+            )
+        return result
 
     @staticmethod
     def relationship_character_name(character_id: str, value: Any) -> str:

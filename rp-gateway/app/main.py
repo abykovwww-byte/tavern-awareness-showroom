@@ -41,6 +41,7 @@ from app.models.schemas import (
     PartyPromptPreviewRequest,
     PartyStartRequest,
     PartyTurnDatasetUpdate,
+    TurnTraceAnnotationCreate,
     TurnFeedbackUpdate,
     TrainingArtifactEventRequest,
     TrainingWorkspaceEventRequest,
@@ -94,6 +95,7 @@ from app.services.state_store import StateStore
 from app.services.training_artifacts import TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService
+from app.services.turn_trace import TurnTraceAssembler
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
@@ -329,6 +331,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return None
         user = current_user(request)
         return user.id if user else None
+
+    def turn_trace_scope(
+        request: Request,
+        party_id: str,
+        branch_id: str | None,
+    ) -> tuple[Any, dict[str, Any] | None, StateStore]:
+        user = current_user(request)
+        owner_id = None if user and user.is_admin else (user.id if user else owner_user_id(request))
+        party = party_store.get_party(party_id, owner_user_id=owner_id)
+        if branch_id:
+            branch = party_store.get_party_branch(party_id, branch_id, owner_user_id=owner_id)
+            trace_store = party_store.store_for_branch(party_id, branch_id, owner_user_id=owner_id)
+            return party, branch, trace_store
+        return party, None, party_store.store_for_party(party_id, owner_user_id=owner_id)
 
     def require_admin(request: Request) -> AuthUser | None:
         user = current_user(request)
@@ -827,6 +843,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "state_versions": party_state_store.history(limit=limit),
         }
 
+    @app.get("/api/parties/{party_id}/turn-traces")
+    def get_party_turn_traces(
+        request: Request,
+        response: Response,
+        party_id: str,
+        branch_id: str | None = None,
+        limit: int = 30,
+        before: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            party, branch, trace_store = turn_trace_scope(request, party_id, branch_id)
+            payload = TurnTraceAssembler(trace_store, party, branch).list_traces(
+                limit=limit,
+                before=before,
+            )
+        except ValueError as exc:
+            if "trace cursor" in str(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return payload
+
+    @app.get("/api/turn-traces/parties")
+    def list_turn_trace_parties(request: Request, response: Response) -> dict[str, Any]:
+        user = current_user(request)
+        owner_id = None if user and user.is_admin else (user.id if user else None)
+        parties = party_store.list_parties(owner_user_id=owner_id)
+        response.headers["Cache-Control"] = "no-store"
+        return {"parties": [party.model_dump(mode="json") for party in parties]}
+
+    @app.get("/api/turn-traces/parties/{party_id}/branches")
+    def list_turn_trace_branches(
+        request: Request,
+        response: Response,
+        party_id: str,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        user = current_user(request)
+        owner_id = None if user and user.is_admin else (user.id if user else None)
+        try:
+            party_store.get_party(party_id, owner_user_id=owner_id)
+            branches = party_store.list_party_branches(
+                party_id,
+                owner_user_id=owner_id,
+                limit=min(max(limit, 1), 100),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return {"party_id": party_id, "branches": branches}
+
+    @app.get("/api/parties/{party_id}/turn-traces/{request_id}")
+    def get_party_turn_trace(
+        request: Request,
+        response: Response,
+        party_id: str,
+        request_id: str,
+        branch_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            party, branch, trace_store = turn_trace_scope(request, party_id, branch_id)
+            payload = TurnTraceAssembler(trace_store, party, branch).trace(request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return payload
+
+    @app.post("/api/parties/{party_id}/turn-traces/{request_id}/annotations")
+    def add_party_turn_trace_annotation(
+        request: Request,
+        response: Response,
+        party_id: str,
+        request_id: str,
+        payload: TurnTraceAnnotationCreate,
+        branch_id: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            party, branch, trace_store = turn_trace_scope(request, party_id, branch_id)
+            user = current_user(request)
+            result = TurnTraceAssembler(trace_store, party, branch).add_annotation(
+                request_id=request_id,
+                annotation_id=payload.annotation_id,
+                phase_key=payload.phase_key,
+                body=payload.body,
+                author_user_id=user.id if user else None,
+            )
+        except ValueError as exc:
+            detail = str(exc)
+            if "already belongs" in detail:
+                raise HTTPException(status_code=409, detail=detail) from exc
+            if "not found" in detail and "phase" not in detail:
+                raise HTTPException(status_code=404, detail=detail) from exc
+            raise HTTPException(status_code=422, detail=detail) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return result
+
     @app.post("/api/parties/{party_id}/artifact-events")
     def record_party_artifact_event(
         http_request: Request,
@@ -1299,7 +1411,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "latest_turn": existing_turns[-1],
             }
 
-        request_status = party_state_store.begin_turn_request(idempotency_key, request_id)
+        try:
+            request_status = party_state_store.begin_turn_request(idempotency_key, request_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        request_id = str(request_status.get("request_id") or request_id)
         if not request_status.get("acquired"):
             if request_status.get("status") == "completed" and request_status.get("response"):
                 response = request_status["response"]
@@ -1323,6 +1439,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "message": "request is already running",
                     },
                 )
+
+        adjudicator = Adjudicator(party_settings, party_state_store)
+        narrative = adjudicator.narrative
+        expected_party_turn = int(party_state_store.get_state().get("meta", {}).get("turn", 0)) + 1
+        adjudicator.record_trace_event(
+            request_id=request_id,
+            phase_key="player_input",
+            alignment_key="player_input",
+            lane="main",
+            event_type="player_input",
+            status="completed",
+            payload={
+                "input": {
+                    "content": AUTO_START_HISTORY_MESSAGE,
+                    "source": "system_auto_start",
+                }
+            },
+            party_turn=expected_party_turn,
+        )
+
+        def trace_start_failure(exc: Exception) -> None:
+            adjudicator.record_trace_event(
+                request_id=request_id,
+                phase_key="request_failed",
+                alignment_key="request_terminal",
+                lane="main",
+                event_type="request_failed",
+                status="failed",
+                payload={"error": {"type": type(exc).__name__, "message": str(exc)[:1000]}},
+                party_turn=expected_party_turn,
+            )
 
         try:
             state = party_state_store.get_state()
@@ -1348,7 +1495,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
-            narrative = NarrativeClient(party_settings)
             artifact_contract = artifact_service.contract_for_state(narrative_state)
             workspace_contract = workspace_service.contract_for_state(narrative_state, party_start=True)
             interaction_contract = (
@@ -1371,10 +1517,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 artifact_contract=interaction_contract,
                 training_turn_contract=training_turn_contract,
             )
+            adjudicator.record_trace_event(
+                request_id=request_id,
+                phase_key="gateway_assembly",
+                alignment_key="gateway_assembly",
+                lane="main",
+                event_type="gateway_assembly",
+                status="completed",
+                payload={
+                    "capture_status": "complete",
+                    "input": {"messages": prompt_messages},
+                    "details": {
+                        "message_count": len(prompt_messages),
+                        "training_turn_contract_included": bool(training_turn_contract),
+                        "interaction_contract_included": bool(interaction_contract),
+                        "assembly_trace": adjudicator.prompt_assembly_trace(prompt_messages, prompt),
+                    },
+                },
+                party_turn=expected_party_turn,
+            )
             repaired = False
             fallback_reason: str | None = None
             transport_status = "ok"
-            adjudicator = Adjudicator(party_settings, party_state_store)
             try:
                 raw = await narrative.complete(
                     chat_request,
@@ -1448,6 +1612,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 training_runtime=runtime_service,
                 interaction_contract=interaction_contract,
             )
+            if validation is not None:
+                initial_violations = [
+                    *validation.violations,
+                    *artifact_result.violations,
+                    *workspace_result.violations,
+                ]
+                adjudicator.record_trace_event(
+                    request_id=request_id,
+                    phase_key="validation:initial",
+                    alignment_key="validation",
+                    lane="main",
+                    event_type="validation",
+                    status="completed" if not initial_violations else "failed",
+                    payload={
+                        "input": {"response": text},
+                        "output": {"valid": not initial_violations, "violations": initial_violations},
+                        "metadata": {"repair": False, "opening_scene": True},
+                    },
+                    party_turn=expected_party_turn,
+                )
             training_runtime_enabled = runtime_service.enabled
             repair_attempts = (
                 party_settings.training_repair_attempts
@@ -1520,6 +1704,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     training_runtime=runtime_service,
                     interaction_contract=interaction_contract,
                 )
+                repair_violations = [
+                    *validation.violations,
+                    *artifact_result.violations,
+                    *workspace_result.violations,
+                ]
+                adjudicator.record_trace_event(
+                    request_id=request_id,
+                    phase_key="validation:repair",
+                    alignment_key="validation",
+                    lane="main",
+                    event_type="validation",
+                    status="completed" if not repair_violations else "failed",
+                    payload={
+                        "input": {"response": text},
+                        "output": {"valid": not repair_violations, "violations": repair_violations},
+                        "metadata": {"repair": True, "opening_scene": True},
+                    },
+                    party_turn=expected_party_turn,
+                )
             if validation is not None and (
                 not validation.valid or not artifact_result.valid or not workspace_result.valid
             ):
@@ -1576,6 +1779,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 training_runtime=runtime_service,
                 interaction_contract=interaction_contract,
             )
+            final_violations = [
+                *(final_validation.violations if final_validation is not None else []),
+                *artifact_result.violations,
+                *workspace_result.violations,
+            ]
+            adjudicator.record_trace_event(
+                request_id=request_id,
+                phase_key="validation:final",
+                alignment_key="validation",
+                lane="main",
+                event_type="validation",
+                status="completed" if not final_violations else "failed",
+                payload={
+                    "input": {"response": text},
+                    "output": {
+                        "valid": not final_violations if final_validation is not None else None,
+                        "violations": final_violations,
+                        "reason": None if final_validation is not None else "not_applicable",
+                    },
+                    "metadata": {"repair": repaired, "opening_scene": True},
+                },
+                party_turn=expected_party_turn,
+            )
             if start_patch:
                 state = party_state_store.apply_state_patch(start_patch, reason=f"party_start:{request_id}")
             state_version = party_state_store.current_version() or int(state.get("meta", {}).get("state_version") or 1)
@@ -1591,6 +1817,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "schema_version": "rp-gateway.turn.v1",
                     "turn_kind": "opening_scene",
                     "scenario_type": party.scenario_type,
+                    "rp_contract_version": getattr(party, "rp_contract_version", "rp-core.v1"),
+                    "rp_contract_revision": int(getattr(party, "rp_contract_revision", 0) or 0),
                     "worldpack_id": party.worldpack_id,
                     "state_campaign_id": party_state_store.campaign_id,
                     "narrative_provider": party_settings.llm_provider,
@@ -1613,6 +1841,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 workspace_files=workspace_result.persistence_records,
                 party_turn=int(state["meta"]["turn"]),
             )
+            adjudicator.record_trace_event(
+                request_id=request_id,
+                phase_key="turn_commit",
+                alignment_key="turn_commit",
+                lane="main",
+                event_type="turn_commit",
+                status="completed",
+                payload={
+                    "output": {
+                        "turn_id": turn_id,
+                        "state_version": state_version,
+                        "party_turn": int(state["meta"]["turn"]),
+                    }
+                },
+                party_turn=int(state["meta"]["turn"]),
+                turn_id=turn_id,
+            )
             party_state_store.complete_turn_request(idempotency_key, response)
             party_state_store.audit(
                 "party_start_complete",
@@ -1627,27 +1872,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except PermissionError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except httpx.TimeoutException as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             raise HTTPException(
                 status_code=504,
                 detail="Narrative provider exceeded the party-start deadline",
             ) from exc
         except httpx.HTTPStatusError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             status = exc.response.status_code if exc.response is not None else "unknown"
             raise HTTPException(status_code=502, detail=f"Narrative provider HTTP {status}") from exc
         except ProviderRateLimitError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             party_state_store.audit("party_start_rate_limited", {"request_id": request_id, **exc.details}, request_id)
             raise HTTPException(status_code=429, detail=exc.public_detail()) from exc
         except RuntimeError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
+            raise
 
         return {
             **response,

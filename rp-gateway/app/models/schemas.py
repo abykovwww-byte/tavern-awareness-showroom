@@ -345,6 +345,22 @@ class PartyMessageRequest(BaseModel):
     max_tokens: int | None = None
 
 
+class TurnTraceAnnotationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    annotation_id: str = Field(min_length=8, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")
+    phase_key: str = Field(min_length=1, max_length=240)
+    body: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("phase_key", "body")
+    @classmethod
+    def strip_trace_annotation_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+
 class NarrativeArtifactContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

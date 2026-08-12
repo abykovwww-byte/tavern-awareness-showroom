@@ -209,6 +209,9 @@ class RelationshipExtractionService:
                     role="relationship_extraction",
                     party_id=self.store.campaign_id,
                     turn_id=int(turn["id"]),
+                    request_id=str(turn.get("request_id") or "") or None,
+                    party_turn=turn.get("party_turn"),
+                    attempt=index + 1,
                     prompt=service_prompt_text(request_payload),
                     payload=request_payload,
                 )

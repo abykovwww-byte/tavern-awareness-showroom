@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -13,6 +14,10 @@ from typing import Any, Iterator
 
 from app.core.json_patch import apply_patch
 from app.models.schemas import StatePatch
+from app.services.trace_redaction import redact_trace_value
+
+
+logger = logging.getLogger(__name__)
 
 
 def now_ts() -> int:
@@ -299,6 +304,65 @@ class StateStore:
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
+                CREATE TABLE IF NOT EXISTS turn_trace_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    turn_id INTEGER,
+                    party_turn INTEGER,
+                    phase_key TEXT NOT NULL,
+                    alignment_key TEXT NOT NULL,
+                    lane TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    completed_at INTEGER,
+                    UNIQUE(campaign_id, request_id, phase_key),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_trace_events_request
+                    ON turn_trace_events(campaign_id, request_id, id);
+                CREATE INDEX IF NOT EXISTS idx_turn_trace_events_turn
+                    ON turn_trace_events(campaign_id, turn_id, id);
+                CREATE TABLE IF NOT EXISTS turn_state_mutations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    turn_id INTEGER,
+                    party_turn INTEGER,
+                    phase_key TEXT NOT NULL,
+                    store_name TEXT NOT NULL,
+                    entity_key TEXT NOT NULL,
+                    before_json TEXT,
+                    after_json TEXT,
+                    lane TEXT NOT NULL DEFAULT 'background' CHECK(lane IN ('main', 'background')),
+                    source TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_state_mutations_request
+                    ON turn_state_mutations(campaign_id, request_id, id);
+                CREATE INDEX IF NOT EXISTS idx_turn_state_mutations_turn
+                    ON turn_state_mutations(campaign_id, turn_id, id);
+                CREATE TABLE IF NOT EXISTS turn_phase_annotations (
+                    id TEXT NOT NULL,
+                    campaign_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    turn_id INTEGER,
+                    phase_key TEXT NOT NULL,
+                    author_user_id TEXT,
+                    body TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    PRIMARY KEY(campaign_id, id),
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE SET NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_turn_phase_annotations_request
+                    ON turn_phase_annotations(campaign_id, request_id, phase_key, created_at);
                 CREATE TABLE IF NOT EXISTS memory_summaries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
@@ -418,6 +482,7 @@ class StateStore:
             self.migrate_turn_columns(connection)
             self.migrate_relationship_turn_columns(connection)
             self.migrate_turn_feedback_columns(connection)
+            self.migrate_turn_trace_tables(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
@@ -557,6 +622,51 @@ class StateStore:
             "CREATE INDEX IF NOT EXISTS idx_turn_feedback_rating "
             "ON turn_feedback(rating, campaign_id, turn_id)"
         )
+
+    def migrate_turn_trace_tables(self, connection: sqlite3.Connection) -> None:
+        """Upgrade additive trace fields and the draft annotation key."""
+
+        mutation_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(turn_state_mutations)").fetchall()
+        }
+        if "lane" not in mutation_columns:
+            connection.execute(
+                "ALTER TABLE turn_state_mutations "
+                "ADD COLUMN lane TEXT NOT NULL DEFAULT 'background' "
+                "CHECK(lane IN ('main', 'background'))"
+            )
+
+        columns = connection.execute("PRAGMA table_info(turn_phase_annotations)").fetchall()
+        primary_key = [row["name"] for row in sorted(columns, key=lambda row: int(row["pk"])) if row["pk"]]
+        if primary_key == ["id"]:
+            connection.execute("ALTER TABLE turn_phase_annotations RENAME TO turn_phase_annotations_legacy")
+            connection.executescript(
+                """
+            CREATE TABLE turn_phase_annotations (
+                id TEXT NOT NULL,
+                campaign_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                turn_id INTEGER,
+                phase_key TEXT NOT NULL,
+                author_user_id TEXT,
+                body TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(campaign_id, id),
+                FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+                FOREIGN KEY(turn_id) REFERENCES turns(id) ON DELETE SET NULL
+            );
+            INSERT INTO turn_phase_annotations(
+                id, campaign_id, request_id, turn_id, phase_key,
+                author_user_id, body, created_at
+            )
+            SELECT id, campaign_id, request_id, turn_id, phase_key,
+                   author_user_id, body, created_at
+            FROM turn_phase_annotations_legacy;
+            DROP TABLE turn_phase_annotations_legacy;
+            CREATE INDEX idx_turn_phase_annotations_request
+                ON turn_phase_annotations(campaign_id, request_id, phase_key, created_at);
+                """
+            )
 
     def recover_interrupted_work(self) -> dict[str, int]:
         """Reconcile work that could only remain running after a process restart."""
@@ -2235,7 +2345,8 @@ class StateStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, request_id, player_message, narrative_response, state_version, created_at
+                SELECT id, request_id, player_message, narrative_response,
+                       state_version, party_turn, created_at
                 FROM turns
                 WHERE campaign_id = ? AND request_id = ?
                 ORDER BY id DESC
@@ -2246,8 +2357,17 @@ class StateStore:
         return dict(row) if row else None
 
     def begin_turn_request(self, idempotency_key: str, request_id: str) -> dict[str, Any]:
+        idempotency_key = str(idempotency_key).strip()
+        request_id = str(request_id).strip()
+        if not idempotency_key:
+            raise ValueError("idempotency_key must not be blank")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,240}", request_id):
+            raise ValueError(
+                "request_id must contain only letters, digits, '.', '_', ':' or '-' and be at most 240 characters"
+            )
         timestamp = now_ts()
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing_turn = connection.execute(
                 "SELECT response_json FROM turns WHERE campaign_id = ? AND idempotency_key = ?",
                 (self.campaign_id, idempotency_key),
@@ -2258,36 +2378,63 @@ class StateStore:
                     "status": "completed",
                     "response": json.loads(existing_turn["response_json"]),
                 }
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO turn_requests(
-                        campaign_id, idempotency_key, request_id, status,
-                        response_json, error, created_at, updated_at
+            existing_request = connection.execute(
+                """
+                SELECT * FROM turn_requests
+                WHERE campaign_id = ? AND idempotency_key = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (self.campaign_id, idempotency_key),
+            ).fetchone()
+            if existing_request is not None:
+                current = self.turn_request_from_row(existing_request)
+                if current["status"] == "failed":
+                    connection.execute(
+                        """
+                        UPDATE turn_requests
+                        SET status = 'running', response_json = NULL, error = NULL, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (timestamp, int(existing_request["id"])),
                     )
-                    VALUES(?, ?, ?, 'running', NULL, NULL, ?, ?)
-                    """,
-                    (self.campaign_id, idempotency_key, request_id, timestamp, timestamp),
+                    return {
+                        "acquired": True,
+                        "status": "running",
+                        "request_id": str(existing_request["request_id"]),
+                        "idempotency_key": idempotency_key,
+                        "retried": True,
+                    }
+                current["acquired"] = False
+                return current
+            request_conflict = connection.execute(
+                """
+                SELECT idempotency_key FROM turn_requests
+                WHERE campaign_id = ? AND request_id = ?
+                UNION ALL
+                SELECT idempotency_key FROM turns
+                WHERE campaign_id = ? AND request_id = ?
+                LIMIT 1
+                """,
+                (self.campaign_id, request_id, self.campaign_id, request_id),
+            ).fetchone()
+            if request_conflict is not None:
+                raise ValueError("request_id already belongs to a different idempotency_key")
+            connection.execute(
+                """
+                INSERT INTO turn_requests(
+                    campaign_id, idempotency_key, request_id, status,
+                    response_json, error, created_at, updated_at
                 )
-                return {
-                    "acquired": True,
-                    "status": "running",
-                    "request_id": request_id,
-                    "idempotency_key": idempotency_key,
-                }
-            except sqlite3.IntegrityError:
-                row = connection.execute(
-                    """
-                    SELECT * FROM turn_requests
-                    WHERE campaign_id = ? AND idempotency_key = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (self.campaign_id, idempotency_key),
-                ).fetchone()
-        status = self.turn_request_from_row(row) if row else {"status": "unknown"}
-        status["acquired"] = False
-        return status
+                VALUES(?, ?, ?, 'running', NULL, NULL, ?, ?)
+                """,
+                (self.campaign_id, idempotency_key, request_id, timestamp, timestamp),
+            )
+            return {
+                "acquired": True,
+                "status": "running",
+                "request_id": request_id,
+                "idempotency_key": idempotency_key,
+            }
 
     def complete_turn_request(self, idempotency_key: str, response_json: dict[str, Any]) -> None:
         with self.connect() as connection:
@@ -2336,6 +2483,290 @@ class StateStore:
             "error": row["error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+        }
+
+    def record_trace_event(
+        self,
+        *,
+        request_id: str,
+        phase_key: str,
+        alignment_key: str,
+        lane: str,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any],
+        party_turn: int | None = None,
+        turn_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist one request-scoped diagnostic fact without affecting gameplay."""
+
+        request_id = str(request_id).strip()
+        phase_key = str(phase_key).strip()
+        alignment_key = str(alignment_key).strip()
+        if not request_id or len(request_id) > 240:
+            raise ValueError("invalid trace request_id")
+        if not phase_key or len(phase_key) > 240:
+            raise ValueError("invalid trace phase_key")
+        if not alignment_key or len(alignment_key) > 160:
+            raise ValueError("invalid trace alignment_key")
+        if lane not in {"main", "background"}:
+            raise ValueError("invalid trace lane")
+        if status not in {"running", "completed", "failed", "skipped"}:
+            raise ValueError("invalid trace status")
+        timestamp = now_ts()
+        completed_at = timestamp if status != "running" else None
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO turn_trace_events(
+                    campaign_id, request_id, turn_id, party_turn, phase_key,
+                    alignment_key, lane, event_type, status, payload_json,
+                    created_at, completed_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_id, request_id, phase_key) DO UPDATE SET
+                    turn_id = COALESCE(excluded.turn_id, turn_trace_events.turn_id),
+                    party_turn = COALESCE(excluded.party_turn, turn_trace_events.party_turn),
+                    alignment_key = excluded.alignment_key,
+                    lane = excluded.lane,
+                    event_type = excluded.event_type,
+                    status = excluded.status,
+                    payload_json = excluded.payload_json,
+                    completed_at = excluded.completed_at
+                """,
+                (
+                    self.campaign_id,
+                    request_id,
+                    turn_id,
+                    party_turn,
+                    phase_key,
+                    alignment_key,
+                    lane,
+                    event_type,
+                    status,
+                    json.dumps(redact_trace_value(payload), ensure_ascii=False),
+                    timestamp,
+                    completed_at,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM turn_trace_events
+                WHERE campaign_id = ? AND request_id = ? AND phase_key = ?
+                """,
+                (self.campaign_id, request_id, phase_key),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def record_narrative_attempt(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Callback used by NarrativeClient for the exact provider attempt."""
+
+        request_id = str(event.get("request_id") or "").strip()
+        if not request_id:
+            return {}
+        status = str(event.get("status") or "failed")
+        with self.connect() as connection:
+            count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM turn_trace_events
+                    WHERE campaign_id = ? AND request_id = ?
+                      AND event_type = 'narrator_attempt'
+                    """,
+                    (self.campaign_id, request_id),
+                ).fetchone()["count"]
+            )
+        return self.record_trace_event(
+            request_id=request_id,
+            phase_key=f"narrator:attempt:{count + 1}",
+            alignment_key="narrator_attempt",
+            lane="main",
+            event_type="narrator_attempt",
+            status=status if status in {"running", "completed", "failed", "skipped"} else "failed",
+            payload={key: value for key, value in event.items() if key != "request_id"},
+        )
+
+    def trace_projection_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Snapshot only mutable projections whose prior values are otherwise lost."""
+
+        definitions = {
+            "character_badges": ("id",),
+            "narrative_events": ("id",),
+            "character_axis_state": ("character_id", "axis"),
+        }
+        snapshot: dict[str, dict[str, dict[str, Any]]] = {}
+        with self.connect() as connection:
+            available = {
+                str(row["name"])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            for table, key_columns in definitions.items():
+                if table not in available:
+                    continue
+                rows = connection.execute(
+                    f"SELECT * FROM {table} WHERE campaign_id = ? ORDER BY rowid ASC",
+                    (self.campaign_id,),
+                ).fetchall()
+                snapshot[table] = {
+                    ":".join(str(row[column]) for column in key_columns): dict(row)
+                    for row in rows
+                }
+        return snapshot
+
+    def capture_projection_changes(
+        self,
+        request_id: str,
+        before: dict[str, dict[str, dict[str, Any]]],
+        *,
+        source: str,
+        reason: str,
+        lane: str = "background",
+    ) -> int:
+        """Record exact before/after transitions for in-place projections."""
+
+        if lane not in {"main", "background"}:
+            raise ValueError("invalid projection mutation lane")
+        after = self.trace_projection_snapshot()
+        turn = self.get_turn_by_request_id(request_id)
+        turn_id = int(turn["id"]) if turn else None
+        party_turn = int(turn["party_turn"]) if turn and turn.get("party_turn") is not None else None
+        changes: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = []
+        for store_name in sorted(set(before) | set(after)):
+            before_rows = before.get(store_name, {})
+            after_rows = after.get(store_name, {})
+            for entity_key in sorted(set(before_rows) | set(after_rows)):
+                old = before_rows.get(entity_key)
+                new = after_rows.get(entity_key)
+                if old != new:
+                    changes.append((store_name, entity_key, old, new))
+        if not changes:
+            return 0
+        timestamp = now_ts()
+        with self.connect() as connection:
+            start = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count FROM turn_state_mutations
+                    WHERE campaign_id = ? AND request_id = ?
+                    """,
+                    (self.campaign_id, request_id),
+                ).fetchone()["count"]
+            )
+            for offset, (store_name, entity_key, old, new) in enumerate(changes, start=1):
+                connection.execute(
+                    """
+                    INSERT INTO turn_state_mutations(
+                        campaign_id, request_id, turn_id, party_turn, phase_key,
+                        store_name, entity_key, before_json, after_json,
+                        lane, source, reason, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.campaign_id,
+                        request_id,
+                        turn_id,
+                        party_turn,
+                        f"projection:{start + offset}",
+                        store_name,
+                        entity_key,
+                        json.dumps(old, ensure_ascii=False) if old is not None else None,
+                        json.dumps(new, ensure_ascii=False) if new is not None else None,
+                        lane,
+                        source[:80],
+                        reason[:240],
+                        timestamp,
+                    ),
+                )
+        return len(changes)
+
+    def add_trace_annotation(
+        self,
+        *,
+        annotation_id: str,
+        request_id: str,
+        phase_key: str,
+        author_user_id: str | None,
+        body: str,
+    ) -> dict[str, Any]:
+        annotation_id = str(annotation_id).strip()
+        request_id = str(request_id).strip()
+        phase_key = str(phase_key).strip()
+        body = str(body).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,160}", annotation_id):
+            raise ValueError("invalid annotation_id")
+        if not request_id or len(request_id) > 240:
+            raise ValueError("invalid request_id")
+        if not phase_key or len(phase_key) > 240:
+            raise ValueError("invalid phase_key")
+        if not body or len(body) > 4000:
+            raise ValueError("annotation body must contain 1..4000 characters")
+        turn = self.get_turn_by_request_id(request_id)
+        turn_id = int(turn["id"]) if turn else None
+        timestamp = now_ts()
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM turn_phase_annotations WHERE campaign_id = ? AND id = ?",
+                (self.campaign_id, annotation_id),
+            ).fetchone()
+            if existing:
+                current = dict(existing)
+                if (
+                    current["campaign_id"] != self.campaign_id
+                    or current["request_id"] != request_id
+                    or current["phase_key"] != phase_key
+                    or current["body"] != body
+                ):
+                    raise ValueError("annotation_id already belongs to different content")
+                current["duplicate"] = True
+                return current
+            connection.execute(
+                """
+                INSERT INTO turn_phase_annotations(
+                    id, campaign_id, request_id, turn_id, phase_key,
+                    author_user_id, body, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    annotation_id,
+                    self.campaign_id,
+                    request_id,
+                    turn_id,
+                    phase_key,
+                    author_user_id,
+                    body,
+                    timestamp,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                VALUES(?, ?, 'turn_trace_annotation_added', ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    request_id,
+                    json.dumps(
+                        {
+                            "annotation_id": annotation_id,
+                            "turn_id": turn_id,
+                            "phase_key": phase_key,
+                            "author_user_id": author_user_id,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+        return {
+            "id": annotation_id,
+            "campaign_id": self.campaign_id,
+            "request_id": request_id,
+            "turn_id": turn_id,
+            "phase_key": phase_key,
+            "author_user_id": author_user_id,
+            "body": body,
+            "created_at": timestamp,
+            "duplicate": False,
         }
 
     def record_turn(
@@ -2457,7 +2888,63 @@ class StateStore:
                     """,
                     (turn_id, self.campaign_id, *workspace_event_ids),
                 )
-            return turn_id
+        self.link_turn_diagnostics(turn_id, request_id, party_turn)
+        return turn_id
+
+    def link_turn_diagnostics(self, turn_id: int, request_id: str, party_turn: int) -> None:
+        """Best-effort correlation after the authoritative turn transaction commits."""
+
+        try:
+            with self.connect() as connection:
+                available = {
+                    str(row["name"])
+                    for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+                }
+                if "turn_trace_events" in available:
+                    connection.execute(
+                        """
+                        UPDATE turn_trace_events SET turn_id = ?, party_turn = ?
+                        WHERE campaign_id = ? AND request_id = ? AND turn_id IS NULL
+                        """,
+                        (turn_id, party_turn, self.campaign_id, request_id),
+                    )
+                if "turn_state_mutations" in available:
+                    connection.execute(
+                        """
+                        UPDATE turn_state_mutations SET turn_id = ?, party_turn = ?
+                        WHERE campaign_id = ? AND request_id = ? AND turn_id IS NULL
+                        """,
+                        (turn_id, party_turn, self.campaign_id, request_id),
+                    )
+                if "turn_phase_annotations" in available:
+                    connection.execute(
+                        """
+                        UPDATE turn_phase_annotations SET turn_id = ?
+                        WHERE campaign_id = ? AND request_id = ? AND turn_id IS NULL
+                        """,
+                        (turn_id, self.campaign_id, request_id),
+                    )
+                if "service_call_log" in available:
+                    service_columns = {
+                        str(row["name"])
+                        for row in connection.execute("PRAGMA table_info(service_call_log)")
+                    }
+                    if {"request_id", "turn_id", "party_turn"}.issubset(service_columns):
+                        connection.execute(
+                            """
+                            UPDATE service_call_log
+                            SET turn_id = COALESCE(turn_id, ?), party_turn = COALESCE(party_turn, ?)
+                            WHERE party_id = ? AND request_id = ?
+                            """,
+                            (turn_id, party_turn, self.campaign_id, request_id),
+                        )
+        except Exception as exc:  # noqa: BLE001 - diagnostics cannot roll back a turn
+            logger.warning(
+                "turn_trace_link_failed request_id=%s turn_id=%s error=%s",
+                request_id,
+                turn_id,
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def training_artifact(self, artifact_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:

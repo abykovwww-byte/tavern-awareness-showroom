@@ -7,7 +7,7 @@ import logging
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -21,6 +21,7 @@ from app.services.character_retrieval import (
 from app.services.context_budget import estimate_tokens
 from app.services.nvidia_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
+from app.services.trace_redaction import redact_trace_value
 from app.services.rp_story_memory import story_memory_prompt_text
 
 
@@ -110,8 +111,13 @@ class ProviderRateLimitError(RuntimeError):
 
 
 class NarrativeClient:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        trace_recorder: Callable[[dict[str, Any]], Any] | None = None,
+    ):
         self.settings = settings
+        self.trace_recorder = trace_recorder
 
     async def complete(
         self,
@@ -129,9 +135,6 @@ class NarrativeClient:
         relationship_pressure: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(self.settings, inbound_authorization)
-        if self.settings.nvidia_api_base.startswith("mock://"):
-            return self.mock_completion(outcome, repair_instruction, artifact_contract)
-
         payload = request.model_dump(exclude_none=True)
         if repair_instruction:
             payload["messages"] = self.repair_messages(
@@ -158,14 +161,48 @@ class NarrativeClient:
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
 
+        if self.settings.nvidia_api_base.startswith("mock://"):
+            payload["model"] = self.settings.narrative_model
+            self.apply_model_policy(payload, self.settings.narrative_model)
+            started = time.perf_counter()
+            try:
+                data = self.mock_completion(outcome, repair_instruction, artifact_contract)
+            except Exception as exc:
+                self.record_trace_attempt(
+                    request_id=request_id,
+                    payload=payload,
+                    model=self.settings.narrative_model,
+                    attempt_index=1,
+                    repair_instruction=repair_instruction,
+                    status="failed",
+                    elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                    error=exc,
+                )
+                raise
+            self.record_trace_attempt(
+                request_id=request_id,
+                payload=payload,
+                model=self.settings.narrative_model,
+                attempt_index=1,
+                repair_instruction=repair_instruction,
+                status="completed",
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                raw_response=json.dumps(data, ensure_ascii=False),
+                usage=data.get("usage") if isinstance(data, dict) else None,
+                http_status=200,
+            )
+            return data
+
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
         attempts = self.model_attempts(self.settings.narrative_model)
         last_timeout: httpx.TimeoutException | None = None
         last_status: httpx.HTTPStatusError | None = None
         rate_limit_retries = 0
+        trace_attempt_index = 0
         async with httpx.AsyncClient(timeout=timeout) as client:
             for index, model in enumerate(attempts):
                 while True:
+                    trace_attempt_index += 1
                     payload["model"] = model
                     self.apply_model_policy(payload, model)
                     started = time.perf_counter()
@@ -208,6 +245,16 @@ class NarrativeClient:
                             elapsed_ms,
                             index < len(attempts) - 1,
                         )
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            error=timeout_error,
+                        )
                         if index < len(attempts) - 1:
                             break
                         raise timeout_error from exc
@@ -231,6 +278,18 @@ class NarrativeClient:
                             can_retry,
                             index < len(attempts) - 1,
                         )
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            raw_response=(response.text if self.trace_recorder is not None and request_id else None),
+                            error=error,
+                            http_status=response.status_code,
+                        )
                         if can_retry:
                             rate_limit_retries += 1
                             await asyncio.sleep(retry_delay)
@@ -252,6 +311,18 @@ class NarrativeClient:
                             elapsed_ms,
                             index < len(attempts) - 1,
                         )
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            raw_response=(response.text if self.trace_recorder is not None and request_id else None),
+                            error=exc,
+                            http_status=response.status_code,
+                        )
                         if index < len(attempts) - 1 and response.status_code in {
                             400,
                             403,
@@ -265,7 +336,25 @@ class NarrativeClient:
                         }:
                             break
                         raise
-                    data = response.json()
+                    try:
+                        data = response.json()
+                        if not isinstance(data, dict):
+                            raise RuntimeError("Narrative provider response must be a JSON object")
+                    except Exception as exc:
+                        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            raw_response=(response.text if self.trace_recorder is not None and request_id else None),
+                            error=exc,
+                            http_status=response.status_code,
+                        )
+                        raise
                     data.setdefault("model", model)
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
                     logger.info(
@@ -277,12 +366,77 @@ class NarrativeClient:
                         elapsed_ms,
                         index > 0 or model != self.settings.narrative_model,
                     )
+                    self.record_trace_attempt(
+                        request_id=request_id,
+                        payload=payload,
+                        model=model,
+                        attempt_index=trace_attempt_index,
+                        repair_instruction=repair_instruction,
+                        status="completed",
+                        elapsed_ms=elapsed_ms,
+                        raw_response=(response.text if self.trace_recorder is not None and request_id else None),
+                        usage=data.get("usage") if isinstance(data, dict) else None,
+                        http_status=response.status_code,
+                    )
                     return data
         if last_status:
             raise last_status
         if last_timeout:
             raise last_timeout
         raise RuntimeError(f"No model attempts configured for provider {self.settings.llm_provider}")
+
+    def record_trace_attempt(
+        self,
+        *,
+        request_id: str | None,
+        payload: dict[str, Any],
+        model: str,
+        attempt_index: int,
+        repair_instruction: str | None,
+        status: str,
+        elapsed_ms: float,
+        raw_response: str | None = None,
+        usage: Any = None,
+        error: Exception | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        if self.trace_recorder is None or not request_id:
+            return
+        event = {
+            "request_id": request_id,
+            "status": status,
+            "provider": self.settings.llm_provider,
+            "model": model,
+            "attempt_index": attempt_index,
+            "repair": repair_instruction is not None,
+            "repair_instruction": repair_instruction,
+            "latency_ms": elapsed_ms,
+            "http_status": http_status,
+            "usage": usage,
+            "input": {"payload": payload},
+            "output": {"raw_response": raw_response} if raw_response is not None else None,
+            "error": (
+                {"type": type(error).__name__, "message": str(error)[:1000]}
+                if error is not None
+                else None
+            ),
+        }
+        safe_event = redact_trace_value(event, self.trace_secrets())
+        try:
+            self.trace_recorder(safe_event)
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never break a turn
+            logger.warning(
+                "turn_trace_capture_failed request_id=%s error=%s",
+                request_id,
+                f"{type(exc).__name__}: {exc}",
+            )
+
+    def trace_secrets(self) -> tuple[str | None, ...]:
+        return (
+            self.settings.nvidia_api_key,
+            self.settings.service_nvidia_api_key,
+            self.settings.service_openrouter_api_key,
+        )
 
     def model_attempts(self, primary_model: str) -> list[str]:
         disabled = set(self.settings.nvidia_disabled_models)

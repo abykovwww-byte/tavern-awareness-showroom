@@ -90,7 +90,7 @@ class MemorySummarizer:
                 "stats": self.stats(),
             }
         try:
-            summary = await self.generate(plan, authorization)
+            summary = await self.generate(plan, authorization, request_id=request_id)
             memory = self.store.record_memory_chapter(
                 from_turn_id=plan.from_turn_id,
                 to_turn_id=plan.to_turn_id,
@@ -175,7 +175,13 @@ class MemorySummarizer:
             "ready",
         )
 
-    async def generate(self, plan: SummaryPlan, authorization: str | None) -> dict[str, Any]:
+    async def generate(
+        self,
+        plan: SummaryPlan,
+        authorization: str | None,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         service_settings = self.memory_service_settings()
         if service_settings.nvidia_api_base.startswith("mock://"):
             return self.mock_summary(plan)
@@ -190,6 +196,9 @@ class MemorySummarizer:
                     role="memory_summary",
                     party_id=self.store.campaign_id,
                     turn_id=plan.to_turn_id,
+                    request_id=request_id,
+                    party_turn=plan.turns[-1].get("party_turn"),
+                    attempt=index + 1,
                     prompt=service_prompt_text(payload),
                     payload=payload,
                 )
