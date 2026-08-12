@@ -1,11 +1,11 @@
 - requirement: "Readiness claims use the registered four-level dictionary and remain separate from Decision status"
-  level: подключено
+  level: каркас
   store: "Decision requirement registry"
   assertion: absence
   expectation: no_bare_readiness_claims
   probe_command: null
   expected: null
-  waiver: "Repository guards are active and have passed merged CI; endurance evidence is not yet accumulated."
+  waiver: "Repository guards exist and pass merged CI, but no recorded production reporting flow has exercised this requirement."
 - requirement: "Every global service-model completion has an exact redacted diagnostic trace"
   level: подключено
   store: "service_call_log"
@@ -23,10 +23,10 @@
   expected: null
   waiver: "Seed causes now enter qualitative relationship pressure; a fresh deployed Starosta party has not yet passed through prompt_presence."
 - requirement: "Semantic acceptance reports independent thresholds and per-class metrics"
-  level: подключено
+  level: каркас
   store: "semantic acceptance report"
   assertion: projection
   expectation: semantic_acceptance_thresholds_hold
   probe_command: null
   expected: null
-  waiver: "Saved-response offline acceptance is green and the Gateway image carries the evaluator; provider-canary repeats and production endurance are pending."
+  waiver: "Saved-response offline acceptance is green and the Gateway image carries the evaluator, but no provider semantic canary or production report has exercised it."
