@@ -150,6 +150,26 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
     return TestClient(create_app(settings))
 
 
+def test_app_lifespan_resumes_persisted_work_without_legacy_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    c = client(tmp_path)
+    party_store = c.app.state.party_store
+    calls: list[str] = []
+    monkeypatch.setattr(party_store, "list_parties", lambda: calls.append("parties") or [])
+    monkeypatch.setattr(party_store, "list_all_party_branches", lambda: calls.append("branches") or [])
+    monkeypatch.setattr(party_store, "resumable_autotest_runs", lambda: calls.append("autotests") or [])
+
+    assert c.app.router.on_startup == []
+    assert c.app.router.on_shutdown == []
+
+    with c:
+        pass
+
+    assert calls == ["parties", "branches", "autotests"]
+
+
 def chat_payload(message: str, stream: bool = False) -> dict[str, object]:
     return {
         "model": "z-ai/glm-5.2",

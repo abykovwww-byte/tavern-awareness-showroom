@@ -9,6 +9,10 @@ progression. The administrator-selected **service model / служебная м�
 global to the stack and handles long-term memory, world changes, and character
 generation. Party BYOK credentials remain isolated to their owning party.
 
+Application startup uses FastAPI's `lifespan` context manager. Before accepting
+requests, it reconciles interrupted party and branch work, resumes pending
+service jobs, and schedules resumable autotest runs.
+
 ## Development
 
 ```bash
