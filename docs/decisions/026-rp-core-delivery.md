@@ -6,10 +6,21 @@
 
 **Decision status: Accepted.** Решение пользователя.
 
-**Delivery status:** локальный `каркас`. Код и offline-регрессии существуют в рабочей
-ветке, но commit, push, merge, Ansible apply, container test и live-canary ещё не
-выполнены. Ни один слайс нельзя называть `наблюдается` до проверки авторитетного
-store, фактического provider prompt и следующей сцены на развёрнутом Gateway.
+**Delivery status:** candidate revision `6` `подключена` на `abykovserv` и
+прошла live-canary на развёрнутом Gateway. PR #35 доставил кумулятивные
+S1–S6, PR #36 открыл candidate revision в admin autotest, PR #38 исправил
+обнаруженный live-разрыв S6 и применён в merge revision `6e1de87`.
+Контейнерный набор после последнего apply: `333 passed, 1 skipped`.
+
+Candidate-run `autotest_07cbe4b1df74` на checkpoint-ветке
+`branch_c58108e112ec` завершил 1/1 ход через OpenRouter
+`openai/gpt-5.6-luna-pro`: `transport_status=ok`, `fallback=false`, validator valid,
+новой строки `checks` нет. Effective prompt составил 129654 символа
+при 260384 символах полного raw transcript — 49,79%. Source party осталась
+на 168 ходах, а её raw-префикс в branch совпал по SHA-256. Этот rollout
+поднимает `RP_CONTRACT_OBSERVED_REVISION` до `6` для новых обычных RP-партий;
+существующие party автоматически не мигрируют. Статус `держится` не
+заявляется: общий 50-turn endurance ещё не выполнен.
 
 Decision 024 сохраняет продуктовые инварианты RP-ядра. Это решение заменяет его
 единый P0-контур на шесть независимо проверяемых вертикальных слайсов.
@@ -122,6 +133,9 @@ uncertain facts и absolute constraints. `/timeline` остаётся audit-only
   lore, relevant characters, dynamic state и выборочный archive retrieval.
 - Offline long-party fixture должен дать prompt не больше 50% полного raw transcript,
   сохранить текущее действие и тот же hash raw turns.
+- Для revision 6 Gateway перед provider call удаляет старейшие полные
+  `user/assistant`-пары, пока длинный effective prompt не уложится в этот порог;
+  обязательные system-блоки и текущее действие не режутся ради процента.
 
 ## Проверка и ступени готовности
 
