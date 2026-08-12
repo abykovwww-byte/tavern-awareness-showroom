@@ -818,6 +818,8 @@ def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, 
 def provider_model_is_suitable(provider: str, model_id: str, raw: dict[str, Any]) -> bool:
     if not model_id:
         return False
+    if provider == "openrouter" and model_id.lower().endswith(":batch"):
+        return False
     if provider == "gemini":
         return (
             is_quality_rp_model(model_id)

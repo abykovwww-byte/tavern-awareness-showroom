@@ -838,6 +838,8 @@ class PartyStore:
 
     def model_profile_is_visible(self, profile: ModelProfileSummary) -> bool:
         provider = normalize_provider(profile.provider)
+        if provider == "openrouter" and profile.model.lower().endswith(":batch"):
+            return False
         if (model_context_limit_tokens(profile) or 0) < MIN_RP_CONTEXT_TOKENS:
             return False
         configured = {

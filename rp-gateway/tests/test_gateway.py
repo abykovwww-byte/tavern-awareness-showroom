@@ -1753,7 +1753,33 @@ def test_openrouter_rp_specialists_bypass_generic_size_filter_but_gpt_oss_20b_do
 
     assert provider_model_is_suitable("openrouter", "aion-labs/aion-3.0-mini", specialist) is True
     assert provider_model_is_suitable("openrouter", "openai/gpt-oss-20b", generic_small) is False
+    assert provider_model_is_suitable("openrouter", "anthropic/claude-opus-5:batch", specialist) is False
     assert prices_are_free("0", "0.000000") is True
+
+
+def test_openrouter_batch_profiles_are_hidden_from_model_registries(tmp_path: Path):
+    c = client(tmp_path)
+    party_store = c.app.state.party_store
+    for model_id in ("anthropic/claude-opus-5", "anthropic/claude-opus-5:batch"):
+        party_store.upsert_model_profile(
+            {
+                "id": model_id.replace("/", "-").replace(":", "-"),
+                "title": model_id,
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "model": model_id,
+                "params": {"context_tokens": 1_000_000, "source": "openrouter_api_live"},
+                "api_key_source": "server_env_or_managed_key",
+            }
+        )
+
+    party_models = c.get("/api/model-profiles").json()["model_profiles"]
+    autotest_models = c.get("/api/admin/autotests/models").json()["model_profiles"]
+
+    assert any(model["model"] == "anthropic/claude-opus-5" for model in party_models)
+    assert not any(model["model"].endswith(":batch") for model in party_models)
+    assert any(model["model"] == "anthropic/claude-opus-5" for model in autotest_models)
+    assert not any(model["model"].endswith(":batch") for model in autotest_models)
 
 
 def test_featured_openrouter_models_enrich_cached_catalog_profiles():
