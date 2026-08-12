@@ -1,14 +1,16 @@
 {
   "schema_version": "rp-relationships.v2",
   "characters": {
-    "tikhomir": {"aliases": ["Тихомир", "Тихомира", "Тихомиру", "Тихомиром"]},
-    "lyubava": {"aliases": ["Любава", "Любавы", "Любаве", "Любавой"]},
-    "frol": {"aliases": ["Фрол", "Фрола", "Фролу", "Фролом"]},
-    "stoyan": {"aliases": ["Стоян", "Стояна", "Стояну", "Стояном"]},
-    "luka": {"aliases": ["Лука", "Луки", "Луке", "Лукой"]},
-    "ratibor": {"aliases": ["Ратибор", "Ратибора", "Ратибору", "Ратибором"]},
-    "zhdan": {"aliases": ["Ждан", "Ждана", "Ждану", "Жданом"]},
-    "radoslav": {"aliases": ["Радослав", "Радослава", "Радославу", "Радославом"]}
+    "bazhena": {"aliases": ["Бажена", "Бажены", "Бажене", "Баженой"]},
+    "radogost": {"aliases": ["Радогост", "Радогоста", "Радогосту", "Радогостом"]},
+    "milena": {"aliases": ["Милена", "Милены", "Милене", "Миленой"]},
+    "nezhan": {"aliases": ["Нежан", "Нежана", "Нежану", "Нежаном"]},
+    "vyshata": {"aliases": ["Вышата", "Вышаты", "Вышате", "Вышатой"]},
+    "rada": {"aliases": ["Рада", "Рады", "Раде", "Радой"]},
+    "dobrogost": {"aliases": ["Доброгост", "Доброгоста", "Доброгосту", "Доброгостом"]},
+    "tverdyata": {"aliases": ["Твердята", "Твердяты", "Твердяте", "Твердятой"]},
+    "khoten": {"aliases": ["Хотен", "Хотена", "Хотену", "Хотеном"]},
+    "ivanko": {"aliases": ["Иванко", "Иванка", "Иванку", "Иванком"]}
   },
   "axes": {
     "loyalty": {
@@ -38,14 +40,16 @@
     "shared_risk": {"axis": "loyalty", "weight": 12, "decay_turns": 60}
   },
   "character_weights": {
-    "tikhomir": {"role": "mentor", "multipliers": {"shared_risk": 1.25, "broken_promise": 1.2}},
-    "lyubava": {"role": "kin", "multipliers": {"defended_publicly": 1.2, "abandoned_in_need": 1.25}},
-    "frol": {"role": "subordinate", "multipliers": {"shared_risk": 1.2}},
-    "stoyan": {"role": "rival", "multipliers": {"insult_public": 1.4}},
-    "luka": {"role": "subordinate", "multipliers": {"kept_promise": 1.15}},
-    "ratibor": {"role": "rival", "multipliers": {"physical_assault": 1.25, "defended_publicly": 0.75}},
-    "zhdan": {"role": "debtor", "multipliers": {"broken_promise": 1.2}},
-    "radoslav": {"role": "rival", "multipliers": {"shared_risk": 1.15}}
+    "bazhena": {"role": "mentor", "multipliers": {"kept_promise": 1.2, "abandoned_in_need": 1.2}},
+    "radogost": {"role": "subordinate", "multipliers": {"shared_risk": 1.2}},
+    "milena": {"role": "subordinate", "multipliers": {"defended_publicly": 1.2}},
+    "nezhan": {"role": "debtor", "multipliers": {"shared_risk": 1.25, "broken_promise": 1.2}},
+    "vyshata": {"role": "rival", "multipliers": {"insult_public": 1.4}},
+    "rada": {"role": "mentor", "multipliers": {"kept_promise": 1.15}},
+    "dobrogost": {"role": "rival", "multipliers": {"defended_publicly": 0.8, "insult_public": 1.25}},
+    "tverdyata": {"role": "rival", "multipliers": {"physical_assault": 1.2}},
+    "khoten": {"role": "debtor", "multipliers": {"broken_promise": 1.25}},
+    "ivanko": {"role": "debtor", "multipliers": {"defended_publicly": 1.25, "abandoned_in_need": 1.3}}
   },
   "roles": {
     "subordinate": {"strike_form": "sabotage"},

@@ -4,17 +4,17 @@
     "schema_version": "1.0.0",
     "state_version": 1,
     "turn": 0,
-    "last_updated": "2026-08-09T00:00:00Z"
+    "last_updated": "2026-08-12T00:00:00Z"
   },
   "player": {
-    "location": "dubravka-village",
+    "location": "red-clay-ravine",
     "status": "active",
     "reputation": {
-      "dubravka-community": 3,
-      "kyiv-druzhina": 0,
-      "podol-merchants": 0,
-      "neighbouring-communities": 0,
-      "steppe-people": 0
+      "olshanitsa-community": 3,
+      "kyiv-household": 0,
+      "podil-boatmen": 0,
+      "neighbouring-homesteads": 0,
+      "steppe-traders": 0
     },
     "resources": {
       "age-years": 30,
@@ -43,36 +43,36 @@
     ],
     "known_world_facts": [
       {
-        "id": "fact-year-and-region",
-        "text": "Сейчас 964 год; деревня Дубравка стоит в Среднем Поднепровье и платит дань Киеву.",
+        "id": "fact-year-place",
+        "text": "Сейчас 964 год; Ольшаница находится примерно в половине дня пути от Киева и подчинена его княжеской власти.",
         "turn": 0,
         "confidence": "confirmed",
         "source": "campaign premise"
       },
       {
-        "id": "fact-sviatoslav-campaign",
-        "text": "Князь Святослав собирает людей и припасы для восточного похода против зависимых от хазар земель.",
+        "id": "fact-sviatoslav-muster",
+        "text": "Князь Святослав собирает людей, повозки, лодки и припасы для восточного похода.",
         "turn": 0,
         "confidence": "confirmed",
         "source": "historical frame"
       },
       {
-        "id": "fact-player-role",
-        "text": "Жители Дубравки считают игрока своим давно известным старостой и ожидают от него суда, распределения повинностей и защиты общины.",
+        "id": "fact-player-starosta",
+        "text": "Жители Ольшаницы считают игрока своим давно известным старостой и ожидают от него организации спасения, суда и ответа Киеву.",
         "turn": 0,
         "confidence": "confirmed",
         "source": "campaign premise"
       },
       {
-        "id": "fact-tribute-due",
-        "text": "К утру община должна передать княжескому гридню мед, воск, меха и два серебряных гривенных слитка.",
+        "id": "fact-ravine-collapse",
+        "text": "После ночного ливня Красный яр продолжает осыпаться; под завалом живы Жирко и киевский гонец Иванко.",
         "turn": 0,
         "confidence": "confirmed",
         "source": "opening situation"
       },
       {
-        "id": "fact-ingots-missing",
-        "text": "Два серебряных слитка пропали из запертой клети; внутри найден медный перстень с плетеным узором.",
+        "id": "fact-seal-and-demand",
+        "text": "У яра найдены княжеская печать, разорванный тубус и край старого сундука; тиун Доброгост требует к полудню людей и транспорт.",
         "turn": 0,
         "confidence": "confirmed",
         "source": "opening situation"
@@ -80,293 +80,343 @@
     ]
   },
   "characters": {
-    "tikhomir": {
+    "bazhena": {
       "status": "alive",
-      "location": "dubravka-smithy",
-      "attitude_to_player": "давний союзник старосты; уважает силу и практичность, но опасается безрассудной демонстрации чуда",
-      "trust": 4,
-      "fear": 1,
-      "loyalty": "dubravka-community",
-      "current_goal": "сохранить деревню, кузницу и семью во время сбора дани",
-      "knowledge": [
-        {"id": "fact-tikhomir-smith", "text": "Тихомир — лучший кузнец Дубравки и знает местное железо, инструменты и людей.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
-      ],
-      "secrets": [
-        {"id": "secret-tikhomir-ring", "text": "Тихомир видел похожий плетеный узор на товаре подольского купца Ждана, но пока не уверен и боится обвинить влиятельного гостя.", "turn": 0, "confidence": "confirmed", "source": "gm"}
-      ],
-      "obligations": ["чинить общинное железо", "выставить вооруженного человека при тревоге", "не допустить расправы без схода"],
-      "hard_constraints": ["Не выдаст секрет игрока посторонним без тяжелого конфликта.", "Не поддержит массовое убийство или бессмысленную жестокость."],
-      "last_confirmed_update": 0
-    },
-    "lyubava": {
-      "status": "alive",
-      "location": "dubravka-village",
-      "attitude_to_player": "поддерживает старосту, пока тот защищает слабых и советуется с общиной",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "поддерживает старосту, пока тот присутствует при беде и отвечает за обещания",
       "trust": 5,
       "fear": 0,
-      "loyalty": "dubravka-community",
-      "current_goal": "не дать семьям остаться без зимних запасов из-за дани или паники",
+      "loyalty": "olshanitsa-community",
+      "current_goal": "организовать спасение и не дать княжескому сбору разорить слабые дворы",
       "knowledge": [
-        {"id": "fact-lyubava-households", "text": "Любава знает запасы, долги, родство и старые обиды почти каждого двора.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-bazhena-households", "text": "Бажена знает запасы, долги и возможности каждого из сорока двух дворов Ольшаницы.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-lyubava-night-cart", "text": "Ночью Любава слышала тележное колесо у околицы, но скрыла это, потому что узнала кашель племянника.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-bazhena-exemptions", "text": "Два двора уже платили посреднику Твердяты серебром за исключение из списка набора.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["защищать детей и вдов", "говорить на сходе за дворы без взрослых мужчин", "хранить доверенные семейные тайны"],
-      "hard_constraints": ["Не согласится отдать последние семенные запасы без крайней необходимости.", "Не станет без доказательств обвинять родича публично."],
+      "obligations": ["беречь общинные запасы", "говорить за слабые дворы", "организовать помощь при бедствии"],
+      "hard_constraints": ["Не отдаст последние семенные запасы без крайней причины.", "Не прикроет произвольную расправу."],
       "last_confirmed_update": 0
     },
-    "frol": {
+    "radogost": {
       "status": "alive",
-      "location": "tribute-storehouse",
-      "attitude_to_player": "исполнительный бортник; ждет ясного приказа и честного распределения риска",
-      "trust": 3,
+      "location": "red-clay-ravine",
+      "attitude_to_player": "уважает ясную задачу и разделенный риск, но опасается показной демонстрации чуда",
+      "trust": 4,
       "fear": 1,
-      "loyalty": "dubravka-community",
-      "current_goal": "сберечь пасеки и найти след похитителя дани",
+      "loyalty": "olshanitsa-community",
+      "current_goal": "поставить подпорки и спасти погребенных без нового обвала",
       "knowledge": [
-        {"id": "fact-frol-tracker", "text": "Фрол хорошо различает следы людей и животных на лесных тропах.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-radogost-craft", "text": "Радогост лучше всех в Ольшанице понимает железо, дерево, веревки и устройство подпорок.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-frol-tracks", "text": "У клети Фрол заметил след городского сапога с подковой и второй, более легкий след босой ноги.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-radogost-chest", "text": "Несколько лет назад Радогост изготовил железные скобы для показавшегося из яра сундука по заказу Хотена.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["выставлять мед и воск в дань", "следить за лесными тропами", "помогать общине при пожаре"],
-      "hard_constraints": ["Не пойдет в очевидную засаду один.", "Не отдаст все ульи, если семьи останутся без меда и воска."],
+      "obligations": ["чинить общинное железо", "строить безопасные подпорки", "обучать двух учеников"],
+      "hard_constraints": ["Не станет испытывать опасный прием на человеке.", "Не поддержит бессмысленную жестокость."],
       "last_confirmed_update": 0
     },
-    "stoyan": {
+    "milena": {
       "status": "alive",
-      "location": "dubravka-village",
-      "attitude_to_player": "старый соперник прежнего порядка; признает право старосты, но проверяет каждое слабое место",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "требует немедленно спасать сына и позднее оценит цену и справедливость решения",
+      "trust": 3,
+      "fear": 2,
+      "loyalty": "olshanitsa-community",
+      "current_goal": "вытащить Жирко живым из-под склона",
+      "knowledge": [
+        {"id": "fact-milena-clay", "text": "Милена знает слои Красного яра, старые дренажные жилы и опасные пустоты в глине.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+      ],
+      "secrets": [
+        {"id": "secret-milena-ivanko", "text": "Ночью Милена видела Иванка у старой дренажной жилы и скрыла это, надеясь первой понять, что он искал.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+      ],
+      "obligations": ["кормить семью", "давать общине посуду", "следить за безопасностью глиняного промысла"],
+      "hard_constraints": ["Не позволит пожертвовать Жирко ради сундука.", "Не простит сознательного бездействия при спасении сына."],
+      "last_confirmed_update": 0
+    },
+    "nezhan": {
+      "status": "alive",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "хочет заслужить признание старосты и болезненно реагирует на недоверие",
+      "trust": 2,
+      "fear": 1,
+      "loyalty": "olshanitsa-community",
+      "current_goal": "удержать спасательную веревку и доказать право вести общинные лодки",
+      "knowledge": [
+        {"id": "fact-nezhan-river", "text": "Нежан — лучший молодой пловец Ольшаницы и знает брод, течение и лодочный путь к Днепру.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+      ],
+      "secrets": [
+        {"id": "secret-nezhan-cargo", "text": "Нежан однажды перевозил неучтенные тюки Хотена и боится, что его свяжут с сетью подложного набора.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+      ],
+      "obligations": ["содержать лодки", "помогать при переправе", "нести спасательную веревку"],
+      "hard_constraints": ["Не бросит товарища в воде или под обвалом.", "Не возьмет на себя вину за чужой приказ."],
+      "last_confirmed_update": 0
+    },
+    "vyshata": {
+      "status": "alive",
+      "location": "olshanitsa-village",
+      "attitude_to_player": "признает должность старосты, но проверяет решения на обычай и пользу дворов",
       "trust": -1,
       "fear": 0,
-      "loyalty": "dubravka-community",
-      "current_goal": "не позволить старосте превратить общину в личный двор",
+      "loyalty": "olshanitsa-community",
+      "current_goal": "созвать сход и не допустить единоличного распоряжения людьми и землей",
       "knowledge": [
-        {"id": "fact-stoyan-custom", "text": "Стоян помнит границы наделов, старые решения схода и обычай соседних общин.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-vyshata-custom", "text": "Вышата помнит границы земли, прежние решения схода и обязательства соседних дворов.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-stoyan-debt", "text": "Стоян должен купцу Ждану серебро после неурожая и скрывает размер долга.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-vyshata-nephew", "text": "Вышата помог собрать плату за незаконное освобождение племянника от набора.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["пасти общинный скот", "говорить на сходе от старших дворов", "сохранять обычай"],
-      "hard_constraints": ["Не предаст деревню внешнему врагу ради личной выгоды.", "Публичное унижение превратит спор в устойчивую вражду."],
+      "obligations": ["говорить на сходе от старших дворов", "хранить обычай", "выставлять людей при общей тревоге"],
+      "hard_constraints": ["Не предаст Ольшаницу внешнему врагу.", "Публичное унижение превратит спор в устойчивую вражду."],
       "last_confirmed_update": 0
     },
-    "luka": {
+    "rada": {
       "status": "alive",
-      "location": "dubravka-village",
-      "attitude_to_player": "осторожный грамотей; надеется на защиту старосты и боится языческой толпы и княжеского суда",
-      "trust": 2,
-      "fear": 2,
-      "loyalty": "olga-pogost-household",
-      "current_goal": "сохранить записи о дани и не допустить обвинения в подлоге",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "осторожно благожелательна и доверяет тому, кто спрашивает согласия и признает предел знания",
+      "trust": 3,
+      "fear": 0,
+      "loyalty": "olshanitsa-community",
+      "current_goal": "подготовить помощь погребенным и не допустить опасного лечения без понимания",
       "knowledge": [
-        {"id": "fact-luka-records", "text": "Лука умеет читать и вести простые записи о повинностях, именах и долгах.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-rada-healer", "text": "Рада умеет останавливать кровь, вправлять простые переломы и различать опасные признаки после травмы.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-luka-tribute-mark", "text": "На восковой дощечке Лука заметил исправленную отметку о двух слитках; исправление сделано не его рукой.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-rada-knot", "text": "Рада узнала на ремне Иванка узел киевских гонцов и не считает его случайным разбойником.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["вести счет дани", "служить при княжеском погосте", "не раскрывать исповеданные ему христианами тайны"],
-      "hard_constraints": ["Не объявит чудо божественным или бесовским без страха и размышления.", "Не умеет объяснить современную науку."],
+      "obligations": ["лечить раненых", "беречь лекарственные запасы", "защищать согласие беспомощных"],
+      "hard_constraints": ["Не позволит ставить опыты на беспомощных.", "Уйдет при попытке лишить ее свободы."],
       "last_confirmed_update": 0
     },
-    "ratibor": {
+    "dobrogost": {
       "status": "alive",
-      "location": "dnieper-landing",
-      "attitude_to_player": "княжеский гридень; требует дань и оценивает старосту как возможного воина или источник беспорядка",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "видит местного старосту, которого можно уважать за порядок или принудить за открытое неповиновение",
       "trust": 0,
       "fear": 0,
-      "loyalty": "kyiv-druzhina",
-      "current_goal": "получить полную дань и людей без задержки восточного похода",
+      "loyalty": "kyiv-household",
+      "current_goal": "выполнить настоящий сбор людей и транспорта без задержки похода",
       "knowledge": [
-        {"id": "fact-ratibor-orders", "text": "Ратибор имеет приказ собрать дань и одного добровольца или назначенного человека для рати.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-dobrogost-order", "text": "Доброгост привез подлинный приказ о сборе людей и транспорта для похода Святослава.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-ratibor-loss", "text": "Ратибор уже потерял часть княжеского серебра на предыдущем погосте и потому не может вернуться с недостачей.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-dobrogost-mismatch", "text": "Настоящий приказ требует меньше людей и имущества, чем список Твердяты, но Доброгост еще не сверил их построчно.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["исполнить приказ князя", "держать воинскую честь", "сохранить дисциплину отроков"],
-      "hard_constraints": ["Не простит явного публичного унижения без политической или силовой причины.", "Не признает чудо доказательством права собственности или невиновности."],
+      "obligations": ["исполнить княжеский приказ", "держать порядок среди сопровождающих", "отвечать за печати и списки"],
+      "hard_constraints": ["Не терпит публичного унижения без ответа.", "Не признает чудо само по себе доказательством права."],
       "last_confirmed_update": 0
     },
-    "zhdan": {
+    "tverdyata": {
+      "status": "alive",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "считает старосту опасным только тогда, когда тот собирает конкретные доказательства",
+      "trust": -2,
+      "fear": 1,
+      "loyalty": "false-levy-network",
+      "current_goal": "получить тубус и дощечку, а Иванка объявить вором",
+      "knowledge": [
+        {"id": "fact-tverdyata-records", "text": "Твердята умеет вести списки, читать печати и объяснять княжеские требования.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+      ],
+      "secrets": [
+        {"id": "secret-tverdyata-forgery", "text": "Твердята дописал двенадцать имен, восемь повозок и одну лодку сверх настоящего приказа, чтобы продать освобождение и забрать излишек.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+      ],
+      "obligations": ["вести список Доброгоста", "беречь печати", "отчитываться за собранное"],
+      "hard_constraints": ["Не признается без доказательств и безопасного выхода.", "Избегает прямого боя и действует через чужую власть."],
+      "last_confirmed_update": 0
+    },
+    "khoten": {
       "status": "alive",
       "location": "kyiv-podil",
-      "attitude_to_player": "лично не знаком; рассматривает деревенского старосту как должника, поставщика и возможного посредника",
+      "attitude_to_player": "лично почти не знаком и видит в старосте возможного поставщика, должника или конкурента",
       "trust": 0,
       "fear": 0,
-      "loyalty": "podol-merchants",
-      "current_goal": "вернуть вложенное серебро и скрыть нелегальную торговую цепочку",
+      "loyalty": "podil-boatmen",
+      "current_goal": "сохранить торговый путь и отделить себя от преступлений Твердяты",
       "knowledge": [
-        {"id": "fact-zhdan-ring", "text": "Ждан продает медные перстни с плетеным узором своим доверенным посредникам.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "fact-khoten-boats", "text": "Хотен владеет несколькими лодками на Подоле и имеет поручителей среди перевозчиков.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
       "secrets": [
-        {"id": "secret-zhdan-smuggling", "text": "Ждан переправляет часть серебра мимо княжеского учета через лодочников и степных посредников.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-khoten-network", "text": "Хотен принимает часть лишнего имущества, знает о продаже освобождений и заказывал скобы старого сундука у Радогоста.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["платить долю купеческому товариществу", "беречь имена посредников", "соблюдать сделки, которые можно доказать"],
-      "hard_constraints": ["Не явится в Дубравку без охраны после угроз.", "Предпочтет сделку насилию, пока тайна не раскрыта публично."],
+      "obligations": ["соблюдать доказуемые сделки", "платить долю товариществу", "беречь имена перевозчиков"],
+      "hard_constraints": ["Не явится без людей после прямой угрозы.", "Предпочтет выкуп и договор насилию, пока это возможно."],
       "last_confirmed_update": 0
     },
-    "radoslav": {
-      "status": "alive",
-      "location": "beregovichi-village",
-      "attitude_to_player": "староста соседней общины; готов сотрудничать против внешней угрозы, но конкурирует за землю и княжеское расположение",
-      "trust": 1,
-      "fear": 0,
-      "loyalty": "neighbouring-communities",
-      "current_goal": "переложить часть воинской повинности на Дубравку и сохранить свой брод",
+    "ivanko": {
+      "status": "incapacitated",
+      "location": "red-clay-ravine",
+      "attitude_to_player": "еще не знает старосту; помощь без немедленной выдачи Твердяте создаст сильное доверие",
+      "trust": 0,
+      "fear": 3,
+      "loyalty": "kyiv-household",
+      "current_goal": "выжить и передать доказательство подложного набора безопасному человеку",
       "knowledge": [
-        {"id": "fact-radoslav-roads", "text": "Радослав знает переправы, лодочников и движение княжеских сборщиков вдоль Днепра.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-ivanko-courier", "text": "Иванко — молодой киевский гонец, способный распознавать порядок использования печатей и списков.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
       "secrets": [
-        {"id": "secret-radoslav-boat", "text": "Один из лодочников Радослава ночью перевозил неизвестный тяжелый груз к Подолу.", "turn": 0, "confidence": "confirmed", "source": "gm"}
+        {"id": "secret-ivanko-tablet", "text": "Восковая дощечка с доказательством подлога спрятана под подкладкой пояса Иванка, а не в разорванном тубусе.", "turn": 0, "confidence": "confirmed", "source": "gm"}
       ],
-      "obligations": ["защищать Береговичи", "поддерживать переправу", "выставлять людей князю"],
-      "hard_constraints": ["Не отдаст контроль над бродом без выгоды или поражения.", "Не станет открытым врагом Дубравки перед походом без сильного повода."],
+      "obligations": ["доставлять порученные вести", "беречь княжескую печать", "назвать источник подлога законному судье"],
+      "hard_constraints": ["Не отдаст дощечку Твердяте добровольно.", "Не назовет сообщника, пока не будет уверен в защите."],
       "last_confirmed_update": 0
     }
   },
   "factions": {
-    "dubravka-community": {
+    "olshanitsa-community": {
       "leader": "player",
-      "goals": ["пережить сбор дани", "сохранить посевное зерно и дворы", "защитить обычай и землю"],
-      "resources": {"households": 34, "armed-adults": 17, "boats": 2, "horses": 6},
-      "allies": ["neighbouring-communities"],
-      "opponents": ["tribute-thieves"],
-      "attitude_to_player": "признает старостой, но оценивает решения по справедливости и результату",
-      "current_actions": ["готовит дань", "ищет пропавшие слитки", "обсуждает княжескую повинность"],
-      "constraints": ["Сход может отказаться от приказа, нарушающего обычай или ставящего все семьи под смертельный риск."]
+      "goals": ["спасти погребенных", "сохранить дворы и семенное зерно", "отдать только законную повинность"],
+      "resources": {"households": 42, "armed-adults": 21, "boats": 2, "carts": 11},
+      "allies": ["neighbouring-homesteads"],
+      "opponents": ["false-levy-network"],
+      "attitude_to_player": "признает старостой, но оценивает решения по присутствию, справедливости и результату",
+      "current_actions": ["спасает людей у яра", "готовит сход", "обсуждает княжеский набор"],
+      "constraints": ["Сход может отказаться от приказа, нарушающего обычай или ставящего дворы под смертельный риск."]
     },
-    "kyiv-druzhina": {
+    "kyiv-household": {
       "leader": "sviatoslav-igorevich",
-      "goals": ["собрать рать и припасы", "удержать пути по Днепру", "ослабить хазарское влияние"],
-      "resources": {"professional-warriors": "many", "river-access": true, "tribute-right": true},
-      "allies": ["olga-pogost-household"],
-      "opponents": ["khazar-interests", "steppe-raiders"],
-      "attitude_to_player": "пока видит обычного местного старосту, ответственного за дань и порядок",
-      "current_actions": ["собирает дань", "нанимает и назначает людей", "разведывает восточный путь"],
-      "constraints": ["Дружина не обладает современным государственным аппаратом и зависит от личных связей, силы, заложников, даров и репутации."]
-    },
-    "podol-merchants": {
-      "leader": "zhdan",
-      "goals": ["контролировать серебро, мед, воск и перевозки", "сохранить торговые связи", "избежать княжеской конфискации"],
-      "resources": {"silver": "substantial", "boats": 5, "agents": 8},
-      "allies": ["river-boatmen"],
-      "opponents": ["tribute-auditors"],
-      "attitude_to_player": "потенциальный поставщик или помеха",
-      "current_actions": ["скупает воск и меха", "перемещает серебро", "ищет сведения о сборе рати"],
-      "constraints": ["Купцы не действуют как единая современная компания и разрывают связи при угрозе коллективной ответственности."]
-    },
-    "neighbouring-communities": {
-      "leader": "radoslav",
-      "goals": ["сохранить переправы и пастбища", "уменьшить собственную повинность", "избежать степного набега"],
-      "resources": {"villages": 3, "boats": 7, "armed-adults": 43},
-      "allies": ["dubravka-community"],
+      "goals": ["собрать людей и транспорт", "удержать пути вокруг Киева", "подготовить восточный поход"],
+      "resources": {"professional-warriors": "many", "sealed-orders": true, "river-access": true},
+      "allies": ["podil-boatmen"],
       "opponents": ["steppe-raiders"],
-      "attitude_to_player": "сосед, конкурент и возможный военный союзник",
-      "current_actions": ["следит за дорогами", "торгуется о повинности", "укрепляет брод"],
-      "constraints": ["Общины помогают друг другу только при взаимной выгоде, родстве, клятве или общей угрозе."]
+      "attitude_to_player": "пока видит местного старосту, ответственного за порядок и законный сбор",
+      "current_actions": ["собирает рать", "переписывает транспорт", "проверяет дороги"],
+      "constraints": ["Княжеская власть зависит от личных людей, печатей, силы, даров и репутации, а не от современного аппарата."]
     },
-    "olga-pogost-household": {
-      "leader": "kyiv-steward",
-      "goals": ["вести учет повинностей", "сохранять княжеский порядок", "не допустить открытого религиозного мятежа"],
-      "resources": {"scribes": 3, "guards": 9, "records": true},
-      "allies": ["kyiv-druzhina"],
-      "opponents": [],
-      "attitude_to_player": "оценивает по аккуратности дани и способности удержать общину",
-      "current_actions": ["сверяет записи", "посылает сборщиков", "наблюдает за местными спорами"],
-      "constraints": ["Христианские и языческие практики сосуществуют напряженно; ни одна сторона не получает автоматического единодушия населения."]
+    "podil-boatmen": {
+      "leader": "khoten",
+      "goals": ["сохранить перевозки", "получать серебро и товар", "избежать княжеской конфискации"],
+      "resources": {"boats": 6, "silver": "substantial", "agents": 9},
+      "allies": ["kyiv-household", "steppe-traders"],
+      "opponents": ["river-raiders"],
+      "attitude_to_player": "видит в Ольшанице близкого поставщика и возможного конкурента за перевозки",
+      "current_actions": ["перевозит припасы", "покупает воск и железо", "скрывает происхождение части груза"],
+      "constraints": ["Торговые связи держатся на поручителях и памяти сделок; открытый скандал быстро лишает доверия."]
     },
-    "khazar-interests": {
-      "leader": "unknown-khazar-agent",
-      "goals": ["получать сведения о рати Святослава", "сохранять торговые каналы", "покупать проводников и серебро"],
-      "resources": {"agents": "unknown", "silver": "unknown", "steppe-contacts": true},
-      "allies": ["steppe-raiders"],
-      "opponents": ["kyiv-druzhina"],
-      "attitude_to_player": "не знает игрока; заинтересуется контролем материи как угрозой или преимуществом",
-      "current_actions": ["ищет сведения о походе", "использует торговых посредников", "проверяет днепровские переправы"],
-      "constraints": ["Фракция действует через конкретных людей и не знает событий, свидетелей которых у нее не было."]
+    "neighbouring-homesteads": {
+      "leader": "several-elders",
+      "goals": ["сохранить свои дворы", "получить помощь при бедствии", "уменьшить собственную повинность"],
+      "resources": {"households": 55, "armed-adults": 24, "horses": 9},
+      "allies": ["olshanitsa-community"],
+      "opponents": ["steppe-raiders"],
+      "attitude_to_player": "готовы помогать сильному соседу, но не подчиняться ему без договора",
+      "current_actions": ["посылают людей к яру", "собирают слухи о наборе", "считают свои повозки"],
+      "constraints": ["Помощь требует взаимности, дара или общей угрозы."]
+    },
+    "false-levy-network": {
+      "leader": "tverdyata",
+      "goals": ["продать освобождения", "присвоить лишние поставки", "уничтожить доказательства"],
+      "resources": {"scribes": 2, "intermediaries": 4, "hidden-silver": "unknown"},
+      "allies": ["corrupt-boatmen"],
+      "opponents": ["ivanko", "olshanitsa-community"],
+      "attitude_to_player": "считает старосту управляемым, пока у него нет списка, свидетеля и внешнего поручителя",
+      "current_actions": ["обвиняет Иванка", "разыскивает дощечку", "подталкивает Доброгоста к немедленному сбору"],
+      "constraints": ["Сеть распадется, если доказательства свяжут подлог, плату и конкретно присвоенный груз."]
+    },
+    "steppe-traders": {
+      "leader": "none",
+      "goals": ["обменивать лошадей, соль и сведения", "избегать захвата", "искать выгодные маршруты"],
+      "resources": {"horses": "variable", "guides": 7, "route-knowledge": true},
+      "allies": ["podil-boatmen"],
+      "opponents": ["steppe-raiders"],
+      "attitude_to_player": "не знают игрока и будут судить по сделкам, силе и обращению с чужаками",
+      "current_actions": ["торгуют у Подола", "ищут проводников", "наблюдают за сбором Святослава"],
+      "constraints": ["Это не единая фракция: договор с одним проводником не связывает остальных."]
     }
   },
   "locations": {
-    "dubravka-village": {
-      "description": "Вымышленная деревня из тридцати четырех дворов на притоке Днепра: избы, клети, кузница, пасеки, огороды и сход у старого дуба.",
+    "olshanitsa-village": {
+      "description": "Ольшаница — сорок два двора у лесной речки и старого пути к Днепру, примерно в половине дня хорошим ходом от Киева.",
       "known_facts": [
-        {"id": "fact-dubravka-tribute", "text": "Дубравка платит Киеву медом, воском, мехом, зерном и серебром.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-olshanitsa-resources", "text": "Община живет зерном, глиной, медом, воском, скотом, лесом, болотным железом и перевозками.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
-      "constraints": ["Ресурсы ограничены трудом и сезоном.", "Секреты быстро становятся слухами, но слух не равен подтвержденному факту."]
+      "constraints": ["Ресурсы ограничены трудом и сезоном.", "Слухи быстро достигают Киева через брод и Подол."]
     },
-    "tribute-storehouse": {
-      "description": "Общинная клеть с тяжелым деревянным замком; здесь лежат собранные меха, воск и место, где хранились серебряные слитки.",
+    "red-clay-ravine": {
+      "description": "Размытый глиняный склон у старой дренажной жилы; под обломками плетня и корней остаются Жирко и Иванко.",
       "known_facts": [
-        {"id": "fact-storehouse-locked", "text": "Замок не взломан, а доступ к ключу имели староста и два назначенных свидетеля.", "turn": 0, "confidence": "confirmed", "source": "opening situation"}
+        {"id": "fact-ravine-danger", "text": "Склон продолжает двигаться, а ручной разбор без подпорок может вызвать новый обвал.", "turn": 0, "confidence": "confirmed", "source": "opening situation"},
+        {"id": "fact-ravine-evidence", "text": "В грязи лежат княжеская печать и разорванный тубус; из стены торчит окованное ребро сундука.", "turn": 0, "confidence": "confirmed", "source": "opening situation"}
       ],
-      "constraints": ["Осмотр сохраняет улики только до того, как толпа затопчет пол."]
+      "constraints": ["Время до следующего обвала неизвестно, но измеряется минутами или часами, не днями.", "Толпа и вода могут уничтожить следы."]
     },
-    "dubravka-smithy": {
-      "description": "Кузница Тихомира с горном, мехами, наковальней, запасом болотного железа и грубым инструментом.",
+    "radogost-forge": {
+      "description": "Кузница и плотницкий навес Радогоста с горном, наковальней, пилой, топорами, веревками и запасом сырого железа.",
       "known_facts": [
-        {"id": "fact-smithy-capability", "text": "Кузница годится для ремонта и простой ковки, но не является современной мастерской.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-forge-capability", "text": "Мастерская годится для ремонта, простой ковки и изготовления подпорок, но не является современной фабрикой.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
-      "constraints": ["Любое заметное чудо в кузнице оставляет свидетелей, необычный продукт и политические последствия."]
+      "constraints": ["Необычный продукт оставляет свидетелей и требует объяснения происхождения."]
     },
-    "willow-ravine": {
-      "description": "Заросший овраг с ручьем между деревней и лесом; влажный песок хранит следы, а тропа раздваивается к переправе и старому святилищу.",
+    "olshanitsa-ford": {
+      "description": "Брод, деревянный настил и малая пристань, связывающие Ольшаницу со старым путем к Днепру и Киеву.",
       "known_facts": [
-        {"id": "fact-ravine-tracks", "text": "От клети к оврагу ведут следы подбитого городского сапога.", "turn": 0, "confidence": "confirmed", "source": "opening investigation"}
+        {"id": "fact-ford-dobrogost", "text": "У брода стоят люди Доброгоста, восемь его лошадей и княжеский дорожный сундук.", "turn": 0, "confidence": "confirmed", "source": "opening situation"}
       ],
-      "constraints": ["После дождя или прохода толпы следы исчезнут."]
-    },
-    "dnieper-landing": {
-      "description": "Небольшая пристань и брод, связывающие деревни с Днепром, Киевом и степными путями.",
-      "known_facts": [
-        {"id": "fact-landing-ratibor", "text": "У пристани стоит ладья Ратибора и его отроков; к утру они должны уйти с данью.", "turn": 0, "confidence": "confirmed", "source": "opening situation"}
-      ],
-      "constraints": ["Движение грузов требует лодки, людей и времени, если игрок не применяет освоенную силу открыто."]
+      "constraints": ["Перевозка груза требует лодки, людей и времени, если игрок не применяет освоенную силу открыто."]
     },
     "kyiv-podil": {
       "description": "Торговая часть Киева у Днепра: пристани, дворы купцов, ремесленники, серебро, чужие языки и княжеские люди.",
       "known_facts": [
-        {"id": "fact-podil-market", "text": "На Подоле можно найти мастеров, купцов, сведения о перстне и покупателей необычного товара.", "turn": 0, "confidence": "confirmed", "source": "historical frame"}
+        {"id": "fact-podil-khoten", "text": "На Подоле находится двор Хотена, его лодки, работники и записи долгов.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
       ],
-      "constraints": ["Путь занимает время; городские сделки требуют поручителя, товара, серебра или силы, признанной окружающими."]
+      "constraints": ["До города можно добраться за половину дня хорошим ходом; сделка требует поручителя, товара, серебра или признанной силы."]
     },
-    "old-grove": {
-      "description": "Старый дубовый круг у леса, где часть жителей приносит клятвы Перуну и Велесу; неподалеку проходит скрытая тропа к броду.",
+    "old-portage": {
+      "description": "Лесная дорога в обход брода, по которой ходят охотники, соседние дворы и люди, не желающие встречаться с княжеским постом.",
       "known_facts": [
-        {"id": "fact-grove-custom", "text": "Сход иногда принимает здесь клятвы, которые для общины имеют политический вес.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+        {"id": "fact-portage-route", "text": "Старый волок выводит к дороге на Киев медленнее брода, но позволяет пройти незамеченным для людей Доброгоста.", "turn": 0, "confidence": "confirmed", "source": "local knowledge"}
       ],
-      "constraints": ["Публичное осквернение святилища вызовет конфликт независимо от реальности богов."]
+      "constraints": ["После ливня дорога тяжела для повозки и оставляет заметные следы."]
+    },
+    "oath-grove": {
+      "description": "Дубовая роща у околицы, где сход подтверждает клятвы и договоры перед богами и свидетелями.",
+      "known_facts": [
+        {"id": "fact-grove-custom", "text": "Публичная клятва в роще имеет для большинства дворов политический вес.", "turn": 0, "confidence": "confirmed", "source": "world bible"}
+      ],
+      "constraints": ["Осквернение рощи вызывает конфликт независимо от реальности богов."]
     }
   },
   "resources": {
-    "tribute-honey": {"owner": "dubravka-community", "quantity": 2, "state": "ready-barrels", "constraints": ["Это большая часть свободного меда общины."]},
-    "tribute-wax": {"owner": "dubravka-community", "quantity": 18, "state": "ready-blocks", "constraints": ["Часть воска нужна для света, ремонта и обмена."]},
-    "tribute-furs": {"owner": "dubravka-community", "quantity": 27, "state": "ready-bundles", "constraints": ["Качество шкур неодинаково и будет проверено сборщиком."]},
-    "tribute-silver-ingots": {"owner": "dubravka-community", "quantity": 0, "state": "missing", "constraints": ["Для полной дани нужны два гривенных слитка."]},
-    "copper-braided-ring": {"owner": "unknown", "quantity": 1, "state": "evidence-in-storehouse", "constraints": ["Плетеный узор связан с торговой сетью, но сам по себе не доказывает личность вора."]},
-    "seed-grain": {"owner": "dubravka-community", "quantity": 14, "state": "reserved-sacks", "constraints": ["Изъятие большей части угрожает следующему урожаю."]},
-    "bog-iron": {"owner": "dubravka-community", "quantity": 9, "state": "raw-lumps", "constraints": ["Требует обжига и ковки, если не преобразован силой игрока."]},
-    "village-boats": {"owner": "dubravka-community", "quantity": 2, "state": "serviceable", "constraints": ["Одна лодка течет при тяжелой загрузке."]}
+    "rescue-ropes": {"owner": "olshanitsa-community", "quantity": 4, "state": "in-use-at-ravine", "constraints": ["Две веревки старые и не выдержат резкого рывка с полной нагрузкой."]},
+    "timber-props": {"owner": "olshanitsa-community", "quantity": 9, "state": "being-cut", "constraints": ["Подпорки нужно правильно поставить, иначе они направят обвал на погребенных."]},
+    "community-carts": {"owner": "olshanitsa-community", "quantity": 11, "state": "serviceable-mixed", "constraints": ["Три повозки нужны для текущих хозяйственных работ и не готовы к дальнему пути."]},
+    "community-boats": {"owner": "olshanitsa-community", "quantity": 2, "state": "serviceable", "constraints": ["Одна лодка требует конопатки перед тяжелой загрузкой."]},
+    "seed-grain": {"owner": "olshanitsa-community", "quantity": 18, "state": "reserved-sacks", "constraints": ["Изъятие большей части угрожает следующему урожаю."]},
+    "bog-iron": {"owner": "olshanitsa-community", "quantity": 11, "state": "raw-lumps", "constraints": ["Требует обжига и ковки, если не преобразован силой игрока."]},
+    "princely-lead-seal": {"owner": "kyiv-household", "quantity": 1, "state": "evidence-in-mud", "constraints": ["Печать подтверждает связь с княжеским двором, но сама не доказывает версию Твердяты."]},
+    "torn-leather-tube": {"owner": "ivanko", "quantity": 1, "state": "evidence-in-mud", "constraints": ["Тубус пуст и может быть ошибочно принят за место хранения дощечки."]},
+    "buried-trade-chest": {"owner": "unknown", "quantity": 1, "state": "partly-exposed", "constraints": ["Внутри нет сказочного клада; содержимое связано со старой торговой кассой и сетью Хотена."]}
   },
   "relationships": {
-    "player-tikhomir": {"from": "player", "to": "tikhomir", "trust": 4, "suspicion": 1, "notes": ["Тихомир — ближайший практический союзник старосты."]},
-    "player-lyubava": {"from": "player", "to": "lyubava", "trust": 5, "suspicion": 0, "notes": ["Любава поддерживает справедливого и присутствующего старосту."]},
-    "player-frol": {"from": "player", "to": "frol", "trust": 3, "suspicion": 1, "notes": ["Фрол готов вести по следу, если риск разделен."]},
-    "player-stoyan": {"from": "player", "to": "stoyan", "trust": -1, "suspicion": 3, "notes": ["Стоян спорит с усилением личной власти старосты."]},
-    "player-luka": {"from": "player", "to": "luka", "trust": 2, "suspicion": 2, "notes": ["Лука боится оказаться крайним из-за записей о дани."]},
-    "player-ratibor": {"from": "player", "to": "ratibor", "trust": 0, "suspicion": 1, "notes": ["Ратибор оценивает старосту по исполнению обязательства."]},
-    "player-zhdan": {"from": "player", "to": "zhdan", "trust": 0, "suspicion": 0, "notes": ["Личной встречи еще не было."]},
-    "player-radoslav": {"from": "player", "to": "radoslav", "trust": 1, "suspicion": 2, "notes": ["Соседство сочетает взаимную помощь и конкуренцию."]}
+    "player-bazhena": {"from": "player", "to": "bazhena", "trust": 5, "suspicion": 0, "notes": ["Бажена поддерживает присутствующего и ответственного старосту."]},
+    "player-radogost": {"from": "player", "to": "radogost", "trust": 4, "suspicion": 1, "notes": ["Радогост ценит ясную задачу и разделенный риск."]},
+    "player-milena": {"from": "player", "to": "milena", "trust": 3, "suspicion": 1, "notes": ["Судьба Жирко немедленно определит отношение Милены."]},
+    "player-nezhan": {"from": "player", "to": "nezhan", "trust": 2, "suspicion": 2, "notes": ["Нежан ищет признания и скрывает одну перевозку Хотена."]},
+    "player-vyshata": {"from": "player", "to": "vyshata", "trust": -1, "suspicion": 3, "notes": ["Вышата сопротивляется единоличной власти старосты."]},
+    "player-rada": {"from": "player", "to": "rada", "trust": 3, "suspicion": 0, "notes": ["Рада ценит согласие, точность и признание пределов знания."]},
+    "player-dobrogost": {"from": "player", "to": "dobrogost", "trust": 0, "suspicion": 1, "notes": ["Доброгост оценивает старосту по порядку и исполнению законного приказа."]},
+    "player-tverdyata": {"from": "player", "to": "tverdyata", "trust": -2, "suspicion": 2, "notes": ["Твердята направляет подозрение на Иванка и ищет доказательство."]},
+    "player-khoten": {"from": "player", "to": "khoten", "trust": 0, "suspicion": 0, "notes": ["Личной встречи в новой партии еще не было."]},
+    "player-ivanko": {"from": "player", "to": "ivanko", "trust": 0, "suspicion": 1, "notes": ["Иванко пока не знает, можно ли доверять старосте."]}
   },
   "active_threads": [
     {
-      "id": "missing-tribute-silver",
-      "description": "Найти два пропавших серебряных слитка и установить виновных до ухода княжеского сборщика.",
+      "id": "rescue-at-red-ravine",
+      "description": "Удержать Красный яр и спасти Жирко с Иванком, не уничтожив улики и не вызвав новый обвал.",
       "state": "open",
-      "participants": ["player", "tikhomir", "lyubava", "frol", "stoyan", "luka", "ratibor", "zhdan"],
-      "deadlines": ["До рассвета следующего дня."],
-      "success_conditions": ["слитки возвращены или недостача закрыта приемлемой сделкой", "виновность подтверждена уликами", "община не расколота произвольной расправой"],
-      "failure_conditions": ["Ратибор уходит с недостачей", "невиновного наказывают", "вор скрывается вместе с сетью"],
+      "participants": ["player", "bazhena", "radogost", "milena", "nezhan", "rada", "ivanko", "tverdyata"],
+      "deadlines": ["Склон продолжает двигаться прямо сейчас."],
+      "success_conditions": ["оба погребенных извлечены живыми", "спасатели не погибли", "печать и тубус не потеряны", "свидетели понимают, что произошло"],
+      "failure_conditions": ["новый обвал убивает или тяжело ранит погребенных", "толпа уничтожает улики", "спасение раскалывает общину обвинениями"],
+      "confirmed_consequences": []
+    },
+    {
+      "id": "false-levy-list",
+      "description": "Сверить настоящий приказ с требованиями Твердяты и доказать либо опровергнуть подложный набор.",
+      "state": "open",
+      "participants": ["player", "bazhena", "vyshata", "dobrogost", "tverdyata", "khoten", "ivanko"],
+      "deadlines": ["К полудню Доброгост ожидает список людей и транспорта."],
+      "success_conditions": ["получено конкретное доказательство различия списков", "Доброгост вынужден рассмотреть подлог", "Ольшаница знает законный размер повинности"],
+      "failure_conditions": ["дощечка уничтожена", "Иванко выдан Твердяте без защиты", "лишние люди и имущество уходят как законный сбор"],
       "confirmed_consequences": []
     },
     {
@@ -374,46 +424,46 @@
       "description": "Осознанно освоить первый уникальный принцип управления материей или энергией и определить цену усталости.",
       "state": "open",
       "participants": ["player"],
-      "deadlines": ["Первое применение может понадобиться до разрешения кризиса с данью."],
+      "deadlines": ["Первое применение может понадобиться во время спасения у яра."],
       "success_conditions": ["принцип сформулирован", "эффект подтвержден", "усталость и свидетели учтены", "прием записан как освоенный"],
-      "failure_conditions": ["не хватает восприятия или понимания для безопасной постановки задачи", "эффект привлекает опасное внимание", "усталость лишает игрока возможности действовать в кризисе"],
+      "failure_conditions": ["не хватает восприятия или понимания для безопасной задачи", "эффект привлекает опасное внимание", "усталость лишает игрока возможности действовать"],
       "confirmed_consequences": []
     },
     {
-      "id": "village-future",
-      "description": "Выбрать путь Дубравки: скрытое улучшение хозяйства, открытое чудо, военная сила, торговый центр или иной проект игрока.",
+      "id": "olshanitsa-future",
+      "description": "Выбрать путь Ольшаницы: скрытое улучшение хозяйства, открытое чудо, торговый узел, военная сила или иной проект игрока.",
       "state": "open",
-      "participants": ["player", "dubravka-community", "neighbouring-communities", "kyiv-druzhina"],
-      "deadlines": ["Осень и восточный поход изменят доступных людей и ресурсы."],
-      "success_conditions": ["есть поддержка людей", "создан устойчивый процесс, а не единичный предмет", "политические последствия поняты"],
-      "failure_conditions": ["община воспринимает преобразование как изъятие власти и труда", "результат невозможно поддерживать без игрока", "слухи привлекают силу, превосходящую местную защиту"],
+      "participants": ["player", "olshanitsa-community", "neighbouring-homesteads", "kyiv-household", "podil-boatmen"],
+      "deadlines": ["Осень и поход изменят доступных людей и ресурсы."],
+      "success_conditions": ["есть поддержка людей", "создан устойчивый процесс", "политические последствия поняты"],
+      "failure_conditions": ["преобразование воспринимается как изъятие власти", "результат невозможно поддерживать без игрока", "слухи привлекают силу, превосходящую местную защиту"],
       "confirmed_consequences": []
     },
     {
       "id": "sviatoslav-eastern-campaign",
-      "description": "Решить отношение к сбору рати и походу Святослава: служба, снабжение, уклонение, влияние или собственная политика.",
+      "description": "Решить отношение к походу Святослава: законная служба, снабжение, переговоры, уклонение, влияние или собственная политика.",
       "state": "open",
-      "participants": ["player", "ratibor", "kyiv-druzhina", "neighbouring-communities", "khazar-interests"],
+      "participants": ["player", "dobrogost", "kyiv-household", "olshanitsa-community", "neighbouring-homesteads"],
       "deadlines": ["Сбор людей и припасов идет сейчас."],
-      "success_conditions": ["позиция игрока подтверждена действиями", "обязательства общины ясны", "отношения с Киевом имеют понятную цену"],
-      "failure_conditions": ["игрок одновременно обещает несовместимое разным сторонам", "Дубравку объявляют мятежной", "община лишается защиты без замены"],
+      "success_conditions": ["позиция подтверждена действиями", "обязательства общины ясны", "отношения с Киевом имеют понятную цену"],
+      "failure_conditions": ["игрок обещает несовместимое разным сторонам", "Ольшаницу объявляют мятежной", "община лишается защиты без замены"],
       "confirmed_consequences": []
     },
     {
-      "id": "braided-ring-network",
-      "description": "Проследить путь медного перстня от клети через Подол, лодочников и возможных степных посредников.",
+      "id": "buried-trade-network",
+      "description": "Установить происхождение сундука, связь скоб Радогоста с Хотеном и путь лишних повинностей до Подола.",
       "state": "open",
-      "participants": ["player", "tikhomir", "luka", "zhdan", "radoslav", "khazar-interests"],
-      "deadlines": ["После ухода торговых лодок след начнет остывать."],
-      "success_conditions": ["установлен владелец перстня", "отделена кража от более крупного заговора", "получена проверяемая связь с торговой сетью"],
-      "failure_conditions": ["перстень уничтожен или подменен", "ложное обвинение предупреждает сеть", "улики становятся известны Ратибору раньше готовности игрока"],
+      "participants": ["player", "radogost", "nezhan", "tverdyata", "khoten", "false-levy-network", "podil-boatmen"],
+      "deadlines": ["После известия об обвале участники сети начнут прятать записи и груз."],
+      "success_conditions": ["происхождение сундука подтверждено", "отделены законные сделки от присвоения", "получена проверяемая связь с Хотеном"],
+      "failure_conditions": ["содержимое тайника разграблено", "ложное обвинение предупреждает сеть", "свидетели исчезают до разговора"],
       "confirmed_consequences": []
     }
   ],
   "completed_threads": [],
   "world_constraints": [
-    {"id": "historical-frame", "text": "964 год и Среднее Поднепровье задают историческую рамку; дальнейшая история меняется только вследствие подтвержденных действий.", "scope": "setting", "turn": 0},
-    {"id": "fictional-locality", "text": "Дубравка, Береговичи и локальные NPC художественны; реальные лица и события не получают вымышленные знания без канала информации.", "scope": "setting", "turn": 0},
+    {"id": "historical-frame", "text": "964 год и окрестности Киева задают историческую рамку; дальнейшая история меняется только вследствие подтвержденных действий.", "scope": "setting", "turn": 0},
+    {"id": "fictional-locality", "text": "Ольшаница, Красный яр и локальные NPC художественны; реальные лица и события не получают вымышленные знания без канала информации.", "scope": "setting", "turn": 0},
     {"id": "player-agency", "text": "Нарратор не решает мысли, чувства, намерения, выбор или согласие персонажа игрока.", "scope": "player agency", "turn": 0},
     {"id": "attempts-not-facts", "text": "Заявление игрока о результате является попыткой, пока результат не подтвержден Gateway outcome или каноническим состоянием.", "scope": "gateway", "turn": 0},
     {"id": "absolute-power", "text": "Сила игрока абсолютна в оговоренных границах и не может быть тайно ослаблена сопротивлением материи, магическим иммунитетом или произвольным лимитом рассказчика.", "scope": "power", "turn": 0},
@@ -421,16 +471,16 @@
     {"id": "first-use-fatigue", "text": "Первое успешное применение уникального принципа вызывает усталость, обратно пропорциональную пониманию; освоенный принцип при повторении бесплатен.", "scope": "power", "turn": 0},
     {"id": "mastery-not-target-specific", "text": "Освоение относится к принципу преобразования, а не к одному конкретному предмету; смена цели сама по себе не делает прием новым.", "scope": "power", "turn": 0},
     {"id": "living-matter", "text": "Сила действует на живую материю и тело игрока, но точность, медицинское понимание и последствия остаются реальными; сознание напрямую не переписывается.", "scope": "power", "turn": 0},
-    {"id": "no-hidden-success", "text": "Провал или блокировка проверки не превращаются в эквивалентный скрытый успех; успешное допустимое воздействие силы, напротив, не ослабляется постфактум.", "scope": "rules", "turn": 0},
+    {"id": "no-hidden-success", "text": "Провал или блокировка проверки не превращаются в эквивалентный скрытый успех; успешное допустимое воздействие силы не ослабляется постфактум.", "scope": "rules", "turn": 0},
     {"id": "social-consequences", "text": "Абсолютная физическая сила не дает автоматического доверия, легитимности, лояльности, знаний, логистики или согласия людей.", "scope": "world", "turn": 0},
-    {"id": "no-anachronistic-infrastructure", "text": "Современные технологии не возникают одним названием: нужны проект, сырье, производственная цепочка, люди и обучение, хотя сила может радикально упростить физическое преобразование.", "scope": "world", "turn": 0},
+    {"id": "no-anachronistic-infrastructure", "text": "Современные технологии не возникают одним названием: нужны проект, сырье, производственная цепочка, люди и обучение, хотя сила может упростить физическое преобразование.", "scope": "world", "turn": 0},
     {"id": "information-boundaries", "text": "NPC и фракции знают только то, чему были свидетелями, что им сообщили или что они обоснованно выяснили.", "scope": "characters", "turn": 0}
   ],
   "timeline": [
-    {"turn": 0, "event": "В 964 году князь Святослав собирает людей и припасы для восточного похода.", "confirmed": true, "participants": ["kyiv-druzhina"]},
-    {"turn": 0, "event": "Игрок из XXI века оказался в собственном теле в роли давно известного жителям старосты Дубравки.", "confirmed": true, "participants": ["player", "dubravka-community"]},
-    {"turn": 0, "event": "Княжеский гридень Ратибор прибыл за данью и должен уйти к рассвету.", "confirmed": true, "participants": ["ratibor", "dubravka-community"]},
-    {"turn": 0, "event": "Из запертой клети пропали два серебряных слитка; найден медный перстень с плетеным узором.", "confirmed": true, "participants": ["player", "tikhomir", "luka"]}
+    {"turn": 0, "event": "В 964 году князь Святослав собирает людей и припасы для восточного похода.", "confirmed": true, "participants": ["kyiv-household"]},
+    {"turn": 0, "event": "Игрок из XXI века оказался в собственном теле в роли давно известного жителям старосты Ольшаницы.", "confirmed": true, "participants": ["player", "olshanitsa-community"]},
+    {"turn": 0, "event": "После ночного ливня Красный яр обрушился, погреб Жирко и Иванка и вскрыл старый торговый тайник.", "confirmed": true, "participants": ["milena", "ivanko", "olshanitsa-community"]},
+    {"turn": 0, "event": "Тиун Доброгост прибыл со сбором для похода, а Твердята потребовал к полудню двенадцать мужчин, восемь повозок и две лодки.", "confirmed": true, "participants": ["dobrogost", "tverdyata", "olshanitsa-community"]}
   ],
   "last_turn": {
     "turn": 0,
@@ -439,8 +489,9 @@
     "state_patch_id": ""
   },
   "uncertain_facts": [
-    {"id": "rumor-inside-accomplice", "text": "Замок без следов взлома может означать сообщника внутри общины, подложный ключ или искусную подмену времени кражи.", "turn": 0, "confidence": "uncertain", "source": "village rumor"},
-    {"id": "rumor-ring-podil", "text": "Плетеные медные перстни якобы носят посредники одного подольского купца.", "turn": 0, "confidence": "uncertain", "source": "smithy rumor"},
-    {"id": "rumor-khazar-spies", "text": "По Днепру ищут проводников люди, покупающие сведения о походе Святослава.", "turn": 0, "confidence": "uncertain", "source": "boatmen rumor"}
+    {"id": "rumor-olga-silver", "text": "Под Красным яром будто бы спрятано серебро княгини Ольги.", "turn": 0, "confidence": "uncertain", "source": "village rumor"},
+    {"id": "rumor-ivanko-thief", "text": "Иванко якобы убил другого гонца и украл княжескую печать.", "turn": 0, "confidence": "uncertain", "source": "Tverdyata accusation"},
+    {"id": "rumor-paid-exemption", "text": "Твердята может убрать любое имя из списка за правильный дар.", "turn": 0, "confidence": "uncertain", "source": "household whisper"},
+    {"id": "rumor-khoten-slaves", "text": "Хотен якобы покупает лишних людей для продажи в степь.", "turn": 0, "confidence": "uncertain", "source": "boatmen rumor"}
   ]
 }
