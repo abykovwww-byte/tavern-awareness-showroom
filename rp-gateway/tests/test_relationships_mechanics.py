@@ -274,6 +274,46 @@ def test_trust_seed_maps_once_without_mutating_canonical_state(tmp_path: Path) -
     assert "seed_trust" not in pressure and "20" not in pressure
 
 
+def test_starosta_positive_seed_opens_and_delivers_favour_by_worldpack_clock(tmp_path: Path) -> None:
+    stack_root = Path(__file__).resolve().parents[2]
+    model = json.loads(
+        (stack_root / "worldpacks" / "starosta" / "relationships" / "model.json").read_text(encoding="utf-8")
+    )
+    state = json.loads((stack_root / "worldpacks" / "starosta" / "state-seed.json").read_text(encoding="utf-8"))
+    state_path = tmp_path / "starosta.json"
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    store = StateStore(str(tmp_path / "starosta.db"), "starosta-candidate", str(state_path))
+    mechanics = RelationshipMechanics(store, model, rp_contract_revision=4)
+
+    mechanics.advance_turn(0)
+
+    seed_rows = [
+        row
+        for row in mechanics.store.cause_rows("bazhena", "loyalty", 0)
+        if row["source"] == "seed"
+    ]
+    favour = mechanics.store.event_rows("bazhena", "favour")
+    assert len(seed_rows) == 1
+    assert seed_rows[0]["weight"] == 20
+    assert len(favour) == 1
+    assert favour[0]["opened_turn"] == 0
+    assert favour[0]["due_turn"] == model["clocks"]["favour"] == 10
+    assert favour[0]["status"] == "active"
+
+    staged_block = mechanics.due_event_block(10, {"bazhena": "Бажена"})
+    assert staged_block is not None
+    assert mechanics.store.event_rows("bazhena", "favour")[0]["status"] == "active"
+
+    changes = mechanics.advance_turn(10)
+    resolved = mechanics.store.event_rows("bazhena", "favour")[0]
+    resolution_block = mechanics.resolved_event_block(changes, {"bazhena": "Бажена"})
+    assert resolved["status"] == "resolved"
+    assert resolved["resolution"] == "delivered"
+    assert resolution_block is not None
+    assert "Бажена" in resolution_block and "конкретную добровольную услугу" in resolution_block
+    assert "favour" not in resolution_block and "10" not in resolution_block
+
+
 def test_non_boundary_cause_reaches_qualitative_pressure(tmp_path: Path) -> None:
     """Proves a durable cause affects the next prompt without a threshold event."""
     mechanics = RelationshipMechanics(make_store(tmp_path, "cause-pressure"), relationship_model())

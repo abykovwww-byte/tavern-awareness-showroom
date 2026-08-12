@@ -9,7 +9,7 @@
   "player_role": "30-летний мужчина-попаданец из Москвы XXI века, рост 187 см, вес 110 кг. Появляется у заброшенной водяной мельницы возле Великого леса Тоб, недалеко от деревни Карн. Его способность создавать и оживлять механизмы имеет абсолютный потенциал, но на старте раскрывается только через осознание, опыт, материалы, мастерскую и подтвержденные события.",
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "rp", "supported": ["rp", "novel"]},
-  "rp_contract": {"schema_version": "rp-core.v2"},
+  "rp_contract": {"schema_version": "rp-core.v2", "revision": 6},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"

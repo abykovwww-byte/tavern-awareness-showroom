@@ -9,7 +9,11 @@ from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
 from app.services.adjudicator import Adjudicator
 from app.services.narrative import NarrativeClient
-from app.services.rp_story_memory import RPStoryMemoryUpdater, STORY_MEMORY_SCHEMA
+from app.services.rp_story_memory import (
+    RPStoryMemoryUpdater,
+    STORY_MEMORY_SCHEMA,
+    reconcile_story_memory,
+)
 from app.services.state_store import StateStore
 
 
@@ -213,6 +217,78 @@ def test_story_memory_prompt_projects_only_active_facts(tmp_path: Path) -> None:
     assert "Сила действует на живую материю." in prompt
     assert "Сила не действует на живую материю." not in prompt
     assert "Старая ситуация." not in prompt
+
+
+def test_story_memory_retracted_fact_cannot_be_resurrected_by_later_summary() -> None:
+    fact_id = "fact:absolute-power-living"
+    previous = story_document()
+    previous["rules_and_abilities"] = [
+        {
+            "fact_id": fact_id,
+            "text": "Сила не действует на живую материю.",
+            "status": "retracted",
+            "authority": "user_correction",
+            "source_turn_ids": [43],
+        }
+    ]
+    proposed = story_document()
+    proposed["rules_and_abilities"] = [
+        {
+            "fact_id": fact_id,
+            "text": "Сила не действует на живую материю.",
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [44],
+        }
+    ]
+
+    merged = reconcile_story_memory(previous, proposed, 24_000)
+
+    assert merged["rules_and_abilities"] == [
+        {
+            "fact_id": fact_id,
+            "text": "Сила не действует на живую материю.",
+            "status": "retracted",
+            "authority": "user_correction",
+            "source_turn_ids": [43],
+        }
+    ]
+
+
+def test_story_memory_user_correction_retracts_existing_fact_by_stable_id() -> None:
+    fact_id = "fact:absolute-power-living"
+    previous = story_document()
+    previous["rules_and_abilities"] = [
+        {
+            "fact_id": fact_id,
+            "text": "Сила не действует на живую материю.",
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [42],
+        }
+    ]
+    proposed = story_document()
+    proposed["rules_and_abilities"] = [
+        {
+            "fact_id": fact_id,
+            "text": "Сила не действует на живую материю.",
+            "status": "retracted",
+            "authority": "user_correction",
+            "source_turn_ids": [43],
+        },
+        {
+            "fact_id": "fact:absolute-power-corrected",
+            "text": "Сила действует на живую материю.",
+            "status": "active",
+            "authority": "user_correction",
+            "source_turn_ids": [43],
+        },
+    ]
+
+    merged = reconcile_story_memory(previous, proposed, 24_000)
+
+    assert [item["status"] for item in merged["rules_and_abilities"]] == ["retracted", "active"]
+    assert [item["source_turn_ids"] for item in merged["rules_and_abilities"]] == [[43], [43]]
 
 
 @pytest.mark.parametrize(

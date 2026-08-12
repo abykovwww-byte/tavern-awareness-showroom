@@ -290,6 +290,7 @@ class PartyCheckpointCreate(BaseModel):
 class PartyBranchCreate(BaseModel):
     checkpoint_id: int = Field(ge=1)
     label: str = Field(min_length=1, max_length=160)
+    rp_contract_revision: int | None = Field(default=None, ge=0, le=6)
 
 
 class PartyCharacterStateEditRequest(BaseModel):
@@ -322,6 +323,7 @@ class PartySummary(BaseModel):
     title: str
     scenario_type: ScenarioType
     rp_contract_version: Literal["rp-core.v1", "rp-core.v2"] = "rp-core.v1"
+    rp_contract_revision: int = Field(default=0, ge=0, le=6)
     worldpack_id: str
     player_character_id: str
     model_profile_id: str
@@ -504,6 +506,7 @@ class AutoTestCreate(BaseModel):
     player_prompt: str = Field(min_length=1, max_length=12000)
     turn_count: int = Field(ge=1, le=30)
     player_model_profile_id: str = Field(min_length=1, max_length=240)
+    rp_contract_revision: int | None = Field(default=None, ge=0, le=6)
 
 
 class PartyCheckRequest(BaseModel):

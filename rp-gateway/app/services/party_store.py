@@ -119,6 +119,7 @@ class PartyStore:
                     title TEXT NOT NULL,
                     scenario_type TEXT NOT NULL DEFAULT 'rp',
                     rp_contract_version TEXT NOT NULL DEFAULT 'rp-core.v1',
+                    rp_contract_revision INTEGER NOT NULL DEFAULT 0,
                     worldpack_id TEXT NOT NULL REFERENCES worldpacks(id),
                     player_character_id TEXT NOT NULL REFERENCES player_characters(id),
                     model_profile_id TEXT NOT NULL REFERENCES model_profiles(id),
@@ -137,6 +138,7 @@ class PartyStore:
                     branch_type TEXT NOT NULL DEFAULT 'manual',
                     source_checkpoint_id INTEGER NOT NULL,
                     state_campaign_id TEXT NOT NULL UNIQUE,
+                    rp_contract_revision INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -241,8 +243,22 @@ class PartyStore:
             "UPDATE parties SET rp_contract_version = 'rp-core.v1' "
             "WHERE rp_contract_version NOT IN ('rp-core.v1', 'rp-core.v2')"
         )
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
+        if "rp_contract_revision" not in columns:
+            connection.execute(
+                "ALTER TABLE parties ADD COLUMN rp_contract_revision INTEGER NOT NULL DEFAULT 0"
+            )
+        connection.execute(
+            "UPDATE parties SET rp_contract_revision = 0 "
+            "WHERE rp_contract_revision IS NULL OR rp_contract_revision < 0 OR rp_contract_revision > 6"
+        )
 
     def migrate_autotest_branches(self, connection: sqlite3.Connection) -> None:
+        branch_columns = {row["name"] for row in connection.execute("PRAGMA table_info(party_branches)").fetchall()}
+        if "rp_contract_revision" not in branch_columns:
+            connection.execute(
+                "ALTER TABLE party_branches ADD COLUMN rp_contract_revision INTEGER NOT NULL DEFAULT 0"
+            )
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(autotest_runs)").fetchall()}
         if "branch_id" not in columns:
             connection.execute("ALTER TABLE autotest_runs ADD COLUMN branch_id TEXT")
@@ -518,7 +534,7 @@ class PartyStore:
             "premise": prompt[:600],
             "player_role": "Персонаж, заданный игроком для этой партии.",
             "generated_by": "rp-light-gui",
-            "rp_contract": {"schema_version": "rp-core.v2"},
+            "rp_contract": {"schema_version": "rp-core.v2", "revision": 6},
             "prompt": state_prompt,
             "prompt_source": request.source,
             "prompt_source_filename": request.source_filename if is_markdown else None,
@@ -921,6 +937,17 @@ class PartyStore:
         )
         if rp_contract_version not in {"rp-core.v1", "rp-core.v2"}:
             raise ValueError(f"worldpack {pack.id} declares unsupported RP contract {rp_contract_version}")
+        declared_revision = (
+            int(rp_contract.get("revision", 6 if rp_contract_version == "rp-core.v2" else 0))
+            if request.scenario_type == "rp" and isinstance(rp_contract, dict)
+            else 0
+        )
+        if not 0 <= declared_revision <= 6:
+            raise ValueError(f"worldpack {pack.id} declares unsupported RP contract revision {declared_revision}")
+        rp_contract_revision = min(
+            declared_revision,
+            max(0, min(int(self.settings.rp_contract_observed_revision), 6)),
+        )
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
@@ -933,11 +960,11 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO parties(
-                    id, owner_user_id, title, scenario_type, rp_contract_version,
+                    id, owner_user_id, title, scenario_type, rp_contract_version, rp_contract_revision,
                     worldpack_id, player_character_id, model_profile_id,
                     state_campaign_id, status, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
@@ -945,6 +972,7 @@ class PartyStore:
                     request.title,
                     request.scenario_type,
                     rp_contract_version,
+                    rp_contract_revision,
                     request.worldpack_id,
                     request.player_character_id,
                     request.model_profile_id,
@@ -1435,10 +1463,24 @@ class PartyStore:
         label: str,
         branch_type: str = "manual",
         owner_user_id: str | None = None,
+        rp_contract_revision: int | None = None,
     ) -> dict[str, Any]:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         source_store = self.store_for_party(party.id, owner_user_id=owner_user_id)
         checkpoint = source_store.get_memory_checkpoint(checkpoint_id)
+        declared_revision = 0
+        rp_contract = party.worldpack.manifest.get("rp_contract") if party.worldpack else None
+        if party.scenario_type == "rp" and isinstance(rp_contract, dict):
+            declared_revision = int(
+                rp_contract.get("revision", 6 if party.rp_contract_version == "rp-core.v2" else 0)
+            )
+        target_revision = party.rp_contract_revision if rp_contract_revision is None else int(rp_contract_revision)
+        if party.scenario_type != "rp" and target_revision != 0:
+            raise ValueError("RP contract revision is available only for RP branches")
+        if not 0 <= target_revision <= min(declared_revision, 6):
+            raise ValueError(
+                f"RP contract revision must be between 0 and WorldPack candidate revision {declared_revision}"
+            )
         branch_id = f"branch_{uuid.uuid4().hex[:12]}"
         state_campaign_id = f"{party.id}--{branch_id}"
         timestamp = now_iso()
@@ -1447,8 +1489,9 @@ class PartyStore:
                 """
                 INSERT INTO party_branches(
                     id, party_id, owner_user_id, label, branch_type,
-                    source_checkpoint_id, state_campaign_id, status, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    source_checkpoint_id, state_campaign_id, rp_contract_revision,
+                    status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
                 """,
                 (
                     branch_id,
@@ -1458,6 +1501,7 @@ class PartyStore:
                     branch_type,
                     int(checkpoint["id"]),
                     state_campaign_id,
+                    target_revision,
                     timestamp,
                     timestamp,
                 ),
@@ -1691,6 +1735,7 @@ class PartyStore:
             title=row["title"],
             scenario_type=row["scenario_type"],
             rp_contract_version=row["rp_contract_version"],
+            rp_contract_revision=int(row["rp_contract_revision"]),
             worldpack_id=row["worldpack_id"],
             player_character_id=row["player_character_id"],
             model_profile_id=row["model_profile_id"],

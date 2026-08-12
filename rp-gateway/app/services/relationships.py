@@ -23,10 +23,16 @@ _FAVOURABLE_ULTIMATUM_RESOLUTIONS = frozenset(
 class RelationshipMechanics:
     """Apply WorldPack-owned relationship rules without consulting a model."""
 
-    def __init__(self, state_store: StateStore, model: dict[str, Any]):
+    def __init__(
+        self,
+        state_store: StateStore,
+        model: dict[str, Any],
+        rp_contract_revision: int = 0,
+    ):
         self.state_store = state_store
         self.model = model
         self.store = RelationshipStore(state_store, model)
+        self.rp_contract_revision = rp_contract_revision
 
     def apply_events(self, *, turn_id: int, party_turn: int, events: list[dict]) -> list[dict]:
         """Persist extracted events and return boundary-event changes they cause."""
@@ -99,6 +105,15 @@ class RelationshipMechanics:
 
             if due_turn > party_turn:
                 continue
+            if event_id == "favour" and self.rp_contract_revision >= 4:
+                if self.store.resolve_event(
+                    int(event["id"]),
+                    status="resolved",
+                    resolution="delivered",
+                    resolved_turn=party_turn,
+                ):
+                    changes.append(self._event_change("resolved", event, resolution="delivered"))
+                continue
             if self.store.resolve_event(
                 int(event["id"]),
                 status="expired",
@@ -163,6 +178,48 @@ class RelationshipMechanics:
             return None
         return "RELATIONSHIP_PRESSURE\n" + "\n".join(rendered)
 
+    @staticmethod
+    def resolved_event_block(changes: list[dict[str, Any]], character_names: dict[str, str]) -> str | None:
+        rendered: list[str] = []
+        for change in changes:
+            if change.get("action") != "resolved":
+                continue
+            name = character_names.get(str(change.get("character_id") or ""))
+            if not name:
+                continue
+            event_id = str(change.get("event_id") or "")
+            resolution = str(change.get("resolution") or "")
+            instruction = {
+                ("favour", "delivered"): "покажи в текущей сцене конкретную добровольную услугу или поддержку этого персонажа",
+                ("crack", "deadline_missed"): "покажи заметное охлаждение и закрытие прежнего окна для разговора",
+                ("ultimatum", "deadline_missed"): "покажи исполнение объявленного разрыва или отказа",
+                ("strike", "deadline_missed"): "покажи открытое последствие накопленного конфликта",
+                ("plot", "not_discovered"): "покажи последствие нераскрытой скрытой линии, не раскрывая служебные детали",
+                ("plot", "discovered_early"): "покажи обнаружение скрытой линии через наблюдаемую сцену",
+                ("plot", "discovered_late"): "покажи запоздалое обнаружение и уже возникшую цену",
+            }.get((event_id, resolution))
+            if instruction:
+                rendered.append(f"- {name}: {instruction}.")
+        if not rendered:
+            return None
+        return (
+            "RELATIONSHIP_EVENT_RESOLUTION\n"
+            "Эти последствия уже определены Gateway. Реализуй их как наблюдаемое поведение в этой сцене; "
+            "не показывай внутренние IDs, часы или числовые значения.\n"
+            + "\n".join(rendered)
+        )
+
+    def due_event_block(self, party_turn: int, character_names: dict[str, str]) -> str | None:
+        """Describe due revision-4 consequences without committing their resolution."""
+        due_changes = [
+            self._event_change("resolved", event, resolution="delivered")
+            for event in self.store.active_events(party_turn)
+            if str(event["event_id"]) == "favour"
+            and int(event["due_turn"]) <= party_turn
+            and self._event_basis_active(event, party_turn)
+        ]
+        return self.resolved_event_block(due_changes, character_names)
+
     def _ensure_seed_state(self) -> None:
         """Materialize the WorldPack trust seed once in the derived relationship tables."""
         self.store.backfill_active_event_deadlines(self.model.get("clocks", {}))
@@ -177,7 +234,7 @@ class RelationshipMechanics:
             if not isinstance(character_id, str) or not isinstance(character, dict):
                 continue
             mapped_trust = self._map_trust(self._seed_trust(state, character_id, character))
-            self.store.add_cause(
+            added = self.store.add_cause(
                 character_id=character_id,
                 axis=axis,
                 event_id="seed_trust",
@@ -189,12 +246,39 @@ class RelationshipMechanics:
                 source="seed",
             )
             if self.store.axis_state(character_id, axis) is None:
+                neutral = (
+                    self._band(axis, "neutral")
+                    if self.rp_contract_revision >= 4
+                    else self._band_for_value(axis, mapped_trust)
+                ) or self._band_for_value(axis, 0)
                 self.store.set_axis_state(
                     character_id=character_id,
                     axis=axis,
-                    band=str(self._band_for_value(axis, mapped_trust)["id"]),
-                    band_since_turn=0,
+                    band=str(neutral["id"]),
+                    band_since_turn=-1 if self.rp_contract_revision >= 4 else 0,
                 )
+            if added and self.rp_contract_revision >= 4:
+                boundary = self._evaluate_axis(
+                    character_id=character_id,
+                    axis=axis,
+                    party_turn=0,
+                    trigger={
+                        "character_id": character_id,
+                        "event_id": "seed_trust",
+                        "evidence": "WorldPack trust seed",
+                        "source": "seed",
+                        "turn_id": 0,
+                    },
+                )
+                if boundary is None:
+                    current = self.store.axis_state(character_id, axis)
+                    if current is not None and int(current["band_since_turn"]) < 0:
+                        self.store.set_axis_state(
+                            character_id=character_id,
+                            axis=axis,
+                            band=str(current["band"]),
+                            band_since_turn=0,
+                        )
 
     def _seed_trust(self, state: dict[str, Any], character_id: str, character: dict[str, Any]) -> int:
         value = character.get("trust")

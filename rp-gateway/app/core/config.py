@@ -33,6 +33,8 @@ class Settings:
     campaign_id: str = os.getenv("CAMPAIGN_ID", "default")
     scenario_type: str = os.getenv("SCENARIO_TYPE", "rp")
     rp_contract_version: str = os.getenv("RP_CONTRACT_VERSION", "rp-core.v1")
+    rp_contract_revision: int = env_int("RP_CONTRACT_REVISION", 0)
+    rp_contract_observed_revision: int = env_int("RP_CONTRACT_OBSERVED_REVISION", 0)
     world_system_prompt: str = ""
     world_authors_note: str = ""
     database_url: str = os.getenv("DATABASE_URL", "sqlite:////data/rp_gateway.db")

@@ -37,11 +37,12 @@ class RuleEngine:
         campaign_id: str | None = None,
         scenario_type: str = "rp",
         rp_contract_version: str = "rp-core.v1",
+        rp_contract_revision: int = 0,
         interaction_evidence: list[InteractionEvidence] | None = None,
         training_runtime: "TrainingRuntimeService | None" = None,
     ) -> tuple[Outcome, StatePatch]:
         if scenario_type == "novel" or (
-            scenario_type == "rp" and rp_contract_version == "rp-core.v2"
+            scenario_type == "rp" and rp_contract_revision >= 1
         ):
             return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
         if scenario_type == "training":

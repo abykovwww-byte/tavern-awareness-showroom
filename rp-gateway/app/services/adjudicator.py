@@ -64,7 +64,11 @@ class Adjudicator:
         self.training_runtime = training_runtime
         self.relationship_model = relationship_model if settings.scenario_type == "rp" else None
         self.relationship_mechanics = (
-            RelationshipMechanics(store, self.relationship_model)
+            RelationshipMechanics(
+                store,
+                self.relationship_model,
+                rp_contract_revision=settings.rp_contract_revision,
+            )
             if self.relationship_model is not None
             else None
         )
@@ -130,11 +134,11 @@ class Adjudicator:
                 return response
 
             state = self.store.get_state()
-            rp_v2 = (
+            rp_no_checks = (
                 self.settings.scenario_type == "rp"
-                and self.settings.rp_contract_version == "rp-core.v2"
+                and self.settings.rp_contract_revision >= 1
             )
-            intent = self.intent_parser.parse(latest, mechanical=not rp_v2)
+            intent = self.intent_parser.parse(latest, mechanical=not rp_no_checks)
             artifact_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
             workspace_evidence = self.training_workspace.pending_evidence() if self.training_workspace else []
             interaction_evidence = [*artifact_evidence, *workspace_evidence]
@@ -145,6 +149,7 @@ class Adjudicator:
                 campaign_id=self.settings.campaign_id,
                 scenario_type=self.settings.scenario_type,
                 rp_contract_version=self.settings.rp_contract_version,
+                rp_contract_revision=self.settings.rp_contract_revision,
                 interaction_evidence=interaction_evidence,
                 training_runtime=self.training_runtime,
             )
@@ -231,7 +236,7 @@ class Adjudicator:
                     )
                     raise RuntimeError("Narrative provider returned an invalid response")
                 validation = None if (
-                    self.settings.scenario_type == "rp" and not rp_v2
+                    self.settings.scenario_type == "rp" and self.settings.rp_contract_revision < 3
                 ) else self.validator.validate(
                     text,
                     outcome,
@@ -422,7 +427,7 @@ class Adjudicator:
             updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
             version = int(updated_state.get("meta", {}).get("state_version", 0))
             final_validation = None if (
-                self.settings.scenario_type == "rp" and not rp_v2
+                self.settings.scenario_type == "rp" and self.settings.rp_contract_revision < 3
             ) else self.validator.validate(
                 text,
                 outcome,
@@ -457,8 +462,10 @@ class Adjudicator:
                 consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
                 party_turn=int(updated_state["meta"]["turn"]),
             )
+            if self.relationship_mechanics is not None and self.settings.rp_contract_revision >= 4:
+                self.relationship_mechanics.advance_turn(int(updated_state["meta"]["turn"]))
             self.store.complete_turn_request(idempotency_key, response)
-            if self.settings.scenario_type == "rp" and not rp_v2:
+            if self.settings.scenario_type == "rp" and not rp_no_checks:
                 self.store.record_check(turn_id, outcome)
             self.store.audit(
                 "turn_complete",
@@ -501,6 +508,7 @@ class Adjudicator:
             "schema_version": "rp-gateway.turn.v1",
             "turn_kind": turn_kind,
             "scenario_type": self.settings.scenario_type,
+            "rp_contract_revision": self.settings.rp_contract_revision,
             "worldpack_id": self.settings.campaign_id,
             "state_campaign_id": self.store.campaign_id,
             "narrative_provider": self.settings.llm_provider,
@@ -673,13 +681,19 @@ class Adjudicator:
         if self.relationship_mechanics is None:
             return None
         party_turn = int(state.get("meta", {}).get("turn", 0))
-        self.relationship_mechanics.advance_turn(party_turn)
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
         names = {
             str(character_id): self.relationship_character_name(str(character_id), value)
             for character_id, value in characters.items()
         }
-        return self.relationship_mechanics.pressure_block(party_turn, names)
+        if self.settings.rp_contract_revision >= 4:
+            pressure = self.relationship_mechanics.pressure_block(party_turn, names)
+            resolution = self.relationship_mechanics.due_event_block(party_turn, names)
+        else:
+            changes = self.relationship_mechanics.advance_turn(party_turn)
+            pressure = self.relationship_mechanics.pressure_block(party_turn, names)
+            resolution = self.relationship_mechanics.resolved_event_block(changes, names)
+        return "\n\n".join(block for block in (pressure, resolution) if block) or None
 
     @staticmethod
     def relationship_character_name(character_id: str, value: Any) -> str:

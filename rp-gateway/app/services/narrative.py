@@ -153,6 +153,7 @@ class NarrativeClient:
                 rp_story_memory=rp_story_memory,
                 artifact_contract=artifact_contract,
                 training_turn_contract=training_turn_contract,
+                relationship_pressure=relationship_pressure,
             )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
@@ -383,7 +384,7 @@ class NarrativeClient:
                     "content": relevant_characters_block(relevant_characters),
                 }
             )
-        if self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2":
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 3:
             absolute_rules = world_absolute_rules_block(state)
             if absolute_rules:
                 messages.append({"role": "system", "content": absolute_rules})
@@ -454,7 +455,7 @@ class NarrativeClient:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
-        if self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2":
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 3:
             absolute_rules = world_absolute_rules_block(state)
             if absolute_rules:
                 messages.append({"role": "system", "content": absolute_rules})
@@ -500,7 +501,7 @@ class NarrativeClient:
                 "If player.resources.current-turn-window is present, begin with that exact scheduled turn as a Russian "
                 "player-facing header and never remain in the previous time window."
             )
-        if self.settings.rp_contract_version == "rp-core.v2":
+        if self.settings.rp_contract_revision >= 1:
             return common + (
                 "You are the GM and narrator of a roleplaying game without mechanical checks. Treat the latest player "
                 "message as intent, not as an automatic fact or a request for hidden adjudication. Never invent dice, "

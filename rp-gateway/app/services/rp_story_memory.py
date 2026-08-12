@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -124,6 +126,12 @@ class RPStoryMemoryUpdater:
             }
         try:
             generated = await self.generate(plan)
+            if self.settings.rp_contract_revision >= 2:
+                generated["memory"] = reconcile_story_memory(
+                    plan.previous_memory.get("memory") if plan.previous_memory else None,
+                    generated["memory"],
+                    self.settings.rp_story_memory_max_chars,
+                )
             snapshot = self.store.record_rp_story_memory(
                 from_turn_id=(
                     int(plan.previous_memory["from_turn_id"])
@@ -209,7 +217,10 @@ class RPStoryMemoryUpdater:
         raise RuntimeError("No model attempts configured for RP story memory")
 
     def update_payload(self, plan: RPStoryMemoryPlan) -> dict[str, Any]:
-        previous = plan.previous_memory.get("memory") if plan.previous_memory else empty_story_memory()
+        previous = normalize_story_memory(
+            plan.previous_memory.get("memory") if plan.previous_memory else None,
+            self.settings.rp_story_memory_max_chars,
+        )
         context = {
             "previous_story_memory": previous,
             "current_authoritative_state_excerpt": self.state_excerpt(self.store.get_state()),
@@ -233,8 +244,10 @@ class RPStoryMemoryUpdater:
                         "Return a recoverable projection document, not canonical state, with exactly these keys: schema_version, canon, "
                         "rules_and_abilities, inventory_and_assets, characters, active_threads, resolved_threads, "
                         "unresolved_hooks, current_situation, chronology. current_situation is one object and every other "
-                        "content key is an array of objects with text, status (active, superseded, or retracted), authority "
+                        "content key is an array of objects with fact_id, text, status (active, superseded, or retracted), authority "
                         "(worldpack, user_correction, state, narrator, inference, or legacy_projection), and source_turn_ids. "
+                        "Keep the exact fact_id from previous_story_memory when correcting an existing fact. Only mark an existing "
+                        "fact superseded or retracted when a new turn explicitly establishes the stronger authority and include that turn ID. "
                         "Preserve audit entries when their status changes instead of deleting contradictions. A direct player correction "
                         "of established canon supersedes model inference; a WorldPack rule or canonical state supersedes every summary. "
                         "Treat player messages as attempts, "
@@ -381,6 +394,63 @@ def normalize_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
     return fit_story_memory(normalized, max(max_chars, 1))
 
 
+def reconcile_story_memory(previous_value: Any, proposed_value: Any, max_chars: int) -> dict[str, Any]:
+    """Merge a service-model proposal without letting weak summaries erase or revive facts."""
+    previous = normalize_story_memory(previous_value, max_chars)
+    proposed = normalize_story_memory(proposed_value, max_chars)
+    result = empty_story_memory()
+    for field in STORY_LIST_FIELDS:
+        result[field] = reconcile_story_items(previous[field], proposed[field])
+
+    previous_current = [previous["current_situation"]] if previous.get("current_situation") else []
+    proposed_current = [proposed["current_situation"]] if proposed.get("current_situation") else []
+    current_items = reconcile_story_items(previous_current, proposed_current)
+    active_current = [item for item in current_items if item["status"] == "active"]
+    result["current_situation"] = (active_current or current_items or [None])[-1]
+    return fit_story_memory(result, max(max_chars, 1))
+
+
+def reconcile_story_items(
+    previous: list[dict[str, Any]],
+    proposed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    stronger = {"worldpack", "state", "user_correction"}
+    merged = [dict(item) for item in previous]
+    index = {str(item["fact_id"]): position for position, item in enumerate(merged)}
+    tombstoned_text = {
+        story_fact_fingerprint(str(item.get("text") or ""))
+        for item in previous
+        if item.get("status") in {"superseded", "retracted"}
+    }
+    for candidate in proposed:
+        fact_id = str(candidate["fact_id"])
+        current_position = index.get(fact_id)
+        if current_position is None:
+            if candidate["status"] != "active" or (
+                story_fact_fingerprint(str(candidate["text"])) in tombstoned_text
+            ):
+                continue
+            index[fact_id] = len(merged)
+            merged.append(dict(candidate))
+            continue
+
+        current = merged[current_position]
+        candidate_turn = max(candidate.get("source_turn_ids") or [0])
+        current_turn = max(current.get("source_turn_ids") or [0])
+        authority = str(candidate.get("authority") or "inference")
+        if candidate["status"] in {"superseded", "retracted"}:
+            if authority not in stronger or candidate_turn <= current_turn:
+                continue
+            tombstoned_text.add(story_fact_fingerprint(str(current.get("text") or "")))
+            merged[current_position] = dict(candidate)
+            continue
+        if current.get("status") in {"superseded", "retracted"}:
+            if authority not in stronger or candidate_turn <= current_turn:
+                continue
+        merged[current_position] = dict(candidate)
+    return merged
+
+
 def fit_story_memory(memory: dict[str, Any], max_chars: int) -> dict[str, Any]:
     fitted = json.loads(json.dumps(memory, ensure_ascii=False))
     drop_order = (
@@ -491,6 +561,7 @@ def story_item_list(value: Any, *, limit: int, item_chars: int) -> list[dict[str
                 if normalized_turn_id >= 0 and normalized_turn_id not in turn_ids:
                     turn_ids.append(normalized_turn_id)
         normalized = {
+            "fact_id": story_fact_id(source.get("fact_id"), text),
             "text": text,
             "status": status,
             "authority": authority,
@@ -510,6 +581,18 @@ def active_story_texts(items: list[dict[str, Any]]) -> list[str]:
         for item in items
         if isinstance(item, dict) and item.get("status") == "active" and str(item.get("text") or "").strip()
     ]
+
+
+def story_fact_id(value: Any, text: str) -> str:
+    supplied = str(value or "").strip().lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9_.:-]{7,79}", supplied):
+        return supplied
+    digest = hashlib.sha256(story_fact_fingerprint(text).encode("utf-8")).hexdigest()[:20]
+    return f"fact:{digest}"
+
+
+def story_fact_fingerprint(text: str) -> str:
+    return " ".join(re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE))
 
 
 def completion_text(response: dict[str, Any]) -> str:

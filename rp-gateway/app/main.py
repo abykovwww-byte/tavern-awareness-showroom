@@ -169,9 +169,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return settings_with_provider_key(settings_for_model_profile(settings, profile, cache_session_id), party)
 
     def runtime_settings_for_branch(party: Any, branch_id: str) -> Settings:
+        branch = party_store.get_party_branch(party.id, branch_id, owner_user_id=party.owner_user_id)
         return replace(
             runtime_settings_for_party(party),
             prompt_cache_session_id=f"rp-party:{party.id}:branch:{branch_id}",
+            rp_contract_revision=int(branch["rp_contract_revision"]),
         )
 
     async def run_autotest(run_id: str) -> None:
@@ -1058,6 +1060,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 checkpoint_id=payload.checkpoint_id,
                 label=payload.label,
                 owner_user_id=owner_user_id(request),
+                rp_contract_revision=payload.rp_contract_revision,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1338,7 +1341,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_tokens=request.max_tokens,
                 stream=False,
             )
-            start_outcome = party_start_outcome(party_id, party.scenario_type)
+            start_outcome = party_start_outcome(
+                party_id,
+                party.scenario_type,
+                party_settings.rp_contract_revision,
+            )
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
             rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
             narrative = NarrativeClient(party_settings)
@@ -1430,7 +1437,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = artifact_result.text
                 workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             validator = OutputValidator()
-            validation = None if party.scenario_type == "rp" else validator.validate(
+            validation = None if (
+                party.scenario_type == "rp" and party_settings.rp_contract_revision < 3
+            ) else validator.validate(
                 text,
                 start_outcome,
                 narrative_state,
@@ -1556,7 +1565,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = artifact_result.text
                 workspace_result = workspace_service.fallback_materialization(workspace_contract, text)
             response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
-            final_validation = None if party.scenario_type == "rp" else validator.validate(
+            final_validation = None if (
+                party.scenario_type == "rp" and party_settings.rp_contract_revision < 3
+            ) else validator.validate(
                 text,
                 start_outcome,
                 narrative_state,
@@ -2019,6 +2030,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 label=label,
                 branch_type="autotest",
                 owner_user_id=owner_id,
+                rp_contract_revision=payload.rp_contract_revision,
             )
             source_store.audit(
                 "autotest_branch_created",
@@ -2271,6 +2283,7 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     prompt_values = {
         "scenario_type": getattr(party, "scenario_type", "rp"),
         "rp_contract_version": getattr(party, "rp_contract_version", "rp-core.v1"),
+        "rp_contract_revision": getattr(party, "rp_contract_revision", 0),
         "campaign_id": party.worldpack_id,
         "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
         "world_authors_note": worldpack_prompt_text(party, "authors_note"),
@@ -2400,14 +2413,25 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
     )
 
 
-def party_start_outcome(party_id: str, scenario_type: str = "rp") -> Outcome:
+def party_start_outcome(
+    party_id: str,
+    scenario_type: str = "rp",
+    rp_contract_revision: int = 0,
+) -> Outcome:
     result = {
         "novel": "narrative_continuation",
         "training": "deterministic_resolution",
-    }.get(scenario_type, "success")
+    }.get(
+        scenario_type,
+        "narrative_continuation" if rp_contract_revision >= 1 else "success",
+    )
     return Outcome(
         check_id=f"party_start:{party_id}",
-        action_type="feasibility",
+        action_type=(
+            "narrative"
+            if scenario_type == "rp" and rp_contract_revision >= 1
+            else "feasibility"
+        ),
         actor="system",
         target="opening_scene",
         result=result,

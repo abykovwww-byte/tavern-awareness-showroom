@@ -7,7 +7,7 @@
   "player_role": "Временный поверенный Пограничной Канцелярии с ограниченным правом расследования",
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "rp", "supported": ["rp", "novel"]},
-  "rp_contract": {"schema_version": "rp-core.v2"},
+  "rp_contract": {"schema_version": "rp-core.v2", "revision": 6},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"

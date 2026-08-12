@@ -4,7 +4,8 @@ Date: 2026-08-03
 
 ## Status
 
-Accepted; authority and projection semantics are superseded by Decision 024.
+Accepted; authority and projection semantics are superseded by Decisions 024
+and 026.
 
 ## Context
 
@@ -26,8 +27,13 @@ Add a cumulative `rp_story_memory_snapshots` ledger and update it only when
 - A global service model receives the previous bounded snapshot, the oldest
   new turn batch, and a compact canonical-state excerpt without NPC secrets.
 - It returns a recoverable projection using the fixed v2 schema. Every entry
-  carries text, provenance (`authority` and source turn IDs), and an explicit
+  carries a stable `fact_id`, text, provenance (`authority` and source turn IDs), and an explicit
   `active`, `superseded`, or `retracted` status.
+- Starting with `rp_contract_revision >= 2`, Gateway merges the proposed
+  projection with the previous snapshot. Omitted facts are retained; weak
+  inference cannot create tombstones, retract stronger facts, or reactivate a
+  retracted/superseded fact. A newer WorldPack/state/user correction may change
+  terminal status while preserving the same `fact_id`.
 - Default cadence is four new turns; a manual update may force a smaller batch.
 - Each successful replacement is append-only, party-scoped, revisioned, and
   records turn coverage, state version, time, and model.

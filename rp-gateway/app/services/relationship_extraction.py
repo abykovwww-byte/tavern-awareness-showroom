@@ -37,7 +37,11 @@ class RelationshipExtractionService:
         self.store = store
         self.model = model
         self.relationship_store = RelationshipStore(store, model)
-        self.mechanics = RelationshipMechanics(store, model)
+        self.mechanics = RelationshipMechanics(
+            store,
+            model,
+            rp_contract_revision=settings.rp_contract_revision,
+        )
 
     async def process_turn(self, turn_id: int, authorization: str | None = None) -> dict[str, Any]:
         """Process exactly one recorded turn; semantic rejection is terminal."""

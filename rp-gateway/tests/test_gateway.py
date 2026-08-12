@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 import shutil
@@ -13,6 +14,8 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.services import narrative as narrative_service
+from app.services import rule_engine as rule_engine_service
 from app.core.config import Settings
 from app.main import create_app, party_chat_request, settings_for_party
 from app.models.schemas import (
@@ -36,6 +39,7 @@ from app.services.nvidia_catalog import (
     prices_are_free,
     provider_model_is_suitable,
 )
+from app.services.prompt_tools import PromptInspector
 from app.services.relationship_store import RelationshipStore
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.rule_engine import RuleEngine
@@ -139,6 +143,7 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "local_llm_enabled": False,
         "post_turn_helpers_inline": True,
         "auth_enabled": False,
+        "rp_contract_observed_revision": 6,
     }
     settings_kwargs.update(settings_overrides)
     settings = Settings(**settings_kwargs)
@@ -707,6 +712,7 @@ def test_rp_core_v2_turn_has_no_hidden_check_or_random_result(tmp_path: Path):
 
     assert response.status_code == 200
     assert party["rp_contract_version"] == "rp-core.v2"
+    assert party["rp_contract_revision"] == 6
     store = c.app.state.party_store.store_for_party(str(party["id"]))
     metadata = latest_turn_metadata(store)
     assert metadata["outcome"] == {
@@ -730,6 +736,64 @@ def test_rp_core_v2_turn_has_no_hidden_check_or_random_result(tmp_path: Path):
             (store.campaign_id,),
         ).fetchone()[0]
     assert checks == 0
+
+
+def test_rp_revision_one_and_training_never_call_random_system_rng(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ForbiddenRng:
+        def __init__(self) -> None:
+            raise AssertionError("SystemRandom must not be constructed")
+
+    monkeypatch.setattr(rule_engine_service.random, "SystemRandom", ForbiddenRng)
+    intent = Intent(action_type="narrative", desired_outcome="Продолжаю сцену")
+
+    rp_outcome, _ = RuleEngine().resolve(
+        base_state(),
+        intent,
+        "rp-no-rng",
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=1,
+    )
+    training_outcome, _ = RuleEngine().resolve(
+        base_state(),
+        intent,
+        "training-no-rng",
+        scenario_type="training",
+    )
+
+    assert rp_outcome.result == "narrative_continuation"
+    assert training_outcome.result == "deterministic_resolution"
+    assert rp_outcome.roll == training_outcome.roll == 0
+
+
+def test_candidate_revision_is_branch_only_until_observed(tmp_path: Path) -> None:
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 6}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path, rp_contract_observed_revision=0)
+    party = create_demo_party(c)
+    assert party["rp_contract_revision"] == 0
+
+    checkpoint = c.post(
+        f"/api/parties/{party['id']}/checkpoints",
+        json={"label": "ADR 026 candidate"},
+    ).json()["checkpoint"]
+    branch_response = c.post(
+        f"/api/parties/{party['id']}/branches",
+        json={
+            "checkpoint_id": checkpoint["id"],
+            "label": "candidate revision 6",
+            "rp_contract_revision": 6,
+        },
+    )
+
+    assert branch_response.status_code == 200, branch_response.text
+    assert branch_response.json()["branch"]["rp_contract_revision"] == 6
+    assert c.get(f"/api/parties/{party['id']}").json()["party"]["rp_contract_revision"] == 0
 
 
 def test_rp_core_v2_manual_check_endpoint_is_neutral_compatibility_input(tmp_path: Path):
@@ -839,6 +903,268 @@ def test_rp_core_v2_repeated_absolute_rule_violation_never_commits(
     assert llm_calls == 2
     assert store.current_version() == version_before
     assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+
+
+def test_rp_opening_scene_repeated_absolute_rule_violation_never_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 6}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    calls = 0
+
+    async def violating_complete(*args: object, **kwargs: object) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "id": f"opening-violation-{calls}",
+            "choices": [{"message": {"role": "assistant", "content": "The power fails on living matter."}}],
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", violating_complete)
+    c = client(tmp_path)
+    party = create_demo_party(c)
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    state = store.get_state()
+    state["world_constraints"] = [
+        {
+            "id": "absolute-power",
+            "text": "The power affects living matter.",
+            "scope": "power",
+            "turn": 0,
+            "kind": "absolute",
+            "source": "worldpack:test",
+            "forbidden_claims": ["power fails on living matter"],
+        }
+    ]
+    state["meta"]["state_version"] = int(store.current_version() or 0) + 1
+    store.insert_state_version(state, "test:opening-absolute-rule")
+    version_before = store.current_version()
+
+    response = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "opening-absolute-rule-failure"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "LLM response failed narrative validation"
+    assert calls == 2
+    assert store.current_version() == version_before
+    assert store.turn_history() == []
+
+
+def test_provider_payload_contains_relationship_pressure_on_first_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers: dict[str, str] = {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"role": "assistant", "content": "Сцена продолжается."}}]}
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, *, json: dict, headers: dict) -> FakeResponse:
+            captured["payload"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(narrative_service.httpx, "AsyncClient", FakeClient)
+    settings = Settings(
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=4,
+        nvidia_api_base="https://provider.invalid/v1",
+        nvidia_api_key="test",
+        nvidia_fallback_models=(),
+    )
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Я смотрю на Бажену.")])
+    neutral = RuleEngine().resolve(
+        base_state(),
+        Intent(action_type="narrative", desired_outcome="Я смотрю на Бажену."),
+        "provider-pressure",
+        scenario_type="rp",
+        rp_contract_revision=4,
+    )[0]
+
+    asyncio.run(
+        NarrativeClient(settings).complete(
+            request,
+            base_state(),
+            neutral,
+            None,
+            relationship_pressure="RELATIONSHIP_PRESSURE\n- Бажена — расположение.",
+        )
+    )
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert any(
+        message["content"].startswith("RELATIONSHIP_PRESSURE")
+        for message in payload["messages"]
+    )
+
+
+def test_prompt_inspector_hides_all_relationship_runtime_blocks() -> None:
+    messages = [
+        {"role": "system", "content": "RELATIONSHIP_PRESSURE\n- private pressure"},
+        {"role": "system", "content": "RELATIONSHIP_EVENT_RESOLUTION\n- private resolution"},
+        {"role": "user", "content": "visible action"},
+    ]
+
+    assert PromptInspector.public_messages(messages) == [
+        {"role": "user", "content": "visible action"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "player-consumer",
+        "npc-consumer",
+        "relationship-consumer",
+        "faction-consumer",
+        "location-consumer",
+        "resource-consumer",
+        "active-thread-consumer",
+        "completed-thread-consumer",
+        "uncertain-consumer",
+        "absolute-consumer",
+    ],
+)
+def test_retained_rp_state_paths_have_real_prompt_consumers(marker: str) -> None:
+    state = base_state()
+    state["player"]["known_world_facts"] = ["player-consumer"]
+    state["characters"]["king"].update({"name": "King", "knowledge": ["npc-consumer"]})
+    state["relationships"] = {
+        "player-king": {
+            "from": "player",
+            "to": "king",
+            "trust": 0,
+            "suspicion": 0,
+            "notes": ["relationship-consumer"],
+        }
+    }
+    state["factions"] = {"faction-consumer": {"status": "active"}}
+    state["locations"] = {"location-consumer": {"status": "known"}}
+    state["resources"] = {"resource-consumer": {"state": "available"}}
+    state["active_threads"] = ["active-thread-consumer"]
+    state["completed_threads"] = ["completed-thread-consumer"]
+    state["uncertain_facts"] = ["uncertain-consumer"]
+    state["world_constraints"] = [
+        {
+            "id": "absolute-consumer",
+            "text": "The marker remains visible.",
+            "kind": "absolute",
+            "source": "worldpack:test",
+            "forbidden_claims": [],
+        }
+    ]
+    settings = Settings(
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=6,
+    )
+    intent = Intent(action_type="narrative", target="king", desired_outcome="Ask King")
+    outcome_value = RuleEngine().resolve(
+        state,
+        intent,
+        "state-consumers",
+        scenario_type="rp",
+        rp_contract_revision=6,
+    )[0]
+    messages = NarrativeClient(settings).narrative_messages(
+        ChatCompletionRequest(messages=[ChatMessage(role="user", content="King, answer me.")]),
+        state,
+        outcome_value,
+        repair_instruction=None,
+    )
+    prompt = "\n".join(message["content"] for message in messages)
+
+    assert marker in prompt
+    assert "timeline-consumer" not in prompt
+
+
+def test_revision_six_prompt_is_at_most_half_of_long_raw_transcript_without_mutation(tmp_path: Path) -> None:
+    state_path = tmp_path / "long-party.json"
+    state_path.write_text(json.dumps(base_state(), ensure_ascii=False), encoding="utf-8")
+    store = StateStore(str(tmp_path / "long-party.db"), "long-party", str(state_path))
+    for index in range(1, 81):
+        store.record_turn(
+            f"long-{index}",
+            f"long-request-{index}",
+            f"Игрок {index}: " + ("намерение и контекст " * 24),
+            f"Нарратор {index}: " + ("последствие и диалог " * 24),
+            {},
+            index,
+            party_turn=index,
+        )
+    raw_before = store.turn_history(limit=200)
+    raw_hash_before = hashlib.sha256(
+        json.dumps(raw_before, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    full_transcript_chars = sum(
+        len(turn["player_message"]) + len(turn["narrative_response"])
+        for turn in raw_before
+    )
+    settings = Settings(
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=6,
+        party_context_max_tokens=512,
+        party_context_limit_tokens=512,
+        party_context_completion_reserve_tokens=64,
+        party_context_system_reserve_tokens=64,
+        party_context_min_history_tokens=64,
+        rp_story_memory_reserve_tokens=64,
+        party_memory_fallback_max_chars=400,
+        party_memory_retrieval_enabled=False,
+    )
+    request = party_chat_request(
+        store,
+        "mock",
+        PartyMessageRequest(content="Текущее действие игрока"),
+        settings,
+    )
+    outcome_value = RuleEngine().resolve(
+        store.get_state(),
+        Intent(action_type="narrative", desired_outcome="Текущее действие игрока"),
+        "long-prompt",
+        scenario_type="rp",
+        rp_contract_revision=6,
+    )[0]
+    messages = NarrativeClient(settings).narrative_messages(
+        request,
+        store.get_state(),
+        outcome_value,
+        repair_instruction=None,
+    )
+    prompt_chars = sum(len(message["content"]) for message in messages)
+    raw_after = store.turn_history(limit=200)
+    raw_hash_after = hashlib.sha256(
+        json.dumps(raw_after, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    assert prompt_chars <= full_transcript_chars * 0.5
+    assert messages[-1]["content"] == "Текущее действие игрока"
+    assert len(raw_after) == 80
+    assert raw_hash_after == raw_hash_before
 
 
 def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tmp_path: Path):
