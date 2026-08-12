@@ -5,7 +5,9 @@ Date: 2026-07-20
 ## Status
 
 Accepted. MVP implemented for the LAN-only `rp-light-gui` client and
-party-scoped gateway API.
+party-scoped gateway API. Decision 024 removes the dedicated RP check surface
+from current Light GUI while retaining the party-scoped endpoint for legacy
+client compatibility.
 
 ## Context
 
@@ -44,7 +46,8 @@ The light GUI flow is:
 4. Select an LLM/model profile.
 5. Start the game chat.
 6. During play, use normal chat plus a compact GM mode for state changes,
-   checks, rollback, and service commands.
+   rollback and service commands. A dedicated RP check form is no longer part
+   of the current client.
 
 The gateway, not the browser, owns the active binding:
 
@@ -201,7 +204,7 @@ not the preferred API for the light GUI.
 
 - Main chat.
 - Active party/world/player/model summary.
-- Service buttons: state, history, rollback, checks, GM mode.
+- Service buttons: state, history, rollback and GM mode.
 - GM mode panel for `/world`-style instructions, proposal preview, apply,
   discard, and rollback.
 

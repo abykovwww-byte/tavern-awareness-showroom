@@ -76,7 +76,7 @@
         <div class="message-status-bar hidden" id="messageStatus" role="status" aria-live="polite"></div>
 
         <form class="composer" id="messageForm">
-          <textarea id="messageInput" rows="2" placeholder="Действие персонажа или команда /check"></textarea>
+          <textarea id="messageInput" rows="2" placeholder="Опишите намерение, действие или реплику персонажа"></textarea>
           <button class="send-button" id="messageSubmit" type="submit" title="Отправить">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
             Отправить
@@ -231,32 +231,6 @@
           <div id="proposalList" class="proposal-list"></div>
         </section>
 
-        <section class="summary-panel" id="checkPanel">
-          <div class="section-label">Проверка</div>
-          <p class="panel-hint">Быстрый /check: gateway решает исход, а модель только описывает его как сцену.</p>
-          <form id="checkForm" class="check-form">
-            <select id="checkType" title="Тип проверки: социальная, скрытность, ресурсы или реалистичность действия">
-              <option value="persuasion">Убеждение</option>
-              <option value="intimidation">Запугивание</option>
-              <option value="deception">Обман</option>
-              <option value="stealth">Скрытность</option>
-              <option value="information">Поиск сведений</option>
-              <option value="resource">Ресурс</option>
-              <option value="feasibility">Реалистичность</option>
-            </select>
-            <input id="checkTarget" placeholder="Цель" title="NPC, фракция, ресурс или объект, на который направлено действие" />
-            <div class="split-row">
-              <input id="checkSkill" type="number" value="0" title="Модификатор навыка/подготовки игрока" />
-              <input id="checkDifficulty" type="number" value="10" title="Сложность проверки; 10 - обычная, 20+ - тяжелая" />
-            </div>
-            <input id="checkGoal" placeholder="Цель действия" title="Чего игрок хочет добиться этой проверкой" />
-            <button class="tool-button" type="submit" title="Запустить проверку и добавить ход в историю">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>
-              Проверить
-            </button>
-          </form>
-        </section>
-
         <section class="summary-panel">
           <div class="section-label">Управление</div>
           <p class="panel-hint">Операции над текущей партией. Миры и персонажи не удаляются этой кнопкой.</p>
@@ -409,7 +383,7 @@
           <fieldset class="choice-block wide">
             <legend>Тип сценария</legend>
             <div class="segmented scenario-type-segmented">
-              <label title="Ролевая игра с D20, навыками, сложностью и механическими исходами"><input type="radio" name="scenarioType" value="rp" required /> RP · D20</label>
+              <label title="Ролевая игра без скрытых проверок: последствия следуют из мира, персонажей и состояния"><input type="radio" name="scenarioType" value="rp" required /> RP</label>
               <label title="Совместное повествование без бросков, навыков и механических проверок"><input type="radio" name="scenarioType" value="novel" required /> Роман</label>
               <label title="Детерминированный учебный сценарий со строгой последовательностью и валидацией"><input type="radio" name="scenarioType" value="training" required /> Обучение</label>
             </div>

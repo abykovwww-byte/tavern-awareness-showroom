@@ -19,7 +19,7 @@ from app.services.state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
-STORY_MEMORY_SCHEMA = "rp-gateway.rp-story-memory.v1"
+STORY_MEMORY_SCHEMA = "rp-gateway.rp-story-memory.v2"
 STORY_LIST_FIELDS = (
     "canon",
     "rules_and_abilities",
@@ -230,11 +230,14 @@ class RPStoryMemoryUpdater:
                     "role": "system",
                     "content": (
                         "Maintain the complete living continuity ledger for one roleplaying campaign. Return strict JSON only. "
-                        "Return a full replacement document, not a patch, with exactly these keys: schema_version, canon, "
+                        "Return a recoverable projection document, not canonical state, with exactly these keys: schema_version, canon, "
                         "rules_and_abilities, inventory_and_assets, characters, active_threads, resolved_threads, "
-                        "unresolved_hooks, current_situation, chronology. All keys except schema_version and current_situation "
-                        "are arrays of concise strings. Preserve still-valid details from previous_story_memory; merge duplicates; "
-                        "move threads when their status changes instead of keeping contradictions. Treat player messages as attempts, "
+                        "unresolved_hooks, current_situation, chronology. current_situation is one object and every other "
+                        "content key is an array of objects with text, status (active, superseded, or retracted), authority "
+                        "(worldpack, user_correction, state, narrator, inference, or legacy_projection), and source_turn_ids. "
+                        "Preserve audit entries when their status changes instead of deleting contradictions. A direct player correction "
+                        "of established canon supersedes model inference; a WorldPack rule or canonical state supersedes every summary. "
+                        "Treat player messages as attempts, "
                         "plans, or claims unless the narrator response or authoritative state confirms them. Never reveal hidden NPC "
                         "secrets that the player has not learned. Keep concrete names, promises, relationships, possessions, rules, "
                         "projects, unresolved hooks, and causal chronology. This ledger is continuity context, never canonical authority. "
@@ -269,10 +272,20 @@ class RPStoryMemoryUpdater:
         chronology = list(memory["chronology"])
         for turn in plan.turns:
             chronology.append(
-                f"Ход {turn['id']}: игрок — {clip(turn['player_message'], 220)}; ведущий — {clip(turn['narrative_response'], 280)}"
+                {
+                    "text": f"Ход {turn['id']}: игрок — {clip(turn['player_message'], 220)}; ведущий — {clip(turn['narrative_response'], 280)}",
+                    "status": "active",
+                    "authority": "narrator",
+                    "source_turn_ids": [int(turn["id"])],
+                }
             )
         memory["chronology"] = chronology
-        memory["current_situation"] = clip(plan.turns[-1]["narrative_response"], 1200)
+        memory["current_situation"] = {
+            "text": clip(plan.turns[-1]["narrative_response"], 1200),
+            "status": "active",
+            "authority": "narrator",
+            "source_turn_ids": [int(plan.turns[-1]["id"])],
+        }
         return normalize_story_memory(memory, self.settings.rp_story_memory_max_chars)
 
     def state_excerpt(self, state: dict[str, Any]) -> str:
@@ -349,7 +362,7 @@ def empty_story_memory() -> dict[str, Any]:
         "active_threads": [],
         "resolved_threads": [],
         "unresolved_hooks": [],
-        "current_situation": "",
+        "current_situation": None,
         "chronology": [],
     }
 
@@ -357,9 +370,10 @@ def empty_story_memory() -> dict[str, Any]:
 def normalize_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     normalized = empty_story_memory()
-    normalized["current_situation"] = clip(source.get("current_situation"), 2_000).strip()
+    current_items = story_item_list(source.get("current_situation"), limit=1, item_chars=2_000)
+    normalized["current_situation"] = current_items[0] if current_items else None
     for field in STORY_LIST_FIELDS:
-        normalized[field] = string_list(
+        normalized[field] = story_item_list(
             source.get(field),
             limit=STORY_FIELD_LIMITS[field],
             item_chars=600,
@@ -389,13 +403,16 @@ def fit_story_memory(memory: dict[str, Any], max_chars: int) -> dict[str, Any]:
             changed = True
             break
         if not changed:
-            longest_field = max(STORY_LIST_FIELDS, key=lambda key: sum(len(item) for item in fitted[key]))
+            longest_field = max(
+                STORY_LIST_FIELDS,
+                key=lambda key: sum(len(json.dumps(item, ensure_ascii=False)) for item in fitted[key]),
+            )
             if fitted[longest_field]:
                 fitted[longest_field].pop(0 if longest_field in {"chronology", "resolved_threads"} else -1)
                 continue
-            current = fitted.get("current_situation", "")
-            if current:
-                fitted["current_situation"] = clip(current, max(len(current) - 300, 0))
+            current = fitted.get("current_situation")
+            if isinstance(current, dict) and current.get("text"):
+                current["text"] = clip(current["text"], max(len(str(current["text"])) - 300, 0))
                 continue
             break
     return fitted
@@ -404,15 +421,18 @@ def fit_story_memory(memory: dict[str, Any], max_chars: int) -> dict[str, Any]:
 def story_memory_prompt_text(snapshot: dict[str, Any], max_chars: int) -> str:
     memory = normalize_story_memory(snapshot.get("memory"), max_chars)
     sections: list[tuple[str, list[str]]] = [
-        ("СОСТОЯНИЕ НА МОМЕНТ ПАУЗЫ", [memory["current_situation"]] if memory["current_situation"] else []),
-        ("КАНОН", memory["canon"]),
-        ("АКТИВНЫЕ СЮЖЕТНЫЕ ЛИНИИ", memory["active_threads"]),
-        ("НЕРАСКРЫТЫЕ ЗАЦЕПКИ", memory["unresolved_hooks"]),
-        ("ПЕРСОНАЖИ", memory["characters"]),
-        ("ПРАВИЛА И СПОСОБНОСТИ", memory["rules_and_abilities"]),
-        ("ИНВЕНТАРЬ И АКТИВЫ", memory["inventory_and_assets"]),
-        ("ХРОНОЛОГИЯ", memory["chronology"][-24:]),
-        ("РАЗРЕШЁННЫЕ ЛИНИИ", memory["resolved_threads"][-16:]),
+        (
+            "СОСТОЯНИЕ НА МОМЕНТ ПАУЗЫ",
+            active_story_texts([memory["current_situation"]]) if memory["current_situation"] else [],
+        ),
+        ("КАНОН", active_story_texts(memory["canon"])),
+        ("АКТИВНЫЕ СЮЖЕТНЫЕ ЛИНИИ", active_story_texts(memory["active_threads"])),
+        ("НЕРАСКРЫТЫЕ ЗАЦЕПКИ", active_story_texts(memory["unresolved_hooks"])),
+        ("ПЕРСОНАЖИ", active_story_texts(memory["characters"])),
+        ("ПРАВИЛА И СПОСОБНОСТИ", active_story_texts(memory["rules_and_abilities"])),
+        ("ИНВЕНТАРЬ И АКТИВЫ", active_story_texts(memory["inventory_and_assets"])),
+        ("ХРОНОЛОГИЯ", active_story_texts(memory["chronology"])[-24:]),
+        ("РАЗРЕШЁННЫЕ ЛИНИИ", active_story_texts(memory["resolved_threads"])[-16:]),
     ]
     lines = [
         f"revision={snapshot.get('revision')} covered_turns={snapshot.get('from_turn_id')}-{snapshot.get('to_turn_id')}",
@@ -432,22 +452,64 @@ def story_memory_prompt_text(snapshot: dict[str, Any], max_chars: int) -> str:
     return "\n".join(lines)
 
 
-def string_list(value: Any, *, limit: int, item_chars: int) -> list[str]:
+def story_item_list(value: Any, *, limit: int, item_chars: int) -> list[dict[str, Any]]:
     if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, dict):
         values = [value]
     elif isinstance(value, list):
         values = value
     else:
         values = []
-    items: list[str] = []
+    items: list[dict[str, Any]] = []
     for item in values:
-        text = str(item or "").strip()
-        if not text or text in items:
+        source = item if isinstance(item, dict) else {"text": item}
+        text = clip(source.get("text"), item_chars).strip()
+        if not text:
             continue
-        items.append(clip(text, item_chars))
+        status = str(source.get("status") or "active")
+        if status not in {"active", "superseded", "retracted"}:
+            status = "active"
+        authority = str(source.get("authority") or "legacy_projection")
+        if authority not in {
+            "worldpack",
+            "user_correction",
+            "state",
+            "narrator",
+            "inference",
+            "legacy_projection",
+        }:
+            authority = "inference"
+        raw_turn_ids = source.get("source_turn_ids")
+        turn_ids = []
+        if isinstance(raw_turn_ids, list):
+            for turn_id in raw_turn_ids:
+                try:
+                    normalized_turn_id = int(turn_id)
+                except (TypeError, ValueError):
+                    continue
+                if normalized_turn_id >= 0 and normalized_turn_id not in turn_ids:
+                    turn_ids.append(normalized_turn_id)
+        normalized = {
+            "text": text,
+            "status": status,
+            "authority": authority,
+            "source_turn_ids": turn_ids[:20],
+        }
+        if any(existing["text"] == text and existing["status"] == status for existing in items):
+            continue
+        items.append(normalized)
         if len(items) >= limit:
             break
     return items
+
+
+def active_story_texts(items: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(item.get("text") or "")
+        for item in items
+        if isinstance(item, dict) and item.get("status") == "active" and str(item.get("text") or "").strip()
+    ]
 
 
 def completion_text(response: dict[str, Any]) -> str:

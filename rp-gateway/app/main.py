@@ -2062,7 +2062,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         if party.scenario_type != "rp":
-            raise HTTPException(status_code=400, detail="Manual skill checks are available only for RP parties")
+            raise HTTPException(status_code=400, detail="The compatibility check endpoint is available only for RP parties")
         command = check_command(request)
         return await party_message(
             http_request,
@@ -2270,6 +2270,7 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     )
     prompt_values = {
         "scenario_type": getattr(party, "scenario_type", "rp"),
+        "rp_contract_version": getattr(party, "rp_contract_version", "rp-core.v1"),
         "campaign_id": party.worldpack_id,
         "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
         "world_authors_note": worldpack_prompt_text(party, "authors_note"),

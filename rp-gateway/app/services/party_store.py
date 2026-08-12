@@ -118,6 +118,7 @@ class PartyStore:
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     scenario_type TEXT NOT NULL DEFAULT 'rp',
+                    rp_contract_version TEXT NOT NULL DEFAULT 'rp-core.v1',
                     worldpack_id TEXT NOT NULL REFERENCES worldpacks(id),
                     player_character_id TEXT NOT NULL REFERENCES player_characters(id),
                     model_profile_id TEXT NOT NULL REFERENCES model_profiles(id),
@@ -197,6 +198,7 @@ class PartyStore:
             self.migrate_owner_columns(connection)
             self.migrate_worldpack_visibility(connection)
             self.migrate_scenario_type(connection)
+            self.migrate_rp_contract_version(connection)
             self.migrate_autotest_branches(connection)
             self.migrate_dataset_columns(connection)
             self.migrate_turn_feedback_columns(connection)
@@ -228,6 +230,17 @@ class PartyStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
         if "scenario_type" not in columns:
             connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
+
+    def migrate_rp_contract_version(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
+        if "rp_contract_version" not in columns:
+            connection.execute(
+                "ALTER TABLE parties ADD COLUMN rp_contract_version TEXT NOT NULL DEFAULT 'rp-core.v1'"
+            )
+        connection.execute(
+            "UPDATE parties SET rp_contract_version = 'rp-core.v1' "
+            "WHERE rp_contract_version NOT IN ('rp-core.v1', 'rp-core.v2')"
+        )
 
     def migrate_autotest_branches(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(autotest_runs)").fetchall()}
@@ -505,6 +518,7 @@ class PartyStore:
             "premise": prompt[:600],
             "player_role": "Персонаж, заданный игроком для этой партии.",
             "generated_by": "rp-light-gui",
+            "rp_contract": {"schema_version": "rp-core.v2"},
             "prompt": state_prompt,
             "prompt_source": request.source,
             "prompt_source_filename": request.source_filename if is_markdown else None,
@@ -897,6 +911,14 @@ class PartyStore:
         supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
         if isinstance(supported, list) and supported and request.scenario_type not in supported:
             raise ValueError(f"worldpack {pack.id} does not support scenario type {request.scenario_type}")
+        rp_contract = pack.manifest.get("rp_contract") if isinstance(pack.manifest, dict) else None
+        rp_contract_version = (
+            str(rp_contract.get("schema_version") or "rp-core.v1")
+            if request.scenario_type == "rp" and isinstance(rp_contract, dict)
+            else "rp-core.v1"
+        )
+        if rp_contract_version not in {"rp-core.v1", "rp-core.v2"}:
+            raise ValueError(f"worldpack {pack.id} declares unsupported RP contract {rp_contract_version}")
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
@@ -909,16 +931,18 @@ class PartyStore:
             connection.execute(
                 """
                 INSERT INTO parties(
-                    id, owner_user_id, title, scenario_type, worldpack_id, player_character_id, model_profile_id,
+                    id, owner_user_id, title, scenario_type, rp_contract_version,
+                    worldpack_id, player_character_id, model_profile_id,
                     state_campaign_id, status, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
                     owner_user_id,
                     request.title,
                     request.scenario_type,
+                    rp_contract_version,
                     request.worldpack_id,
                     request.player_character_id,
                     request.model_profile_id,
@@ -1664,6 +1688,7 @@ class PartyStore:
             owner_user_id=row["owner_user_id"],
             title=row["title"],
             scenario_type=row["scenario_type"],
+            rp_contract_version=row["rp_contract_version"],
             worldpack_id=row["worldpack_id"],
             player_character_id=row["player_character_id"],
             model_profile_id=row["model_profile_id"],

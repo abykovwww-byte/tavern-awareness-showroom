@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Accepted; RP resolution details are superseded by Decision 024 for parties on
+`rp-core.v2`. Scenario separation and legacy `rp-core.v1` compatibility remain.
 
 ## Problem
 
@@ -18,10 +19,15 @@ silently choose or change it.
 
 ### `rp`
 
-- Parse player intent and resolve it through the D20 RuleEngine.
-- Apply skill, preparation, leverage, relationship, difficulty, and blockers.
-- Persist check records and require narration to preserve the fixed outcome.
-- Keep `/check` available in Light GUI.
+- Persist the WorldPack-selected RP contract version on the party.
+- For `rp-core.v2`, treat free text and compatibility `/check` as neutral
+  narrative continuation without D20, difficulty, score, success/failure, or a
+  check record.
+- Continue from canonical state, WorldPack constraints, information, resources,
+  NPC goals, relationship pressure and prior consequences.
+- Enforce typed absolute rules and player agency after narration, before commit.
+- Keep legacy `rp-core.v1` behavior only for existing parties until an explicit
+  versioned migration.
 
 ### `novel`
 

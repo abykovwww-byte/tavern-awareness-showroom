@@ -65,7 +65,8 @@ class PromptInspector:
     def preview_current(self, content: str) -> dict[str, Any]:
         state = self.store.get_state()
         latest = content.strip() or "[следующий ход игрока]"
-        intent = self.intent_parser.parse(latest)
+        rp_v2 = self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2"
+        intent = self.intent_parser.parse(latest, mechanical=not rp_v2)
         outcome, patch = self.rule_engine.resolve(
             state,
             intent,
@@ -73,6 +74,7 @@ class PromptInspector:
             roll=10,
             campaign_id=self.settings.campaign_id,
             scenario_type=self.settings.scenario_type,
+            rp_contract_version=self.settings.rp_contract_version,
         )
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
@@ -109,7 +111,8 @@ class PromptInspector:
     def reconstruct_last_prompt(self, latest_turn: dict[str, Any]) -> dict[str, Any]:
         state = self.store.get_state()
         latest = str(latest_turn.get("player_message") or "")
-        intent = self.intent_parser.parse(latest)
+        rp_v2 = self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2"
+        intent = self.intent_parser.parse(latest, mechanical=not rp_v2)
         outcome, _patch = self.rule_engine.resolve(
             state,
             intent,
@@ -117,6 +120,7 @@ class PromptInspector:
             roll=10,
             campaign_id=self.settings.campaign_id,
             scenario_type=self.settings.scenario_type,
+            rp_contract_version=self.settings.rp_contract_version,
         )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)

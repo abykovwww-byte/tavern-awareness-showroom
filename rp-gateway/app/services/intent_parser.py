@@ -1,8 +1,4 @@
-"""Conservative player intent parser.
-
-MVP rule: explicit /check commands are parsed mechanically. Free-form text is
-treated as a low-confidence feasibility attempt, not as confirmed facts.
-"""
+"""Conservative player intent parser with a legacy mechanical compatibility path."""
 
 from __future__ import annotations
 
@@ -31,20 +27,24 @@ CHECK_TYPES = {
 
 
 class IntentParser:
-    def parse(self, latest_user_message: str) -> Intent:
+    def parse(self, latest_user_message: str, *, mechanical: bool = True) -> Intent:
         text = latest_user_message.strip()
         match = re.search(r"/check\s+([a-zA-Z_ -]+)", text)
         if not match:
             return Intent(
-                action_type="feasibility",
+                action_type="feasibility" if mechanical else "narrative",
                 # Training scoring must see the complete explicit action. Party
                 # messages are already bounded by the API schema, so truncating
                 # here only creates silent false negatives.
                 desired_outcome=text,
                 methods=["free_text"],
                 facts_claimed_by_player=self.claimed_facts(text),
-                ambiguities=["No explicit /check command; using safe feasibility category."],
-                confidence=0.35,
+                ambiguities=(
+                    ["No explicit /check command; using safe feasibility category."]
+                    if mechanical
+                    else []
+                ),
+                confidence=0.35 if mechanical else 1.0,
             )
 
         command = text[match.start() :].splitlines()[0]
@@ -68,20 +68,20 @@ class IntentParser:
         desired = fields.get("goal") or fields.get("outcome") or fields.get("desired_outcome") or " ".join(loose)
         resource = fields.get("resource")
         return Intent(
-            action_type=action,  # type: ignore[arg-type]
+            action_type=action if mechanical else "narrative",  # type: ignore[arg-type]
             actor=fields.get("actor", "player"),
             target=fields.get("target"),
             desired_outcome=desired[:500],
-            methods=[fields.get("method", "explicit_check")],
+            methods=[fields.get("method", "explicit_check")] if mechanical else ["free_text"],
             resources_claimed=[resource] if resource else [],
             facts_claimed_by_player=self.claimed_facts(text),
             ambiguities=[] if desired else ["Desired outcome is not explicit."],
-            confidence=0.9 if desired else 0.7,
-            skill=self.safe_int(fields.get("skill"), 0),
-            preparation=self.safe_int(fields.get("preparation"), 0),
-            leverage=self.safe_int(fields.get("leverage"), 0),
-            difficulty=self.safe_int(fields.get("difficulty"), 10),
-            resource_amount=self.safe_float(fields.get("amount"), 1.0),
+            confidence=(0.9 if desired else 0.7) if mechanical else 1.0,
+            skill=self.safe_int(fields.get("skill"), 0) if mechanical else 0,
+            preparation=self.safe_int(fields.get("preparation"), 0) if mechanical else 0,
+            leverage=self.safe_int(fields.get("leverage"), 0) if mechanical else 0,
+            difficulty=self.safe_int(fields.get("difficulty"), 10) if mechanical else 0,
+            resource_amount=self.safe_float(fields.get("amount"), 1.0) if mechanical else 0.0,
         )
 
     def parse_json_intent(self, raw: str) -> Intent:

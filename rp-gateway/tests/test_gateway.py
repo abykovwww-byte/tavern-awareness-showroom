@@ -681,6 +681,166 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
     assert len(history) == 1
 
 
+def test_rp_core_v2_turn_has_no_hidden_check_or_random_result(tmp_path: Path):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2"}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path)
+    party = create_demo_party(c)
+
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "Стоп. Почему мы не можем выйти наружу?", "source": "current"},
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.json()["preview"]
+    assert preview_payload["intent"]["action_type"] == "narrative"
+    assert preview_payload["outcome"]["result"] == "narrative_continuation"
+    assert preview_payload["outcome"]["roll"] == preview_payload["outcome"]["difficulty"] == 0
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Стоп. Почему мы не можем выйти наружу?"},
+    )
+
+    assert response.status_code == 200
+    assert party["rp_contract_version"] == "rp-core.v2"
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    metadata = latest_turn_metadata(store)
+    assert metadata["outcome"] == {
+        "check_id": metadata["outcome"]["check_id"],
+        "action_type": "narrative",
+        "actor": "player",
+        "target": None,
+        "result": "narrative_continuation",
+        "roll": 0,
+        "difficulty": 0,
+        "modifiers": {},
+        "final_score": 0,
+        "blocked_reasons": [],
+        "consequences": metadata["outcome"]["consequences"],
+        "forbidden_reinterpretations": metadata["outcome"]["forbidden_reinterpretations"],
+        "authoritative_block": metadata["outcome"]["authoritative_block"],
+    }
+    with sqlite3.connect(store.sqlite_path) as connection:
+        checks = connection.execute(
+            "SELECT COUNT(*) FROM checks WHERE campaign_id = ?",
+            (store.campaign_id,),
+        ).fetchone()[0]
+    assert checks == 0
+
+
+def test_rp_core_v2_manual_check_endpoint_is_neutral_compatibility_input(tmp_path: Path):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2"}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path)
+    party = create_demo_party(c)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/checks",
+        json={"check_type": "persuasion", "target": "advisor", "skill": 99, "difficulty": 1, "goal": "meeting"},
+    )
+
+    assert response.status_code == 200
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    outcome = latest_turn_metadata(store)["outcome"]
+    assert outcome["action_type"] == "narrative"
+    assert outcome["result"] == "narrative_continuation"
+    assert outcome["roll"] == outcome["difficulty"] == outcome["final_score"] == 0
+
+
+def test_rp_core_v2_validator_rejects_declared_absolute_rule_violation() -> None:
+    state = base_state()
+    state["world_constraints"] = [
+        {
+            "id": "absolute-power",
+            "text": "The power affects living matter.",
+            "scope": "power",
+            "turn": 0,
+            "kind": "absolute",
+            "source": "worldpack:test",
+            "forbidden_claims": ["power fails on living matter"],
+        }
+    ]
+    result = OutputValidator().validate(
+        "The power fails on living matter.",
+        Outcome(
+            check_id="neutral",
+            action_type="narrative",
+            actor="player",
+            result="narrative_continuation",
+            roll=0,
+            difficulty=0,
+            modifiers={},
+            final_score=0,
+            authoritative_block="neutral",
+        ),
+        state,
+        scenario_type="rp",
+    )
+
+    assert result.valid is False
+    assert result.violations == [
+        "Narrative contradicts absolute WorldPack rule absolute-power: power fails on living matter"
+    ]
+
+
+def test_rp_core_v2_repeated_absolute_rule_violation_never_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2"}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    llm_calls = 0
+
+    async def violating_complete(*args: object, **kwargs: object) -> dict:
+        nonlocal llm_calls
+        llm_calls += 1
+        return {
+            "id": f"violation-{llm_calls}",
+            "choices": [{"message": {"role": "assistant", "content": "The power fails on living matter."}}],
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", violating_complete)
+    c = client(tmp_path)
+    party = create_demo_party(c)
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    state = store.get_state()
+    state["world_constraints"] = [
+        {
+            "id": "absolute-power",
+            "text": "The power affects living matter.",
+            "scope": "power",
+            "turn": 0,
+            "kind": "absolute",
+            "source": "worldpack:test",
+            "forbidden_claims": ["power fails on living matter"],
+        }
+    ]
+    state["meta"]["state_version"] = int(store.current_version() or 0) + 1
+    store.insert_state_version(state, "test:absolute-rule")
+    version_before = store.current_version()
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Use the power.", "idempotency_key": "absolute-rule-failure"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "LLM response failed narrative validation"
+    assert llm_calls == 2
+    assert store.current_version() == version_before
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == []
+
+
 def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tmp_path: Path):
     """Proves prompt placement and the absence of relationship internals from party API surfaces."""
     pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])

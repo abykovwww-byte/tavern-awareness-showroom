@@ -73,6 +73,8 @@ class OutputValidator:
             key_terms = [part for part in reason.lower().split() if len(part) >= 6]
             if key_terms and "despite" in lowered and any(term in lowered for term in key_terms):
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
+        if scenario_type == "rp":
+            violations.extend(absolute_rule_violations(text, state or {}))
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
         if scenario_type == "training" and training_runtime and training_runtime.enabled:
@@ -85,7 +87,8 @@ class OutputValidator:
                 violations=violations,
                 repair_instruction=(
                     "Перепиши ответ как обычную сцену для игрока. Удали служебные метки, анализ и диагностику. "
-                    "Не принимай решений за персонажа игрока и не меняй зафиксированный исход действия."
+                    "Не принимай решений за персонажа игрока, не вводи скрытую проверку и соблюдай каждое "
+                    "активное абсолютное правило WorldPack."
                 ),
             )
         return ValidationResult(valid=True)
@@ -115,3 +118,25 @@ def safe_fallback(
     else:
         second = "Остается решить, как обойти препятствие или чем рискнуть дальше."
     return f"{first} {second}"
+
+
+def absolute_rule_violations(text: str, state: dict[str, Any]) -> list[str]:
+    lowered = text.casefold()
+    violations: list[str] = []
+    for item in state.get("world_constraints", []):
+        if not isinstance(item, dict) or item.get("kind") != "absolute":
+            continue
+        rule_id = str(item.get("id") or "unknown")
+        markers = item.get("forbidden_claims")
+        if not isinstance(markers, list):
+            continue
+        matched = []
+        for marker in markers:
+            marker_text = str(marker).strip()
+            if marker_text and marker_text.casefold() in lowered:
+                matched.append(marker_text)
+        if matched:
+            violations.append(
+                f"Narrative contradicts absolute WorldPack rule {rule_id}: {matched[0]}"
+            )
+    return violations

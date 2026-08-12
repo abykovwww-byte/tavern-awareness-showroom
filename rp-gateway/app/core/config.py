@@ -32,6 +32,7 @@ class Settings:
     app_port: int = env_int("APP_PORT", 8088)
     campaign_id: str = os.getenv("CAMPAIGN_ID", "default")
     scenario_type: str = os.getenv("SCENARIO_TYPE", "rp")
+    rp_contract_version: str = os.getenv("RP_CONTRACT_VERSION", "rp-core.v1")
     world_system_prompt: str = ""
     world_authors_note: str = ""
     database_url: str = os.getenv("DATABASE_URL", "sqlite:////data/rp_gateway.db")

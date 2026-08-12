@@ -4,7 +4,7 @@ Date: 2026-08-03
 
 ## Status
 
-Accepted.
+Accepted; authority and projection semantics are superseded by Decision 024.
 
 ## Context
 
@@ -25,14 +25,18 @@ Add a cumulative `rp_story_memory_snapshots` ledger and update it only when
 
 - A global service model receives the previous bounded snapshot, the oldest
   new turn batch, and a compact canonical-state excerpt without NPC secrets.
-- It returns a complete replacement document using the fixed v1 schema.
+- It returns a recoverable projection using the fixed v2 schema. Every entry
+  carries text, provenance (`authority` and source turn IDs), and an explicit
+  `active`, `superseded`, or `retracted` status.
 - Default cadence is four new turns; a manual update may force a smaller batch.
 - Each successful replacement is append-only, party-scoped, revisioned, and
   records turn coverage, state version, time, and model.
 - A checkpoint fork copies only the newest snapshot fully covered by that
   checkpoint and resets its branch-local revision to one.
-- The narrator receives `RP_STORY_MEMORY` after world instructions and before
-  episodic chapters. State and `AUTHORITATIVE_OUTCOME` remain higher authority.
+- The narrator receives only active `RP_STORY_MEMORY` entries after world
+  instructions and before episodic chapters. Retracted and superseded entries
+  remain auditable in snapshots but cannot enter the effective prompt. State,
+  WorldPack absolute rules, and explicit user corrections remain higher authority.
 - Background failures are fail-open and use durable service-job retry.
 
 Training and novel parties do not enqueue the job, load the snapshot, inject
@@ -54,7 +58,8 @@ local Gemma window without sending the complete campaign transcript.
 - Very long RP campaigns gain a stable living continuity ledger similar to a
   maintained campaign-summary file.
 - Immutable chapters and raw turns remain available for detail and audit.
-- A service-model hallucination cannot directly mutate state.
+- A service-model hallucination cannot directly mutate state, and can be
+  superseded or retracted without deleting its audit entry.
 - RP retains fewer verbatim recent turns inside the 132k prompt, by an explicit
   and observable 10k reserve.
 - Training behavior and context budget remain unchanged.

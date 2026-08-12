@@ -322,6 +322,12 @@ class NarrativeClient:
             "turn": state.get("meta", {}).get("turn"),
             "player": player_state,
             "relationships": selected_character_relationships(state, relevant_characters),
+            "factions": state.get("factions", {}),
+            "locations": state.get("locations", {}),
+            "resources": state.get("resources", {}),
+            "active_threads": state.get("active_threads", []),
+            "completed_threads": state.get("completed_threads", []),
+            "uncertain_facts": state.get("uncertain_facts", []),
             "constraints": state.get("world_constraints", []),
         }
         rules = self.scenario_rules()
@@ -377,6 +383,10 @@ class NarrativeClient:
                     "content": relevant_characters_block(relevant_characters),
                 }
             )
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2":
+            absolute_rules = world_absolute_rules_block(state)
+            if absolute_rules:
+                messages.append({"role": "system", "content": absolute_rules})
         messages.extend(
             [
                 {"role": "system", "content": f"Relevant state summary: {state_summary}"},
@@ -444,6 +454,10 @@ class NarrativeClient:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_version == "rp-core.v2":
+            absolute_rules = world_absolute_rules_block(state)
+            if absolute_rules:
+                messages.append({"role": "system", "content": absolute_rules})
         if self.settings.scenario_type == "rp" and relationship_pressure:
             messages.append({"role": "system", "content": relationship_pressure})
         messages.append(
@@ -485,6 +499,14 @@ class NarrativeClient:
                 "whether an item is safe or suspicious unless the authored scenario explicitly schedules a final debrief. "
                 "If player.resources.current-turn-window is present, begin with that exact scheduled turn as a Russian "
                 "player-facing header and never remain in the previous time window."
+            )
+        if self.settings.rp_contract_version == "rp-core.v2":
+            return common + (
+                "You are the GM and narrator of a roleplaying game without mechanical checks. Treat the latest player "
+                "message as intent, not as an automatic fact or a request for hidden adjudication. Never invent dice, "
+                "difficulty, modifiers, scores, success, or failure. Difficulty comes only from active WorldPack rules, "
+                "current state, NPC goals, available information, resources, relationships, and prior consequences. "
+                "Obey every WORLD_ABSOLUTE_RULES item and end with a playable opening for the next player action."
             )
         return common + (
             "You are the GM and narrator of a roleplaying game. The RP Gateway has already resolved the D20 check. "
@@ -714,6 +736,27 @@ def rp_story_memory_block(snapshot: dict[str, Any], max_chars: int) -> str:
         "long-range continuity, but treat current canonical state and AUTHORITATIVE_OUTCOME as higher authority. Do not "
         "turn uncertainty into fact and do not assume omitted detail was erased.\n"
         f"{story_memory_prompt_text(snapshot, max_chars)}"
+    )
+
+
+def world_absolute_rules_block(state: dict[str, Any]) -> str | None:
+    rules = []
+    for item in state.get("world_constraints", []):
+        if not isinstance(item, dict) or item.get("kind") != "absolute":
+            continue
+        rules.append(
+            {
+                "id": str(item.get("id") or "").strip(),
+                "source": str(item.get("source") or "").strip(),
+                "text": str(item.get("text") or "").strip(),
+            }
+        )
+    if not rules:
+        return None
+    return (
+        "WORLD_ABSOLUTE_RULES\n"
+        "These active WorldPack rules are authoritative. Do not contradict, weaken, or reinterpret them.\n"
+        f"{json.dumps(rules, ensure_ascii=False, separators=(',', ':'))}"
     )
 
 

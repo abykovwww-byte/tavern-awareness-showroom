@@ -13,6 +13,7 @@ WORLD_MARKDOWN_FILENAME_MAX_CHARS = 255
 
 
 CheckType = Literal[
+    "narrative",
     "persuasion",
     "intimidation",
     "deception",
@@ -320,6 +321,7 @@ class PartySummary(BaseModel):
     owner_user_id: str | None = None
     title: str
     scenario_type: ScenarioType
+    rp_contract_version: Literal["rp-core.v1", "rp-core.v2"] = "rp-core.v1"
     worldpack_id: str
     player_character_id: str
     model_profile_id: str

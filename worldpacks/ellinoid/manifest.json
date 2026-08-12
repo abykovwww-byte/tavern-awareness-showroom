@@ -9,6 +9,7 @@
   "player_role": "18-летняя незамужняя дворянка из знатного, но обнищавшего петербургского рода. Ее имя выбирает игрок. Семья ожидает, что она спасет дом выгодным браком; сама героиня ищет любовь, свободу и способ не предать близких.",
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "novel", "supported": ["novel", "rp"]},
+  "rp_contract": {"schema_version": "rp-core.v2"},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"

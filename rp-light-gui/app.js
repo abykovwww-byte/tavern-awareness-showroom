@@ -114,8 +114,6 @@ const els = {
   worldPreview: document.querySelector("#worldPreview"),
   worldInstruction: document.querySelector("#worldInstruction"),
   worldPreviewLlmButton: document.querySelector("#worldPreviewLlmButton"),
-  checkForm: document.querySelector("#checkForm"),
-  checkPanel: document.querySelector("#checkPanel"),
   partyModelProviderSelect: document.querySelector("#partyModelProviderSelect"),
   partyModelSelect: document.querySelector("#partyModelSelect"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
@@ -162,6 +160,7 @@ const els = {
 };
 
 const checkLabels = {
+  narrative: "Намерение",
   persuasion: "Убеждение",
   intimidation: "Запугивание",
   deception: "Обман",
@@ -182,7 +181,7 @@ const metaHints = {
 };
 
 const scenarioTypeLabels = {
-  rp: "RP · D20",
+  rp: "RP",
   novel: "Роман",
   training: "Обучение",
 };
@@ -256,7 +255,6 @@ function bindEvents() {
   els.partyModelProviderSelect.addEventListener("change", renderPartyModelOptions);
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
-  els.checkForm.addEventListener("submit", runCheck);
   els.adminUserForm.addEventListener("submit", createAdminUser);
   els.byokKeyForm.addEventListener("submit", createByokKey);
   els.serviceModelForm.addEventListener("submit", saveServiceModel);
@@ -641,7 +639,7 @@ function renderAll() {
 
 function renderBranchReadOnlyControls() {
   if (!appState.activeBranch) return;
-  const containers = [els.loreCardForm, els.checkpointForm, els.checkForm];
+  const containers = [els.loreCardForm, els.checkpointForm];
   containers.forEach((container) => {
     container?.querySelectorAll("input, textarea, select, button").forEach((node) => { node.disabled = true; });
   });
@@ -706,9 +704,6 @@ function renderMeta() {
   const branch = appState.activeBranch;
   els.deletePartyButton.disabled = !party || Boolean(branch);
   els.changePartyModelButton.disabled = !party || Boolean(branch);
-  if (els.checkPanel) {
-    els.checkPanel.classList.toggle("hidden", !party || Boolean(branch) || party.scenario_type !== "rp");
-  }
   renderPartyModelSelect();
   if (!party) {
     els.partyMeta.innerHTML = `<dt title="Статус выбранной партии">Статус</dt><dd>партия не выбрана</dd>`;
@@ -912,13 +907,14 @@ function rpStoryMemoryHtml(snapshot, stats) {
   }
   const data = snapshot.memory || {};
   const covered = `${snapshot.from_turn_id ?? "-"}-${snapshot.to_turn_id ?? "-"}`;
+  const currentSituation = activeStoryText(data.current_situation);
   return `
     ${stateItem("RP story memory", `revision ${escapeHtml(snapshot.revision || 1)} · ходы ${escapeHtml(covered)}`, "Кумулятивный RP-only snapshot; canonical state имеет больший приоритет.")}
-    ${data.current_situation ? `<div class="state-item memory-text"><strong>Текущая ситуация</strong>${escapeHtml(clipText(data.current_situation, 900))}</div>` : ""}
-    ${memoryList("Канон", data.canon)}
-    ${memoryList("Персонажи", data.characters)}
-    ${memoryList("Активные линии", data.active_threads)}
-    ${memoryList("Нераскрытые зацепки", data.unresolved_hooks)}
+    ${currentSituation ? `<div class="state-item memory-text"><strong>Текущая ситуация</strong>${escapeHtml(clipText(currentSituation, 900))}</div>` : ""}
+    ${memoryList("Канон", activeStoryItems(data.canon))}
+    ${memoryList("Персонажи", activeStoryItems(data.characters))}
+    ${memoryList("Активные линии", activeStoryItems(data.active_threads))}
+    ${memoryList("Нераскрытые зацепки", activeStoryItems(data.unresolved_hooks))}
   `;
 }
 
@@ -2796,27 +2792,6 @@ async function changePartyModel() {
   }
 }
 
-async function runCheck(event) {
-  event.preventDefault();
-  if (!appState.activeParty) return;
-  try {
-    setBusy(true, "Провожу проверку и обновляю state...");
-    await apiPost(`/api/parties/${appState.activeParty.id}/checks`, {
-      check_type: document.querySelector("#checkType").value,
-      target: document.querySelector("#checkTarget").value.trim() || null,
-      skill: Number(document.querySelector("#checkSkill").value || 0),
-      difficulty: Number(document.querySelector("#checkDifficulty").value || 10),
-      goal: document.querySelector("#checkGoal").value.trim(),
-    });
-    await reloadActiveParty();
-    openPanelFor(els.stateSummary);
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setBusy(false);
-  }
-}
-
 function appendPendingMessage(text, requestId) {
   if (!appState.history) appState.history = { turns: [] };
   const timestamp = pendingMessageForParty(appState.activeParty?.id)?.createdAt || Date.now();
@@ -3502,7 +3477,18 @@ function memoryList(title, items) {
 function memoryItemText(item) {
   if (typeof item === "string") return item;
   if (!item || typeof item !== "object") return String(item ?? "");
-  return item.fact || item.thread || item.change || item.promise || item.obligation || JSON.stringify(item);
+  return item.text || item.fact || item.thread || item.change || item.promise || item.obligation || JSON.stringify(item);
+}
+
+function activeStoryItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.filter((item) => typeof item === "string" || item?.status === "active");
+}
+
+function activeStoryText(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object" || item.status !== "active") return "";
+  return item.text || "";
 }
 
 function relationshipText(relationship) {

@@ -9,6 +9,7 @@
   "player_role": "Внутренний киберкриминалист и специалист по реагированию на инциденты в АО «Северная линия». Игрок выбирает имя персонажа. У персонажа есть доступ к SOC, SIEM/EDR, цепочке хранения доказательств и кризисному штабу, но нет права нарушать закон, атаковать внешние цели или единолично принимать бизнес-решения.",
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {"recommended": "training", "supported": ["training", "rp"]},
+  "rp_contract": {"schema_version": "rp-core.v2"},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"

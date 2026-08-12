@@ -36,10 +36,13 @@ class RuleEngine:
         roll: int | None = None,
         campaign_id: str | None = None,
         scenario_type: str = "rp",
+        rp_contract_version: str = "rp-core.v1",
         interaction_evidence: list[InteractionEvidence] | None = None,
         training_runtime: "TrainingRuntimeService | None" = None,
     ) -> tuple[Outcome, StatePatch]:
-        if scenario_type == "novel":
+        if scenario_type == "novel" or (
+            scenario_type == "rp" and rp_contract_version == "rp-core.v2"
+        ):
             return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
         if scenario_type == "training":
             return self.resolve_nonmechanical(
@@ -117,7 +120,7 @@ class RuleEngine:
                 "apply their observable consequences, and advance exactly one authored scenario turn.\n"
                 "</AUTHORITATIVE_OUTCOME>"
             )
-        else:
+        elif scenario_type == "novel":
             consequences = [
                 "Continue the shared fiction from the player's contribution.",
                 "Prioritize character, relationship, pacing, and scene continuity over game mechanics.",
@@ -128,6 +131,19 @@ class RuleEngine:
                 "Mode: collaborative novel\n"
                 "No die was rolled and no skill check exists. Continue the fiction coherently without inventing "
                 "a mechanical success or failure.\n"
+                "</AUTHORITATIVE_OUTCOME>"
+            )
+        else:
+            consequences = [
+                "Continue the roleplaying scene from the player's stated intent.",
+                "Apply active WorldPack rules, current state, character goals, relationships, and prior consequences.",
+                "Leave consequential choices and the player character's inner decisions to the player.",
+            ]
+            authoritative = (
+                "<AUTHORITATIVE_OUTCOME>\n"
+                "Mode: roleplaying without mechanical checks\n"
+                "No die was rolled and no feasibility, difficulty, score, success, or failure was assigned. "
+                "Treat the player text as intent and continue from active world facts and character causes.\n"
                 "</AUTHORITATIVE_OUTCOME>"
             )
         outcome = Outcome(

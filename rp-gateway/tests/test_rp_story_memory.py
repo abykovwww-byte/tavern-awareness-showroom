@@ -89,6 +89,8 @@ def test_story_memory_updater_is_rp_only_and_cumulative(tmp_path: Path) -> None:
     assert first["story_memory"]["from_turn_id"] == 1
     assert first["story_memory"]["to_turn_id"] == 4
     assert len(first["story_memory"]["memory"]["chronology"]) == 4
+    assert first["story_memory"]["memory"]["current_situation"]["status"] == "active"
+    assert first["story_memory"]["memory"]["current_situation"]["source_turn_ids"] == [4]
 
     record_turns(store, 1, start=5)
     second = asyncio.run(updater.update(None, force=True, fail_open=False))
@@ -163,6 +165,53 @@ def test_story_memory_prompt_block_and_order_are_rp_only(tmp_path: Path) -> None
     )
     assert not any(message["content"].startswith("RP_STORY_MEMORY") for message in training_messages)
     assert any(message["content"].startswith("LONG_TERM_PARTY_MEMORY") for message in training_messages)
+
+
+def test_story_memory_prompt_projects_only_active_facts(tmp_path: Path) -> None:
+    store = make_store(tmp_path)
+    memory = story_document()
+    memory["rules_and_abilities"] = [
+        {
+            "text": "Сила не действует на живую материю.",
+            "status": "retracted",
+            "authority": "inference",
+            "source_turn_ids": [42],
+        },
+        {
+            "text": "Сила действует на живую материю.",
+            "status": "active",
+            "authority": "user_correction",
+            "source_turn_ids": [43],
+        },
+    ]
+    memory["current_situation"] = {
+        "text": "Старая ситуация.",
+        "status": "retracted",
+        "authority": "inference",
+        "source_turn_ids": [42],
+    }
+    snapshot = store.record_rp_story_memory(
+        from_turn_id=42,
+        to_turn_id=43,
+        state_version=1,
+        memory=memory,
+        model="service-model",
+    )
+
+    messages = NarrativeClient(
+        Settings(scenario_type="rp", rp_contract_version="rp-core.v2")
+    ).narrative_messages(
+        ChatCompletionRequest(messages=[ChatMessage(role="user", content="Продолжаю.")]),
+        store.get_state(),
+        outcome(),
+        repair_instruction=None,
+        rp_story_memory=snapshot,
+    )
+    prompt = "\n".join(message["content"] for message in messages)
+
+    assert "Сила действует на живую материю." in prompt
+    assert "Сила не действует на живую материю." not in prompt
+    assert "Старая ситуация." not in prompt
 
 
 @pytest.mark.parametrize(

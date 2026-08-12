@@ -221,7 +221,14 @@
         "id": { "type": "string", "minLength": 1 },
         "text": { "type": "string", "minLength": 1 },
         "scope": { "type": "string" },
-        "turn": { "type": "integer", "minimum": 0 }
+        "turn": { "type": "integer", "minimum": 0 },
+        "kind": { "type": "string", "enum": ["absolute", "guidance"] },
+        "source": { "type": "string", "minLength": 1 },
+        "forbidden_claims": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
       }
     },
     "timeline_event": {

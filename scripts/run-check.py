@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run a bounded RP check and write an authoritative outcome proposal.
+"""Run a bounded legacy v1 check and write an authoritative outcome proposal.
 
 The helper is intentionally deterministic when --roll and --check-id are
 provided. It does not call an LLM and does not edit state/current.json. State
 changes are written as proposed patches for the iteration-2 apply workflow.
+It is not part of the rp-core.v2 party turn path.
 """
 
 from __future__ import annotations

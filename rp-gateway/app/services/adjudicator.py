@@ -130,7 +130,11 @@ class Adjudicator:
                 return response
 
             state = self.store.get_state()
-            intent = self.intent_parser.parse(latest)
+            rp_v2 = (
+                self.settings.scenario_type == "rp"
+                and self.settings.rp_contract_version == "rp-core.v2"
+            )
+            intent = self.intent_parser.parse(latest, mechanical=not rp_v2)
             artifact_evidence = self.training_artifacts.pending_evidence() if self.training_artifacts else []
             workspace_evidence = self.training_workspace.pending_evidence() if self.training_workspace else []
             interaction_evidence = [*artifact_evidence, *workspace_evidence]
@@ -140,6 +144,7 @@ class Adjudicator:
                 request_id,
                 campaign_id=self.settings.campaign_id,
                 scenario_type=self.settings.scenario_type,
+                rp_contract_version=self.settings.rp_contract_version,
                 interaction_evidence=interaction_evidence,
                 training_runtime=self.training_runtime,
             )
@@ -225,7 +230,9 @@ class Adjudicator:
                         request_id,
                     )
                     raise RuntimeError("Narrative provider returned an invalid response")
-                validation = None if self.settings.scenario_type == "rp" else self.validator.validate(
+                validation = None if (
+                    self.settings.scenario_type == "rp" and not rp_v2
+                ) else self.validator.validate(
                     text,
                     outcome,
                     narrative_state,
@@ -414,7 +421,9 @@ class Adjudicator:
             text = response_text(response)
             updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
             version = int(updated_state.get("meta", {}).get("state_version", 0))
-            final_validation = None if self.settings.scenario_type == "rp" else self.validator.validate(
+            final_validation = None if (
+                self.settings.scenario_type == "rp" and not rp_v2
+            ) else self.validator.validate(
                 text,
                 outcome,
                 updated_state,
@@ -449,7 +458,7 @@ class Adjudicator:
                 party_turn=int(updated_state["meta"]["turn"]),
             )
             self.store.complete_turn_request(idempotency_key, response)
-            if self.settings.scenario_type == "rp":
+            if self.settings.scenario_type == "rp" and not rp_v2:
                 self.store.record_check(turn_id, outcome)
             self.store.audit(
                 "turn_complete",
