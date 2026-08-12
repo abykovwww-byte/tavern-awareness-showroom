@@ -139,6 +139,7 @@ const els = {
   adminAutotestPromptInput: document.querySelector("#adminAutotestPromptInput"),
   adminAutotestProviderSelect: document.querySelector("#adminAutotestProviderSelect"),
   adminAutotestModelSelect: document.querySelector("#adminAutotestModelSelect"),
+  adminAutotestRevisionInput: document.querySelector("#adminAutotestRevisionInput"),
   adminAutotestTurnsInput: document.querySelector("#adminAutotestTurnsInput"),
   adminAutotestStartButton: document.querySelector("#adminAutotestStartButton"),
   adminAutotestRunsList: document.querySelector("#adminAutotestRunsList"),
@@ -2480,6 +2481,12 @@ async function createAdminAutotest(event) {
     showToast("Количество ходов должно быть от 1 до 30.");
     return;
   }
+  const revisionText = els.adminAutotestRevisionInput.value.trim();
+  const candidateRevision = revisionText === "" ? undefined : Number(revisionText);
+  if (candidateRevision !== undefined && (!Number.isInteger(candidateRevision) || candidateRevision < 0 || candidateRevision > 6)) {
+    showToast("Candidate revision RP-контракта должна быть от 0 до 6.");
+    return;
+  }
   try {
     setBusy(true, "Сохраняю checkpoint и создаю ветку автотеста...");
     const result = await apiPost("/api/admin/autotests", {
@@ -2487,6 +2494,7 @@ async function createAdminAutotest(event) {
       player_prompt: els.adminAutotestPromptInput.value.trim(),
       turn_count: turnCount,
       player_model_profile_id: els.adminAutotestModelSelect.value,
+      rp_contract_revision: candidateRevision,
     });
     appState.adminAutotestRuns = [
       result.run,

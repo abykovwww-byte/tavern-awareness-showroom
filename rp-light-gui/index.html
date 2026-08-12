@@ -277,6 +277,7 @@
                 <label class="management-field"><span>Провайдер игрока</span><select id="adminAutotestProviderSelect" required></select></label>
                 <label class="management-field"><span>Модель игрока</span><select id="adminAutotestModelSelect" required></select></label>
               </div>
+              <label class="management-field"><span>Candidate revision RP-контракта · 0–6</span><input id="adminAutotestRevisionInput" type="number" min="0" max="6" placeholder="Как у исходной партии" /></label>
               <label class="management-field"><span>Ходов LLM-игрока · максимум 30</span><input id="adminAutotestTurnsInput" type="number" min="1" max="30" value="5" required /></label>
               <button id="adminAutotestStartButton" class="tool-button wide-button" type="submit">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 3 14 9-14 9V3Z"/></svg>
@@ -509,6 +510,6 @@
     <script src="/structured-content.js?v=20260729-messenger-boundary"></script>
     <script src="/message-time.js?v=20260729-message-time"></script>
     <script src="/training-artifacts.js?v=20260731-messenger-links"></script>
-    <script src="/app.js?v=20260811-visible-turn-cost"></script>
+    <script src="/app.js?v=20260812-adr026-candidate-revision"></script>
   </body>
 </html>
