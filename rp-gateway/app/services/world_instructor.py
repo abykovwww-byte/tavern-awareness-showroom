@@ -83,7 +83,7 @@ class WorldInstructor:
             body = rest.strip()
 
         try:
-            draft = await self.draft_instruction(body, authorization)
+            draft = await self.draft_instruction(body, authorization, request_id=request_id)
             self.store.create_patch_proposal(draft.patch)
             self.store.audit(
                 "world_proposal",
@@ -105,7 +105,14 @@ class WorldInstructor:
 
         return self.chat_response(self.preview_text(draft), model)
 
-    async def draft_instruction(self, instruction: str, authorization: str | None, use_llm: bool = True) -> WorldInstructionDraft:
+    async def draft_instruction(
+        self,
+        instruction: str,
+        authorization: str | None,
+        use_llm: bool = True,
+        *,
+        request_id: str | None = None,
+    ) -> WorldInstructionDraft:
         instruction = instruction.strip()
         if not instruction:
             raise ValueError("world instruction is empty")
@@ -115,7 +122,13 @@ class WorldInstructor:
             draft = self.mock_draft(state, instruction, proposal_id)
         else:
             try:
-                draft = await self.llm_draft(state, instruction, proposal_id, authorization)
+                draft = await self.llm_draft(
+                    state,
+                    instruction,
+                    proposal_id,
+                    authorization,
+                    request_id=request_id,
+                )
             except PermissionError:
                 raise
             except Exception as exc:  # noqa: BLE001 - safe fallback keeps the UI usable
@@ -131,6 +144,8 @@ class WorldInstructor:
         instruction: str,
         proposal_id: str,
         inbound_authorization: str | None,
+        *,
+        request_id: str | None = None,
     ) -> WorldInstructionDraft:
         runtime = service_model_settings(self.settings)
 
@@ -176,7 +191,10 @@ class WorldInstructor:
                 completion = await client.complete(
                     role="world_instructor",
                     party_id=self.store.campaign_id,
-                    turn_id=turn,
+                    turn_id=None,
+                    request_id=request_id,
+                    party_turn=turn,
+                    attempt=index + 1,
                     prompt=service_prompt_text(payload),
                     payload=payload,
                 )

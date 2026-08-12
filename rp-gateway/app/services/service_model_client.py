@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import re
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,17 +16,14 @@ import httpx
 
 from app.core.config import Settings
 from app.services.provider_auth import outbound_headers
+from app.services.trace_redaction import REDACTED, redact_trace_value
 
 
-DEFAULT_RETENTION_DAYS = 30
+DEFAULT_RETENTION_DAYS = 0
 RETENTION_ENV = "SERVICE_CALL_LOG_RETENTION_DAYS"
-REDACTED = "[REDACTED]"
+TRACE_SCHEMA_VERSION = "rp-gateway.service-call.v1"
 
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)([\"']?(?:api[_-]?key|authorization|cookie|password|secret|token)[\"']?\s*[:=]\s*)"
-    r"(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'|[^\s,;}\]]+)"
-)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,6 +66,9 @@ class ServiceModelClient:
         party_id: str | None,
         turn_id: int | None,
         prompt: str,
+        request_id: str | None = None,
+        party_turn: int | None = None,
+        attempt: int | None = None,
         **opts: Any,
     ) -> ServiceCompletion:
         payload = dict(opts.pop("payload", {}))
@@ -78,6 +79,8 @@ class ServiceModelClient:
             payload["model"] = self.settings.narrative_model
 
         response: httpx.Response | None = None
+        data: dict[str, Any] | None = None
+        started = time.perf_counter()
         try:
             client_options: dict[str, Any] = {
                 "timeout": httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0),
@@ -99,23 +102,41 @@ class ServiceModelClient:
                 raise RuntimeError("Service model response must be a JSON object")
         except Exception as exc:
             raw_response = response.text if response is not None else f"{type(exc).__name__}: {exc}"
-            self._record(
+            self._safe_record(
                 party_id=party_id,
                 turn_id=turn_id,
+                request_id=request_id,
+                party_turn=party_turn,
                 role=role,
                 prompt=prompt,
                 raw_response=raw_response,
                 status="error",
+                provider=self.settings.llm_provider,
+                model=self._model_name(payload.get("model")),
+                attempt=attempt,
+                latency_ms=self._elapsed_ms(started),
+                http_status=response.status_code if response is not None else None,
+                usage=None,
+                error={"type": type(exc).__name__, "message": str(exc)},
             )
             raise
 
-        self._record(
+        self._safe_record(
             party_id=party_id,
             turn_id=turn_id,
+            request_id=request_id,
+            party_turn=party_turn,
             role=role,
             prompt=prompt,
             raw_response=raw_response,
             status="completed",
+            provider=self.settings.llm_provider,
+            model=self._model_name(data.get("model") or payload.get("model")),
+            attempt=attempt,
+            latency_ms=self._elapsed_ms(started),
+            http_status=response.status_code,
+            usage=data.get("usage"),
+            error=None,
         )
         return ServiceCompletion(
             data=data,
@@ -137,12 +158,45 @@ class ServiceModelClient:
                     prompt_text TEXT NOT NULL,
                     raw_response TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    status TEXT NOT NULL
+                    status TEXT NOT NULL,
+                    request_id TEXT,
+                    party_turn INTEGER,
+                    provider TEXT,
+                    model TEXT,
+                    attempt INTEGER,
+                    latency_ms REAL,
+                    http_status INTEGER,
+                    usage_json TEXT,
+                    error_json TEXT,
+                    trace_schema_version TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_service_call_log_party_turn
                     ON service_call_log (party_id, turn_id, id);
                 CREATE INDEX IF NOT EXISTS idx_service_call_log_created_at
                     ON service_call_log (created_at);
+                """
+            )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(service_call_log)")}
+            for name, column_type in (
+                ("request_id", "TEXT"),
+                ("party_turn", "INTEGER"),
+                ("provider", "TEXT"),
+                ("model", "TEXT"),
+                ("attempt", "INTEGER"),
+                ("latency_ms", "REAL"),
+                ("http_status", "INTEGER"),
+                ("usage_json", "TEXT"),
+                ("error_json", "TEXT"),
+                ("trace_schema_version", "TEXT"),
+            ):
+                if name not in columns:
+                    connection.execute(f"ALTER TABLE service_call_log ADD COLUMN {name} {column_type}")
+            connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_service_call_log_party_request
+                    ON service_call_log (party_id, request_id, id);
+                CREATE INDEX IF NOT EXISTS idx_service_call_log_party_party_turn
+                    ON service_call_log (party_id, party_turn, id);
                 """
             )
 
@@ -151,19 +205,29 @@ class ServiceModelClient:
         *,
         party_id: str | None,
         turn_id: int | None,
+        request_id: str | None,
+        party_turn: int | None,
         role: str,
         prompt: str,
         raw_response: str,
         status: str,
+        provider: str | None,
+        model: str | None,
+        attempt: int | None,
+        latency_ms: float,
+        http_status: int | None,
+        usage: Any,
+        error: dict[str, Any] | None,
     ) -> None:
         created = self._utc_now()
-        cutoff = created - timedelta(days=self.retention_days)
         with sqlite3.connect(self.settings.sqlite_path) as connection:
             connection.execute(
                 """
                 INSERT INTO service_call_log (
-                    party_id, turn_id, role, prompt_text, raw_response, created_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    party_id, turn_id, role, prompt_text, raw_response, created_at, status,
+                    request_id, party_turn, provider, model, attempt, latency_ms,
+                    http_status, usage_json, error_json, trace_schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
@@ -173,32 +237,71 @@ class ServiceModelClient:
                     self._redact(raw_response),
                     self._timestamp(created),
                     status,
+                    request_id,
+                    party_turn,
+                    provider,
+                    model,
+                    attempt,
+                    latency_ms,
+                    http_status,
+                    self._redacted_json(usage),
+                    self._redacted_json(error),
+                    TRACE_SCHEMA_VERSION,
                 ),
             )
-            connection.execute(
-                "DELETE FROM service_call_log WHERE created_at < ?",
-                (self._timestamp(cutoff),),
+            if self.retention_days > 0:
+                cutoff = created - timedelta(days=self.retention_days)
+                connection.execute(
+                    "DELETE FROM service_call_log WHERE created_at < ?",
+                    (self._timestamp(cutoff),),
+                )
+
+    def _safe_record(self, **values: Any) -> None:
+        try:
+            self._record(**values)
+        except Exception as exc:  # noqa: BLE001 - diagnostics cannot decide a service result
+            logger.warning(
+                "service_call_trace_failed role=%s request_id=%s error=%s",
+                values.get("role"),
+                values.get("request_id"),
+                f"{type(exc).__name__}: {exc}",
             )
 
+    def _redacted_json(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return json.dumps(redact_trace_value(value, self._known_secrets()), ensure_ascii=False, separators=(",", ":"))
+
+    def _redact_json_value(self, value: Any) -> Any:
+        return redact_trace_value(value, self._known_secrets())
+
     def _redact(self, value: str) -> str:
-        redacted = value
-        known_secrets = {
+        return str(redact_trace_value(value, self._known_secrets()))
+
+    def _known_secrets(self) -> tuple[str | None, ...]:
+        return (
             self.settings.nvidia_api_key,
             self.settings.service_nvidia_api_key,
             self.settings.service_openrouter_api_key,
-        }
-        for secret in sorted((item for item in known_secrets if item), key=len, reverse=True):
-            redacted = redacted.replace(secret, REDACTED)
-        redacted = _BEARER_RE.sub(f"Bearer {REDACTED}", redacted)
-        return _SECRET_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}{REDACTED}", redacted)
+        )
 
     def _retention_days(self, explicit: int | None) -> int:
         if explicit is not None:
-            return max(int(explicit), 1)
+            return max(int(explicit), 0)
         try:
-            return max(int(os.getenv(RETENTION_ENV, str(DEFAULT_RETENTION_DAYS))), 1)
+            return max(int(os.getenv(RETENTION_ENV, str(DEFAULT_RETENTION_DAYS))), 0)
         except ValueError:
             return DEFAULT_RETENTION_DAYS
+
+    @staticmethod
+    def _model_name(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> float:
+        return round((time.perf_counter() - started) * 1000, 2)
 
     def _utc_now(self) -> datetime:
         value = self._now()

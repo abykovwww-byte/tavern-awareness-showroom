@@ -12,6 +12,35 @@ Runtime URL after deploy:
 http://192.168.1.88:8010
 ```
 
+## Request trace workbench
+
+Light GUI also serves an authenticated operator page at `/trace.html`. It loads
+the user's parties and checkpoint branches itself, so a copied link can point to
+an exact request without relying on in-memory chat state:
+
+```text
+/trace.html?party_id=<party_id>&branch_id=<branch_id>&request_id=<request_id>
+```
+
+`branch_id` and `request_id` are optional. The page lists request-scoped traces,
+shows only phases actually returned by Gateway, separates main and background
+lanes, compares up to four requests by `alignment_key`, and posts phase comments
+without accepting a browser-supplied author. Partial or missing capture is shown
+as unknown rather than as proof that a phase did not run.
+
+The trace workbench uses these owner/admin-scoped routes:
+
+```text
+/api/turn-traces/parties
+/api/turn-traces/parties/{party_id}/branches
+/api/parties/{party_id}/turn-traces
+/api/parties/{party_id}/turn-traces/{request_id}
+/api/parties/{party_id}/turn-traces/{request_id}/annotations
+```
+
+It is shipped as plain HTML/CSS/JS with no package-manager dependency. Run its
+focused checks with `node --check trace.js` and `node trace.test.js`.
+
 The client uses only party-scoped API routes:
 
 ```text

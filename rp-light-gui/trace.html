@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Трассы запросов · RP Light GUI</title>
+    <link rel="stylesheet" href="/trace.css?v=20260812-turn-trace" />
+  </head>
+  <body>
+    <a class="skip-link" href="#traceWorkspace">К содержимому трассы</a>
+
+    <header class="workbench-header">
+      <div class="brand-block">
+        <a class="brand-mark" href="/" aria-label="Вернуться в RP Light GUI">RP</a>
+        <div>
+          <p class="eyebrow">Операторский экран</p>
+          <h1>Трассы запросов</h1>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="accountLabel" class="account-label" aria-live="polite"></span>
+        <a class="quiet-link" href="/">Вернуться к партии</a>
+        <button id="refreshButton" class="button secondary" type="button">Обновить</button>
+      </div>
+    </header>
+
+    <section id="authNotice" class="auth-notice hidden" role="alert">
+      <h2>Нужен вход</h2>
+      <p>Откройте Light GUI, войдите в свою учётную запись и вернитесь к трассам.</p>
+      <a class="button primary" href="/">Перейти к входу</a>
+    </section>
+
+    <main id="traceWorkspace" class="workbench" tabindex="-1">
+      <section class="scope-panel" aria-labelledby="scopeHeading">
+        <div>
+          <p class="eyebrow">Область данных</p>
+          <h2 id="scopeHeading">Партия и ветка</h2>
+        </div>
+        <div class="scope-controls">
+          <label>
+            <span>Партия</span>
+            <select id="partySelect" autocomplete="off"></select>
+          </label>
+          <label>
+            <span>Ветка</span>
+            <select id="branchSelect" autocomplete="off"></select>
+          </label>
+        </div>
+        <dl id="scopeMeta" class="scope-meta"></dl>
+      </section>
+
+      <div id="pageStatus" class="page-status" role="status" aria-live="polite"></div>
+
+      <div class="workbench-grid">
+        <aside class="request-rail" aria-labelledby="requestsHeading">
+          <div class="rail-heading">
+            <div>
+              <p class="eyebrow">История</p>
+              <h2 id="requestsHeading">Запросы</h2>
+            </div>
+            <span id="requestCount" class="count-badge">0</span>
+          </div>
+
+          <div class="filter-grid">
+            <label class="filter-search">
+              <span>Поиск</span>
+              <input id="traceSearch" type="search" placeholder="request id, ход или текст" autocomplete="off" />
+            </label>
+            <label>
+              <span>Статус</span>
+              <select id="traceStatusFilter">
+                <option value="">Все</option>
+                <option value="completed">Завершён</option>
+                <option value="failed">Ошибка</option>
+                <option value="running">Выполняется</option>
+              </select>
+            </label>
+            <label>
+              <span>Захват</span>
+              <select id="traceCaptureFilter">
+                <option value="">Любой</option>
+                <option value="complete">Полный</option>
+                <option value="partial">Частичный</option>
+                <option value="missing">Отсутствует</option>
+              </select>
+            </label>
+          </div>
+
+          <p class="selection-hint">Отметьте от двух до четырёх запросов для сравнения.</p>
+          <ol id="traceList" class="trace-list"></ol>
+          <button id="loadMoreButton" class="button secondary load-more hidden" type="button">Загрузить ещё</button>
+        </aside>
+
+        <section class="trace-stage" aria-labelledby="stageHeading">
+          <div class="stage-toolbar">
+            <div>
+              <p class="eyebrow">Разбор</p>
+              <h2 id="stageHeading">Фактически выполненные фазы</h2>
+            </div>
+            <div class="view-actions" role="group" aria-label="Режим просмотра">
+              <button id="singleViewButton" class="button secondary active" type="button" aria-pressed="true">Один запрос</button>
+              <button id="compareViewButton" class="button secondary" type="button" aria-pressed="false" disabled>Сравнить</button>
+              <button id="clearCompareButton" class="button ghost hidden" type="button">Снять выбор</button>
+            </div>
+          </div>
+
+          <p id="compareSelectionStatus" class="compare-selection" aria-live="polite"></p>
+
+          <section id="emptyStage" class="empty-stage">
+            <h3>Выберите запрос слева</h3>
+            <p>Здесь появятся его метаданные, реальные фазы, входы, выходы и комментарии.</p>
+          </section>
+
+          <section id="detailView" class="detail-view hidden" aria-label="Трасса выбранного запроса">
+            <header class="trace-summary">
+              <div>
+                <p id="traceRequestId" class="request-id"></p>
+                <h3 id="traceTitle">Трасса запроса</h3>
+              </div>
+              <div id="traceBadges" class="badge-row"></div>
+            </header>
+            <dl id="traceMeta" class="trace-meta"></dl>
+            <div id="captureNotice" class="capture-notice"></div>
+            <div id="traceWarnings" class="trace-warnings"></div>
+            <div id="phaseLanes" class="phase-lanes"></div>
+          </section>
+
+          <section id="compareView" class="compare-view hidden" aria-label="Сравнение запросов">
+            <div class="derived-notice">
+              Сравнение вычисляется в браузере. Источником истины остаются значения, возвращённые Gateway.
+            </div>
+            <div id="compareTableHost" class="compare-table-host"></div>
+          </section>
+        </section>
+      </div>
+    </main>
+
+    <script src="/trace.js?v=20260812-turn-trace"></script>
+  </body>
+</html>

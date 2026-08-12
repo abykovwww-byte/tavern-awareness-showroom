@@ -1668,6 +1668,15 @@ button:disabled {
     padding-inline: 14px;
   }
 
+  .top-bar,
+  .top-actions {
+    flex-wrap: wrap;
+  }
+
+  .top-actions {
+    justify-content: flex-end;
+  }
+
   .chat-log {
     min-height: 420px;
     padding: 14px;

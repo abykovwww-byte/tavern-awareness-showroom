@@ -125,7 +125,7 @@ class RPStoryMemoryUpdater:
                 "stats": self.stats(),
             }
         try:
-            generated = await self.generate(plan)
+            generated = await self.generate(plan, request_id=request_id)
             if self.settings.rp_contract_revision >= 2:
                 generated["memory"] = reconcile_story_memory(
                     plan.previous_memory.get("memory") if plan.previous_memory else None,
@@ -180,7 +180,12 @@ class RPStoryMemoryUpdater:
                 raise
             raise RuntimeError("RP story-memory provider failed") from exc
 
-    async def generate(self, plan: RPStoryMemoryPlan) -> dict[str, Any]:
+    async def generate(
+        self,
+        plan: RPStoryMemoryPlan,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
         runtime = self.service_settings()
         if runtime.nvidia_api_base.startswith("mock://"):
             return {"memory": self.mock_memory(plan), "model": plan.model}
@@ -195,6 +200,9 @@ class RPStoryMemoryUpdater:
                     role="rp_story_memory",
                     party_id=self.store.campaign_id,
                     turn_id=plan.to_turn_id,
+                    request_id=request_id,
+                    party_turn=plan.turns[-1].get("party_turn"),
+                    attempt=index + 1,
                     prompt=service_prompt_text(payload),
                     payload=payload,
                 )
