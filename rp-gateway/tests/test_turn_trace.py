@@ -27,12 +27,16 @@ def trace_store(tmp_path: Path, campaign_id: str = "party-trace") -> StateStore:
     )
 
 
-def party(revision: int = 0) -> SimpleNamespace:
+def party(
+    revision: int = 0,
+    scenario_type: str = "rp",
+    contract_version: str = "rp-core.v1",
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="party_1",
         title="Trace Party",
-        scenario_type="rp",
-        rp_contract_version="rp-core.v1",
+        scenario_type=scenario_type,
+        rp_contract_version=contract_version,
         rp_contract_revision=revision,
     )
 
@@ -422,6 +426,8 @@ def test_trace_events_link_to_turn_and_detail_uses_actual_phases(tmp_path: Path)
     trace = payload["trace"]
 
     assert trace["turn_id"] == turn_id
+    assert trace["scenario_type"] == "rp"
+    assert trace["rp_contract_version"] == "rp-core.v1"
     assert trace["rp_contract_revision"] == 3
     assert {phase["phase_key"] for phase in trace["phases"]} >= {
         "player_input",
@@ -504,6 +510,20 @@ def test_failed_request_without_turn_is_visible_and_annotatable(tmp_path: Path) 
         ).fetchone()[0]
     assert annotation_count == 1
     assert audit_count == 1
+
+
+def test_succeeded_service_job_does_not_leave_trace_settling(tmp_path: Path) -> None:
+    store = trace_store(tmp_path)
+    record_request_and_turn(store)
+    job = store.enqueue_service_job("rp_story_memory", "req_trace_1")
+    store.mark_service_job_running(int(job["id"]))
+
+    assembler = TurnTraceAssembler(store, party(3))
+    assert assembler.list_traces()["traces"][0]["settling"] is True
+
+    store.complete_service_job(int(job["id"]))
+
+    assert assembler.list_traces()["traces"][0]["settling"] is False
 
 
 def test_failed_request_exposes_state_changed_before_missing_commit(tmp_path: Path) -> None:
@@ -676,6 +696,48 @@ def test_branch_envelope_is_isolated_and_revision_aware(tmp_path: Path) -> None:
     assert [item["request_id"] for item in payload["traces"]] == ["branch-request"]
 
 
+@pytest.mark.parametrize("scenario_type", ["training", "novel"])
+def test_non_rp_trace_contract_uses_scenario_type_without_rp_fields(
+    tmp_path: Path,
+    scenario_type: str,
+) -> None:
+    store = trace_store(tmp_path, f"{scenario_type}-campaign")
+    request_id = f"req_{scenario_type}"
+    idempotency_key = f"idem-{scenario_type}"
+    response = {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+    store.begin_turn_request(idempotency_key, request_id)
+    store.record_turn(
+        idempotency_key,
+        request_id,
+        "act",
+        "done",
+        response,
+        store.current_version() or 1,
+        metadata={
+            "turn_kind": "narrative",
+            "scenario_type": scenario_type,
+            "rp_contract_version": "rp-core.v2",
+            "rp_contract_revision": 6,
+        },
+        party_turn=1,
+    )
+    store.complete_turn_request(idempotency_key, response)
+    assembler = TurnTraceAssembler(
+        store,
+        party(6, scenario_type=scenario_type, contract_version="rp-core.v2"),
+    )
+
+    summary = assembler.list_traces()["traces"][0]
+    detail = assembler.trace(request_id)
+    for trace in (summary, detail["trace"]):
+        assert trace["scenario_type"] == scenario_type
+        assert trace["rp_contract_version"] is None
+        assert trace["rp_contract_revision"] is None
+    assert detail["party"]["scenario_type"] == scenario_type
+    assert detail["party"]["rp_contract_version"] is None
+    assert detail["party"]["rp_contract_revision"] is None
+
+
 def test_inherited_branch_turn_without_revision_keeps_source_revision(tmp_path: Path) -> None:
     store = trace_store(tmp_path, "branch-campaign")
     store.begin_turn_request("idem-legacy-branch", "req_legacy_branch")
@@ -697,8 +759,14 @@ def test_inherited_branch_turn_without_revision_keeps_source_revision(tmp_path: 
         {"id": "branch_candidate", "label": "Candidate", "rp_contract_revision": 6},
     )
 
-    assert assembler.list_traces()["traces"][0]["rp_contract_revision"] == 0
-    assert assembler.trace("req_legacy_branch")["trace"]["rp_contract_revision"] == 0
+    summary = assembler.list_traces()["traces"][0]
+    detail = assembler.trace("req_legacy_branch")["trace"]
+    assert summary["scenario_type"] == "rp"
+    assert summary["rp_contract_version"] == "rp-core.v1"
+    assert summary["rp_contract_revision"] == 0
+    assert detail["scenario_type"] == "rp"
+    assert detail["rp_contract_version"] == "rp-core.v1"
+    assert detail["rp_contract_revision"] == 0
 
 
 def test_failed_candidate_branch_request_uses_branch_revision(tmp_path: Path) -> None:
@@ -984,7 +1052,7 @@ def test_party_trace_api_round_trip_and_no_store(tmp_path: Path) -> None:
     assert annotated.json()["annotation"]["author_user_id"] is None
 
 
-def test_trace_api_owner_admin_showroom_and_branch_isolation(tmp_path: Path) -> None:
+def test_trace_api_is_admin_only_when_auth_is_enabled(tmp_path: Path) -> None:
     write_trace_worldpack(tmp_path)
     settings = Settings(
         app_env="test",
@@ -1055,11 +1123,46 @@ def test_trace_api_owner_admin_showroom_and_branch_isolation(tmp_path: Path) -> 
         json={"checkpoint_id": checkpoint["id"], "label": "Candidate"},
     ).json()["branch"]
 
-    assert alice.get(f"/api/parties/{party_id}/turn-traces").status_code == 200
-    assert bob.get(f"/api/parties/{party_id}/turn-traces").status_code == 404
-    assert bob.get(
-        f"/api/parties/{party_id}/turn-traces", params={"branch_id": branch["id"]}
-    ).status_code == 404
+    trace_paths = (
+        "/api/turn-traces/parties",
+        f"/api/turn-traces/parties/{party_id}/branches",
+        f"/api/parties/{party_id}/turn-traces",
+        f"/api/parties/{party_id}/turn-traces/req_alice_start",
+    )
+    for client in (alice, bob):
+        for path in trace_paths:
+            assert client.get(path).status_code == 403
+        assert client.get(
+            f"/api/parties/{party_id}/turn-traces", params={"branch_id": branch["id"]}
+        ).status_code == 403
+
+    admin_detail = admin.get(f"/api/parties/{party_id}/turn-traces/req_alice_start")
+    assert admin_detail.status_code == 200, admin_detail.text
+    phase_key = admin_detail.json()["trace"]["phases"][0]["phase_key"]
+    annotation_url = f"/api/parties/{party_id}/turn-traces/req_alice_start/annotations"
+    for client, expected_status in (
+        (alice, 403),
+        (bob, 403),
+        (anonymous, 401),
+    ):
+        assert client.post(
+            annotation_url,
+            json={
+                "annotation_id": f"annotation-denied-{expected_status}",
+                "phase_key": phase_key,
+                "body": "must not be stored",
+            },
+        ).status_code == expected_status
+
+    assert admin.post(
+        annotation_url,
+        json={
+            "annotation_id": "annotation-admin-allowed",
+            "phase_key": phase_key,
+            "body": "operator note",
+        },
+    ).status_code == 200
+
     assert admin.get(f"/api/parties/{party_id}/turn-traces").status_code == 200
     operator_parties = admin.get("/api/turn-traces/parties")
     assert party_id in {item["id"] for item in operator_parties.json()["parties"]}
@@ -1068,4 +1171,14 @@ def test_trace_api_owner_admin_showroom_and_branch_isolation(tmp_path: Path) -> 
 
     showroom = TestClient(app)
     assert showroom.get("/api/showroom/scenarios").status_code == 200
-    assert showroom.get(f"/api/parties/{party_id}/turn-traces").status_code == 401
+    for client in (anonymous, showroom):
+        for path in trace_paths:
+            assert client.get(path).status_code == 401
+    assert showroom.post(
+        annotation_url,
+        json={
+            "annotation_id": "annotation-showroom-denied",
+            "phase_key": phase_key,
+            "body": "must not be stored",
+        },
+    ).status_code == 401

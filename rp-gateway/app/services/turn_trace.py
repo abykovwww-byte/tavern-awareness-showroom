@@ -71,6 +71,7 @@ class TurnTraceAssembler:
         self.branch = branch
 
     def envelope(self) -> dict[str, Any]:
+        scenario_type = str(getattr(self.party, "scenario_type", "rp") or "rp")
         party_revision = int(getattr(self.party, "rp_contract_revision", 0) or 0)
         branch_revision = int((self.branch or {}).get("rp_contract_revision", party_revision) or 0)
         return {
@@ -78,15 +79,17 @@ class TurnTraceAssembler:
             "party": {
                 "id": self.party.id,
                 "title": self.party.title,
-                "scenario_type": self.party.scenario_type,
-                "rp_contract_version": getattr(self.party, "rp_contract_version", "rp-core.v1"),
-                "rp_contract_revision": party_revision,
+                "scenario_type": scenario_type,
+                "rp_contract_version": (
+                    getattr(self.party, "rp_contract_version", "rp-core.v1") if scenario_type == "rp" else None
+                ),
+                "rp_contract_revision": party_revision if scenario_type == "rp" else None,
             },
             "branch": (
                 {
                     "id": self.branch["id"],
                     "label": self.branch.get("label") or self.branch["id"],
-                    "rp_contract_revision": branch_revision,
+                    "rp_contract_revision": branch_revision if scenario_type == "rp" else None,
                 }
                 if self.branch
                 else None
@@ -181,7 +184,10 @@ class TurnTraceAssembler:
                 """,
                 (self.store.campaign_id, request_id),
             ).fetchall()
-        settling = any(str(row["status"]) not in {"completed", "failed", "dead"} for row in jobs)
+        settling = any(
+            str(row["status"]) not in {"completed", "succeeded", "failed", "dead"}
+            for row in jobs
+        )
         capture_status = "complete" if phase_count and (turn or root["status"] == "failed") else "partial"
         warnings = [] if capture_status == "complete" else ["Historical request has only partial trace capture."]
         preview = str(turn.get("player_message") or "") if turn else ""
@@ -194,6 +200,10 @@ class TurnTraceAssembler:
                 if self.branch and (turn is None or phase_count > 0)
                 else int(getattr(self.party, "rp_contract_revision", 0) or 0)
             )
+        scenario_type = str(metadata.get("scenario_type") or getattr(self.party, "scenario_type", "rp") or "rp")
+        contract_version = metadata.get("rp_contract_version") or getattr(
+            self.party, "rp_contract_version", "rp-core.v1"
+        )
         return {
             "request_id": request_id,
             "turn_id": int(turn["id"]) if turn else None,
@@ -205,7 +215,9 @@ class TurnTraceAssembler:
             "updated_at": int(root["updated_at"]),
             "preview": preview[:240],
             "phase_count": phase_count,
-            "rp_contract_revision": int(revision or 0),
+            "scenario_type": scenario_type,
+            "rp_contract_version": str(contract_version) if scenario_type == "rp" else None,
+            "rp_contract_revision": int(revision or 0) if scenario_type == "rp" else None,
             "warnings": warnings,
         }
 
@@ -314,6 +326,10 @@ class TurnTraceAssembler:
                 if self.branch and (turn is None or trace_event_count > 0)
                 else int(getattr(self.party, "rp_contract_revision", 0) or 0)
             )
+        scenario_type = str(metadata.get("scenario_type") or getattr(self.party, "scenario_type", "rp") or "rp")
+        contract_version = metadata.get("rp_contract_version") or getattr(
+            self.party, "rp_contract_version", "rp-core.v1"
+        )
         warnings = []
         if capture_status != "complete":
             warnings.append("Some historical phases were not captured by the active trace contract.")
@@ -326,7 +342,9 @@ class TurnTraceAssembler:
             "settling": settling,
             "created_at": int(root["created_at"]),
             "updated_at": int(root["updated_at"]),
-            "rp_contract_revision": int(revision or 0),
+            "scenario_type": scenario_type,
+            "rp_contract_version": str(contract_version) if scenario_type == "rp" else None,
+            "rp_contract_revision": int(revision or 0) if scenario_type == "rp" else None,
             "warnings": warnings,
             "omissions": list(dict.fromkeys(omissions)),
             "phases": phases,

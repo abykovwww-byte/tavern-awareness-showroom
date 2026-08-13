@@ -45,7 +45,7 @@ def estimate_party_context(
     relevant_characters_text = first_system_content(prompt_messages, "RELEVANT_CHARACTERS")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
     memory_summary = store.latest_memory_coverage()
-    story_memory = store.latest_rp_story_memory() if settings.scenario_type == "rp" else None
+    story_memory = store.effective_rp_story_memory() if settings.scenario_type == "rp" else None
     cache_usage = cache_usage_from_response(latest_turn.get("response_json"))
     context_limit_tokens = settings.effective_party_context_limit_tokens
     prompt_tokens = estimate_tokens(prompt_text)

@@ -5,7 +5,7 @@
   expectation: request_trace_survives_without_committed_turn
   probe_command: null
   expected: null
-  waiver: "Local capture and focused tests are part of the current Workbench change; deployed failed-request evidence is pending."
+  waiver: "Source and focused tests cover capture; deployed failed-request evidence is pending."
 - requirement: "Narrator and service-model attempts retain exact redacted input, output and attempt metadata"
   level: каркас
   store: "turn_trace_events and service_call_log"
@@ -13,7 +13,7 @@
   expectation: model_attempt_trace_is_exact_and_redacted
   probe_command: null
   expected: null
-  waiver: "The additive trace schema is defined locally; provider and production evidence across narrator and service roles is pending."
+  waiver: "Source and redaction tests cover the additive schema; provider and production evidence across narrator and service roles is pending."
 - requirement: "Trace reads authoritative stores without becoming a runtime input or a second state authority"
   level: каркас
   store: "authoritative stores plus diagnostic trace tables"
@@ -21,15 +21,15 @@
   expectation: trace_never_changes_runtime_result
   probe_command: null
   expected: null
-  waiver: "The diagnostic-only boundary is covered by design and local failure injection; deployed replay evidence is pending."
-- requirement: "Party and branch traces obey existing owner scope and are unavailable to Showroom"
+  waiver: "Source and failure injection cover the diagnostic-only boundary; deployed replay evidence is pending."
+- requirement: "Party and branch traces are admin-only and unavailable to ordinary owners and Showroom"
   level: каркас
   store: "party access policy and trace API"
   assertion: absence
-  expectation: trace_is_owner_scoped_and_showroom_denied
+  expectation: trace_is_admin_scoped_and_owner_showroom_denied
   probe_command: null
   expected: null
-  waiver: "API guards are implemented in the current local change; authenticated HTTP and Showroom denial evidence is pending."
+  waiver: "Source and focused tests define the admin-only guard, including server-only training data; authenticated HTTP owner/Showroom denial evidence is pending."
 - requirement: "Phase annotations are idempotent, audited and cannot alter gameplay"
   level: каркас
   store: "turn_phase_annotations and audit_events"
@@ -37,7 +37,7 @@
   expectation: annotation_reaches_audit_without_state_change
   probe_command: null
   expected: null
-  waiver: "Local round-trip coverage is part of the current change; deployed owner-authored evidence is pending."
+  waiver: "Source and round-trip tests cover annotations; deployed admin-authored evidence is pending."
 - requirement: "Trace rendering follows actual scenario and RP revision while preserving unknown phases"
   level: каркас
   store: "turn trace read model and Light GUI"
@@ -45,7 +45,7 @@
   expectation: trace_renders_actual_revision_and_unknown_phases
   probe_command: null
   expected: null
-  waiver: "Local renderer fixtures cover the contract; browser evidence for legacy, revised RP and training flows is pending."
+  waiver: "Focused helper tests cover normalization, alignment, diff and metadata fallback; authenticated browser evidence for legacy, revised RP and training flows is pending."
 - requirement: "Diagnostic retention is unlimited by default and explicit positive retention remains enforceable"
   level: каркас
   store: "service_call_log and turn trace tables"
@@ -53,4 +53,4 @@
   expectation: default_retention_never_expires_trace
   probe_command: null
   expected: null
-  waiver: "The default and migration are defined locally; production disk-growth and backup evidence is pending."
+  waiver: "Runtime tests and the IaC default cover retention configuration; production disk-growth and backup evidence is pending."

@@ -57,7 +57,13 @@ class ServiceModelClient:
         self.transport = transport
         self.retention_days = self._retention_days(retention_days)
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self._migrate()
+        try:
+            self._migrate()
+        except Exception as exc:  # noqa: BLE001 - diagnostics cannot decide a service result
+            logger.warning(
+                "service_call_trace_migration_failed error=%s",
+                f"{type(exc).__name__}: {exc}",
+            )
 
     async def complete(
         self,

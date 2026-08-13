@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
 from app.services.state_store import StateStore
@@ -86,6 +88,7 @@ def make_legacy_deadline_nullable(store: StateStore) -> None:
                 payload_json TEXT NOT NULL,
                 resolution TEXT,
                 resolved_turn INTEGER,
+                resolved_turn_id INTEGER,
                 created_at INTEGER NOT NULL
             )
             """
@@ -94,10 +97,10 @@ def make_legacy_deadline_nullable(store: StateStore) -> None:
             """
             INSERT INTO narrative_events(
                 id, campaign_id, character_id, axis, event_id, status, opened_turn,
-                due_turn, payload_json, resolution, resolved_turn, created_at
+                due_turn, payload_json, resolution, resolved_turn, resolved_turn_id, created_at
             )
             SELECT id, campaign_id, character_id, axis, event_id, status, opened_turn,
-                   due_turn, payload_json, resolution, resolved_turn, created_at
+                   due_turn, payload_json, resolution, resolved_turn, resolved_turn_id, created_at
             FROM narrative_events_current
             """
         )
@@ -274,7 +277,7 @@ def test_trust_seed_maps_once_without_mutating_canonical_state(tmp_path: Path) -
     assert "seed_trust" not in pressure and "20" not in pressure
 
 
-def test_starosta_positive_seed_opens_and_delivers_favour_by_worldpack_clock(tmp_path: Path) -> None:
+def test_starosta_positive_seed_requires_scene_evidence_to_deliver_favour(tmp_path: Path) -> None:
     stack_root = Path(__file__).resolve().parents[2]
     model = json.loads(
         (stack_root / "worldpacks" / "starosta" / "relationships" / "model.json").read_text(encoding="utf-8")
@@ -304,7 +307,34 @@ def test_starosta_positive_seed_opens_and_delivers_favour_by_worldpack_clock(tmp
     assert staged_block is not None
     assert mechanics.store.event_rows("bazhena", "favour")[0]["status"] == "active"
 
-    changes = mechanics.advance_turn(10)
+    assert mechanics.advance_turn(10) == []
+    assert mechanics.store.event_rows("bazhena", "favour")[0]["status"] == "active"
+
+    turn_id = store.record_turn(
+        "favour-delivery",
+        "favour-delivery-request",
+        "Я наблюдаю.",
+        "Бажена открыто заступилась за старосту.",
+        {},
+        store.current_version() or 1,
+        party_turn=10,
+    )
+    mechanics.apply_events(
+        turn_id=turn_id,
+        party_turn=10,
+        events=[
+            {
+                "character_id": "bazhena",
+                "event_id": "defended_publicly",
+                "evidence": "Бажена открыто заступилась за старосту.",
+            }
+        ],
+    )
+    changes = mechanics.resolve_delivered_favours(
+        turn_id=turn_id,
+        party_turn=10,
+        narrative_response="Бажена открыто заступилась за старосту.",
+    )
     resolved = mechanics.store.event_rows("bazhena", "favour")[0]
     resolution_block = mechanics.resolved_event_block(changes, {"bazhena": "Бажена"})
     assert resolved["status"] == "resolved"
@@ -312,6 +342,177 @@ def test_starosta_positive_seed_opens_and_delivers_favour_by_worldpack_clock(tmp
     assert resolution_block is not None
     assert "Бажена" in resolution_block and "конкретную добровольную услугу" in resolution_block
     assert "favour" not in resolution_block and "10" not in resolution_block
+
+
+def test_due_favour_stays_active_after_negative_scene_evidence(tmp_path: Path) -> None:
+    mechanics = RelationshipMechanics(
+        make_store(tmp_path, "negative-favour-evidence"),
+        relationship_model(),
+        rp_contract_revision=4,
+    )
+    mechanics.advance_turn(0)
+    mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    mechanics.apply_events(
+        turn_id=1,
+        party_turn=1,
+        events=[{"character_id": "ivan", "event_id": "loss_10_a", "evidence": "Иван отказал."}],
+    )
+
+    assert mechanics.resolve_delivered_favours(
+        turn_id=1,
+        party_turn=1,
+        narrative_response="Иван отказал.",
+    ) == []
+    assert mechanics.store.event_rows("ivan", "favour")[0]["status"] == "active"
+
+
+def test_due_favour_does_not_resolve_from_player_claim_only(tmp_path: Path) -> None:
+    model = relationship_model()
+    model["events"]["defended_publicly"] = {
+        "axis": "loyalty",
+        "weight": 10,
+        "decay_turns": 40,
+        "resolves": ["favour"],
+    }
+    mechanics = RelationshipMechanics(
+        make_store(tmp_path, "player-claim-favour-evidence"),
+        model,
+        rp_contract_revision=4,
+    )
+    mechanics.advance_turn(0)
+    mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    mechanics.apply_events(
+        turn_id=1,
+        party_turn=1,
+        events=[{"character_id": "ivan", "event_id": "defended_publicly", "evidence": "Иван мне помог."}],
+    )
+
+    assert mechanics.resolve_delivered_favours(
+        turn_id=1,
+        party_turn=1,
+        narrative_response="Иван молча смотрит в сторону.",
+    ) == []
+    assert mechanics.store.event_rows("ivan", "favour")[0]["status"] == "active"
+
+
+@pytest.mark.parametrize("event_id", ["kept_promise", "shared_risk"])
+def test_due_favour_ignores_positive_unmarked_scene_evidence(tmp_path: Path, event_id: str) -> None:
+    model = relationship_model()
+    model["events"][event_id] = {"axis": "loyalty", "weight": 10, "decay_turns": 40}
+    mechanics = RelationshipMechanics(
+        make_store(tmp_path, f"unmarked-{event_id}"),
+        model,
+        rp_contract_revision=4,
+    )
+    mechanics.advance_turn(0)
+    mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    evidence = f"Иван совершил событие {event_id}."
+    mechanics.apply_events(
+        turn_id=1,
+        party_turn=1,
+        events=[{"character_id": "ivan", "event_id": event_id, "evidence": evidence}],
+    )
+
+    assert mechanics.resolve_delivered_favours(
+        turn_id=1,
+        party_turn=1,
+        narrative_response=evidence,
+    ) == []
+    assert mechanics.store.event_rows("ivan", "favour")[0]["status"] == "active"
+
+
+def test_rollback_reopens_favour_delivered_by_excluded_turn(tmp_path: Path) -> None:
+    model = relationship_model()
+    model["events"]["defended_publicly"] = {
+        "axis": "loyalty",
+        "weight": 15,
+        "decay_turns": 40,
+        "resolves": ["favour"],
+    }
+    store = StateStore(
+        str(tmp_path / "rollback-delivered-favour.db"),
+        "rollback-delivered-favour",
+        str(tmp_path / "rollback-delivered-favour.json"),
+    )
+    mechanics = RelationshipMechanics(store, model, rp_contract_revision=4)
+    mechanics.store.add_cause(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="seed_trust",
+        weight=20,
+        turn_id=0,
+        party_turn=0,
+        expires_turn=None,
+        evidence="seed",
+        source="seed",
+    )
+    mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    state_v2 = store.get_state()
+    state_v2["meta"]["state_version"] = 2
+    state_v2["meta"]["turn"] = 1
+    store.insert_state_version(state_v2, "test:delivery")
+    turn_id = store.record_turn(
+        "delivery-turn",
+        "delivery-request",
+        "Я жду.",
+        "Иван открыто заступился за меня.",
+        {},
+        2,
+        party_turn=1,
+    )
+    mechanics.apply_events(
+        turn_id=turn_id,
+        party_turn=1,
+        events=[
+            {
+                "character_id": "ivan",
+                "event_id": "defended_publicly",
+                "evidence": "Иван открыто заступился за меня.",
+            }
+        ],
+    )
+
+    assert mechanics.resolve_delivered_favours(
+        turn_id=turn_id,
+        party_turn=1,
+        narrative_response="Иван открыто заступился за меня.",
+    )
+    delivered = mechanics.store.event_rows("ivan", "favour")[0]
+    assert delivered["status"] == "resolved"
+    assert delivered["resolved_turn_id"] == turn_id
+
+    store.rollback(target_version=1)
+
+    reopened = mechanics.store.event_rows("ivan", "favour")[0]
+    assert reopened["status"] == "active"
+    assert reopened["resolution"] is None
+    assert reopened["resolved_turn"] is None
+    assert reopened["resolved_turn_id"] is None
+    assert mechanics.due_event_block(1, {"ivan": "Иван"}) is not None
 
 
 def test_non_boundary_cause_reaches_qualitative_pressure(tmp_path: Path) -> None:

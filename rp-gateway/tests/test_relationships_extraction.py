@@ -54,10 +54,11 @@ def make_store(tmp_path: Path, campaign_id: str = "relationship-extraction") -> 
     return StateStore(str(tmp_path / "state.db"), campaign_id, str(state_path))
 
 
-def settings(tmp_path: Path, *, scenario_type: str) -> Settings:
+def settings(tmp_path: Path, *, scenario_type: str, rp_contract_revision: int = 0) -> Settings:
     return Settings(
         campaign_id="relationship-extraction",
         scenario_type=scenario_type,
+        rp_contract_revision=rp_contract_revision,
         database_url=f"sqlite:///{tmp_path / 'state.db'}",
         world_state_path=str(tmp_path / "state.json"),
         nvidia_api_base="mock://relationship-extraction",
@@ -96,6 +97,60 @@ def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, m
     assert count == 2  # one deterministic trust seed plus the extracted cause
     assert first_value == -20
     assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == first_value
+
+
+def test_process_turn_resolves_due_favour_from_marked_extracted_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = json.loads(json.dumps(MODEL))
+    model["axes"]["loyalty"]["band_deadband"] = 0
+    model["events"]["defended_publicly"] = {
+        "axis": "loyalty",
+        "weight": 15,
+        "decay_turns": 40,
+        "resolves": ["favour"],
+    }
+    store = make_store(tmp_path)
+    turn_id = store.record_turn(
+        "turn-1",
+        "request-1",
+        "Я молчу.",
+        "Иван открыто заступился за меня перед толпой.",
+        {},
+        1,
+        party_turn=1,
+    )
+    service = RelationshipExtractionService(
+        settings(tmp_path, scenario_type="rp", rp_contract_revision=4),
+        store,
+        model,
+    )
+    service.mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+
+    async def fixed_completion(*_args, **_kwargs):
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": json.dumps({"events": [{
+                "character_mention": "Иван",
+                "event_id": "defended_publicly",
+                "evidence": "Иван открыто заступился за меня перед толпой.",
+            }]}, ensure_ascii=False)}}],
+        }
+
+    monkeypatch.setattr(service, "_complete", fixed_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert [item["event_id"] for item in result["delivered_favours"]] == ["favour"]
+    favour = service.mechanics.store.event_rows("ivan", "favour")[0]
+    assert favour["status"] == "resolved"
+    assert favour["resolution"] == "delivered"
 
 
 def test_process_turn_accepts_single_fenced_json_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

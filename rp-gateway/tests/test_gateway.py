@@ -263,6 +263,35 @@ def latest_turn_metadata(store: StateStore) -> dict[str, object]:
     return json.loads(row[0])
 
 
+def seed_incorrect_story_fact(store: StateStore) -> None:
+    store.record_rp_story_memory(
+        from_turn_id=0,
+        to_turn_id=0,
+        state_version=store.current_version() or 1,
+        memory={
+            "schema_version": "rp-gateway.rp-story-memory.v2",
+            "canon": [
+                {
+                    "fact_id": "fact:incorrect-gate",
+                    "text": "The gate is closed.",
+                    "status": "active",
+                    "authority": "inference",
+                    "source_turn_ids": [0],
+                }
+            ],
+            "rules_and_abilities": [],
+            "inventory_and_assets": [],
+            "characters": [],
+            "active_threads": [],
+            "resolved_threads": [],
+            "unresolved_hooks": [],
+            "current_situation": None,
+            "chronology": [],
+        },
+        model="seeded-test-memory",
+    )
+
+
 def login(c: TestClient, username: str = "admin", password: str = "admin-secret") -> dict[str, object]:
     response = c.post("/api/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
@@ -1962,6 +1991,81 @@ def test_admin_rp_autotest_ignores_semantic_validator_without_fallback(
     assert metadata["transport_status"] == "ok"
 
 
+def test_admin_revision_six_rp_autotest_does_not_commit_validation_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 6}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        local_llm_model_alias="gemma-4-26b-a4b-it-rp-q4",
+        rp_contract_observed_revision=6,
+    )
+    login(admin)
+
+    async def next_action(*args: object, **kwargs: object) -> str:
+        return "I take the next action."
+
+    def reject_narrative(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            valid=False,
+            violations=["forced repeated absolute-rule violation"],
+            repair_instruction="Respect the absolute rule.",
+        )
+
+    monkeypatch.setattr("app.main.AutoPlayerClient.next_action", next_action)
+    monkeypatch.setattr("app.services.adjudicator.OutputValidator.validate", reject_narrative)
+    source_party = create_demo_party(admin, title="Revision 6 invalid autotest")
+    assert source_party["rp_contract_revision"] == 6
+    local_profile = next(
+        profile
+        for profile in admin.get("/api/admin/autotests/models").json()["model_profiles"]
+        if profile["provider"] == "local"
+    )
+
+    started = admin.post(
+        "/api/admin/autotests",
+        json={
+            "source_party_id": source_party["id"],
+            "player_prompt": "Take the next in-world action only.",
+            "turn_count": 1,
+            "player_model_profile_id": local_profile["id"],
+        },
+    )
+    assert started.status_code == 200, started.text
+    run = started.json()["run"]
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        run = next(
+            item
+            for item in admin.get("/api/admin/autotests").json()["runs"]
+            if item["id"] == run["id"]
+        )
+        if run["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.02)
+
+    assert run["status"] == "failed", run
+    assert run["completed_turns"] == 0
+    assert run["fallback_turns"] == 0
+    branch_store = admin.app.state.party_store.store_for_branch(
+        source_party["id"],
+        run["branch_id"],
+        owner_user_id=run["owner_user_id"],
+    )
+    assert branch_store.turn_history(limit=10) == []
+
+
 def test_party_byok_is_scoped_to_current_party(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(
@@ -2324,6 +2428,335 @@ def test_rp_story_memory_api_fields_are_absent_from_training(tmp_path: Path):
     assert "story_memory_stats" not in training_memory
     assert "rp_story_memory_tokens" not in training_context
     assert training_context["history_token_budget"] == 81_920
+
+
+def test_typed_story_memory_replace_forces_cadence_and_reaches_later_prompt(tmp_path: Path):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 2}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path, rp_story_memory_update_turns=4)
+    party = create_demo_party(c, title="Typed memory correction")
+    assert party["rp_contract_revision"] == 2
+    store = c.app.state.party_store.store_for_party(party["id"])
+    seed_incorrect_story_fact(store)
+    correction_payload = {
+        "content": "Please continue after applying this explicit memory correction.",
+        "idempotency_key": "typed-memory-correction-1",
+        "story_memory_corrections": [
+            {
+                "field": "canon",
+                "fact_id": "fact:incorrect-gate",
+                "action": "replace",
+                "replacement_text": "The gate is open.",
+            }
+        ],
+    }
+
+    corrected = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json=correction_payload,
+        headers={"X-Request-ID": "typed-memory-correction-request-1"},
+    )
+    assert corrected.status_code == 200, corrected.text
+    first_turn = store.turn_history(limit=10)[0]
+    metadata = latest_turn_metadata(store)
+    assert metadata["story_memory_corrections"] == correction_payload["story_memory_corrections"]
+
+    snapshot = store.latest_rp_story_memory()
+    assert snapshot is not None
+    assert snapshot["revision"] == 2
+    assert snapshot["to_turn_id"] == first_turn["id"]
+    canon = snapshot["memory"]["canon"]
+    assert canon[0] == {
+        "fact_id": "fact:incorrect-gate",
+        "text": "The gate is closed.",
+        "status": "superseded",
+        "authority": "user_correction",
+        "source_turn_ids": [first_turn["id"]],
+    }
+    assert canon[1]["fact_id"] != "fact:incorrect-gate"
+    assert canon[1]["text"] == "The gate is open."
+    assert canon[1]["status"] == "active"
+    assert canon[1]["authority"] == "user_correction"
+    assert canon[1]["source_turn_ids"] == [first_turn["id"]]
+
+    duplicate = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json=correction_payload,
+        headers={"X-Request-ID": "typed-memory-correction-request-duplicate"},
+    )
+    assert duplicate.status_code == 200, duplicate.text
+    assert len(store.turn_history(limit=10)) == 1
+    assert len(store.rp_story_memories(limit=10)) == 2
+
+    next_turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "I inspect the doorway.", "idempotency_key": "typed-memory-next-turn"},
+        headers={"X-Request-ID": "typed-memory-next-request"},
+    )
+    assert next_turn.status_code == 200, next_turn.text
+    with sqlite3.connect(store.sqlite_path) as connection:
+        row = connection.execute(
+            "SELECT prompt_json FROM turns WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (store.campaign_id,),
+        ).fetchone()
+    assert row is not None
+    prompt = row[0]
+    assert "The gate is open." in prompt
+    assert "The gate is closed." not in prompt
+
+
+def test_pending_typed_story_memory_replace_reaches_prompt_before_service_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 2}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(
+        Adjudicator,
+        "schedule_service_jobs",
+        lambda self, authorization=None: None,
+    )
+    c = client(tmp_path, post_turn_helpers_inline=False, rp_story_memory_update_turns=4)
+    party = create_demo_party(c, title="Pending typed memory correction")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    seed_incorrect_story_fact(store)
+
+    corrected = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Apply this explicit correction and continue.",
+            "idempotency_key": "pending-memory-correction",
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:incorrect-gate",
+                    "action": "replace",
+                    "replacement_text": "The gate is open.",
+                }
+            ],
+        },
+    )
+    assert corrected.status_code == 200, corrected.text
+    with sqlite3.connect(store.sqlite_path) as connection:
+        correction_prompt = connection.execute(
+            "SELECT prompt_json FROM turns WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (store.campaign_id,),
+        ).fetchone()
+    assert correction_prompt is not None
+    assert "The gate is open." in correction_prompt[0]
+    assert "The gate is closed." not in correction_prompt[0]
+    persisted = store.latest_rp_story_memory()
+    assert persisted is not None
+    assert persisted["revision"] == 1
+    assert persisted["memory"]["canon"][0]["status"] == "active"
+    public_memory = c.get(f"/api/parties/{party['id']}/memory")
+    assert public_memory.status_code == 200, public_memory.text
+    public_canon = public_memory.json()["story_memory"]["memory"]["canon"]
+    assert any(item["text"] == "The gate is open." and item["status"] == "active" for item in public_canon)
+    assert not any(item["text"] == "The gate is closed." and item["status"] == "active" for item in public_canon)
+    assert any(
+        job["job_type"] == "rp_story_memory" and job["status"] == "pending"
+        for job in store.service_jobs()
+    )
+
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "I inspect the doorway.", "source": "current"},
+    )
+    assert preview.status_code == 200, preview.text
+    preview_prompt = "\n".join(message["content"] for message in preview.json()["preview"]["messages"])
+    assert "The gate is open." in preview_prompt
+    assert "The gate is closed." not in preview_prompt
+
+    next_turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "I inspect the doorway.", "idempotency_key": "pending-memory-next-turn"},
+    )
+    assert next_turn.status_code == 200, next_turn.text
+    with sqlite3.connect(store.sqlite_path) as connection:
+        row = connection.execute(
+            "SELECT prompt_json FROM turns WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (store.campaign_id,),
+        ).fetchone()
+    assert row is not None
+    assert "The gate is open." in row[0]
+    assert "The gate is closed." not in row[0]
+
+
+def test_reconstructed_last_prompt_does_not_apply_later_pending_correction(tmp_path: Path):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 2}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Historical memory reconstruction")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    seed_incorrect_story_fact(store)
+    store.record_turn(
+        "historical-pending-correction",
+        "historical-pending-correction-request",
+        "Apply the correction.",
+        "Continuing.",
+        {},
+        store.current_version() or 1,
+        metadata={
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:incorrect-gate",
+                    "action": "replace",
+                    "replacement_text": "The gate is open.",
+                }
+            ]
+        },
+    )
+
+    preview = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"source": "last"},
+    )
+
+    assert preview.status_code == 200, preview.text
+    payload = preview.json()["preview"]
+    assert payload["source"] == "reconstructed_last_turn"
+    prompt = "\n".join(message["content"] for message in payload["messages"])
+    assert "The gate is closed." in prompt
+    assert "The gate is open." not in prompt
+
+
+@pytest.mark.parametrize("scenario_type", ["training", "novel"])
+def test_typed_story_memory_correction_rejects_non_rp_without_turn(
+    tmp_path: Path,
+    scenario_type: str,
+):
+    write_worldpack(tmp_path, supported_modes=[scenario_type])
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Non-RP correction", scenario_type=scenario_type)
+    store = c.app.state.party_store.store_for_party(party["id"])
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Invalid correction lane.",
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:not-present",
+                    "action": "retract",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "only available for RP parties" in response.json()["detail"]
+    assert store.turn_history(limit=10) == []
+
+
+def test_typed_story_memory_correction_rejects_rp_revision_one_without_turn(tmp_path: Path):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 1}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Revision one correction")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    seed_incorrect_story_fact(store)
+
+    response = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Invalid correction revision.",
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:incorrect-gate",
+                    "action": "retract",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "revision 2 or newer" in response.json()["detail"]
+    assert store.turn_history(limit=10) == []
+
+
+def test_typed_story_memory_correction_preflight_rejects_unknown_field_and_fact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 2}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Invalid typed memory correction")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    seed_incorrect_story_fact(store)
+    provider_calls = 0
+
+    async def unexpected_provider_call(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal provider_calls
+        provider_calls += 1
+        raise AssertionError("provider must not run for an invalid story-memory correction")
+
+    monkeypatch.setattr("app.services.narrative.NarrativeClient.complete", unexpected_provider_call)
+    state_version = store.current_version()
+
+    unknown_field = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Invalid field correction.",
+            "idempotency_key": "invalid-memory-field",
+            "story_memory_corrections": [
+                {
+                    "field": "current_situation",
+                    "fact_id": "fact:incorrect-gate",
+                    "action": "retract",
+                }
+            ],
+        },
+    )
+    assert unknown_field.status_code == 422
+
+    unknown_fact = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Invalid fact correction.",
+            "idempotency_key": "invalid-memory-fact",
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:not-present",
+                    "action": "retract",
+                }
+            ],
+        },
+        headers={"X-Request-ID": "req_invalid_memory_fact"},
+    )
+    assert unknown_fact.status_code == 400
+    assert "active story-memory fact not found" in unknown_fact.json()["detail"]
+    assert provider_calls == 0
+    assert store.current_version() == state_version
+    assert store.turn_history(limit=10) == []
+    failed_trace = c.get(
+        f"/api/parties/{party['id']}/turn-traces/req_invalid_memory_fact"
+    )
+    assert failed_trace.status_code == 200, failed_trace.text
+    trace = failed_trace.json()["trace"]
+    assert trace["status"] == "failed"
+    assert trace["turn_id"] is None
+    assert any(phase["phase_key"] == "request_failed" for phase in trace["phases"])
 
 
 def test_context_overflow_is_omitted_until_episodic_chapter_catches_up(tmp_path: Path):

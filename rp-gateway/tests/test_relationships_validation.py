@@ -45,6 +45,22 @@ def valid_model() -> dict:
             "weight must be between -30 and 15",
         ),
         (
+            lambda model: model["events"]["defended_publicly"].__setitem__("resolves", "favour"),
+            "resolves must be a non-empty list",
+        ),
+        (
+            lambda model: model["events"]["defended_publicly"].__setitem__("resolves", ["unknown"]),
+            "resolves unknown boundary events: unknown",
+        ),
+        (
+            lambda model: model["events"]["defended_publicly"].pop("resolves"),
+            "must declare at least one positive event that resolves favour",
+        ),
+        (
+            lambda model: model["events"]["defended_publicly"].__setitem__("weight", 0),
+            "that resolves favour must have positive weight",
+        ),
+        (
             lambda model: model["characters"]["enri-emmot"].__setitem__("aliases", []),
             "aliases must contain at least one form",
         ),
@@ -66,6 +82,10 @@ def valid_model() -> dict:
         "unknown-wound",
         "overlapping-boundaries",
         "out-of-range-weight",
+        "invalid-resolves-shape",
+        "unknown-resolved-event",
+        "missing-favour-resolver",
+        "non-positive-favour-resolver",
         "missing-alias",
         "duplicate-alias",
         "missing-clock",

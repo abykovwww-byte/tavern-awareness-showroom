@@ -21,6 +21,7 @@ const appState = {
   busy: false,
   busyText: "",
   pendingMessages: {},
+  pendingStoryMemoryCorrections: [],
   adminUsers: [],
   adminWorldpacks: [],
   byokKeys: [],
@@ -40,6 +41,7 @@ const els = {
   accountStrip: document.querySelector("#accountStrip"),
   currentUserLabel: document.querySelector("#currentUserLabel"),
   logoutButton: document.querySelector("#logoutButton"),
+  traceWorkbenchLink: document.querySelector("#traceWorkbenchLink"),
   partyList: document.querySelector("#partyList"),
   activeWorld: document.querySelector("#activeWorld"),
   activePartyTitle: document.querySelector("#activePartyTitle"),
@@ -233,6 +235,7 @@ function bindEvents() {
   document.querySelector("#rollbackButton").addEventListener("click", rollbackParty);
   els.memorySummarizeButton.addEventListener("click", summarizeMemory);
   els.memoryClearButton.addEventListener("click", clearLatestMemory);
+  els.memorySummary.addEventListener("click", handleStoryMemoryCorrectionAction);
   els.loreCardForm.addEventListener("submit", createLoreCard);
   els.loreCardList.addEventListener("click", handleLoreCardAction);
   els.checkpointForm.addEventListener("submit", createCheckpoint);
@@ -481,6 +484,7 @@ function clearWorkspaceState() {
   appState.chatArchiveExpanded = false;
   appState.proposals = [];
   appState.pendingMessages = {};
+  appState.pendingStoryMemoryCorrections = [];
   appState.adminUsers = [];
   appState.byokKeys = [];
   appState.serviceModelSettings = null;
@@ -497,6 +501,9 @@ function renderAuth() {
   }
   if (els.adminPanel) {
     els.adminPanel.classList.toggle("hidden", !isAdmin());
+  }
+  if (els.traceWorkbenchLink) {
+    els.traceWorkbenchLink.classList.toggle("hidden", appState.authEnabled && !isAdmin());
   }
   if (els.autotestBlock) {
     els.autotestBlock.classList.toggle("hidden", !isAdmin());
@@ -529,6 +536,7 @@ async function selectParty(partyId) {
   }
   appState.activeParty = party;
   appState.activeBranch = null;
+  appState.pendingStoryMemoryCorrections = [];
   localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
   if (isAdmin()) await reloadAdminAutotestRuns(party.id);
@@ -909,14 +917,85 @@ function rpStoryMemoryHtml(snapshot, stats) {
   const data = snapshot.memory || {};
   const covered = `${snapshot.from_turn_id ?? "-"}-${snapshot.to_turn_id ?? "-"}`;
   const currentSituation = activeStoryText(data.current_situation);
+  const correctionsEnabled = Number(appState.activeParty?.rp_contract_revision || 0) >= 2 && !appState.activeBranch;
+  const pendingCorrections = appState.pendingStoryMemoryCorrections || [];
+  const pendingHtml = pendingCorrections.length
+    ? `<div class="state-item memory-list"><strong>Коррекции со следующим ходом</strong><ul>${pendingCorrections.map((item) => `
+        <li>${escapeHtml(item.action === "replace" ? "Исправить" : "Отозвать")}: ${escapeHtml(item.fact_id)}
+          <button class="text-button" type="button" data-story-memory-action="cancel" data-field="${escapeHtml(item.field)}" data-fact-id="${escapeHtml(item.fact_id)}">Отменить</button>
+        </li>`).join("")}</ul></div>`
+    : "";
   return `
     ${stateItem("RP story memory", `revision ${escapeHtml(snapshot.revision || 1)} · ходы ${escapeHtml(covered)}`, "Кумулятивный RP-only snapshot; canonical state имеет больший приоритет.")}
+    ${pendingHtml}
     ${currentSituation ? `<div class="state-item memory-text"><strong>Текущая ситуация</strong>${escapeHtml(clipText(currentSituation, 900))}</div>` : ""}
-    ${memoryList("Канон", activeStoryItems(data.canon))}
-    ${memoryList("Персонажи", activeStoryItems(data.characters))}
-    ${memoryList("Активные линии", activeStoryItems(data.active_threads))}
-    ${memoryList("Нераскрытые зацепки", activeStoryItems(data.unresolved_hooks))}
+    ${storyMemoryList("Канон", "canon", data.canon, correctionsEnabled)}
+    ${storyMemoryList("Правила и способности", "rules_and_abilities", data.rules_and_abilities, correctionsEnabled)}
+    ${storyMemoryList("Инвентарь и активы", "inventory_and_assets", data.inventory_and_assets, correctionsEnabled)}
+    ${storyMemoryList("Персонажи", "characters", data.characters, correctionsEnabled)}
+    ${storyMemoryList("Активные линии", "active_threads", data.active_threads, correctionsEnabled)}
+    ${storyMemoryList("Завершённые линии", "resolved_threads", data.resolved_threads, correctionsEnabled)}
+    ${storyMemoryList("Нераскрытые зацепки", "unresolved_hooks", data.unresolved_hooks, correctionsEnabled)}
+    ${storyMemoryList("Хронология", "chronology", data.chronology, correctionsEnabled)}
   `;
+}
+
+function storyMemoryList(title, field, items, correctionsEnabled = false) {
+  const rows = activeStoryItems(items).slice(0, 4);
+  if (!rows.length) return "";
+  const html = rows.map((item) => {
+    const text = escapeHtml(memoryItemText(item));
+    if (!correctionsEnabled || !item || typeof item !== "object" || !item.fact_id) return `<li>${text}</li>`;
+    const attributes = `data-field="${escapeHtml(field)}" data-fact-id="${escapeHtml(item.fact_id)}"`;
+    return `<li><span>${text}</span><span class="inline-actions">
+      <button class="text-button" type="button" data-story-memory-action="replace" ${attributes}>Исправить</button>
+      <button class="text-button danger-text" type="button" data-story-memory-action="retract" ${attributes}>Отозвать</button>
+    </span></li>`;
+  }).join("");
+  return `<div class="state-item memory-list"><strong>${escapeHtml(title)}</strong><ul>${html}</ul></div>`;
+}
+
+function handleStoryMemoryCorrectionAction(event) {
+  const button = event.target.closest("[data-story-memory-action]");
+  if (
+    !button
+    || appState.activeParty?.scenario_type !== "rp"
+    || Number(appState.activeParty?.rp_contract_revision || 0) < 2
+    || appState.activeBranch
+  ) return;
+  const action = button.dataset.storyMemoryAction;
+  const field = button.dataset.field;
+  const factId = button.dataset.factId;
+  if (!field || !factId) return;
+  if (action === "cancel") {
+    appState.pendingStoryMemoryCorrections = appState.pendingStoryMemoryCorrections.filter(
+      (item) => item.field !== field || item.fact_id !== factId,
+    );
+    renderMemory();
+    return;
+  }
+  let replacementText = null;
+  if (action === "replace") {
+    replacementText = window.prompt("Введите исправленный факт. Он заменит выбранную запись со следующим ходом.");
+    if (!replacementText?.trim()) return;
+    replacementText = replacementText.trim();
+  } else if (action === "retract") {
+    if (!window.confirm("Отозвать этот факт из RP story memory со следующим ходом?")) return;
+  } else {
+    return;
+  }
+  const correction = {
+    field,
+    fact_id: factId,
+    action,
+    ...(replacementText ? { replacement_text: replacementText } : {}),
+  };
+  appState.pendingStoryMemoryCorrections = [
+    ...appState.pendingStoryMemoryCorrections.filter((item) => item.field !== field || item.fact_id !== factId),
+    correction,
+  ];
+  renderMemory();
+  showToast("Коррекция подготовлена. Отправьте следующий ход, чтобы записать её с точным turn ID.");
 }
 
 function renderMemoryTools() {
@@ -2186,6 +2265,8 @@ async function sendMessage(event) {
   }
   const partyId = appState.activeParty.id;
   const requestId = makeClientRequestId();
+  const submittedCorrections = [...appState.pendingStoryMemoryCorrections];
+  let turnCommitted = false;
   els.messageInput.value = "";
   startPendingMessage(partyId, requestId, text);
   appendPendingMessage(text, requestId);
@@ -2193,9 +2274,11 @@ async function sendMessage(event) {
     setPendingStatus("GM формирует ответ...", partyId);
     const result = await apiPost(
       `/api/parties/${partyId}/messages`,
-      { content: text, idempotency_key: requestId },
+      partyMessagePayload(text, requestId, submittedCorrections),
       { "X-Request-ID": requestId },
     );
+    turnCommitted = true;
+    appState.pendingStoryMemoryCorrections = [];
     const content = result.message?.content || "";
     if (content) {
       replacePendingMessage(partyId, requestId, content);
@@ -2214,6 +2297,8 @@ async function sendMessage(event) {
       return null;
     });
     if (recovered?.narrative_response) {
+      turnCommitted = true;
+      appState.pendingStoryMemoryCorrections = [];
       showToast("Ответ подтянут из истории.");
     } else {
       const message = recoveryError?.message || error.message;
@@ -2221,8 +2306,17 @@ async function sendMessage(event) {
       showToast(message);
     }
   } finally {
+    if (turnCommitted) renderMemory();
     clearPendingMessage(partyId);
   }
+}
+
+function partyMessagePayload(text, requestId, corrections = []) {
+  const payload = { content: text, idempotency_key: requestId };
+  if (Array.isArray(corrections) && corrections.length) {
+    payload.story_memory_corrections = corrections;
+  }
+  return payload;
 }
 
 async function previewWorldInstruction(options = {}) {

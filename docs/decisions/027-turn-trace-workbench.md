@@ -12,6 +12,14 @@
 локальная реализация, commit, deploy и живая проверка остаются разными
 утверждениями.
 
+### Supersession
+
+Это решение консолидирует и заменяет неопубликованные рабочие черновики
+Decision 023 (сбор turn-centric трассы) и Decision 025 (операторский UI поверх
+неё). Эти номера не являются отдельными принятыми решениями репозитория. В
+частности, идентичность трассы теперь request-centric, а сбор и UI поставляются
+одним диагностическим контуром без прежней жёсткой зависимости 025 от 023.
+
 ## Context
 
 Существующие данные позволяют восстановить только часть обработки хода:
@@ -94,7 +102,7 @@ flowchart LR
     MU["turn_state_mutations\nin-place before/after"] --> View
     SL["service_call_log\nservice attempts"] --> View
     AN["turn_phase_annotations"] --> View
-    View --> UI["Owner-scoped Light GUI Workbench"]
+    View --> UI["Admin-scoped Light GUI Workbench"]
     UI -->|"annotation only"| AN
 ```
 
@@ -143,7 +151,7 @@ body и время. Gateway проверяет существование пар
 текст и в той же операции зеркалит безопасные метаданные в `audit_events`.
 Аннотация не меняет state, prompt, scoring, provider routing или delivery level.
 
-### 7. API owner/admin-scoped и bounded
+### 7. API доступен только admin/operator и bounded
 
 Замороженный HTTP-контракт:
 
@@ -156,17 +164,20 @@ POST /api/parties/{party_id}/turn-traces/{request_id}/annotations?branch_id
      {"annotation_id":"...","phase_key":"...","body":"..."}
 ```
 
-Первые два endpoint дают странице только разрешённые партии и ветки: владельцу
-— свои, admin — все. List endpoint возвращает bounded summaries и непрозрачный
-cursor для следующей страницы;
+Все endpoint требуют существующую роль Gateway `admin`; отдельная роль
+`operator` не вводится. Первые два endpoint дают операторской странице партии и
+ветки для административного разбора. List endpoint возвращает bounded summaries
+и непрозрачный cursor для следующей страницы;
 крупные prompt/response и exact mutation details читаются только через detail.
-Доступ имеет владелец партии или admin через существующую party access policy.
-Showroom visitor cookie, `run_id` и compatibility `/v1` не дают доступа ни к
-чтению трассы, ни к аннотациям.
+Обычный владелец партии, Showroom visitor cookie, `run_id` и compatibility `/v1`
+не дают доступа ни к чтению трассы, ни к аннотациям. Это также сохраняет
+server-only training policy: exact prompt может содержать скрытые
+`AUTHORITATIVE_OUTCOME`, scoring и assessment-инструкции, которые не являются
+игровым API участника.
 
 ### 8. Light GUI — презентация, не новый runtime
 
-Отдельная owner/admin-scoped страница Light GUI:
+Отдельная admin/operator-only страница Light GUI:
 
 - показывает main/background lanes и terminal/non-terminal status;
 - выравнивает несколько запросов по `alignment_key`;
@@ -185,11 +196,14 @@ GUI не вычисляет authoritative mutation diff из state и не об�
 Принято решение хранить диагностическую трассу постоянно для отладки. Новые
 trace-таблицы не имеют автоматического TTL. Для `service_call_log` значение
 `SERVICE_CALL_LOG_RETENTION_DAYS=0` означает unlimited и является default;
-положительное число явно включает очистку старых записей.
+положительное число явно включает очистку старых записей. IaC задаёт default
+через `rp_stack_gateway_service_call_log_retention_days: 0`, рендерит его в
+Gateway `.env`, а осознанное host-specific значение может быть задано в
+`/etc/ansible/local-overrides.yml`.
 
 Unlimited retention не отменяет privacy boundary: журнал содержит пользовательский
 нарратив и model output, входит в Gateway data/backup scope, не экспортируется в
-dataset автоматически и доступен только через owner/admin-scoped API. Дисковый рост,
+dataset автоматически и доступен только через admin-scoped API. Дисковый рост,
 редакция секретов и восстановление backup проверяются как эксплуатационные
 свойства.
 
@@ -216,8 +230,8 @@ state patch, prompt, scoring, repair/fallback policy или активацию
   `state/schema.json` или публичные игровые модели.
 - Party и checkpoint branch остаются разными `state_campaign_id`; запрос к
   branch никогда не объединяется с source party по совпавшему номеру хода.
-- Существующие public interfaces сохраняются; добавляются только три
-  party-scoped endpoint.
+- Существующие public interfaces сохраняются; добавляются пять admin-scoped
+  endpoint, из них три адресуют конкретную party.
 
 ## Validation
 
@@ -234,19 +248,24 @@ state patch, prompt, scoring, repair/fallback policy или активацию
    latency/status/usage и не содержат внедрённый secret;
 7. default `0` не удаляет старые service rows, положительный retention удаляет
    записи до cutoff;
-8. owner и admin читают разрешённую party, чужой owner и Showroom получают
-   отказ;
+8. admin читает party/branch trace, обычный owner и Showroom получают отказ;
 9. annotation idempotently появляется в annotation store и `audit_events`, но
    не меняет state/history;
 10. намеренный отказ trace recorder не меняет результат основного runtime;
 11. list pagination bounded, а крупный detail загружается отдельно;
-12. Light GUI tests покрывают RP revision, legacy RP, training, request без
-    commit, fallback/repair и сравнение нескольких запросов.
+12. Light GUI Node tests покрывают построение URL, нормализацию, выравнивание и
+    сравнение нескольких запросов, отсутствие capture, metadata-driven fallback,
+    line diff, annotation payload и статические security/packaging guards.
+
+Эти JS-тесты не являются DOM/browser-доказательством RP/training/failed-request
+сценариев. Фактический рендер этих случаев, включая server-only training fields,
+repair/fallback и request без commit, проверяется отдельным authenticated
+admin-browser canary.
 
 Полный offline gate, commit, push, Ansible apply, container tests, HTTP check и
 authenticated browser check называются раздельно. Для documentation-only
 изменения достаточно link/fence/registry validation и `git diff --check`; для
-поставки Workbench нужен полный repository CI и живой owner/admin-scoped canary.
+поставки Workbench нужен полный repository CI и живой admin-scoped canary.
 
 ## Consequences
 
@@ -259,6 +278,8 @@ privacy impact Gateway backup. Асинхронная трасса может б
 
 ## Related decisions
 
+- Unpublished working drafts Decision 023 and Decision 025 are superseded by
+  this accepted request-centric decision and are not separate repository ADRs.
 - [Decision 006: Light GUI party flow](006-light-gui-party-flow.md)
 - [Decision 010: Party scenario types](010-party-scenario-types.md)
 - [Decision 017: WorldPack-owned Training Runtime](017-worldpack-owned-training-runtime.md)

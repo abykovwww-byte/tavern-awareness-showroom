@@ -106,13 +106,9 @@ class RelationshipMechanics:
             if due_turn > party_turn:
                 continue
             if event_id == "favour" and self.rp_contract_revision >= 4:
-                if self.store.resolve_event(
-                    int(event["id"]),
-                    status="resolved",
-                    resolution="delivered",
-                    resolved_turn=party_turn,
-                ):
-                    changes.append(self._event_change("resolved", event, resolution="delivered"))
+                # A due clock creates a narrator obligation; it is not proof that
+                # the promised help appeared in the committed scene. The existing
+                # evidence-checked relationship extractor resolves it separately.
                 continue
             if self.store.resolve_event(
                 int(event["id"]),
@@ -140,6 +136,62 @@ class RelationshipMechanics:
             if boundary is not None:
                 changes.append(boundary)
 
+        return changes
+
+    def resolve_delivered_favours(
+        self,
+        *,
+        turn_id: int,
+        party_turn: int,
+        narrative_response: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve due favours only after WorldPack-marked evidence in this scene."""
+        if turn_id <= 0:
+            raise ValueError("turn_id must be positive")
+        if party_turn < 0:
+            raise ValueError("party_turn must be non-negative")
+        if self.rp_contract_revision < 4:
+            return []
+
+        self._ensure_seed_state()
+        scene_text = " ".join(str(narrative_response or "").casefold().split())
+        changes: list[dict[str, Any]] = []
+        for event in self.store.active_events(party_turn):
+            if (
+                str(event["event_id"]) != "favour"
+                or int(event["due_turn"]) > party_turn
+                or not self._event_basis_active(event, party_turn)
+            ):
+                continue
+            evidence_rows = self.store.cause_rows(
+                str(event["character_id"]),
+                str(event["axis"]),
+                party_turn,
+            )
+            delivered = False
+            for row in evidence_rows:
+                event_rule = self.model.get("events", {}).get(str(row["event_id"]))
+                resolves = event_rule.get("resolves") if isinstance(event_rule, dict) else None
+                if (
+                    int(row["turn_id"]) == turn_id
+                    and int(row["weight"]) > 0
+                    and str(row["source"]) == "extraction"
+                    and isinstance(resolves, list)
+                    and "favour" in resolves
+                    and " ".join(str(row["evidence"] or "").casefold().split()) in scene_text
+                ):
+                    delivered = True
+                    break
+            if not delivered:
+                continue
+            if self.store.resolve_event(
+                int(event["id"]),
+                status="resolved",
+                resolution="delivered",
+                resolved_turn=party_turn,
+                resolved_turn_id=turn_id,
+            ):
+                changes.append(self._event_change("resolved", event, resolution="delivered"))
         return changes
 
     def pressure_block(self, party_turn: int, character_names: dict[str, str]) -> str | None:

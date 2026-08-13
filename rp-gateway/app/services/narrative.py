@@ -518,6 +518,7 @@ class NarrativeClient:
                     "content": rp_story_memory_block(
                         rp_story_memory,
                         self.settings.rp_story_memory_prompt_max_chars,
+                        self.settings.rp_contract_revision,
                     ),
                 }
             )
@@ -914,14 +915,18 @@ def long_term_memory_block(memory_summary: dict[str, Any] | list[dict[str, Any]]
     )
 
 
-def rp_story_memory_block(snapshot: dict[str, Any], max_chars: int) -> str:
+def rp_story_memory_block(
+    snapshot: dict[str, Any],
+    max_chars: int,
+    rp_contract_revision: int = 0,
+) -> str:
     return (
         "RP_STORY_MEMORY\n"
         "This is the bounded living continuity ledger for this RP party. It may summarize confirmed facts, character "
         "arcs, possessions, projects, active and resolved threads, unresolved hooks, and chronology. Use it to preserve "
         "long-range continuity, but treat current canonical state and AUTHORITATIVE_OUTCOME as higher authority. Do not "
         "turn uncertainty into fact and do not assume omitted detail was erased.\n"
-        f"{story_memory_prompt_text(snapshot, max_chars)}"
+        f"{story_memory_prompt_text(snapshot, max_chars, rp_contract_revision)}"
     )
 
 

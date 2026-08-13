@@ -34,6 +34,7 @@ def make_legacy_deadline_nullable(store: StateStore) -> None:
                 payload_json TEXT NOT NULL,
                 resolution TEXT,
                 resolved_turn INTEGER,
+                resolved_turn_id INTEGER,
                 created_at INTEGER NOT NULL
             )
             """
@@ -42,10 +43,10 @@ def make_legacy_deadline_nullable(store: StateStore) -> None:
             """
             INSERT INTO narrative_events(
                 id, campaign_id, character_id, axis, event_id, status, opened_turn,
-                due_turn, payload_json, resolution, resolved_turn, created_at
+                due_turn, payload_json, resolution, resolved_turn, resolved_turn_id, created_at
             )
             SELECT id, campaign_id, character_id, axis, event_id, status, opened_turn,
-                   due_turn, payload_json, resolution, resolved_turn, created_at
+                   due_turn, payload_json, resolution, resolved_turn, resolved_turn_id, created_at
             FROM narrative_events_current
             """
         )
@@ -209,6 +210,7 @@ def test_empty_legacy_relationship_tables_migrate_to_two_clock_ddl(tmp_path: Pat
     assert {"turn_id", "party_turn"} <= cause_columns
     assert "party_turn" in badge_columns and "turn_id" not in badge_columns
     assert event_columns["due_turn"] == 1
+    assert event_columns["resolved_turn_id"] == 0
     assert index_columns == ["campaign_id", "character_id", "axis", "party_turn"]
 
 
@@ -234,6 +236,52 @@ def test_active_event_deadline_backfill_is_idempotent(tmp_path: Path) -> None:
     assert relationships.backfill_active_event_deadlines({"crack": 6}) == 1
     assert relationships.active_events(8)[0]["due_turn"] == 14
     assert relationships.backfill_active_event_deadlines({"crack": 6}) == 0
+
+
+def test_resolve_event_rejects_excluded_provenance_turn_but_preserves_unscoped_resolution(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path, "excluded-resolution-provenance")
+    relationships = RelationshipStore(store, {})
+    turn_id = store.record_turn(
+        "excluded-turn",
+        "excluded-request",
+        "player",
+        "narrative",
+        {},
+        1,
+        party_turn=1,
+    )
+    event_row_id = relationships.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    assert event_row_id is not None
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE turns SET excluded_from_memory = 1 WHERE campaign_id = ? AND id = ?",
+            (store.campaign_id, turn_id),
+        )
+
+    assert not relationships.resolve_event(
+        event_row_id,
+        status="resolved",
+        resolution="delivered",
+        resolved_turn=1,
+        resolved_turn_id=turn_id,
+    )
+    assert relationships.event_rows("ivan", "favour")[0]["status"] == "active"
+
+    assert relationships.resolve_event(
+        event_row_id,
+        status="expired",
+        resolution="deadline_missed",
+        resolved_turn=1,
+    )
+    assert relationships.event_rows("ivan", "favour")[0]["status"] == "expired"
 
 
 def test_add_cause_is_idempotent_and_value_is_clamped(tmp_path: Path) -> None:

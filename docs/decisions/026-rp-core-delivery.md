@@ -89,15 +89,41 @@ live-canary соответствующей ревизии. Явная мигра
   замене сервисной моделью.
 - Weak inference не может отозвать факт, вернуть tombstone в active или создать
   новый tombstone без известного факта.
+- Service model не назначает authority и provenance: Gateway принудительно делает
+  каждую новую или изменённую запись `inference` и разрешает только IDs ходов
+  фактически обработанного пакета. Неизменённая запись сохраняет прежнюю authority.
 - Более сильная и более новая user/state/WorldPack authority может изменить статус.
-- В effective prompt попадают только active-записи.
+- В существующем party message API для RP revision 2+ доступна типизированная
+  коррекция активной list-записи: `retract` или `replace` по её `field` и
+  `fact_id`. Клиент не передаёт authority, status или provenance: Gateway
+  проверяет цель до provider call, сохраняет correction в metadata того же
+  committed turn и использует фактический turn ID как источник.
+- Коррекция форсирует ближайшую сборку snapshot и сразу накладывается на
+  effective narrator prompt. Поэтому задержка или retry фоновой service job не
+  возвращает ошибочный факт в текущую или следующую сцену; повторная коррекция
+  уже неактивной цели отклоняется до state/turn mutation.
+- Bounded memory освобождает место за счёт weak-записей и не отбрасывает
+  tombstone или replacement с `user_correction`; если безопасного места нет,
+  preflight отклоняет `replace`, а не превращает его в неявный `retract`.
+- `current_situation` остаётся rolling single-object projection и не входит в
+  list-entry correction API: для него нельзя сохранить одновременно tombstone
+  и replacement без отдельного контракта идентичности.
+- В effective prompt попадают только active v2-записи; legacy `legacy_projection`
+  не активируется автоматически при повышении revision и не передаётся service
+  model как материал для перефразирования.
+- Rollback сохраняет append-only audit, но инвалидирует snapshots, покрывающие
+  исключённые ходы; UI, updater и prompt читают newest valid projection. Запись
+  результата фоновой job атомарно проверяет contributing turns и base snapshot,
+  поэтому job, пережившая rollback, не может воскресить отменённую ветку.
 
 ### S3 — Absolute rule enforcement до commit
 
 - Typed `world_constraints` с `kind=absolute` и `forbidden_claims` входят в prompt.
 - Первый ответ narrator валидируется, допускается один repair, затем выполняется
   повторная validation.
-- При повторном нарушении нет state version, turn, artifact или успешного ответа.
+- При повторном нарушении нет state version, turn, artifact или успешного ответа,
+  включая RP candidate/autotest branch. Gateway fallback остаётся только у
+  deterministic training runtime.
 - Тот же контракт действует для opening scene.
 
 ### S4 — Замкнутый персонажный цикл
@@ -114,9 +140,15 @@ seed или подтверждённая сцена
 ```
 
 Для актуального source WorldPack `starosta` positive seed Бажены открывает `favour`
-по WorldPack clock. На due turn Gateway помечает событие `resolved/delivered` и
-передаёт narrator обязательство показать конкретную добровольную помощь. Внутренние
-ID, численные веса и сроки не раскрываются. Старый live-checkpoint с Любавой
+по WorldPack clock. На due turn Gateway передаёт narrator обязательство показать
+конкретную добровольную помощь, но не считает часы доказательством исполнения.
+Событие получает `resolved/delivered` только после evidence-checked extraction
+положительной причины того же персонажа из записанной сцены, причём authored
+event WorldPack должен явно разрешать это через `resolves: ["favour"]`; иначе
+событие остаётся active. Delivery хранит source turn ID. Rollback этого хода
+атомарно возвращает `favour` в active, а запоздавшая extraction job не может
+закрыть его по уже исключённому ходу.
+Внутренние ID, численные веса и сроки не раскрываются. Старый live-checkpoint с Любавой
 проверяется по тому же инварианту после deploy, если пользователь создаёт его копию.
 
 ### S5 — Consumer-or-retire

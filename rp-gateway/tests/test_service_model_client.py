@@ -210,6 +210,32 @@ def test_trace_write_failure_does_not_change_successful_service_result(tmp_path:
     assert rows(settings) == []
 
 
+def test_trace_migration_failure_does_not_block_service_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, json={"choices": [{"message": {"content": "ok"}}]})
+
+    def broken_migrate(_self: ServiceModelClient) -> None:
+        raise sqlite3.OperationalError("diagnostic migration unavailable")
+
+    monkeypatch.setattr(ServiceModelClient, "_migrate", broken_migrate)
+    client = ServiceModelClient(settings_for(tmp_path), transport=httpx.MockTransport(handler))
+
+    completion = asyncio.run(
+        client.complete(
+            role="memory_summary",
+            party_id="party_test",
+            turn_id=1,
+            request_id="req_migration_fail_open",
+            prompt="Summarize.",
+        )
+    )
+
+    assert completion.data["choices"][0]["message"]["content"] == "ok"
+
+
 def test_extended_credential_shapes_are_redacted(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, request=request, json={"choices": [{"message": {"content": "ok"}}]})

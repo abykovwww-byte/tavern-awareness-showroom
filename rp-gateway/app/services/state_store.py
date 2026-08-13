@@ -128,6 +128,7 @@ class StateStore:
                     payload_json TEXT NOT NULL,
                     resolution TEXT,
                     resolved_turn INTEGER,
+                    resolved_turn_id INTEGER,
                     created_at INTEGER NOT NULL,
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
                 );
@@ -410,6 +411,7 @@ class StateStore:
                     memory_json TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     model TEXT NOT NULL,
+                    invalidated INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
                     UNIQUE(campaign_id, revision),
                     UNIQUE(campaign_id, to_turn_id)
@@ -480,7 +482,9 @@ class StateStore:
                 """
             )
             self.migrate_turn_columns(connection)
+            self.migrate_rp_story_memory_columns(connection)
             self.migrate_relationship_turn_columns(connection)
+            self.migrate_narrative_event_resolution_columns(connection)
             self.migrate_turn_feedback_columns(connection)
             self.migrate_turn_trace_tables(connection)
             connection.execute(
@@ -510,6 +514,31 @@ class StateStore:
                   AND preceding_turn.id <= current_turn.id
             )
             WHERE current_turn.party_turn IS NULL
+            """
+        )
+
+    def migrate_rp_story_memory_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(rp_story_memory_snapshots)").fetchall()
+        }
+        if "invalidated" in columns:
+            return
+        connection.execute(
+            "ALTER TABLE rp_story_memory_snapshots "
+            "ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.execute(
+            """
+            UPDATE rp_story_memory_snapshots AS snapshot
+            SET invalidated = 1
+            WHERE EXISTS (
+                SELECT 1
+                FROM turns AS turn_record
+                WHERE turn_record.campaign_id = snapshot.campaign_id
+                  AND turn_record.excluded_from_memory = 1
+                  AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
+            )
             """
         )
 
@@ -590,6 +619,7 @@ class StateStore:
                 payload_json TEXT NOT NULL,
                 resolution TEXT,
                 resolved_turn INTEGER,
+                resolved_turn_id INTEGER,
                 created_at INTEGER NOT NULL,
                 FOREIGN KEY(campaign_id) REFERENCES campaigns(id)
             );
@@ -609,6 +639,14 @@ class StateStore:
                 ON narrative_events(campaign_id, status, due_turn);
             """
         )
+
+    @staticmethod
+    def migrate_narrative_event_resolution_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(narrative_events)").fetchall()
+        }
+        if "resolved_turn_id" not in columns:
+            connection.execute("ALTER TABLE narrative_events ADD COLUMN resolved_turn_id INTEGER")
 
     def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
@@ -1192,7 +1230,7 @@ class StateStore:
                     story_row = connection.execute(
                         """
                         SELECT * FROM rp_story_memory_snapshots
-                        WHERE campaign_id = ? AND to_turn_id <= ?
+                        WHERE campaign_id = ? AND to_turn_id <= ? AND invalidated = 0
                         ORDER BY to_turn_id DESC, revision DESC LIMIT 1
                         """,
                         (self.campaign_id, int(through_turn_id)),
@@ -1584,7 +1622,8 @@ class StateStore:
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         query = """
-            SELECT id, request_id, player_message, narrative_response, state_version, party_turn, created_at
+            SELECT id, request_id, player_message, narrative_response,
+                   state_version, party_turn, metadata_json, created_at
             FROM turns
             WHERE campaign_id = ? AND id > ? AND excluded_from_memory = 0
         """
@@ -1598,7 +1637,17 @@ class StateStore:
             params.append(limit)
         with self.connect() as connection:
             rows = connection.execute(query, tuple(params)).fetchall()
-        return [dict(row) for row in rows]
+        turns: list[dict[str, Any]] = []
+        for row in rows:
+            turn = dict(row)
+            raw_metadata = turn.pop("metadata_json", None)
+            try:
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            turn["metadata"] = metadata if isinstance(metadata, dict) else {}
+            turns.append(turn)
+        return turns
 
     def search_archived_turns(self, query: str, through_turn_id: int, limit: int = 3) -> list[dict[str, Any]]:
         """Retrieve only already-compressed turns; the raw tail remains sequential in the prompt."""
@@ -1716,6 +1765,22 @@ class StateStore:
             ).fetchone()
         return self.rp_story_memory_from_row(row) if row else None
 
+    def effective_rp_story_memory(self) -> dict[str, Any] | None:
+        """Return the newest snapshot whose covered turns are still part of memory."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM rp_story_memory_snapshots
+                WHERE campaign_id = ? AND invalidated = 0
+                ORDER BY to_turn_id DESC, revision DESC
+                LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+        return self.rp_story_memory_from_row(row) if row else None
+
     def rp_story_memories(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -1736,25 +1801,56 @@ class StateStore:
         state_version: int,
         memory: dict[str, Any],
         model: str,
-    ) -> dict[str, Any]:
+        contributing_turn_ids: list[int] | None = None,
+        base_snapshot_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        turn_ids = list(dict.fromkeys(int(turn_id) for turn_id in contributing_turn_ids or []))
         with self.connect() as connection:
             existing = connection.execute(
                 "SELECT * FROM rp_story_memory_snapshots WHERE campaign_id = ? AND to_turn_id = ?",
                 (self.campaign_id, int(to_turn_id)),
             ).fetchone()
             if existing is not None:
-                return self.rp_story_memory_from_row(existing)
+                return (
+                    self.rp_story_memory_from_row(existing)
+                    if not bool(existing["invalidated"])
+                    else None
+                )
             row = connection.execute(
                 "SELECT COALESCE(MAX(revision), 0) AS revision FROM rp_story_memory_snapshots WHERE campaign_id = ?",
                 (self.campaign_id,),
             ).fetchone()
             revision = int(row["revision"] or 0) + 1
-            cursor = connection.execute(
+            turn_placeholders = ", ".join("?" for _ in turn_ids)
+            turn_guard = (
+                f"""
+                AND (
+                    SELECT COUNT(*)
+                    FROM turns
+                    WHERE campaign_id = ?
+                      AND id IN ({turn_placeholders})
+                      AND excluded_from_memory = 0
+                ) = ?
                 """
+                if turn_ids
+                else ""
+            )
+            cursor = connection.execute(
+                f"""
                 INSERT INTO rp_story_memory_snapshots(
                     campaign_id, revision, from_turn_id, to_turn_id,
                     state_version, memory_json, created_at, model
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                )
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE (
+                    ? IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM rp_story_memory_snapshots
+                        WHERE campaign_id = ? AND id = ? AND invalidated = 0
+                    )
+                )
+                {turn_guard}
                 """,
                 (
                     self.campaign_id,
@@ -1765,8 +1861,18 @@ class StateStore:
                     json.dumps(memory, ensure_ascii=False),
                     now_ts(),
                     model,
+                    base_snapshot_id,
+                    self.campaign_id,
+                    base_snapshot_id,
+                    *(
+                        (self.campaign_id, *turn_ids, len(turn_ids))
+                        if turn_ids
+                        else ()
+                    ),
                 ),
             )
+            if cursor.rowcount == 0:
+                return None
             created = connection.execute(
                 "SELECT * FROM rp_story_memory_snapshots WHERE id = ?",
                 (int(cursor.lastrowid),),
@@ -1788,6 +1894,7 @@ class StateStore:
             "memory": memory if isinstance(memory, dict) else {},
             "created_at": row["created_at"],
             "model": row["model"],
+            "invalidated": bool(row["invalidated"]),
         }
 
     def latest_memory_coverage(self) -> dict[str, Any] | None:
@@ -2322,6 +2429,35 @@ class StateStore:
                     now_ts(),
                     f"rollback:v{target_version}",
                 ),
+            )
+            connection.execute(
+                """
+                UPDATE rp_story_memory_snapshots AS snapshot
+                SET invalidated = 1
+                WHERE snapshot.campaign_id = ?
+                  AND snapshot.invalidated = 0
+                  AND EXISTS (
+                      SELECT 1
+                      FROM turns AS turn_record
+                      WHERE turn_record.campaign_id = snapshot.campaign_id
+                        AND turn_record.excluded_from_memory = 0
+                        AND turn_record.state_version > ?
+                        AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
+                  )
+                """,
+                (self.campaign_id, target_version),
+            )
+            connection.execute(
+                """
+                UPDATE narrative_events
+                SET status = 'active', resolution = NULL, resolved_turn = NULL, resolved_turn_id = NULL
+                WHERE campaign_id = ? AND status = 'resolved' AND resolution = 'delivered'
+                  AND resolved_turn_id IN (
+                      SELECT id FROM turns
+                      WHERE campaign_id = ? AND state_version > ? AND excluded_from_memory = 0
+                  )
+                """,
+                (self.campaign_id, self.campaign_id, target_version),
             )
             connection.execute(
                 """

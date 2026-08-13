@@ -136,6 +136,7 @@ class Adjudicator:
         idempotency_key: str | None,
         request_id: str | None = None,
         allow_gateway_fallback: bool = True,
+        story_memory_corrections: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         request_id = request_id or f"req_{uuid.uuid4().hex}"
         idempotency_key = idempotency_key or request_id
@@ -167,6 +168,13 @@ class Adjudicator:
                 payload={"input": {"content": latest}},
                 party_turn=expected_party_turn,
             )
+            normalized_story_corrections: list[dict[str, str]] = []
+            if story_memory_corrections:
+                if self.rp_story_memory is None:
+                    raise ValueError("story-memory corrections are only available for RP parties")
+                normalized_story_corrections = self.rp_story_memory.validate_corrections(
+                    story_memory_corrections
+                )
             if self.world.is_world_command(latest):
                 self.record_trace_event(
                     request_id=request_id,
@@ -205,6 +213,7 @@ class Adjudicator:
                         repaired=False,
                         fallback_reason=None,
                         transport_status="ok",
+                        story_memory_corrections=normalized_story_corrections,
                     ),
                 )
                 self.store.complete_turn_request(idempotency_key, response)
@@ -272,7 +281,11 @@ class Adjudicator:
                     lane="main",
                 )
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
-                rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
+                rp_story_memory = (
+                    self.rp_story_memory.prompt_snapshot(normalized_story_corrections)
+                    if self.rp_story_memory
+                    else None
+                )
                 prompt_messages = self.narrative.narrative_messages(
                     request,
                     narrative_state,
@@ -626,6 +639,7 @@ class Adjudicator:
                     outcome=outcome.model_dump(mode="json"),
                     llm_calls=llm_calls,
                     interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
+                    story_memory_corrections=normalized_story_corrections,
                 ),
                 artifacts=artifact_result.persistence_records if artifact_result else [],
                 consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
@@ -716,8 +730,9 @@ class Adjudicator:
         outcome: dict[str, Any] | None = None,
         llm_calls: int = 0,
         interaction_evidence: list[dict[str, Any]] | None = None,
+        story_memory_corrections: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        return {
+        metadata = {
             "schema_version": "rp-gateway.turn.v1",
             "turn_kind": turn_kind,
             "scenario_type": self.settings.scenario_type,
@@ -746,6 +761,9 @@ class Adjudicator:
                 "interactive_workspace_enabled": bool(self.training_workspace and self.training_workspace.enabled),
             },
         }
+        if story_memory_corrections:
+            metadata["story_memory_corrections"] = [dict(item) for item in story_memory_corrections]
+        return metadata
 
     def preview_applied_state(self, patch: Any) -> dict[str, Any]:
         candidate = self.store.preview_patch(patch)

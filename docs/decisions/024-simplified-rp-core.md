@@ -149,8 +149,8 @@ score не может скрыть провал одного инвариант�
 
 ## Supersession and dependencies
 
-- Decision 022 остаётся обязательным evidence-gate; Decision 023 полезен для
-  диагностики, но не является продуктовой зависимостью.
+- Decision 022 остаётся обязательным evidence-gate; Decision 027 предоставляет
+  диагностику, но не является продуктовой зависимостью.
 - Decision 016 заменён в части авторитетности story memory.
 - Decisions 020 и 021 сохраняются и расширяются замкнутым character loop.
 - Decision 010 сохраняет разделение режимов; его RP-resolution superseded для

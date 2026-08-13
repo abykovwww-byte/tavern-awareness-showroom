@@ -283,7 +283,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     authorization=None,
                     idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
                     request_id=f"{request_id}_narrator",
-                    allow_gateway_fallback=True,
+                    allow_gateway_fallback=(
+                        party.scenario_type == "training" and runtime_service.enabled
+                    ),
                 )
                 fallback_turns = int(run.get("fallback_turns") or 0)
                 choices = narrator_response.get("choices") or []
@@ -339,14 +341,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         party_id: str,
         branch_id: str | None,
     ) -> tuple[Any, dict[str, Any] | None, StateStore]:
-        user = current_user(request)
-        owner_id = None if user and user.is_admin else (user.id if user else owner_user_id(request))
-        party = party_store.get_party(party_id, owner_user_id=owner_id)
+        require_admin(request)
+        party = party_store.get_party(party_id, owner_user_id=None)
         if branch_id:
-            branch = party_store.get_party_branch(party_id, branch_id, owner_user_id=owner_id)
-            trace_store = party_store.store_for_branch(party_id, branch_id, owner_user_id=owner_id)
+            branch = party_store.get_party_branch(party_id, branch_id, owner_user_id=None)
+            trace_store = party_store.store_for_branch(party_id, branch_id, owner_user_id=None)
             return party, branch, trace_store
-        return party, None, party_store.store_for_party(party_id, owner_user_id=owner_id)
+        return party, None, party_store.store_for_party(party_id, owner_user_id=None)
 
     def require_admin(request: Request) -> AuthUser | None:
         user = current_user(request)
@@ -869,9 +870,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/turn-traces/parties")
     def list_turn_trace_parties(request: Request, response: Response) -> dict[str, Any]:
-        user = current_user(request)
-        owner_id = None if user and user.is_admin else (user.id if user else None)
-        parties = party_store.list_parties(owner_user_id=owner_id)
+        require_admin(request)
+        parties = party_store.list_parties(owner_user_id=None)
         response.headers["Cache-Control"] = "no-store"
         return {"parties": [party.model_dump(mode="json") for party in parties]}
 
@@ -882,13 +882,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         party_id: str,
         limit: int = 100,
     ) -> dict[str, Any]:
-        user = current_user(request)
-        owner_id = None if user and user.is_admin else (user.id if user else None)
+        require_admin(request)
         try:
-            party_store.get_party(party_id, owner_user_id=owner_id)
+            party_store.get_party(party_id, owner_user_id=None)
             branches = party_store.list_party_branches(
                 party_id,
-                owner_user_id=owner_id,
+                owner_user_id=None,
                 limit=min(max(limit, 1), 100),
             )
         except ValueError as exc:
@@ -1077,7 +1076,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if party.scenario_type == "rp":
             story_updater = RPStoryMemoryUpdater(party_settings, party_state_store)
-            payload["story_memory"] = party_state_store.latest_rp_story_memory()
+            payload["story_memory"] = story_updater.prompt_snapshot()
             payload["story_memory_stats"] = story_updater.stats()
         return payload
 
@@ -1496,7 +1495,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 party_settings.rp_contract_revision,
             )
             memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
-            rp_story_memory = party_state_store.latest_rp_story_memory() if party.scenario_type == "rp" else None
+            rp_story_memory = (
+                adjudicator.rp_story_memory.prompt_snapshot()
+                if adjudicator.rp_story_memory is not None
+                else None
+            )
             artifact_contract = artifact_service.contract_for_state(narrative_state)
             workspace_contract = workspace_service.contract_for_state(narrative_state, party_start=True)
             interaction_contract = (
@@ -1952,6 +1955,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party.scenario_type == "training"
                     and runtime_service.enabled
                 ),
+                story_memory_corrections=[
+                    correction.model_dump(mode="json", exclude_none=True)
+                    for correction in request.story_memory_corrections
+                ],
             )
         except RequestAlreadyRunning as exc:
             raise HTTPException(

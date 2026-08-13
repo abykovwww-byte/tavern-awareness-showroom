@@ -95,6 +95,12 @@ class RelationshipExtractionService:
             party_turn=party_turn,
             events=parsed["events"],
         )
+        delivered_favours = self.mechanics.resolve_delivered_favours(
+            turn_id=int(turn_id),
+            party_turn=party_turn,
+            narrative_response=str(turn.get("narrative_response") or ""),
+        )
+        applied.extend(delivered_favours)
         self.store.audit(
             "relationship_extraction_applied",
             {
@@ -102,6 +108,7 @@ class RelationshipExtractionService:
                 "party_turn": party_turn,
                 "extracted_events": len(parsed["events"]),
                 "applied_events": len(applied),
+                "delivered_favours": len(delivered_favours),
                 "model": raw_response.get("model"),
             },
             request_id,
@@ -112,6 +119,7 @@ class RelationshipExtractionService:
             "turn_id": int(turn_id),
             "party_turn": party_turn,
             "events": applied,
+            "delivered_favours": delivered_favours,
         }
 
     def parse_response(

@@ -34,7 +34,7 @@
     "broken_promise": {"axis": "loyalty", "weight": -25, "decay_turns": 60, "wound": "deceived"},
     "abandoned_in_need": {"axis": "loyalty", "weight": -30, "decay_turns": null, "wound": "abandoned"},
     "physical_assault": {"axis": "loyalty", "weight": -30, "decay_turns": null, "wound": "humiliated_publicly"},
-    "defended_publicly": {"axis": "loyalty", "weight": 15, "decay_turns": 60},
+    "defended_publicly": {"axis": "loyalty", "weight": 15, "decay_turns": 60, "resolves": ["favour"]},
     "kept_promise": {"axis": "loyalty", "weight": 10, "decay_turns": 40},
     "trust_gained": {"axis": "loyalty", "weight": 10, "decay_turns": 40},
     "shared_risk": {"axis": "loyalty", "weight": 12, "decay_turns": 60}

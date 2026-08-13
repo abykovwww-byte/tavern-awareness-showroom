@@ -294,15 +294,33 @@ class RelationshipStore:
         status: str,
         resolution: str | None,
         resolved_turn: int,
+        resolved_turn_id: int | None = None,
     ) -> bool:
         with self.state_store.connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE narrative_events
-                SET status = ?, resolution = ?, resolved_turn = ?
+                SET status = ?, resolution = ?, resolved_turn = ?, resolved_turn_id = ?
                 WHERE id = ? AND campaign_id = ? AND status = 'active'
+                  AND (
+                      ? IS NULL
+                      OR EXISTS (
+                          SELECT 1 FROM turns
+                          WHERE id = ? AND campaign_id = ? AND excluded_from_memory = 0
+                      )
+                  )
                 """,
-                (status, resolution, resolved_turn, event_row_id, self.campaign_id),
+                (
+                    status,
+                    resolution,
+                    resolved_turn,
+                    resolved_turn_id,
+                    event_row_id,
+                    self.campaign_id,
+                    resolved_turn_id,
+                    resolved_turn_id,
+                    self.campaign_id,
+                ),
             )
         return cursor.rowcount == 1
 

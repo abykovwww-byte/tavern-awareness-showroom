@@ -340,11 +340,43 @@ class PartySummary(BaseModel):
     model_profile: ModelProfileSummary | None = None
 
 
+RPStoryMemoryField = Literal[
+    "canon",
+    "rules_and_abilities",
+    "inventory_and_assets",
+    "characters",
+    "active_threads",
+    "resolved_threads",
+    "unresolved_hooks",
+    "chronology",
+]
+
+
+class RPStoryMemoryCorrection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: RPStoryMemoryField
+    fact_id: str = Field(min_length=8, max_length=80, pattern=r"^[a-z0-9][a-z0-9_.:-]{7,79}$")
+    action: Literal["retract", "replace"]
+    replacement_text: str | None = Field(default=None, max_length=600)
+
+    @model_validator(mode="after")
+    def validate_replacement(self) -> "RPStoryMemoryCorrection":
+        if self.replacement_text is not None:
+            self.replacement_text = self.replacement_text.strip()
+        if self.action == "replace" and not self.replacement_text:
+            raise ValueError("replacement_text is required for replace")
+        if self.action == "retract" and self.replacement_text is not None:
+            raise ValueError("replacement_text is only allowed for replace")
+        return self
+
+
 class PartyMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     idempotency_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    story_memory_corrections: list[RPStoryMemoryCorrection] = Field(default_factory=list, max_length=10)
 
 
 class TurnTraceAnnotationCreate(BaseModel):

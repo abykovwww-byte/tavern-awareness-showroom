@@ -18,6 +18,7 @@ from app.services.narrative import (
     uncompacted_archive_fallback_block,
 )
 from app.services.rule_engine import RuleEngine
+from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.state_store import StateStore
 
 
@@ -27,6 +28,7 @@ class PromptInspector:
         self.store = store
         self.intent_parser = IntentParser()
         self.rule_engine = RuleEngine()
+        self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
 
     def preview(self, content: str, source: str = "current") -> dict[str, Any]:
         if source == "last":
@@ -80,7 +82,7 @@ class PromptInspector:
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
-        rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
+        rp_story_memory = self.rp_story_memory.prompt_snapshot() if self.rp_story_memory else None
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             candidate_state,
@@ -291,7 +293,7 @@ class PromptInspector:
 
     def memory_inspection(self, latest: str) -> dict[str, Any]:
         coverage = self.store.latest_memory_coverage()
-        story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
+        story_memory = self.rp_story_memory.prompt_snapshot() if self.rp_story_memory else None
         covered_through = int(coverage["to_turn_id"]) if coverage else 0
         selected = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         selected_keys = {(item.get("memory_type"), item.get("id")) for item in selected}

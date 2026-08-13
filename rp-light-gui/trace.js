@@ -79,6 +79,16 @@ function captureExplanation(captureStatus) {
   return "Gateway не указал полноту захвата. Отсутствие фазы нельзя считать доказательством, что она не выполнялась.";
 }
 
+function traceContractLabel(trace, party = null) {
+  const scenarioType = String(trace?.scenario_type || party?.scenario_type || "").trim();
+  if (scenarioType && scenarioType !== "rp") return scenarioType;
+  const revisionValue = trace?.rp_contract_revision ?? party?.rp_contract_revision;
+  const revision = Number(revisionValue);
+  if (Number.isInteger(revision) && revision > 0) return `RP r${revision}`;
+  const version = trace?.rp_contract_version || party?.rp_contract_version;
+  return version ? String(version) : scenarioType;
+}
+
 function missingPhaseMessage(detail) {
   const captureStatus = String(detail?.trace?.capture_status || "").toLowerCase();
   if (captureStatus === "complete") return "Не выполнялась (захват полный).";
@@ -278,6 +288,7 @@ const exported = {
   missingPhaseMessage,
   normalizeTimestamp,
   normalizeDetail,
+  traceContractLabel,
   traceDetailUrl,
   traceListUrl,
 };
@@ -356,7 +367,9 @@ if (typeof document !== "undefined") {
       }
     }
     if (!response.ok) {
-      if (response.status === 401) showAuthenticationRequired();
+      if (response.status === 401 || response.status === 403) {
+        showAuthenticationRequired(response.status === 403);
+      }
       const detail = Array.isArray(payload.detail)
         ? payload.detail.map((item) => item?.msg || String(item)).join("; ")
         : payload.detail;
@@ -399,10 +412,14 @@ if (typeof document !== "undefined") {
     dom.clearCompareButton.addEventListener("click", clearCompare);
   }
 
-  function showAuthenticationRequired() {
+  function showAuthenticationRequired(authenticated = false) {
     if (!dom.traceWorkspace || !dom.authNotice) return;
     dom.traceWorkspace.classList.add("hidden");
     dom.authNotice.classList.remove("hidden");
+    if (authenticated) {
+      dom.authNotice.querySelector("h2").textContent = "Доступ только для администратора";
+      dom.authNotice.querySelector("p").textContent = "Трассы запросов содержат операторские диагностические данные.";
+    }
   }
 
   function renderPartyOptions() {
@@ -440,12 +457,17 @@ if (typeof document !== "undefined") {
   function renderScope() {
     const selectedParty = state.scope?.party || state.parties.find((party) => party.id === state.partyId) || null;
     const selectedBranch = state.scope?.branch || state.branches.find((branch) => branch.id === state.branchId) || null;
-    makeDefinitionList(dom.scopeMeta, [
+    const rows = [
       ["Сценарий", selectedParty?.scenario_type],
-      ["Контракт", selectedParty?.rp_contract_version],
-      ["Ревизия RP", selectedBranch?.rp_contract_revision ?? selectedParty?.rp_contract_revision],
-      ["State", state.scope?.state_campaign_id || selectedBranch?.state_campaign_id || selectedParty?.state_campaign_id],
-    ]);
+    ];
+    if (selectedParty?.scenario_type === "rp") {
+      rows.push(["Контракт RP", traceContractLabel({
+        ...selectedParty,
+        rp_contract_revision: selectedBranch?.rp_contract_revision ?? selectedParty?.rp_contract_revision,
+      })]);
+    }
+    rows.push(["State", state.scope?.state_campaign_id || selectedBranch?.state_campaign_id || selectedParty?.state_campaign_id]);
+    makeDefinitionList(dom.scopeMeta, rows);
   }
 
   function resetTraceScope() {
@@ -590,7 +612,7 @@ if (typeof document !== "undefined") {
             statusLabel(trace.status),
             captureLabel(trace.capture_status),
             `фаз: ${trace.phase_count ?? "—"}`,
-            trace.rp_contract_revision !== undefined ? `RP r${trace.rp_contract_revision}` : null,
+            traceContractLabel(trace),
           ].filter(Boolean).join(" · "),
         }),
       );
@@ -967,8 +989,9 @@ if (typeof document !== "undefined") {
       ["Ветка", detail.branch?.label || (state.branchId ? state.branchId : "Основная линия")],
       ["State", detail.state_campaign_id],
     ];
-    if (trace.rp_contract_revision !== undefined) {
-      metaRows.splice(3, 0, ["Ревизия RP запроса", trace.rp_contract_revision]);
+    metaRows.splice(3, 0, ["Сценарий", trace.scenario_type || detail.party?.scenario_type]);
+    if ((trace.scenario_type || detail.party?.scenario_type) === "rp") {
+      metaRows.splice(4, 0, ["Контракт RP запроса", traceContractLabel(trace, detail.party)]);
     }
     makeDefinitionList(dom.traceMeta, metaRows);
     dom.captureNotice.className = `capture-notice ${trace.capture_status || "missing"}`;
@@ -1052,9 +1075,7 @@ if (typeof document !== "undefined") {
         header.append(
           element("span", { className: "compare-request", text: detail.trace.request_id }),
           element("small", {
-            text: detail.trace.rp_contract_revision !== undefined
-              ? `${traceHeading(detail.trace)} · RP r${detail.trace.rp_contract_revision}`
-              : traceHeading(detail.trace),
+            text: [traceHeading(detail.trace), traceContractLabel(detail.trace, detail.party)].filter(Boolean).join(" · "),
           }),
         );
         headRow.append(header);
@@ -1157,9 +1178,8 @@ if (typeof document !== "undefined") {
     bindEvents();
     try {
       const auth = await readAuth();
-      if (auth.auth_enabled !== false && !auth.authenticated) {
-        dom.traceWorkspace.classList.add("hidden");
-        dom.authNotice.classList.remove("hidden");
+      if (auth.auth_enabled !== false && (!auth.authenticated || auth.user?.role !== "admin")) {
+        showAuthenticationRequired(Boolean(auth.authenticated));
         return;
       }
       if (auth.user) dom.accountLabel.textContent = `${auth.user.username} · ${auth.user.role}`;

@@ -16,6 +16,7 @@ const {
   missingPhaseMessage,
   normalizeDetail,
   normalizeTimestamp,
+  traceContractLabel,
   traceDetailUrl,
   traceListUrl,
 } = require("./trace.js");
@@ -44,6 +45,16 @@ assert.deepEqual(normalized.trace.phases, []);
 assert.equal(normalizeTimestamp(1_720_000_000).toISOString(), "2024-07-03T09:46:40.000Z");
 assert.equal(normalizeTimestamp(1_720_000_000_000).toISOString(), "2024-07-03T09:46:40.000Z");
 assert.equal(normalizeTimestamp("not-a-date"), null);
+assert.equal(traceContractLabel({ scenario_type: "training", rp_contract_revision: null }), "training");
+assert.equal(traceContractLabel({ scenario_type: "novel", rp_contract_revision: null }), "novel");
+assert.equal(
+  traceContractLabel({ scenario_type: "rp", rp_contract_version: "rp-core.v1", rp_contract_revision: 0 }),
+  "rp-core.v1",
+);
+assert.equal(
+  traceContractLabel({ scenario_type: "rp", rp_contract_version: "rp-core.v2", rp_contract_revision: 6 }),
+  "RP r6",
+);
 
 const revisionZero = {
   trace: {
@@ -126,12 +137,19 @@ assert.deepEqual(
 const directory = __dirname;
 const source = fs.readFileSync(path.join(directory, "trace.js"), "utf8");
 const html = fs.readFileSync(path.join(directory, "trace.html"), "utf8");
+const appSource = fs.readFileSync(path.join(directory, "app.js"), "utf8");
+const index = fs.readFileSync(path.join(directory, "index.html"), "utf8");
 const dockerfile = fs.readFileSync(path.join(directory, "Dockerfile"), "utf8");
 const nginx = fs.readFileSync(path.join(directory, "nginx.conf"), "utf8");
 
 assert.doesNotMatch(source, /\.innerHTML\b/);
 assert.match(source, /textContent/);
 assert.match(source, /\/api\/turn-traces\/parties/);
+const adminGatePosition = source.indexOf('auth.user?.role !== "admin"');
+const traceLoadPosition = source.indexOf('requestJson("/api/turn-traces/parties")');
+assert.ok(adminGatePosition >= 0 && adminGatePosition < traceLoadPosition);
+assert.match(index, /id="traceWorkbenchLink" class="text-button hidden"/);
+assert.match(appSource, /traceWorkbenchLink\.classList\.toggle\("hidden", appState\.authEnabled && !isAdmin\(\)\)/);
 assert.match(html, /<main id="traceWorkspace"[^>]*tabindex="-1">/);
 assert.match(html, /aria-live="polite"/);
 assert.match(html, /<ol id="traceList"/);

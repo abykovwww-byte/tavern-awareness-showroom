@@ -64,7 +64,7 @@ class RPStoryMemoryUpdater:
         self.batch_token_budget = max(settings.rp_story_memory_batch_tokens, 1)
 
     def stats(self) -> dict[str, Any]:
-        latest = self.store.latest_rp_story_memory()
+        latest = self.store.effective_rp_story_memory()
         covered_through = int(latest["to_turn_id"]) if latest else 0
         pending = self.store.turns_for_memory(after_turn_id=covered_through)
         return {
@@ -84,12 +84,13 @@ class RPStoryMemoryUpdater:
     def build_plan(self, force: bool = False) -> tuple[RPStoryMemoryPlan | None, str]:
         if self.settings.scenario_type != "rp":
             return None, "not_rp"
-        previous = self.store.latest_rp_story_memory()
+        previous = self.store.effective_rp_story_memory()
         covered_through = int(previous["to_turn_id"]) if previous else 0
         pending = self.store.turns_for_memory(after_turn_id=covered_through)
         if not pending:
             return None, "up_to_date"
-        if not force and len(pending) < self.update_turns:
+        has_user_correction = any(turn_story_memory_corrections(turn) for turn in pending)
+        if not force and len(pending) < self.update_turns and not has_user_correction:
             return None, "waiting_for_batch"
         batch = oldest_turns_within_token_budget(pending, self.batch_token_budget)
         if not batch:
@@ -107,6 +108,54 @@ class RPStoryMemoryUpdater:
             "ready",
         )
 
+    def validate_corrections(self, corrections: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+        if not corrections:
+            return []
+        if self.settings.scenario_type != "rp" or self.settings.rp_contract_revision < 2:
+            raise ValueError("story-memory corrections require RP contract revision 2 or newer")
+        return validate_story_memory_corrections(
+            self.prompt_snapshot(),
+            corrections,
+            self.settings.rp_story_memory_max_chars,
+        )
+
+    def prompt_snapshot(
+        self,
+        corrections: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """Project committed corrections over the latest persisted service snapshot."""
+
+        latest = self.store.effective_rp_story_memory()
+        if latest is None:
+            return None
+        covered_through = int(latest["to_turn_id"])
+        pending = self.store.turns_for_memory(after_turn_id=covered_through)
+        has_pending_corrections = any(turn_story_memory_corrections(turn) for turn in pending)
+        if not has_pending_corrections and not corrections:
+            return latest
+        projected = dict(latest)
+        memory = latest.get("memory")
+        if has_pending_corrections:
+            memory = apply_user_story_memory_corrections(
+                memory,
+                pending,
+                self.settings.rp_story_memory_max_chars,
+            )
+        if corrections:
+            validated = validate_story_memory_corrections(
+                {"memory": memory},
+                corrections,
+                self.settings.rp_story_memory_max_chars,
+            )
+            memory = apply_validated_story_memory_corrections(
+                memory,
+                validated,
+                None,
+                self.settings.rp_story_memory_max_chars,
+            )
+        projected["memory"] = memory
+        return projected
+
     async def update(
         self,
         authorization: str | None,
@@ -121,15 +170,27 @@ class RPStoryMemoryUpdater:
             return {
                 "generated": False,
                 "reason": reason,
-                "story_memory": self.store.latest_rp_story_memory(),
+                "story_memory": self.store.effective_rp_story_memory(),
                 "stats": self.stats(),
             }
         try:
             generated = await self.generate(plan, request_id=request_id)
             if self.settings.rp_contract_revision >= 2:
-                generated["memory"] = reconcile_story_memory(
-                    plan.previous_memory.get("memory") if plan.previous_memory else None,
+                previous_memory = plan.previous_memory.get("memory") if plan.previous_memory else None
+                trusted_memory = apply_user_story_memory_corrections(
+                    previous_memory,
+                    plan.turns,
+                    self.settings.rp_story_memory_max_chars,
+                )
+                service_candidate = service_story_memory_candidate(
+                    previous_memory,
                     generated["memory"],
+                    [int(turn["id"]) for turn in plan.turns],
+                    self.settings.rp_story_memory_max_chars,
+                )
+                generated["memory"] = reconcile_story_memory(
+                    trusted_memory,
+                    service_candidate,
                     self.settings.rp_story_memory_max_chars,
                 )
             snapshot = self.store.record_rp_story_memory(
@@ -142,7 +203,30 @@ class RPStoryMemoryUpdater:
                 state_version=plan.state_version,
                 memory=generated["memory"],
                 model=generated.get("model") or plan.model,
+                contributing_turn_ids=[int(turn["id"]) for turn in plan.turns],
+                base_snapshot_id=(
+                    int(plan.previous_memory["id"])
+                    if plan.previous_memory
+                    else None
+                ),
             )
+            if snapshot is None:
+                self.store.audit(
+                    "rp_story_memory_stale_plan",
+                    {
+                        "from_turn_id": plan.from_turn_id,
+                        "to_turn_id": plan.to_turn_id,
+                        "state_version": plan.state_version,
+                    },
+                    request_id,
+                )
+                return {
+                    "generated": False,
+                    "reason": "stale_plan",
+                    "story_memory": self.store.effective_rp_story_memory(),
+                    "stats": self.stats(),
+                    "error": "stale_plan",
+                }
             self.store.audit(
                 "rp_story_memory_updated",
                 {
@@ -172,7 +256,7 @@ class RPStoryMemoryUpdater:
                 return {
                     "generated": False,
                     "reason": "story_memory_failed",
-                    "story_memory": self.store.latest_rp_story_memory(),
+                    "story_memory": self.store.effective_rp_story_memory(),
                     "stats": self.stats(),
                     "error": type(exc).__name__,
                 }
@@ -229,6 +313,23 @@ class RPStoryMemoryUpdater:
             plan.previous_memory.get("memory") if plan.previous_memory else None,
             self.settings.rp_story_memory_max_chars,
         )
+        if self.settings.rp_contract_revision >= 2:
+            for field in STORY_LIST_FIELDS:
+                previous[field] = [
+                    item
+                    for item in previous[field]
+                    if not (
+                        item.get("status") == "active"
+                        and item.get("authority") == "legacy_projection"
+                    )
+                ]
+            current = previous.get("current_situation")
+            if (
+                isinstance(current, dict)
+                and current.get("status") == "active"
+                and current.get("authority") == "legacy_projection"
+            ):
+                previous["current_situation"] = None
         context = {
             "previous_story_memory": previous,
             "current_authoritative_state_excerpt": self.state_excerpt(self.store.get_state()),
@@ -252,12 +353,11 @@ class RPStoryMemoryUpdater:
                         "Return a recoverable projection document, not canonical state, with exactly these keys: schema_version, canon, "
                         "rules_and_abilities, inventory_and_assets, characters, active_threads, resolved_threads, "
                         "unresolved_hooks, current_situation, chronology. current_situation is one object and every other "
-                        "content key is an array of objects with fact_id, text, status (active, superseded, or retracted), authority "
-                        "(worldpack, user_correction, state, narrator, inference, or legacy_projection), and source_turn_ids. "
-                        "Keep the exact fact_id from previous_story_memory when correcting an existing fact. Only mark an existing "
-                        "fact superseded or retracted when a new turn explicitly establishes the stronger authority and include that turn ID. "
-                        "Preserve audit entries when their status changes instead of deleting contradictions. A direct player correction "
-                        "of established canon supersedes model inference; a WorldPack rule or canonical state supersedes every summary. "
+                        "content key is an array of objects with fact_id, text, status (active, superseded, or retracted), authority, "
+                        "and source_turn_ids. Keep the exact fact_id from previous_story_memory when updating an existing fact. "
+                        "Every new or changed item is only an inference: use status active, authority inference, and source turn IDs "
+                        "from new_confirmed_turns. Copy existing terminal audit entries unchanged. Gateway, not this service model, "
+                        "decides user, state, or WorldPack authority and all tombstone transitions. "
                         "Treat player messages as attempts, "
                         "plans, or claims unless the narrator response or authoritative state confirms them. Never reveal hidden NPC "
                         "secrets that the player has not learned. Keep concrete names, promises, relationships, possessions, rules, "
@@ -402,6 +502,271 @@ def normalize_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
     return fit_story_memory(normalized, max(max_chars, 1))
 
 
+def service_story_memory_candidate(
+    previous_value: Any,
+    proposed_value: Any,
+    batch_turn_ids: list[int],
+    max_chars: int,
+) -> dict[str, Any]:
+    """Convert untrusted service output into Gateway-owned inference candidates."""
+    previous = normalize_story_memory(previous_value, max_chars)
+    proposed = normalize_story_memory(proposed_value, max_chars)
+    source_turn_ids: list[int] = []
+    for turn_id in batch_turn_ids:
+        normalized_turn_id = int(turn_id)
+        if normalized_turn_id >= 0 and normalized_turn_id not in source_turn_ids:
+            source_turn_ids.append(normalized_turn_id)
+    source_turn_ids = source_turn_ids[-20:]
+
+    candidate = empty_story_memory()
+    for field in STORY_LIST_FIELDS:
+        candidate[field] = service_story_items(
+            previous[field],
+            proposed[field],
+            source_turn_ids,
+        )
+
+    previous_current = [previous["current_situation"]] if previous.get("current_situation") else []
+    proposed_current = [proposed["current_situation"]] if proposed.get("current_situation") else []
+    current_items = service_story_items(previous_current, proposed_current, source_turn_ids)
+    candidate["current_situation"] = current_items[0] if current_items else None
+    return fit_story_memory(candidate, max(max_chars, 1))
+
+
+def turn_story_memory_corrections(turn: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = turn.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    corrections = metadata.get("story_memory_corrections")
+    if not isinstance(corrections, list):
+        return []
+    return [dict(item) for item in corrections if isinstance(item, dict)]
+
+
+def story_item_is_safely_removable(item: dict[str, Any]) -> bool:
+    return str(item.get("authority") or "legacy_projection") in {
+        "inference",
+        "narrator",
+        "legacy_projection",
+    }
+
+
+def validate_story_memory_corrections(
+    snapshot: dict[str, Any] | None,
+    corrections: list[dict[str, Any]],
+    max_chars: int,
+) -> list[dict[str, str]]:
+    memory = normalize_story_memory(snapshot.get("memory") if snapshot else None, max_chars)
+    normalized: list[dict[str, str]] = []
+    seen_targets: set[tuple[str, str]] = set()
+    protected_targets = {
+        (str(item.get("field") or ""), str(item.get("fact_id") or ""))
+        for item in corrections
+        if isinstance(item, dict)
+    }
+    replace_counts: dict[str, int] = {}
+    for correction in corrections:
+        if not isinstance(correction, dict):
+            raise ValueError("story-memory correction must be an object")
+        field = str(correction.get("field") or "")
+        fact_id = str(correction.get("fact_id") or "")
+        action = str(correction.get("action") or "")
+        if field not in STORY_LIST_FIELDS:
+            raise ValueError(f"unsupported story-memory field: {field or '<blank>'}")
+        if action not in {"retract", "replace"}:
+            raise ValueError(f"unsupported story-memory correction action: {action or '<blank>'}")
+        target_key = (field, fact_id)
+        if target_key in seen_targets:
+            raise ValueError(f"duplicate story-memory correction target: {field}/{fact_id}")
+        target = next(
+            (
+                item
+                for item in memory[field]
+                if str(item.get("fact_id") or "") == fact_id and item.get("status") == "active"
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"active story-memory fact not found: {field}/{fact_id}")
+        replacement_text = str(correction.get("replacement_text") or "").strip()
+        if action == "replace":
+            if not replacement_text:
+                raise ValueError("replacement_text is required for replace")
+            replacement_fingerprint = story_fact_fingerprint(replacement_text)
+            if replacement_fingerprint == story_fact_fingerprint(str(target.get("text") or "")):
+                raise ValueError("replacement_text must differ from the replaced fact")
+            if any(
+                str(item.get("fact_id") or "") != fact_id
+                and story_fact_fingerprint(str(item.get("text") or "")) == replacement_fingerprint
+                for item in memory[field]
+            ):
+                raise ValueError("replacement_text already exists in the story-memory field")
+            replace_counts[field] = replace_counts.get(field, 0) + 1
+            required_slots = max(
+                len(memory[field]) + replace_counts[field] - STORY_FIELD_LIMITS[field],
+                0,
+            )
+            removable_slots = sum(
+                1
+                for item in memory[field]
+                if story_item_is_safely_removable(item)
+                and (field, str(item.get("fact_id") or "")) not in protected_targets
+            )
+            if removable_slots < required_slots:
+                raise ValueError(
+                    f"story-memory field is full and has no safely removable weak entry: {field}"
+                )
+        elif correction.get("replacement_text") is not None:
+            raise ValueError("replacement_text is only allowed for replace")
+        item = {"field": field, "fact_id": fact_id, "action": action}
+        if replacement_text:
+            item["replacement_text"] = replacement_text
+        normalized.append(item)
+        seen_targets.add(target_key)
+    projected = apply_validated_story_memory_corrections(
+        memory,
+        normalized,
+        None,
+        max_chars,
+    )
+    oversized_fields = [
+        field
+        for field in STORY_LIST_FIELDS
+        if len(projected[field]) > STORY_FIELD_LIMITS[field]
+    ]
+    if oversized_fields:
+        raise ValueError(
+            "story-memory correction exceeds field capacity: " + ", ".join(oversized_fields)
+        )
+    if len(json.dumps(projected, ensure_ascii=False)) > max(max_chars, 1):
+        raise ValueError("story-memory correction exceeds max_chars capacity")
+    return normalized
+
+
+def apply_user_story_memory_corrections(
+    memory_value: Any,
+    turns: list[dict[str, Any]],
+    max_chars: int,
+) -> dict[str, Any]:
+    memory = normalize_story_memory(memory_value, max_chars)
+    for turn in turns:
+        corrections = turn_story_memory_corrections(turn)
+        if not corrections:
+            continue
+        validated = validate_story_memory_corrections(
+            {"memory": memory},
+            corrections,
+            max_chars,
+        )
+        memory = apply_validated_story_memory_corrections(
+            memory,
+            validated,
+            int(turn["id"]),
+            max_chars,
+        )
+    return memory
+
+
+def apply_validated_story_memory_corrections(
+    memory_value: Any,
+    corrections: list[dict[str, str]],
+    source_turn_id: int | None,
+    max_chars: int,
+) -> dict[str, Any]:
+    """Apply already validated Gateway corrections; None provenance is prompt-only."""
+
+    memory = normalize_story_memory(memory_value, max_chars)
+    source_turn_ids = [source_turn_id] if source_turn_id is not None else []
+    protected_targets: dict[str, set[str]] = {}
+    for correction in corrections:
+        protected_targets.setdefault(correction["field"], set()).add(correction["fact_id"])
+    for correction in corrections:
+        field = correction["field"]
+        fact_id = correction["fact_id"]
+        if correction["action"] == "replace" and len(memory[field]) >= STORY_FIELD_LIMITS[field]:
+            removable_index = next(
+                (
+                    index
+                    for index in range(len(memory[field]) - 1, -1, -1)
+                    if story_item_is_safely_removable(memory[field][index])
+                    and str(memory[field][index].get("fact_id") or "")
+                    not in protected_targets[field]
+                ),
+                None,
+            )
+            if removable_index is None:
+                raise ValueError(
+                    f"story-memory field is full and has no safely removable weak entry: {field}"
+                )
+            memory[field].pop(removable_index)
+        target_index = next(
+            index
+            for index, item in enumerate(memory[field])
+            if str(item["fact_id"]) == fact_id and item["status"] == "active"
+        )
+        target = memory[field][target_index]
+        memory[field][target_index] = {
+            **target,
+            "status": "retracted" if correction["action"] == "retract" else "superseded",
+            "authority": "user_correction",
+            "source_turn_ids": source_turn_ids,
+        }
+        if correction["action"] == "replace":
+            replacement_text = correction["replacement_text"]
+            memory[field].append(
+                {
+                    "fact_id": story_fact_id(None, replacement_text),
+                    "text": replacement_text,
+                    "status": "active",
+                    "authority": "user_correction",
+                    "source_turn_ids": source_turn_ids,
+                }
+            )
+    return fit_story_memory(memory, max(max_chars, 1))
+
+
+def service_story_items(
+    previous: list[dict[str, Any]],
+    proposed: list[dict[str, Any]],
+    source_turn_ids: list[int],
+) -> list[dict[str, Any]]:
+    previous_by_id = {str(item["fact_id"]): item for item in previous}
+    previous_by_text = {
+        story_fact_fingerprint(str(item.get("text") or "")): item
+        for item in previous
+    }
+    candidates: list[dict[str, Any]] = []
+    seen_fact_ids: set[str] = set()
+    seen_text: set[str] = set()
+    for proposed_item in proposed:
+        text = str(proposed_item["text"])
+        fingerprint = story_fact_fingerprint(text)
+        exact_previous = previous_by_text.get(fingerprint)
+        referenced_previous = previous_by_id.get(str(proposed_item["fact_id"]))
+        if exact_previous is not None:
+            sanitized = dict(exact_previous)
+        else:
+            sanitized = {
+                "fact_id": (
+                    str(referenced_previous["fact_id"])
+                    if referenced_previous is not None
+                    else story_fact_id(None, text)
+                ),
+                "text": text,
+                "status": "active",
+                "authority": "inference",
+                "source_turn_ids": list(source_turn_ids),
+            }
+        sanitized_fact_id = str(sanitized["fact_id"])
+        sanitized_text = story_fact_fingerprint(str(sanitized["text"]))
+        if sanitized_fact_id in seen_fact_ids or sanitized_text in seen_text:
+            continue
+        candidates.append(sanitized)
+        seen_fact_ids.add(sanitized_fact_id)
+        seen_text.add(sanitized_text)
+    return candidates
+
+
 def reconcile_story_memory(previous_value: Any, proposed_value: Any, max_chars: int) -> dict[str, Any]:
     """Merge a service-model proposal without letting weak summaries erase or revive facts."""
     previous = normalize_story_memory(previous_value, max_chars)
@@ -446,6 +811,9 @@ def reconcile_story_items(
         candidate_turn = max(candidate.get("source_turn_ids") or [0])
         current_turn = max(current.get("source_turn_ids") or [0])
         authority = str(candidate.get("authority") or "inference")
+        current_authority = str(current.get("authority") or "inference")
+        if current_authority == "legacy_projection" and authority not in stronger:
+            continue
         if candidate["status"] in {"superseded", "retracted"}:
             if authority not in stronger or candidate_turn <= current_turn:
                 continue
@@ -455,6 +823,10 @@ def reconcile_story_items(
         if current.get("status") in {"superseded", "retracted"}:
             if authority not in stronger or candidate_turn <= current_turn:
                 continue
+        if current_authority in stronger and (
+            authority not in stronger or candidate_turn <= current_turn
+        ):
+            continue
         merged[current_position] = dict(candidate)
     return merged
 
@@ -471,46 +843,104 @@ def fit_story_memory(memory: dict[str, Any], max_chars: int) -> dict[str, Any]:
         ("unresolved_hooks", 10, False),
         ("active_threads", 12, False),
     )
+    for field, _minimum, drop_oldest in drop_order:
+        while len(fitted[field]) > STORY_FIELD_LIMITS[field]:
+            positions = (
+                range(len(fitted[field]))
+                if drop_oldest
+                else range(len(fitted[field]) - 1, -1, -1)
+            )
+            removable = next(
+                (
+                    position
+                    for position in positions
+                    if story_item_is_safely_removable(fitted[field][position])
+                ),
+                None,
+            )
+            if removable is None:
+                break
+            fitted[field].pop(removable)
     while len(json.dumps(fitted, ensure_ascii=False)) > max_chars:
         changed = False
         for field, minimum, drop_oldest in drop_order:
             items = fitted[field]
             if len(items) <= minimum:
                 continue
-            items.pop(0 if drop_oldest else -1)
+            positions = range(len(items)) if drop_oldest else range(len(items) - 1, -1, -1)
+            removable = next(
+                (
+                    position
+                    for position in positions
+                    if story_item_is_safely_removable(items[position])
+                ),
+                None,
+            )
+            if removable is None:
+                continue
+            items.pop(removable)
             changed = True
             break
         if not changed:
-            longest_field = max(
-                STORY_LIST_FIELDS,
-                key=lambda key: sum(len(json.dumps(item, ensure_ascii=False)) for item in fitted[key]),
-            )
-            if fitted[longest_field]:
-                fitted[longest_field].pop(0 if longest_field in {"chronology", "resolved_threads"} else -1)
+            for field, _minimum, drop_oldest in drop_order:
+                items = fitted[field]
+                positions = range(len(items)) if drop_oldest else range(len(items) - 1, -1, -1)
+                removable = next(
+                    (
+                        position
+                        for position in positions
+                        if story_item_is_safely_removable(items[position])
+                    ),
+                    None,
+                )
+                if removable is None:
+                    continue
+                items.pop(removable)
+                changed = True
+                break
+            if changed:
                 continue
             current = fitted.get("current_situation")
-            if isinstance(current, dict) and current.get("text"):
-                current["text"] = clip(current["text"], max(len(str(current["text"])) - 300, 0))
+            if (
+                isinstance(current, dict)
+                and current.get("text")
+                and story_item_is_safely_removable(current)
+            ):
+                shortened = clip(current["text"], max(len(str(current["text"])) - 300, 0))
+                if shortened:
+                    current["text"] = shortened
+                else:
+                    fitted["current_situation"] = None
                 continue
             break
     return fitted
 
 
-def story_memory_prompt_text(snapshot: dict[str, Any], max_chars: int) -> str:
+def story_memory_prompt_text(
+    snapshot: dict[str, Any],
+    max_chars: int,
+    rp_contract_revision: int = 0,
+) -> str:
     memory = normalize_story_memory(snapshot.get("memory"), max_chars)
+    include_legacy_projection = rp_contract_revision < 2
     sections: list[tuple[str, list[str]]] = [
         (
             "СОСТОЯНИЕ НА МОМЕНТ ПАУЗЫ",
-            active_story_texts([memory["current_situation"]]) if memory["current_situation"] else [],
+            active_story_texts(
+                [memory["current_situation"]],
+                include_legacy_projection=include_legacy_projection,
+            )
+            if memory["current_situation"]
+            else [],
         ),
-        ("КАНОН", active_story_texts(memory["canon"])),
-        ("АКТИВНЫЕ СЮЖЕТНЫЕ ЛИНИИ", active_story_texts(memory["active_threads"])),
-        ("НЕРАСКРЫТЫЕ ЗАЦЕПКИ", active_story_texts(memory["unresolved_hooks"])),
-        ("ПЕРСОНАЖИ", active_story_texts(memory["characters"])),
-        ("ПРАВИЛА И СПОСОБНОСТИ", active_story_texts(memory["rules_and_abilities"])),
-        ("ИНВЕНТАРЬ И АКТИВЫ", active_story_texts(memory["inventory_and_assets"])),
-        ("ХРОНОЛОГИЯ", active_story_texts(memory["chronology"])[-24:]),
-        ("РАЗРЕШЁННЫЕ ЛИНИИ", active_story_texts(memory["resolved_threads"])[-16:]),
+        ("КАНОН", active_story_texts(memory["canon"], include_legacy_projection=include_legacy_projection)),
+        ("АКТИВНЫЕ СЮЖЕТНЫЕ ЛИНИИ", active_story_texts(memory["active_threads"], include_legacy_projection=include_legacy_projection)),
+        ("НЕРАСКРЫТЫЕ ЗАЦЕПКИ", active_story_texts(memory["unresolved_hooks"], include_legacy_projection=include_legacy_projection)),
+        ("ПЕРСОНАЖИ", active_story_texts(memory["characters"], include_legacy_projection=include_legacy_projection)),
+        ("ПРАВИЛА И СПОСОБНОСТИ", active_story_texts(memory["rules_and_abilities"], include_legacy_projection=include_legacy_projection)),
+        ("ИНВЕНТАРЬ И АКТИВЫ", active_story_texts(memory["inventory_and_assets"], include_legacy_projection=include_legacy_projection)),
+        ("ХРОНОЛОГИЯ", active_story_texts(memory["chronology"], include_legacy_projection=include_legacy_projection)[-24:]),
+        ("РАЗРЕШЁННЫЕ ЛИНИИ", active_story_texts(memory["resolved_threads"], include_legacy_projection=include_legacy_projection)[-16:]),
     ]
     lines = [
         f"revision={snapshot.get('revision')} covered_turns={snapshot.get('from_turn_id')}-{snapshot.get('to_turn_id')}",
@@ -583,11 +1013,18 @@ def story_item_list(value: Any, *, limit: int, item_chars: int) -> list[dict[str
     return items
 
 
-def active_story_texts(items: list[dict[str, Any]]) -> list[str]:
+def active_story_texts(
+    items: list[dict[str, Any]],
+    *,
+    include_legacy_projection: bool = True,
+) -> list[str]:
     return [
         str(item.get("text") or "")
         for item in items
-        if isinstance(item, dict) and item.get("status") == "active" and str(item.get("text") or "").strip()
+        if isinstance(item, dict)
+        and item.get("status") == "active"
+        and (include_legacy_projection or item.get("authority") != "legacy_projection")
+        and str(item.get("text") or "").strip()
     ]
 
 

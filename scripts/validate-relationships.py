@@ -176,6 +176,7 @@ def validate_model(model: Any, path: Path, character_ids: set[str] | None = None
     roles = object_value(model.get("roles"), errors, path, "roles")
     wounds = object_value(model.get("wounds"), errors, path, "wounds")
     events = object_value(model.get("events"), errors, path, "events")
+    positive_favour_resolvers: list[str] = []
     for event_id, raw_event in events.items():
         event = object_value(raw_event, errors, path, f"event {event_id}")
         if event.get("axis") != "loyalty":
@@ -186,9 +187,30 @@ def validate_model(model: Any, path: Path, character_ids: set[str] | None = None
         decay = event.get("decay_turns")
         if decay is not None and (not isinstance(decay, int) or isinstance(decay, bool) or decay <= 0):
             error(errors, path, f"event {event_id} decay_turns must be null or a positive integer")
+        resolves = event.get("resolves")
+        if resolves is not None:
+            if not isinstance(resolves, list) or not resolves or any(not isinstance(item, str) for item in resolves):
+                error(errors, path, f"event {event_id} resolves must be a non-empty list of event ids")
+            else:
+                unknown_resolutions = sorted(set(resolves) - BOUNDARY_EVENTS)
+                if unknown_resolutions:
+                    error(
+                        errors,
+                        path,
+                        f"event {event_id} resolves unknown boundary events: {', '.join(unknown_resolutions)}",
+                    )
+                if len(resolves) != len(set(resolves)):
+                    error(errors, path, f"event {event_id} resolves must not contain duplicates")
+                if "favour" in resolves:
+                    if isinstance(weight, int) and not isinstance(weight, bool) and weight > 0:
+                        positive_favour_resolvers.append(event_id)
+                    else:
+                        error(errors, path, f"event {event_id} that resolves favour must have positive weight")
         wound = event.get("wound")
         if wound is not None and wound not in wounds:
             error(errors, path, f"event {event_id} references unknown wound: {wound}")
+    if not positive_favour_resolvers:
+        error(errors, path, "events must declare at least one positive event that resolves favour")
 
     character_weights = object_value(model.get("character_weights"), errors, path, "character_weights")
     for character_id, raw_config in character_weights.items():
