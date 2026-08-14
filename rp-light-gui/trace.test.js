@@ -10,12 +10,17 @@ const {
   annotationUrl,
   buildAlignmentRows,
   captureExplanation,
+  changeLineDiff,
+  compactLineDiff,
   comparisonChangedFields,
+  jsonChanges,
   lineDiff,
   metadataFallback,
   missingPhaseMessage,
   normalizeDetail,
   normalizeTimestamp,
+  parseEmbeddedJson,
+  phasePresentation,
   traceContractLabel,
   traceDetailUrl,
   traceListUrl,
@@ -93,6 +98,25 @@ assert.equal(repeated.length, 2);
 assert.equal(repeated[1].occurrence, 2);
 assert.equal(repeated[1].phases[1], null);
 
+assert.deepEqual(phasePresentation({ event_type: "player_input" }), {
+  actor: "Пользователь",
+  description: "Пользователь отправляет действие",
+});
+assert.equal(phasePresentation({ event_type: "narrator_attempt" }).actor, "Нарратор");
+assert.deepEqual(
+  phasePresentation({ event_type: "service_model_call", alignment_key: "service:relationship_extraction" }),
+  {
+    actor: "Служебная LLM",
+    description: "Служебная LLM извлекает изменения отношений из завершённого хода",
+  },
+);
+assert.equal(
+  phasePresentation({ event_type: "service_job", alignment_key: "service_job:relationship_extraction", lane: "background" }).actor,
+  "GW",
+);
+assert.equal(phasePresentation({ event_type: "state_delta" }).actor, "GW");
+assert.equal(phasePresentation({ event_type: "unknown", title: "Понятное старое название" }).description, "Понятное старое название");
+
 const missingAlignment = buildAlignmentRows([
   { trace: { phases: [{ phase_key: "same-key" }] } },
   { trace: { phases: [{ phase_key: "same-key" }] } },
@@ -118,6 +142,55 @@ const diff = lineDiff("alpha\nbeta", "alpha\ngamma");
 assert.ok(diff.some((line) => line.type === "delete" && line.text === "beta"));
 assert.ok(diff.some((line) => line.type === "insert" && line.text === "gamma"));
 
+assert.deepEqual(parseEmbeddedJson('```json\n{"events":[]}\n```'), { events: [] });
+assert.equal(parseEmbeddedJson("обычный текст"), null);
+assert.deepEqual(
+  jsonChanges(
+    { state: { characters: { nezhan: { loyalty: 0, label: "ровно" } }, untouched: { value: 1 } } },
+    { state: { characters: { nezhan: { loyalty: 12, label: "расположение" } }, untouched: { value: 1 } } },
+  ),
+  [
+    { path: "$.state.characters.nezhan.label", operation: "replace", before: "ровно", after: "расположение" },
+    { path: "$.state.characters.nezhan.loyalty", operation: "replace", before: 0, after: 12 },
+  ],
+);
+assert.deepEqual(
+  jsonChanges(["a", "b"], ["a", "c", "d"]),
+  [
+    { path: "$[1]", operation: "replace", before: "b", after: "c" },
+    { path: "$[2]", operation: "add", before: undefined, after: "d" },
+  ],
+);
+assert.deepEqual(
+  jsonChanges(
+    { raw_response: '```json\n{"events":[{"event_id":"shared_risk","evidence":"old"}]}\n```' },
+    { raw_response: '```json\n{"events":[{"event_id":"shared_risk","evidence":"new"}]}\n```' },
+  ),
+  [{ path: "$.raw_response.events[0].evidence", operation: "replace", before: "old", after: "new" }],
+);
+assert.deepEqual(
+  jsonChanges('{"same":true}', { same: true }),
+  [{ path: "$", operation: "replace", before: '{"same":true}', after: { same: true } }],
+);
+assert.deepEqual(
+  jsonChanges('{"same":true}', '{ "same": true }'),
+  [{ path: "$", operation: "replace", before: '{"same":true}', after: '{ "same": true }' }],
+);
+const addedLines = changeLineDiff({ operation: "add", before: undefined, after: { added: true } });
+assert.ok(addedLines.length > 0 && addedLines.every((line) => line.type === "insert"));
+assert.ok(addedLines.every((line) => !line.text.includes("поле не захвачено")));
+const removedLines = changeLineDiff({ operation: "remove", before: { removed: true }, after: undefined });
+assert.ok(removedLines.length > 0 && removedLines.every((line) => line.type === "delete"));
+assert.ok(removedLines.every((line) => !line.text.includes("поле не захвачено")));
+const longBefore = Array.from({ length: 260 }, (_, index) => `line ${index}`);
+const longAfter = [...longBefore];
+longAfter[130] = "changed line";
+const compact = compactLineDiff(longBefore.join("\n"), longAfter.join("\n"));
+assert.ok(compact.some((line) => line.type === "skip" && line.count > 100));
+assert.ok(compact.some((line) => line.type === "delete" && line.text === "line 130"));
+assert.ok(compact.some((line) => line.type === "insert" && line.text === "changed line"));
+assert.ok(compact.length < 12);
+
 assert.deepEqual(annotationPayload("phase:1", "  Проверить факт  ", "annotation_1"), {
   annotation_id: "annotation_1",
   phase_key: "phase:1",
@@ -133,6 +206,14 @@ assert.deepEqual(
   ),
   ["lane", "status", "capture_status"],
 );
+const comparableFields = ["lane", "status", "capture_status", "input", "output", "details", "metadata", "warnings"];
+assert.deepEqual(
+  comparisonChangedFields(
+    { lane: "main", status: "completed", capture_status: "complete", input: { a: 1 }, output: { a: 1 }, details: { a: 1 }, metadata: { a: 1 }, warnings: [] },
+    { lane: "background", status: "failed", capture_status: "partial", input: { a: 2 }, output: { a: 2 }, details: { a: 2 }, metadata: { a: 2 }, warnings: ["changed"] },
+  ),
+  comparableFields,
+);
 
 const directory = __dirname;
 const source = fs.readFileSync(path.join(directory, "trace.js"), "utf8");
@@ -144,6 +225,8 @@ const nginx = fs.readFileSync(path.join(directory, "nginx.conf"), "utf8");
 
 assert.doesNotMatch(source, /\.innerHTML\b/);
 assert.match(source, /textContent/);
+assert.match(source, /className: "json-node"/);
+assert.match(source, /text: "Исполнитель и фаза"/);
 assert.match(source, /\/api\/turn-traces\/parties/);
 const adminGatePosition = source.indexOf('auth.user?.role !== "admin"');
 const traceLoadPosition = source.indexOf('requestJson("/api/turn-traces/parties")');

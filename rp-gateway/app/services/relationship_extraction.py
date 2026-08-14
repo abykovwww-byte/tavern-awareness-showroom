@@ -200,7 +200,12 @@ class RelationshipExtractionService:
         if settings.nvidia_api_base.startswith("mock://"):
             return self._mock_response(settings.narrative_model)
 
-        payload = self._completion_payload(turn, aliases, settings.narrative_model)
+        payload = self._completion_payload(
+            turn,
+            aliases,
+            settings.narrative_model,
+            enforce_json_schema=settings.llm_provider == "local",
+        )
         client_policy = NarrativeClient(settings)
         client_policy.apply_prompt_cache_policy(payload)
         attempts = client_policy.model_attempts(settings.narrative_model)
@@ -246,6 +251,8 @@ class RelationshipExtractionService:
         turn: dict[str, Any],
         aliases: dict[str, list[str]],
         model_name: str,
+        *,
+        enforce_json_schema: bool = False,
     ) -> dict[str, Any]:
         state = self.store.get_state()
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
@@ -280,7 +287,7 @@ class RelationshipExtractionService:
             "characters": character_catalog,
             "allowed_event_ids": sorted(self._event_models()),
         }
-        return {
+        payload: dict[str, Any] = {
             "model": model_name,
             "stream": False,
             "temperature": 0,
@@ -290,11 +297,18 @@ class RelationshipExtractionService:
                     "role": "system",
                     "content": (
                         "Extract only relationship events that are directly evidenced by this completed RP turn. "
-                        "Return strict JSON with exactly one top-level key, events. Each event must contain exactly "
-                        "character_mention, event_id, and a short verbatim evidence quote from the supplied turn. "
+                        "Return strict JSON with exactly one top-level key, events. Each event object must contain "
+                        "exactly these JSON keys: \"character_mention\", \"event_id\", and \"evidence\". Put a short "
+                        "verbatim quote from the supplied turn in \"evidence\"; never use \"evidence_quote\". "
                         "Use only the supplied alias forms for character_mention; never output an internal character "
                         "ID. Return at most five events. Do not "
                         "output numbers in any field. "
+                        "Each event's evidence must be one self-contained verbatim fragment that explicitly shows "
+                        "both the player and the named character in the completed interaction; do not combine "
+                        "separate snippets. The character's presence, routine action, or danger alone is not enough. "
+                        "For shared_risk, that one fragment must explicitly show both the player and the character "
+                        "jointly facing the same concrete danger. A fragment saying only that the character holds a "
+                        "rope near a breach or chasm is not shared_risk because it shows only the character. "
                         "Do not infer hidden motives, scores, weights, bands, or events not completed in the turn. "
                         "If nothing qualifies, return {\"events\":[]}."
                     ),
@@ -305,6 +319,50 @@ class RelationshipExtractionService:
                 },
             ],
         }
+        if enforce_json_schema:
+            character_mentions = sorted(
+                {
+                    alias
+                    for character_aliases in aliases.values()
+                    for alias in character_aliases
+                    if alias
+                }
+            )
+            character_mention_schema: dict[str, Any] = {"type": "string"}
+            if character_mentions:
+                character_mention_schema["enum"] = character_mentions
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "relationship_events",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "events": {
+                                "type": "array",
+                                "maxItems": MAX_EVENTS_PER_TURN,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "character_mention": character_mention_schema,
+                                        "event_id": {
+                                            "type": "string",
+                                            "enum": sorted(self._event_models()),
+                                        },
+                                        "evidence": {"type": "string"},
+                                    },
+                                    "required": ["character_mention", "event_id", "evidence"],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["events"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        return payload
 
     def _recorded_turn(self, turn_id: int) -> dict[str, Any]:
         if isinstance(turn_id, bool) or not isinstance(turn_id, int) or turn_id <= 0:

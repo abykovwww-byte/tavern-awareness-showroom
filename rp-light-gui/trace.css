@@ -717,6 +717,25 @@ textarea::placeholder {
   font-size: 0.96rem;
 }
 
+.phase-actor {
+  display: inline-flex;
+  width: fit-content;
+  margin-bottom: 0.3rem;
+  border: 1px solid rgba(142, 184, 255, 0.5);
+  border-radius: 999px;
+  padding: 0.18rem 0.42rem;
+  color: var(--info);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.phase-description {
+  display: block;
+  margin: 0.35rem 0;
+  line-height: 1.4;
+}
+
 .phase-key {
   margin: 0.2rem 0 0;
   color: var(--muted);
@@ -761,6 +780,66 @@ pre,
   font: 0.75rem/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.json-tree {
+  max-width: 100%;
+  max-height: 420px;
+  margin: 0.45rem 0 0;
+  overflow: auto;
+  border: 1px solid #252e3f;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  color: #dce3ef;
+  background: #0a0e15;
+  font: 0.75rem/1.5 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.data-section .json-node > summary,
+.diff-details .json-node > summary {
+  min-height: 0;
+  padding: 0.18rem 0;
+  color: #dce3ef;
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.json-children {
+  margin-left: 0.45rem;
+  border-left: 1px solid #2b3548;
+  padding-left: 0.75rem;
+}
+
+.json-leaf {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.16rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-key {
+  color: #9fc1ff;
+}
+
+.json-bracket,
+.json-count {
+  margin-left: 0.35rem;
+  color: var(--muted);
+}
+
+.json-value.string {
+  color: #b9f4d7;
+}
+
+.json-value.number,
+.json-value.boolean {
+  color: #f2c66d;
+}
+
+.json-value.null,
+.json-value.undefined {
+  color: var(--muted);
 }
 
 .data-empty {
@@ -866,8 +945,8 @@ pre,
   position: sticky;
   z-index: 2;
   left: 0;
-  width: 190px;
-  min-width: 190px;
+  width: 240px;
+  min-width: 240px;
   background: #121722;
 }
 
@@ -943,6 +1022,20 @@ pre,
   font: 0.7rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+.diff-change + .diff-change {
+  border-top: 1px solid #252e3f;
+}
+
+.diff-path {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  padding: 0.3rem 0.45rem;
+  color: #9fc1ff;
+  background: #111722;
+  overflow-wrap: anywhere;
+}
+
 .diff-line {
   display: grid;
   grid-template-columns: 1.4rem minmax(0, 1fr);
@@ -966,6 +1059,11 @@ pre,
 .diff-line.delete {
   color: #ffc0c3;
   background: rgba(197, 59, 70, 0.2);
+}
+
+.diff-line.skip {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .auth-notice {

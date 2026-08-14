@@ -46,6 +46,67 @@ function formatData(value) {
   return JSON.stringify(stableValue(value), null, 2);
 }
 
+function parseEmbeddedJson(value) {
+  if (typeof value !== "string") return null;
+  let text = value.trim();
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) text = fenced[1].trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return isObject(parsed) || Array.isArray(parsed) ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function phasePresentation(phase) {
+  const eventType = String(phase?.event_type || "").toLowerCase();
+  const alignmentKey = String(phase?.alignment_key || phase?.phase_key || "").toLowerCase();
+  let actor = "GW";
+  if (eventType === "player_input" || alignmentKey.startsWith("player_input")) actor = "Пользователь";
+  else if (eventType === "narrator_attempt" || alignmentKey.startsWith("narrator")) actor = "Нарратор";
+  else if (eventType === "service_model_call" || alignmentKey.startsWith("service:")) actor = "Служебная LLM";
+
+  let description = null;
+  if (actor === "Пользователь") description = "Пользователь отправляет действие";
+  else if (actor === "Нарратор") description = "Нарратор создаёт продолжение сцены";
+  else if (alignmentKey === "service:relationship_extraction") {
+    description = "Служебная LLM извлекает изменения отношений из завершённого хода";
+  } else if (alignmentKey.startsWith("service:")) {
+    description = `Служебная LLM выполняет задачу ${alignmentKey.slice("service:".length).replaceAll("_", " ")}`;
+  } else if (alignmentKey === "service_job:relationship_extraction") {
+    description = "GW запускает извлечение изменений отношений";
+  } else if (alignmentKey.startsWith("service_job:")) {
+    description = `GW запускает фоновую задачу ${alignmentKey.slice("service_job:".length).replaceAll("_", " ")}`;
+  } else if (alignmentKey.startsWith("audit:relationship_extraction_applied")) {
+    description = "GW применяет подтверждённые изменения отношений";
+  } else if (alignmentKey.startsWith("audit:relationship_extraction_rejected")) {
+    description = "GW отклоняет невалидное извлечение отношений";
+  }
+
+  const descriptions = {
+    gateway_assembly: "GW собирает prompt для нарратора",
+    validation: "GW проверяет ответ нарратора",
+    check: "GW рассчитывает проверку правила",
+    state_delta: "GW фиксирует изменение канонического состояния",
+    turn_commit: "GW фиксирует завершённый ход",
+    turn_result: "GW показывает итоговый ответ хода",
+    relationship_causes: "GW показывает причины изменений отношений",
+    training_projection: "GW обновляет проекции тренинга",
+    memory_projection: "GW обновляет проекции памяти",
+    projection_mutations: "GW обновляет производные проекции",
+    request_terminal: "GW фиксирует итоговый статус запроса",
+    request_failed: "GW отклоняет запрос",
+  };
+  if (!description) description = descriptions[eventType] || descriptions[alignmentKey] || null;
+  if (!description && alignmentKey.startsWith("audit:")) {
+    description = `GW фиксирует событие ${alignmentKey.slice("audit:".length).replaceAll("_", " ")}`;
+  }
+  if (!description) description = phase?.title || phase?.phase_key || "Фаза без названия";
+  return { actor, description };
+}
+
 function normalizeTimestamp(value) {
   if (value === null || value === undefined || value === "") return null;
   const numeric = Number(value);
@@ -169,11 +230,13 @@ function buildAlignmentRows(details) {
       occurrences.set(alignmentKey, occurrence);
       const rowKey = `${alignmentKey}\u0000${occurrence}`;
       if (!rows.has(rowKey)) {
+        const presentation = phasePresentation(phase);
         rows.set(rowKey, {
           rowKey,
           alignmentKey,
           occurrence,
-          title: phase.title || alignmentKey,
+          actor: presentation.actor,
+          description: presentation.description,
           phases: Array(details.length).fill(null),
         });
       }
@@ -216,7 +279,7 @@ function comparablePhase(phase) {
 
 function comparisonChangedFields(baselinePhase, phase) {
   const fields = ["lane", "status", "capture_status", "input", "output", "details", "metadata", "warnings"];
-  return fields.filter((key) => formatData(baselinePhase?.[key]) !== formatData(phase?.[key]));
+  return fields.filter((key) => jsonChanges(baselinePhase?.[key], phase?.[key]).length > 0);
 }
 
 function lineDiff(beforeValue, afterValue, maxLines = 180) {
@@ -273,6 +336,86 @@ function lineDiff(beforeValue, afterValue, maxLines = 180) {
   return result;
 }
 
+function jsonChanges(before, after, path = "$") {
+  if (formatData(before) === formatData(after)) return [];
+  const parsedBefore = parseEmbeddedJson(before);
+  const parsedAfter = parseEmbeddedJson(after);
+  if (parsedBefore !== null && parsedAfter !== null) {
+    const structured = jsonChanges(parsedBefore, parsedAfter, path);
+    return structured.length
+      ? structured
+      : [{ path, operation: "replace", before, after }];
+  }
+  if (isObject(before) && isObject(after)) {
+    const changes = [];
+    const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)])).sort();
+    keys.forEach((key) => {
+      const childPath = `${path}.${key}`;
+      if (!hasOwn(before, key)) {
+        changes.push({ path: childPath, operation: "add", before: undefined, after: after[key] });
+      } else if (!hasOwn(after, key)) {
+        changes.push({ path: childPath, operation: "remove", before: before[key], after: undefined });
+      } else {
+        changes.push(...jsonChanges(before[key], after[key], childPath));
+      }
+    });
+    return changes;
+  }
+  if (Array.isArray(before) && Array.isArray(after)) {
+    const changes = [];
+    const size = Math.max(before.length, after.length);
+    for (let index = 0; index < size; index += 1) {
+      const childPath = `${path}[${index}]`;
+      if (index >= before.length) {
+        changes.push({ path: childPath, operation: "add", before: undefined, after: after[index] });
+      } else if (index >= after.length) {
+        changes.push({ path: childPath, operation: "remove", before: before[index], after: undefined });
+      } else {
+        changes.push(...jsonChanges(before[index], after[index], childPath));
+      }
+    }
+    return changes;
+  }
+  return [{ path, operation: "replace", before, after }];
+}
+
+function compactLineDiff(beforeValue, afterValue, context = 2) {
+  const parts = lineDiff(beforeValue, afterValue);
+  const keep = parts.map((part) => part.type !== "equal");
+  parts.forEach((part, index) => {
+    if (part.type === "equal") return;
+    for (let offset = 1; offset <= context; offset += 1) {
+      if (index - offset >= 0) keep[index - offset] = true;
+      if (index + offset < keep.length) keep[index + offset] = true;
+    }
+  });
+  const result = [];
+  let skipped = 0;
+  parts.forEach((part, index) => {
+    if (part.type === "equal" && !keep[index]) {
+      skipped += 1;
+      return;
+    }
+    if (skipped) {
+      result.push({ type: "skip", count: skipped, text: `${skipped} неизменённых строк` });
+      skipped = 0;
+    }
+    result.push(part);
+  });
+  if (skipped) result.push({ type: "skip", count: skipped, text: `${skipped} неизменённых строк` });
+  return result;
+}
+
+function changeLineDiff(change) {
+  if (change.operation === "add") {
+    return formatData(change.after).split("\n").map((text) => ({ type: "insert", text }));
+  }
+  if (change.operation === "remove") {
+    return formatData(change.before).split("\n").map((text) => ({ type: "delete", text }));
+  }
+  return compactLineDiff(change.before, change.after);
+}
+
 const exported = {
   MAX_COMPARE,
   annotationPayload,
@@ -280,14 +423,19 @@ const exported = {
   annotationUrl,
   buildAlignmentRows,
   captureExplanation,
+  changeLineDiff,
   comparablePhase,
   comparisonChangedFields,
+  compactLineDiff,
   formatData,
+  jsonChanges,
   lineDiff,
   metadataFallback,
   missingPhaseMessage,
   normalizeTimestamp,
   normalizeDetail,
+  parseEmbeddedJson,
+  phasePresentation,
   traceContractLabel,
   traceDetailUrl,
   traceListUrl,
@@ -754,13 +902,59 @@ if (typeof document !== "undefined") {
     dom.phaseLanes.replaceChildren();
   }
 
+  function jsonPrimitive(value) {
+    if (value === undefined) return "[поле не захвачено]";
+    return JSON.stringify(value);
+  }
+
+  function makeJsonNode(value, label = null, depth = 0) {
+    const parsed = parseEmbeddedJson(value);
+    const displayed = parsed ?? value;
+    const structured = isObject(displayed) || Array.isArray(displayed);
+    if (!structured) {
+      const leaf = element("div", { className: "json-leaf" });
+      if (label !== null) leaf.append(element("span", { className: "json-key", text: label }), element("span", { text: ":" }));
+      leaf.append(element("span", { className: `json-value ${displayed === null ? "null" : typeof displayed}`.trim(), text: jsonPrimitive(displayed) }));
+      return leaf;
+    }
+
+    const entries = Array.isArray(displayed)
+      ? displayed.map((item, index) => [`[${index}]`, item])
+      : Object.entries(displayed).sort(([left], [right]) => left.localeCompare(right));
+    const details = element("details", { className: "json-node" });
+    details.open = depth === 0;
+    const bracket = Array.isArray(displayed) ? "[]" : "{}";
+    const summary = element("summary");
+    if (label !== null) summary.append(element("span", { className: "json-key", text: label }), element("span", { text: ": " }));
+    summary.append(
+      element("span", { className: "json-bracket", text: bracket }),
+      element("span", { className: "json-count", text: String(entries.length) }),
+    );
+    details.append(summary);
+    if (entries.length) {
+      const children = element("div", { className: "json-children" });
+      entries.forEach(([key, child]) => children.append(makeJsonNode(child, key, depth + 1)));
+      details.append(children);
+    }
+    return details;
+  }
+
+  function makeDataView(value) {
+    const parsed = parseEmbeddedJson(value);
+    const displayed = parsed ?? value;
+    if (!isObject(displayed) && !Array.isArray(displayed)) return element("pre", { text: formatData(value) });
+    const tree = element("div", { className: "json-tree" });
+    tree.append(makeJsonNode(displayed));
+    return tree;
+  }
+
   function makeDataSection(label, phase, key) {
     const details = element("details", { className: "data-section" });
     details.append(element("summary", { text: label }));
     if (!hasOwn(phase, key)) {
       details.append(element("div", { className: "data-empty", text: "Поле не захвачено." }));
     } else {
-      details.append(element("pre", { text: formatData(phase[key]) }));
+      details.append(makeDataView(phase[key]));
     }
     return details;
   }
@@ -859,13 +1053,15 @@ if (typeof document !== "undefined") {
   }
 
   function makePhaseCard(detail, phase, index) {
+    const presentation = phasePresentation(phase);
     const status = String(phase.status || "").toLowerCase();
     const card = element("article", { className: `phase-card ${status}`.trim() });
     const header = element("header", { className: "phase-heading" });
     const main = element("div", { className: "phase-heading-main" });
     const names = element("div");
     names.append(
-      element("h4", { className: "phase-title", text: phase.title || phase.phase_key || "Фаза без названия" }),
+      element("span", { className: "phase-actor", text: presentation.actor }),
+      element("h4", { className: "phase-title", text: presentation.description }),
       element("p", { className: "phase-key", text: phase.phase_key || "phase_key не указан" }),
     );
     main.append(element("span", { className: "phase-index", text: index + 1 }), names);
@@ -891,7 +1087,7 @@ if (typeof document !== "undefined") {
     if (asArray(phase.warnings).length) {
       const warnings = element("details", { className: "data-section" });
       warnings.append(element("summary", { text: `Предупреждения (${phase.warnings.length})` }));
-      warnings.append(element("pre", { text: formatData(phase.warnings) }));
+      warnings.append(makeDataView(phase.warnings));
       card.append(warnings);
     }
     card.append(makeAnnotationSection(detail, phase));
@@ -1002,15 +1198,26 @@ if (typeof document !== "undefined") {
 
   function makeDiffBlock(before, after) {
     const block = element("div", { className: "diff-block" });
-    lineDiff(before, after).forEach((part) => {
-      const prefix = part.type === "insert" ? "+" : part.type === "delete" ? "−" : " ";
-      const line = element("span", { className: `diff-line ${part.type}`.trim() });
-      line.append(element("span", { text: prefix }));
-      const content = element(part.type === "insert" ? "ins" : part.type === "delete" ? "del" : "span", {
-        text: part.text || " ",
+    const changes = jsonChanges(before, after);
+    const operationLabels = { add: "добавлено", remove: "удалено", replace: "изменено" };
+    changes.forEach((change) => {
+      const section = element("section", { className: "diff-change" });
+      section.append(element("div", {
+        className: "diff-path",
+        text: `${change.path} · ${operationLabels[change.operation] || change.operation}`,
+      }));
+      changeLineDiff(change).forEach((part) => {
+        const prefix = part.type === "insert" ? "+" : part.type === "delete" ? "−" : part.type === "skip" ? "⋯" : " ";
+        const line = element("span", { className: `diff-line ${part.type}`.trim() });
+        line.append(element("span", { text: prefix }));
+        const tag = part.type === "insert" ? "ins" : part.type === "delete" ? "del" : "span";
+        const content = element(tag, {
+          text: part.type === "skip" ? part.text : (part.text || " "),
+        });
+        line.append(content);
+        section.append(line);
       });
-      line.append(content);
-      block.append(line);
+      block.append(section);
     });
     return block;
   }
@@ -1031,7 +1238,7 @@ if (typeof document !== "undefined") {
 
     const phaseData = element("details", { className: "diff-details" });
     phaseData.append(element("summary", { text: "Данные фазы" }));
-    phaseData.append(element("pre", { text: formatData(comparablePhase(phase)) }));
+    phaseData.append(makeDataView(comparablePhase(phase)));
     cell.append(phaseData);
 
     if (isBaseline) {
@@ -1050,7 +1257,7 @@ if (typeof document !== "undefined") {
     }));
     changed.forEach((key) => {
       const details = element("details", { className: "diff-details" });
-      details.append(element("summary", { text: `Diff: ${key}` }), makeDiffBlock(baselinePhase[key], phase[key]));
+      details.append(element("summary", { text: `Изменения: ${key}` }), makeDiffBlock(baselinePhase[key], phase[key]));
       cell.append(details);
     });
     return cell;
@@ -1069,7 +1276,7 @@ if (typeof document !== "undefined") {
       table.append(element("caption", { className: "visually-hidden", text: "Сравнение фаз выбранных трасс" }));
       const head = element("thead");
       const headRow = element("tr");
-      headRow.append(element("th", { text: "alignment_key", attrs: { scope: "col" } }));
+      headRow.append(element("th", { text: "Исполнитель и фаза", attrs: { scope: "col" } }));
       details.forEach((detail) => {
         const header = element("th", { attrs: { scope: "col" } });
         header.append(
@@ -1086,7 +1293,8 @@ if (typeof document !== "undefined") {
         const tableRow = element("tr");
         const rowHeader = element("th", { attrs: { scope: "row" } });
         rowHeader.append(
-          element("span", { text: row.title }),
+          element("span", { className: "phase-actor", text: row.actor }),
+          element("span", { className: "phase-description", text: row.description }),
           element("span", {
             className: "alignment-label",
             text: row.occurrence > 1 ? `${row.alignmentKey} · #${row.occurrence}` : row.alignmentKey,

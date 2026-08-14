@@ -179,7 +179,7 @@ def test_process_turn_rejects_removed_evidence_quote_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Proves the observed local-model alias is normalized to the canonical evidence field."""
+    """Proves the observed local-model alias remains a terminal ADR rejection."""
     store = make_store(tmp_path)
     turn_id = store.record_turn("turn-1", "request-1", "Иван публично оскорбил цель.", "Нарратор продолжил сцену.", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
@@ -260,6 +260,7 @@ def test_completion_payload_includes_identity_hint_for_character_targeting(tmp_p
         {"player_message": "Я оскорбляю Энри.", "narrative_response": "Энри услышала оскорбление."},
         {"ainz-ooal-gown": ["Аинз Оал Гоун"], "enri-emmot": ["Энри Эммот", "Энри"]},
         "fixture",
+        enforce_json_schema=True,
     )
     context = json.loads(payload["messages"][1]["content"])
 
@@ -275,7 +276,41 @@ def test_completion_payload_includes_identity_hint_for_character_targeting(tmp_p
             "identity_hint": "Энри живет в деревне Карн.",
         },
     ]
-    assert "never output an internal character ID" in payload["messages"][0]["content"]
+    prompt = payload["messages"][0]["content"]
+    assert "never output an internal character ID" in prompt
+    assert 'exactly these JSON keys: "character_mention", "event_id", and "evidence"' in prompt
+    assert 'in "evidence"; never use "evidence_quote"' in prompt
+    assert "one self-contained verbatim fragment" in prompt
+    assert "presence, routine action, or danger alone is not enough" in prompt
+    assert "For shared_risk, that one fragment must explicitly show both the player" in prompt
+    assert "holds a rope near a breach or chasm is not shared_risk" in prompt
+    response_format = payload["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    assert schema["required"] == ["events"]
+    assert schema["additionalProperties"] is False
+    event_schema = schema["properties"]["events"]["items"]
+    assert event_schema["required"] == ["character_mention", "event_id", "evidence"]
+    assert event_schema["additionalProperties"] is False
+    assert event_schema["properties"]["character_mention"]["enum"] == [
+        "Аинз Оал Гоун",
+        "Энри",
+        "Энри Эммот",
+    ]
+    assert event_schema["properties"]["event_id"]["enum"] == ["insult_public"]
+
+
+def test_completion_payload_keeps_remote_service_models_schema_free(tmp_path: Path) -> None:
+    service = RelationshipExtractionService(
+        settings(tmp_path, scenario_type="rp"),
+        make_store(tmp_path),
+        MODEL,
+    )
+
+    payload = service._completion_payload({}, {"ivan": ["Иван"]}, "fixture")
+
+    assert "response_format" not in payload
 
 
 def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
