@@ -118,6 +118,16 @@ const els = {
   worldPreviewLlmButton: document.querySelector("#worldPreviewLlmButton"),
   partyModelProviderSelect: document.querySelector("#partyModelProviderSelect"),
   partyModelSelect: document.querySelector("#partyModelSelect"),
+  narratorSettingsAvailability: document.querySelector("#narratorSettingsAvailability"),
+  narratorSettingsFields: document.querySelector("#narratorSettingsFields"),
+  narratorReasoningSelect: document.querySelector("#narratorReasoningSelect"),
+  narratorTemperatureField: document.querySelector("#narratorTemperatureField"),
+  narratorTemperatureInput: document.querySelector("#narratorTemperatureInput"),
+  narratorTopPField: document.querySelector("#narratorTopPField"),
+  narratorTopPInput: document.querySelector("#narratorTopPInput"),
+  narratorMaxTokensSelect: document.querySelector("#narratorMaxTokensSelect"),
+  resetNarratorSettingsButton: document.querySelector("#resetNarratorSettingsButton"),
+  narratorSettingsSavedHint: document.querySelector("#narratorSettingsSavedHint"),
   changePartyModelButton: document.querySelector("#changePartyModelButton"),
   deletePartyButton: document.querySelector("#deletePartyButton"),
   operationStatus: document.querySelector("#operationStatus"),
@@ -196,6 +206,14 @@ const providerLabels = {
   openrouter: "OpenRouter",
 };
 const providerOrder = ["local", "nvidia", "gemini", "openrouter"];
+const narratorReasoningLabels = {
+  none: "Выкл.",
+  low: "Низкая",
+  medium: "Средняя",
+  high: "Высокая",
+  xhigh: "Очень высокая",
+  max: "Максимальная",
+};
 
 const CHAT_VISIBLE_TURNS = 4;
 const AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии";
@@ -245,6 +263,7 @@ function bindEvents() {
   els.characterLlmDraftButton.addEventListener("click", previewCharacterLlmDraft);
   els.promptPreviewButton.addEventListener("click", previewPrompt);
   els.changePartyModelButton.addEventListener("click", changePartyModel);
+  els.resetNarratorSettingsButton.addEventListener("click", resetNarratorSettingsForm);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
     syncAutoPartyTitle();
@@ -257,6 +276,7 @@ function bindEvents() {
   els.modelProviderSelect.addEventListener("change", renderDialogModelOptions);
   els.modelSelect.addEventListener("change", renderModelPreview);
   els.partyModelProviderSelect.addEventListener("change", renderPartyModelOptions);
+  els.partyModelSelect.addEventListener("change", renderNarratorSettings);
   els.messageForm.addEventListener("submit", sendMessage);
   els.partyForm.addEventListener("submit", createParty);
   els.adminUserForm.addEventListener("submit", createAdminUser);
@@ -750,6 +770,112 @@ function renderPartyModelOptions() {
   if (profiles.some((profile) => profile.id === current)) {
     els.partyModelSelect.value = current;
   }
+  renderNarratorSettings();
+}
+
+function narratorControlsForProfile(profile) {
+  const raw = profile?.params?.narrator_controls;
+  if (!raw || !Array.isArray(raw.reasoning_efforts) || !Array.isArray(raw.max_tokens)) return null;
+  return {
+    reasoning_efforts: [...raw.reasoning_efforts],
+    default_reasoning_effort: String(raw.default_reasoning_effort || ""),
+    temperature: Boolean(raw.temperature),
+    top_p: Boolean(raw.top_p),
+    max_tokens: raw.max_tokens.map(Number),
+  };
+}
+
+function narratorSettingsPayload(controls, values) {
+  if (!controls) return {};
+  const payload = {};
+  const effort = String(values.reasoning_effort || "");
+  if (effort) {
+    if (!controls.reasoning_efforts.includes(effort)) throw new Error("Выбранная глубина рассуждений недоступна для этой модели.");
+    payload.reasoning_effort = effort;
+  }
+  const temperature = String(values.temperature ?? "").trim();
+  if (controls.temperature && temperature) {
+    const parsed = Number(temperature);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 2) throw new Error("Температура должна быть от 0 до 2.");
+    payload.temperature = parsed;
+  }
+  const topP = String(values.top_p ?? "").trim();
+  if (controls.top_p && topP) {
+    const parsed = Number(topP);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) throw new Error("Top P должен быть от 0 до 1.");
+    payload.top_p = parsed;
+  }
+  const maxTokens = String(values.max_tokens ?? "").trim();
+  if (maxTokens) {
+    const parsed = Number(maxTokens);
+    if (!controls.max_tokens.includes(parsed)) throw new Error("Выбранный бюджет ответа недоступен для этой модели.");
+    payload.max_tokens = parsed;
+  }
+  return payload;
+}
+
+function selectedPartyModelProfile() {
+  return appState.modelProfiles.find((profile) => profile.id === els.partyModelSelect?.value) || null;
+}
+
+function renderNarratorSettings() {
+  const profile = selectedPartyModelProfile();
+  const controls = narratorControlsForProfile(profile);
+  const party = appState.activeParty;
+  const readOnly = !party || Boolean(appState.activeBranch);
+  if (!controls) {
+    els.narratorSettingsAvailability.textContent = profile
+      ? "Для этой модели ручные параметры пока не предусмотрены."
+      : "Выберите поддерживаемую модель.";
+    els.narratorSettingsFields.hidden = true;
+    els.resetNarratorSettingsButton.hidden = true;
+    els.narratorSettingsSavedHint.hidden = true;
+    return;
+  }
+
+  const saved = profile?.id === party?.model_profile_id ? (party.narrator_settings || {}) : {};
+  const defaultEffort = narratorReasoningLabels[controls.default_reasoning_effort] || controls.default_reasoning_effort;
+  els.narratorSettingsAvailability.textContent = "Оставьте «Авто», чтобы использовать настройки модели.";
+  els.narratorReasoningSelect.innerHTML = [
+    `<option value="">Авто${defaultEffort ? ` (по умолчанию: ${escapeHtml(defaultEffort.toLowerCase())})` : ""}</option>`,
+    ...controls.reasoning_efforts.map((effort) => `<option value="${escapeHtml(effort)}">${escapeHtml(narratorReasoningLabels[effort] || effort)}</option>`),
+  ].join("");
+  els.narratorReasoningSelect.value = saved.reasoning_effort || "";
+  els.narratorTemperatureField.hidden = !controls.temperature;
+  els.narratorTemperatureInput.value = controls.temperature && saved.temperature != null ? saved.temperature : "";
+  els.narratorTopPField.hidden = !controls.top_p;
+  els.narratorTopPInput.value = controls.top_p && saved.top_p != null ? saved.top_p : "";
+  els.narratorMaxTokensSelect.innerHTML = [
+    `<option value="">Авто</option>`,
+    ...controls.max_tokens.map((value) => `<option value="${value}">${value.toLocaleString("ru-RU")}</option>`),
+  ].join("");
+  els.narratorMaxTokensSelect.value = saved.max_tokens != null ? String(saved.max_tokens) : "";
+  [
+    els.narratorReasoningSelect,
+    els.narratorTemperatureInput,
+    els.narratorTopPInput,
+    els.narratorMaxTokensSelect,
+    els.resetNarratorSettingsButton,
+  ].forEach((element) => { element.disabled = readOnly; });
+  els.narratorSettingsFields.hidden = false;
+  els.resetNarratorSettingsButton.hidden = false;
+  els.narratorSettingsSavedHint.hidden = false;
+}
+
+function resetNarratorSettingsForm() {
+  els.narratorReasoningSelect.value = "";
+  els.narratorTemperatureInput.value = "";
+  els.narratorTopPInput.value = "";
+  els.narratorMaxTokensSelect.value = "";
+}
+
+function readNarratorSettings() {
+  return narratorSettingsPayload(narratorControlsForProfile(selectedPartyModelProfile()), {
+    reasoning_effort: els.narratorReasoningSelect.value,
+    temperature: els.narratorTemperatureInput.value,
+    top_p: els.narratorTopPInput.value,
+    max_tokens: els.narratorMaxTokensSelect.value,
+  });
 }
 
 function renderState() {
@@ -2879,14 +3005,18 @@ async function deleteActiveParty() {
 async function changePartyModel() {
   const party = appState.activeParty;
   const modelProfileId = els.partyModelSelect.value;
-  if (!party || !modelProfileId || modelProfileId === party.model_profile_id) return;
+  if (!party || !modelProfileId) return;
   const profile = appState.modelProfiles.find((item) => item.id === modelProfileId);
   try {
-    setBusy(true, "Меняю модель партии...");
-    await apiPatch(`/api/parties/${party.id}/model`, { model_profile_id: modelProfileId });
+    const narratorSettings = readNarratorSettings();
+    setBusy(true, "Сохраняю модель и параметры наратора...");
+    await apiPatch(`/api/parties/${party.id}/model`, {
+      model_profile_id: modelProfileId,
+      narrator_settings: narratorSettings,
+    });
     await boot();
     await selectParty(party.id);
-    showToast(`Модель партии: ${profile?.title || modelProfileId}`);
+    showToast(`Модель и параметры наратора сохранены: ${profile?.title || modelProfileId}`);
   } catch (error) {
     showToast(error.message);
   } finally {

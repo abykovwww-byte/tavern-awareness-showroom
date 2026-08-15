@@ -54,6 +54,7 @@ class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     _raw_transcript_chars: int | None = PrivateAttr(default=None)
+    _narrator_settings_model: str | None = PrivateAttr(default=None)
 
     model: str | None = None
     messages: list[ChatMessage]
@@ -238,8 +239,18 @@ class PartyCreate(BaseModel):
     model_profile_id: str
 
 
+class NarratorSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] | None = None
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: Literal[1024, 2048, 4096, 8192, 16384] | None = None
+
+
 class PartyModelUpdate(BaseModel):
     model_profile_id: str
+    narrator_settings: NarratorSettings | None = None
 
 
 class PartyDatasetUpdate(BaseModel):
@@ -333,6 +344,7 @@ class PartySummary(BaseModel):
     status: str
     dataset_review_status: Literal["excluded", "review", "approved"] = "review"
     dataset_tags: list[str] = Field(default_factory=list)
+    narrator_settings: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     worldpack: WorldPackSummary | None = None

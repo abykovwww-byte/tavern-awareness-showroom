@@ -1133,6 +1133,40 @@ button:disabled {
   font-weight: 780;
 }
 
+.narrator-settings {
+  margin: 12px 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.narrator-settings-title {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.narrator-settings-fields {
+  display: grid;
+  gap: 4px;
+}
+
+.narrator-settings [hidden] {
+  display: none !important;
+}
+
+.narrator-settings .management-field small,
+.narrator-settings-note {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.narrator-settings-note {
+  margin: 8px 0 0;
+}
+
 .tool-button.danger:hover {
   border-color: rgba(211, 106, 98, 0.82);
   color: #f2a29b;

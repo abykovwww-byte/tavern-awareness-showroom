@@ -243,9 +243,37 @@
             <span>Модель партии</span>
             <select id="partyModelSelect" title="Сменить модель для следующих ходов этой партии"></select>
           </label>
-          <button id="changePartyModelButton" class="tool-button wide-button" type="button" title="Применить выбранную модель к этой партии">
+          <div id="narratorSettingsPanel" class="narrator-settings">
+            <div class="narrator-settings-title">Параметры наратора</div>
+            <p id="narratorSettingsAvailability" class="panel-hint">Выберите поддерживаемую модель.</p>
+            <div id="narratorSettingsFields" class="narrator-settings-fields" hidden>
+              <label class="management-field">
+                <span>Глубина рассуждений</span>
+                <select id="narratorReasoningSelect"></select>
+                <small>Сколько усилий модель тратит на обдумывание ответа. Чем выше, тем обычно медленнее и дороже.</small>
+              </label>
+              <label id="narratorTemperatureField" class="management-field">
+                <span>Температура</span>
+                <input id="narratorTemperatureInput" type="number" min="0" max="2" step="0.05" placeholder="Авто" />
+                <small>Управляет разнообразием формулировок. Ниже — стабильнее, выше — смелее, но менее предсказуемо.</small>
+              </label>
+              <label id="narratorTopPField" class="management-field">
+                <span>Top P</span>
+                <input id="narratorTopPInput" type="number" min="0" max="1" step="0.05" placeholder="Авто" />
+                <small>Ограничивает выбор наиболее вероятными продолжениями. Обычно меняйте его или температуру, но не оба сразу.</small>
+              </label>
+              <label class="management-field">
+                <span>Бюджет ответа</span>
+                <select id="narratorMaxTokensSelect"></select>
+                <small>Общий лимит на обдумывание и итоговый текст. Слишком низкое значение может оборвать сцену.</small>
+              </label>
+            </div>
+            <button id="resetNarratorSettingsButton" class="text-button wide-button" type="button" hidden>Все параметры — Авто</button>
+            <p id="narratorSettingsSavedHint" class="narrator-settings-note" hidden>Сохраняется для текущей партии и применяется со следующего ответа наратора.</p>
+          </div>
+          <button id="changePartyModelButton" class="tool-button wide-button" type="button" title="Применить выбранную модель и параметры наратора к этой партии">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3h4v4"/><path d="M21 3 13 11"/><path d="M7 21H3v-4"/><path d="M3 21l8-8"/></svg>
-            Сменить модель
+            Применить модель и параметры
           </button>
           <button id="deletePartyButton" class="tool-button danger wide-button" type="button" title="Удалить партию, ее историю ходов и isolated state">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>

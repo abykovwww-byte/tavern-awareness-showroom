@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import json
 import re
@@ -160,17 +161,27 @@ class NarrativeClient:
             )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
+        narrator_settings_model = (request._narrator_settings_model or "").strip().lower()
 
         if self.settings.nvidia_api_base.startswith("mock://"):
-            payload["model"] = self.settings.narrative_model
-            self.apply_model_policy(payload, self.settings.narrative_model)
+            attempt_payload = copy.deepcopy(payload)
+            attempt_payload["model"] = self.settings.narrative_model
+            uses_narrator_settings = narrator_settings_model == self.settings.narrative_model.strip().lower()
+            if narrator_settings_model and not uses_narrator_settings:
+                for key in ("reasoning", "temperature", "top_p", "max_tokens"):
+                    attempt_payload.pop(key, None)
+            self.apply_model_policy(
+                attempt_payload,
+                self.settings.narrative_model,
+                require_parameters=uses_narrator_settings,
+            )
             started = time.perf_counter()
             try:
                 data = self.mock_completion(outcome, repair_instruction, artifact_contract)
             except Exception as exc:
                 self.record_trace_attempt(
                     request_id=request_id,
-                    payload=payload,
+                    payload=attempt_payload,
                     model=self.settings.narrative_model,
                     attempt_index=1,
                     repair_instruction=repair_instruction,
@@ -181,7 +192,7 @@ class NarrativeClient:
                 raise
             self.record_trace_attempt(
                 request_id=request_id,
-                payload=payload,
+                payload=attempt_payload,
                 model=self.settings.narrative_model,
                 attempt_index=1,
                 repair_instruction=repair_instruction,
@@ -201,10 +212,19 @@ class NarrativeClient:
         trace_attempt_index = 0
         async with httpx.AsyncClient(timeout=timeout) as client:
             for index, model in enumerate(attempts):
+                attempt_payload = copy.deepcopy(payload)
+                attempt_payload["model"] = model
+                uses_narrator_settings = narrator_settings_model == model.strip().lower()
+                if narrator_settings_model and not uses_narrator_settings:
+                    for key in ("reasoning", "temperature", "top_p", "max_tokens"):
+                        attempt_payload.pop(key, None)
+                self.apply_model_policy(
+                    attempt_payload,
+                    model,
+                    require_parameters=uses_narrator_settings,
+                )
                 while True:
                     trace_attempt_index += 1
-                    payload["model"] = model
-                    self.apply_model_policy(payload, model)
                     started = time.perf_counter()
                     logger.info(
                         "llm_attempt_start request_id=%s check_id=%s model=%s attempt=%s/%s timeout_seconds=%s repair=%s",
@@ -220,7 +240,7 @@ class NarrativeClient:
                         async with asyncio.timeout(self.settings.model_attempt_timeout_seconds):
                             response = await client.post(
                                 f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
-                                json=payload,
+                                json=attempt_payload,
                                 headers=headers,
                             )
                     except (httpx.TimeoutException, TimeoutError) as exc:
@@ -247,7 +267,7 @@ class NarrativeClient:
                         )
                         self.record_trace_attempt(
                             request_id=request_id,
-                            payload=payload,
+                            payload=attempt_payload,
                             model=model,
                             attempt_index=trace_attempt_index,
                             repair_instruction=repair_instruction,
@@ -280,7 +300,7 @@ class NarrativeClient:
                         )
                         self.record_trace_attempt(
                             request_id=request_id,
-                            payload=payload,
+                            payload=attempt_payload,
                             model=model,
                             attempt_index=trace_attempt_index,
                             repair_instruction=repair_instruction,
@@ -313,7 +333,7 @@ class NarrativeClient:
                         )
                         self.record_trace_attempt(
                             request_id=request_id,
-                            payload=payload,
+                            payload=attempt_payload,
                             model=model,
                             attempt_index=trace_attempt_index,
                             repair_instruction=repair_instruction,
@@ -344,7 +364,7 @@ class NarrativeClient:
                         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
                         self.record_trace_attempt(
                             request_id=request_id,
-                            payload=payload,
+                            payload=attempt_payload,
                             model=model,
                             attempt_index=trace_attempt_index,
                             repair_instruction=repair_instruction,
@@ -368,7 +388,7 @@ class NarrativeClient:
                     )
                     self.record_trace_attempt(
                         request_id=request_id,
-                        payload=payload,
+                        payload=attempt_payload,
                         model=model,
                         attempt_index=trace_attempt_index,
                         repair_instruction=repair_instruction,
@@ -578,15 +598,23 @@ class NarrativeClient:
         if self.settings.openrouter_prompt_cache_enabled and str(payload.get("model") or "").startswith("anthropic/"):
             payload["cache_control"] = {"type": "ephemeral", "ttl": self.settings.openrouter_prompt_cache_ttl}
 
-    def apply_model_policy(self, payload: dict[str, Any], model: str) -> None:
+    def apply_model_policy(
+        self,
+        payload: dict[str, Any],
+        model: str,
+        *,
+        require_parameters: bool = False,
+    ) -> None:
         """Apply model-specific runtime controls while preserving unrelated caller preferences."""
         if normalize_provider(self.settings.llm_provider) != "openrouter":
             return
-        if model.strip().lower() != "deepseek/deepseek-v4-flash":
-            return
         provider_preferences = dict(payload.get("provider") or {})
-        provider_preferences["sort"] = "throughput"
-        payload["provider"] = provider_preferences
+        if model.strip().lower() == "deepseek/deepseek-v4-flash":
+            provider_preferences["sort"] = "throughput"
+        if require_parameters:
+            provider_preferences["require_parameters"] = True
+        if provider_preferences:
+            payload["provider"] = provider_preferences
 
     def repair_messages(
         self,

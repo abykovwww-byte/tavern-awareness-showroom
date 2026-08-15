@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from app.services import narrative as narrative_service
 from app.services import rule_engine as rule_engine_service
 from app.core.config import Settings
-from app.main import create_app, party_chat_request, settings_for_party
+from app.main import apply_party_narrator_settings, create_app, party_chat_request, settings_for_party
 from app.models.schemas import (
     ChatCompletionRequest,
     ChatMessage,
@@ -35,6 +35,7 @@ from app.services.nvidia_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
     fetch_provider_api_profiles,
+    narrator_control_capabilities,
     parse_build_catalog,
     prices_are_free,
     provider_model_is_suitable,
@@ -1519,8 +1520,12 @@ def test_existing_parties_migrate_without_campaign_specific_scenario_inference(t
     client(tmp_path)
     with sqlite3.connect(database) as connection:
         migrated = dict(connection.execute("SELECT id, scenario_type FROM parties").fetchall())
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(parties)")}
+        narrator_settings = dict(connection.execute("SELECT id, narrator_settings_json FROM parties").fetchall())
 
     assert migrated == {"old-awareness": "rp", "old-rp": "rp"}
+    assert "narrator_settings_json" in columns
+    assert narrator_settings == {"old-awareness": "{}", "old-rp": "{}"}
 
 
 def test_rp_party_after_turn_10_keeps_narrator_response_and_honest_metadata(tmp_path: Path):
@@ -2996,6 +3001,129 @@ def test_party_model_can_be_changed(tmp_path: Path):
     assert changed.json()["party"]["model_profile"]["model"] == models[1]["model"]
 
 
+def test_supported_openrouter_narrator_settings_are_exposed_validated_and_saved(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party_store = c.app.state.party_store
+    model_ids = {
+        "deepseek": "deepseek/deepseek-v4-flash",
+        "luna": "openai/gpt-5.6-luna",
+        "luna_pro": "openai/gpt-5.6-luna-pro",
+        "unsupported": "anthropic/claude-opus-5",
+    }
+    for key, model in model_ids.items():
+        party_store.upsert_model_profile(
+            {
+                "id": f"test-{key}",
+                "title": model,
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "model": model,
+                "params": {"context_tokens": 384_000, "source": "test"},
+                "api_key_source": "server_env_or_managed_key",
+            }
+        )
+
+    profiles = {item["id"]: item for item in c.get("/api/model-profiles").json()["model_profiles"]}
+    assert profiles["test-deepseek"]["params"]["narrator_controls"] == narrator_control_capabilities(
+        "openrouter", model_ids["deepseek"]
+    )
+    assert profiles["test-luna"]["params"]["narrator_controls"]["reasoning_efforts"][-1] == "max"
+    assert profiles["test-luna_pro"]["params"]["narrator_controls"]["temperature"] is False
+    assert "narrator_controls" not in profiles["test-unsupported"]["params"]
+
+    character = c.post(
+        "/api/player-characters",
+        json={"worldpack_id": "demo-world", "name": "Mira", "description": "Investigator", "profile": {}},
+    ).json()["player_character"]
+    party = c.post(
+        "/api/parties",
+        json={
+            "title": "Narrator controls",
+            "scenario_type": "rp",
+            "worldpack_id": "demo-world",
+            "player_character_id": character["id"],
+            "model_profile_id": "test-deepseek",
+        },
+    ).json()["party"]
+    settings = {
+        "reasoning_effort": "xhigh",
+        "temperature": 0.65,
+        "top_p": 0.9,
+        "max_tokens": 8192,
+    }
+    changed = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": "test-deepseek", "narrator_settings": settings},
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["party"]["narrator_settings"] == settings
+
+    preserved = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": "test-deepseek"},
+    )
+    assert preserved.json()["party"]["narrator_settings"] == settings
+
+    assert c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": "test-deepseek", "narrator_settings": {"temperature": 2.1}},
+    ).status_code == 422
+    incompatible = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": "test-luna", "narrator_settings": {"temperature": 0.7}},
+    )
+    assert incompatible.status_code == 400
+    assert "temperature is not supported" in incompatible.json()["detail"]
+
+    luna = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={
+            "model_profile_id": "test-luna",
+            "narrator_settings": {"reasoning_effort": "max", "max_tokens": 16384},
+        },
+    )
+    assert luna.status_code == 200
+    assert luna.json()["party"]["narrator_settings"] == {
+        "reasoning_effort": "max",
+        "max_tokens": 16384,
+    }
+
+    reset_on_model_change = c.patch(
+        f"/api/parties/{party['id']}/model",
+        json={"model_profile_id": "test-unsupported"},
+    )
+    assert reset_on_model_change.status_code == 200
+    assert reset_on_model_change.json()["party"]["narrator_settings"] == {}
+
+
+def test_party_narrator_settings_keep_explicit_request_limits() -> None:
+    request = ChatCompletionRequest(
+        model="deepseek/deepseek-v4-flash",
+        messages=[ChatMessage(role="user", content="Continue.")],
+        temperature=0.2,
+        max_tokens=2048,
+    )
+
+    apply_party_narrator_settings(
+        request,
+        "openrouter",
+        "deepseek/deepseek-v4-flash",
+        {
+            "reasoning_effort": "xhigh",
+            "temperature": 0.8,
+            "top_p": 0.85,
+            "max_tokens": 8192,
+        },
+    )
+
+    assert request.temperature == 0.2
+    assert request.max_tokens == 2048
+    assert request.top_p == 0.85
+    assert request.reasoning == {"effort": "xhigh", "exclude": True}
+    assert request._narrator_settings_model == "deepseek/deepseek-v4-flash"
+
+
 def test_party_context_estimate_reports_usage_and_history_window(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
@@ -3883,6 +4011,76 @@ def test_openrouter_deepseek_flash_uses_supported_throughput_routing(
     assert "reasoning" not in captured
     assert captured["provider"] == {"sort": "throughput"}
     assert "max_tokens" not in captured
+
+
+def test_narrator_settings_require_supported_primary_and_do_not_leak_to_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    payloads: list[dict[str, object]] = []
+
+    class FallbackAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "FallbackAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            payload = dict(kwargs["json"])  # type: ignore[arg-type]
+            payloads.append(payload)
+            provider_request = httpx.Request("POST", url)
+            if len(payloads) == 1:
+                return httpx.Response(400, request=provider_request, json={"error": {"code": 400}})
+            return httpx.Response(
+                200,
+                request=provider_request,
+                json={"choices": [{"message": {"role": "assistant", "content": "Fallback scene."}}]},
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FallbackAsyncClient)
+    settings = Settings(
+        llm_provider="openrouter",
+        nvidia_api_base="https://openrouter.ai/api/v1",
+        nvidia_api_key="test-key",
+        narrative_model="deepseek/deepseek-v4-flash",
+        nvidia_fallback_models=("openai/gpt-5.6-luna",),
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    apply_party_narrator_settings(
+        request,
+        "openrouter",
+        settings.narrative_model,
+        {"reasoning_effort": "xhigh", "temperature": 0.7, "top_p": 0.9, "max_tokens": 4096},
+    )
+    outcome = Outcome(
+        check_id="narrator-settings-fallback",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: success.",
+    )
+
+    asyncio.run(NarrativeClient(settings).complete(request, base_state(), outcome, None))
+
+    assert payloads[0]["reasoning"] == {"effort": "xhigh", "exclude": True}
+    assert payloads[0]["temperature"] == 0.7
+    assert payloads[0]["top_p"] == 0.9
+    assert payloads[0]["max_tokens"] == 4096
+    assert payloads[0]["provider"] == {"sort": "throughput", "require_parameters": True}
+    assert payloads[1]["model"] == "openai/gpt-5.6-luna"
+    assert not ({"reasoning", "temperature", "top_p", "max_tokens"} & payloads[1].keys())
+    assert "provider" not in payloads[1]
 
 
 @pytest.mark.parametrize("status_code", [403, 410])

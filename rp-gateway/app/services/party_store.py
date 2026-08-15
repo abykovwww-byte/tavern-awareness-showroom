@@ -34,8 +34,10 @@ from app.services.nvidia_catalog import (
     enrich_openrouter_profile_params,
     is_quality_rp_model,
     is_rp_candidate,
+    narrator_control_capabilities,
     normalize_provider,
     static_model_profiles,
+    validate_narrator_settings,
 )
 from app.services.context_budget import model_context_limit_tokens
 from app.services.state_store import StateStore
@@ -127,6 +129,7 @@ class PartyStore:
                     status TEXT NOT NULL,
                     dataset_review_status TEXT NOT NULL DEFAULT 'review',
                     dataset_tags_json TEXT NOT NULL DEFAULT '[]',
+                    narrator_settings_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -203,6 +206,7 @@ class PartyStore:
             self.migrate_rp_contract_version(connection)
             self.migrate_autotest_branches(connection)
             self.migrate_dataset_columns(connection)
+            self.migrate_narrator_settings(connection)
             self.migrate_turn_feedback_columns(connection)
 
     def migrate_owner_columns(self, connection: sqlite3.Connection) -> None:
@@ -280,6 +284,11 @@ class PartyStore:
             "UPDATE parties SET dataset_review_status = 'review' "
             "WHERE dataset_review_status NOT IN ('excluded', 'review', 'approved')"
         )
+
+    def migrate_narrator_settings(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
+        if "narrator_settings_json" not in columns:
+            connection.execute("ALTER TABLE parties ADD COLUMN narrator_settings_json TEXT NOT NULL DEFAULT '{}'")
 
     def migrate_turn_feedback_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turn_feedback)").fetchall()}
@@ -888,6 +897,11 @@ class PartyStore:
         provider = normalize_provider(row["provider"])
         if provider == "openrouter":
             params = enrich_openrouter_profile_params(row["model"], params)
+        narrator_controls = narrator_control_capabilities(provider, row["model"])
+        if narrator_controls:
+            params["narrator_controls"] = narrator_controls
+        else:
+            params.pop("narrator_controls", None)
         return ModelProfileSummary(
             id=row["id"],
             title=str(params.get("title_override") or row["title"]),
@@ -1025,11 +1039,29 @@ class PartyStore:
             raise ValueError(f"party not found: {party_id}")
         return self.get_party(party_id, owner_user_id=owner_user_id)
 
-    def update_party_model(self, party_id: str, model_profile_id: str, owner_user_id: str | None = None) -> PartySummary:
-        self.get_model_profile(model_profile_id)
+    def update_party_model(
+        self,
+        party_id: str,
+        model_profile_id: str,
+        owner_user_id: str | None = None,
+        narrator_settings: dict[str, Any] | None = None,
+    ) -> PartySummary:
+        profile = self.get_model_profile(model_profile_id)
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
+        if narrator_settings is None:
+            normalized_settings = party.narrator_settings if party.model_profile_id == model_profile_id else {}
+        else:
+            normalized_settings = validate_narrator_settings(profile.provider, profile.model, narrator_settings)
         timestamp = now_iso()
-        sql = "UPDATE parties SET model_profile_id = ?, updated_at = ? WHERE id = ?"
-        params: list[Any] = [model_profile_id, timestamp, party_id]
+        sql = (
+            "UPDATE parties SET model_profile_id = ?, narrator_settings_json = ?, updated_at = ? WHERE id = ?"
+        )
+        params: list[Any] = [
+            model_profile_id,
+            json.dumps(normalized_settings, ensure_ascii=False, separators=(",", ":")),
+            timestamp,
+            party_id,
+        ]
         if owner_user_id:
             sql += " AND owner_user_id = ?"
             params.append(owner_user_id)
@@ -1752,6 +1784,7 @@ class PartyStore:
             status=row["status"],
             dataset_review_status=row["dataset_review_status"],
             dataset_tags=json.loads(row["dataset_tags_json"] or "[]"),
+            narrator_settings=json.loads(row["narrator_settings_json"] or "{}"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

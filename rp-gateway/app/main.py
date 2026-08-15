@@ -80,7 +80,12 @@ from app.services.narrative import (
     response_text,
     uncompacted_archive_fallback_block,
 )
-from app.services.nvidia_catalog import normalize_provider, provider_api_key, provider_base_url
+from app.services.nvidia_catalog import (
+    normalize_provider,
+    provider_api_key,
+    provider_base_url,
+    validate_narrator_settings,
+)
 from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import (
     SERVICE_MODEL_SETTING_KEY,
@@ -266,6 +271,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         idempotency_key=f"autotest:{run_id}:turn:{turn_number}",
                     ),
                     party_settings,
+                    provider=narrator_profile.provider,
+                    narrator_settings=party.narrator_settings,
                 )
                 runtime_service, artifact_service, workspace_service = training_services_for_party(
                     party,
@@ -819,7 +826,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.patch("/api/parties/{party_id}/model")
     def update_party_model(request: Request, party_id: str, payload: PartyModelUpdate) -> dict[str, Any]:
         try:
-            party = party_store.update_party_model(party_id, payload.model_profile_id, owner_user_id=owner_user_id(request))
+            narrator_settings = (
+                payload.narrator_settings.model_dump(mode="json", exclude_none=True)
+                if payload.narrator_settings is not None
+                else None
+            )
+            party = party_store.update_party_model(
+                party_id,
+                payload.model_profile_id,
+                owner_user_id=owner_user_id(request),
+                narrator_settings=narrator_settings,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"party": party.model_dump(mode="json")}
@@ -1489,6 +1506,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_tokens=request.max_tokens,
                 stream=False,
             )
+            apply_party_narrator_settings(
+                chat_request,
+                model_profile.provider,
+                model_profile.model,
+                party.narrator_settings,
+            )
             start_outcome = party_start_outcome(
                 party_id,
                 party.scenario_type,
@@ -1937,6 +1960,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 model_profile.model,
                 request,
                 party_settings,
+                provider=model_profile.provider,
+                narrator_settings=party.narrator_settings,
             )
             runtime_service, artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             response = await Adjudicator(
@@ -2744,6 +2769,8 @@ def party_chat_request(
     model: str,
     request: PartyMessageRequest,
     settings: Settings,
+    provider: str | None = None,
+    narrator_settings: dict[str, Any] | None = None,
 ) -> ChatCompletionRequest:
     memory = store.latest_memory_coverage()
     covered_through = int(memory["to_turn_id"]) if memory else 0
@@ -2792,7 +2819,33 @@ def party_chat_request(
         len(str(turn.get("player_message") or "")) + len(str(turn.get("narrative_response") or ""))
         for turn in all_turns
     )
+    if provider and narrator_settings:
+        apply_party_narrator_settings(chat_request, provider, model, narrator_settings)
     return chat_request
+
+
+def apply_party_narrator_settings(
+    request: ChatCompletionRequest,
+    provider: str,
+    model: str,
+    narrator_settings: dict[str, Any] | None,
+) -> ChatCompletionRequest:
+    settings = validate_narrator_settings(provider, model, narrator_settings or {})
+    if not settings:
+        return request
+    if request.temperature is None and "temperature" in settings:
+        request.temperature = float(settings["temperature"])
+    if request.max_tokens is None and "max_tokens" in settings:
+        request.max_tokens = int(settings["max_tokens"])
+    if "top_p" in settings:
+        request.top_p = float(settings["top_p"])
+    effort = settings.get("reasoning_effort")
+    if effort == "none":
+        request.reasoning = {"enabled": False}
+    elif effort:
+        request.reasoning = {"effort": effort, "exclude": True}
+    request._narrator_settings_model = model
+    return request
 
 
 async def generate_character_edit(

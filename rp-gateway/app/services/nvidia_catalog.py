@@ -16,6 +16,63 @@ PROVIDER_TITLES = {
     "local": "Local Vulkan",
 }
 
+NARRATOR_MAX_TOKEN_OPTIONS = [1024, 2048, 4096, 8192, 16384]
+NARRATOR_CONTROL_CAPABILITIES: dict[str, dict[str, Any]] = {
+    "openai/gpt-5.6-luna": {
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "medium",
+        "temperature": False,
+        "top_p": False,
+        "max_tokens": NARRATOR_MAX_TOKEN_OPTIONS,
+    },
+    "openai/gpt-5.6-luna-pro": {
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "medium",
+        "temperature": False,
+        "top_p": False,
+        "max_tokens": NARRATOR_MAX_TOKEN_OPTIONS,
+    },
+    "deepseek/deepseek-v4-flash": {
+        "reasoning_efforts": ["none", "high", "xhigh"],
+        "default_reasoning_effort": "high",
+        "temperature": True,
+        "top_p": True,
+        "max_tokens": NARRATOR_MAX_TOKEN_OPTIONS,
+    },
+}
+
+
+def narrator_control_capabilities(provider: str, model_id: str) -> dict[str, Any]:
+    if normalize_provider(provider) != "openrouter":
+        return {}
+    capabilities = NARRATOR_CONTROL_CAPABILITIES.get(model_id.strip().lower())
+    if not capabilities:
+        return {}
+    return {
+        **capabilities,
+        "reasoning_efforts": list(capabilities["reasoning_efforts"]),
+        "max_tokens": list(capabilities["max_tokens"]),
+    }
+
+
+def validate_narrator_settings(provider: str, model_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+    if not settings:
+        return {}
+    capabilities = narrator_control_capabilities(provider, model_id)
+    if not capabilities:
+        raise ValueError("manual narrator settings are not supported by this model")
+    effort = settings.get("reasoning_effort")
+    if effort is not None and effort not in capabilities["reasoning_efforts"]:
+        raise ValueError(f"reasoning effort {effort!r} is not supported by {model_id}")
+    if settings.get("temperature") is not None and not capabilities["temperature"]:
+        raise ValueError(f"temperature is not supported by {model_id}")
+    if settings.get("top_p") is not None and not capabilities["top_p"]:
+        raise ValueError(f"top_p is not supported by {model_id}")
+    max_tokens = settings.get("max_tokens")
+    if max_tokens is not None and max_tokens not in capabilities["max_tokens"]:
+        raise ValueError(f"max_tokens {max_tokens!r} is not supported by {model_id}")
+    return dict(settings)
+
 STATIC_GEMINI_MODELS: list[dict[str, Any]] = [
     {
         "model": "gemini-3.6-flash",
