@@ -1215,6 +1215,74 @@ def test_revision_six_prompt_is_at_most_half_of_long_raw_transcript_without_muta
     assert raw_hash_after == raw_hash_before
 
 
+def test_revision_six_keeps_latest_history_pair_when_mandatory_prompt_exceeds_half_raw_transcript(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "short-party.json"
+    state_path.write_text(json.dumps(base_state(), ensure_ascii=False), encoding="utf-8")
+    store = StateStore(str(tmp_path / "short-party.db"), "short-party", str(state_path))
+    first_player = "Я осматриваю горящий склад и запоминаю расположение выходов. " * 30
+    first_narrator = "Огонь остаётся во дворе, а люди освобождают проход к воротам. " * 30
+    latest_player = "Я освобождаю Ратибора из-под балки. " * 45
+    latest_narrator = "Ратибор выбрался и теперь стоит рядом с дружинниками. " * 45
+    current_action = "Мы ведём Ратибора со двора."
+    for index, (player_message, narrative_response) in enumerate(
+        ((first_player, first_narrator), (latest_player, latest_narrator)),
+        start=1,
+    ):
+        store.record_turn(
+            f"short-{index}",
+            f"short-request-{index}",
+            player_message,
+            narrative_response,
+            {},
+            index,
+            party_turn=index,
+        )
+    settings = Settings(
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=6,
+        world_system_prompt="Обязательное правило мира: сохраняй непрерывность сцены. " * 800,
+        party_memory_retrieval_enabled=False,
+    )
+    request = party_chat_request(
+        store,
+        "mock",
+        PartyMessageRequest(content=current_action),
+        settings,
+    )
+    outcome_value = RuleEngine().resolve(
+        store.get_state(),
+        Intent(action_type="narrative", desired_outcome=current_action),
+        "short-prompt",
+        scenario_type="rp",
+        rp_contract_revision=6,
+    )[0]
+    messages = NarrativeClient(settings).narrative_messages(
+        request,
+        store.get_state(),
+        outcome_value,
+        repair_instruction=None,
+    )
+
+    assert request._raw_transcript_chars == sum(
+        len(message)
+        for message in (first_player, first_narrator, latest_player, latest_narrator)
+    )
+    assert len(settings.world_system_prompt) > request._raw_transcript_chars // 2
+    assert [
+        (message["role"], message["content"])
+        for message in messages
+        if message["role"] != "system"
+    ] == [
+        ("user", latest_player),
+        ("assistant", latest_narrator),
+        ("user", current_action),
+    ]
+    assert messages[-1] == {"role": "user", "content": current_action}
+
+
 def test_relationship_pressure_is_narrator_only_and_party_apis_do_not_leak_it(tmp_path: Path):
     """Proves prompt placement and the absence of relationship internals from party API surfaces."""
     pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])

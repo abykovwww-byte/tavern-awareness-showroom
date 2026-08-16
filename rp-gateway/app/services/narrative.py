@@ -852,10 +852,18 @@ def fit_messages_to_context(
         over_prompt_chars = max_prompt_chars is not None and len(prompt_text) > max_prompt_chars
         if not over_token_budget and not over_prompt_chars:
             break
-        oldest_history = next(
-            (index for index, message in enumerate(fitted[:-1]) if message.get("role") != "system"),
-            None,
-        )
+        history_indices = [
+            index
+            for index, message in enumerate(fitted[:-1])
+            if message.get("role") != "system"
+        ]
+        if (
+            over_prompt_chars
+            and not over_token_budget
+            and [fitted[index].get("role") for index in history_indices] == ["user", "assistant"]
+        ):
+            break
+        oldest_history = history_indices[0] if history_indices else None
         if oldest_history is not None:
             if (
                 over_prompt_chars

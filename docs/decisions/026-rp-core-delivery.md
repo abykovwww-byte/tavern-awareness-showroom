@@ -164,10 +164,15 @@ uncertain facts и absolute constraints. `/timeline` остаётся audit-only
 - Effective prompt использует bounded recent turns, active story memory, chapters,
   lore, relevant characters, dynamic state и выборочный archive retrieval.
 - Offline long-party fixture должен дать prompt не больше 50% полного raw transcript,
+  когда процентная граница достижима без удаления минимального continuity tail,
   сохранить текущее действие и тот же hash raw turns.
 - Для revision 6 Gateway перед provider call удаляет старейшие полные
-  `user/assistant`-пары, пока длинный effective prompt не уложится в этот порог;
-  обязательные system-блоки и текущее действие не режутся ради процента.
+  `user/assistant`-пары, пока длинный effective prompt не уложится в этот порог,
+  но останавливает percentage-only trimming перед последней полной парой.
+  Обязательные system-блоки, последняя полная пара и текущее действие не режутся
+  только ради процента. Если этот минимальный continuity tail уже превышает 50%,
+  effective prompt может быть больше процентной границы; реальный provider input
+  token budget остаётся обязательным и при необходимости сокращает контекст дальше.
 
 ## Проверка и ступени готовности
 
