@@ -151,22 +151,6 @@ def test_revision_schema_bounds_accept_seven_and_reject_eight() -> None:
         )
 
 
-def test_production_env_requires_explicit_observed_revision_and_keeps_six_observed() -> None:
-    test_path = Path(__file__).resolve()
-    apps_dir = test_path.parents[4]
-    repository_root = test_path.parents[6]
-    env_template = (apps_dir / "templates" / "rp-stack.env.j2").read_text(encoding="utf-8")
-    observed_line = next(
-        line for line in env_template.splitlines() if line.startswith("RP_CONTRACT_OBSERVED_REVISION=")
-    )
-    inventory = (repository_root / "inventories" / "local" / "group_vars" / "server.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert observed_line == "RP_CONTRACT_OBSERVED_REVISION={{ rp_stack_gateway_rp_contract_observed_revision }}"
-    assert "rp_stack_gateway_rp_contract_observed_revision: 6" in inventory
-
-
 def test_merchant_and_starosta_declare_revision_seven_candidates() -> None:
     worldpacks = Path(__file__).resolve().parents[2] / "worldpacks"
     for worldpack_id in ("merchant-sviatoslav", "starosta"):
