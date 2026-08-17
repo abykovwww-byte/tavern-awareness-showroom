@@ -194,9 +194,16 @@ class RelationshipMechanics:
                 changes.append(self._event_change("resolved", event, resolution="delivered"))
         return changes
 
-    def pressure_block(self, party_turn: int, character_names: dict[str, str]) -> str | None:
+    def pressure_block(
+        self,
+        party_turn: int,
+        character_names: dict[str, str],
+        *,
+        persist_seed_state: bool = True,
+    ) -> str | None:
         """Return the deliberately non-numeric narrator pressure block."""
-        self._ensure_seed_state()
+        if persist_seed_state:
+            self._ensure_seed_state()
         rows = self.store.pressure_rows(party_turn)
         rendered: list[str] = []
         for row in rows:

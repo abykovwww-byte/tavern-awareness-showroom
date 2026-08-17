@@ -11,10 +11,17 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.models.schemas import ChatCompletionRequest, Outcome
+from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
-from app.services.narrative import ProviderRateLimitError, NarrativeClient, response_text, with_text
+from app.services.narrative import (
+    NarrativeClient,
+    PromptBudgetExceeded,
+    ProviderRateLimitError,
+    archived_memory_retrieval_block,
+    response_text,
+    with_text,
+)
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
@@ -264,6 +271,10 @@ class Adjudicator:
 
             llm_calls = 0
             repaired = False
+            revision_seven = (
+                self.settings.scenario_type == "rp"
+                and self.settings.rp_contract_revision >= 7
+            )
             provider_fallback_reason: str | None = None
             gateway_fallback_reason: str | None = None
             transport_status = "ok"
@@ -281,22 +292,177 @@ class Adjudicator:
                     lane="main",
                 )
                 memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
-                rp_story_memory = (
-                    self.rp_story_memory.prompt_snapshot(normalized_story_corrections)
-                    if self.rp_story_memory
-                    else None
-                )
-                prompt_messages = self.narrative.narrative_messages(
-                    request,
-                    narrative_state,
-                    outcome,
-                    repair_instruction=None,
-                    memory_summary=memory_summary,
-                    rp_story_memory=rp_story_memory,
-                    artifact_contract=interaction_contract,
-                    training_turn_contract=training_turn_contract,
-                    relationship_pressure=relationship_pressure,
-                )
+                rp_story_memory: dict[str, Any] | None = None
+                story_snapshot_id: int | None = None
+                story_coverage = 0
+
+                def assemble_prompt() -> list[dict[str, str]]:
+                    return self.narrative.narrative_messages(
+                        request,
+                        narrative_state,
+                        outcome,
+                        repair_instruction=None,
+                        memory_summary=memory_summary,
+                        rp_story_memory=rp_story_memory,
+                        artifact_contract=interaction_contract,
+                        training_turn_contract=training_turn_contract,
+                        relationship_pressure=relationship_pressure,
+                    )
+
+                refresh_attempted = False
+                before_refresh: dict[str, Any] | None = None
+                refresh: dict[str, Any] | None = None
+                for _assembly_pass in range(2):
+                    try:
+                        snapshot_stable = False
+                        for _snapshot_read in range(3 if revision_seven else 1):
+                            rp_story_memory = (
+                                self.rp_story_memory.prompt_snapshot(
+                                    normalized_story_corrections
+                                )
+                                if self.rp_story_memory
+                                else None
+                            )
+                            if revision_seven:
+                                story_snapshot_id, story_coverage = (
+                                    self.rebuild_revision_seven_request(
+                                        request,
+                                        rp_story_memory,
+                                        latest,
+                                    )
+                                )
+                            prompt_messages = assemble_prompt()
+                            if not revision_seven or self.rp_story_memory is None:
+                                snapshot_stable = True
+                                break
+                            final_story_memory = self.rp_story_memory.prompt_snapshot(
+                                normalized_story_corrections
+                            )
+                            final_snapshot_id = (
+                                int(final_story_memory["id"])
+                                if final_story_memory is not None
+                                and final_story_memory.get("id") is not None
+                                else None
+                            )
+                            final_coverage = (
+                                int(final_story_memory.get("to_turn_id") or 0)
+                                if final_story_memory is not None
+                                else 0
+                            )
+                            if (
+                                story_snapshot_id != final_snapshot_id
+                                or story_coverage != final_coverage
+                            ):
+                                continue
+                            snapshot_stable = True
+                            break
+                        if not snapshot_stable:
+                            raise RuntimeError(
+                                "RP story-memory snapshot did not stabilize before narrator call"
+                            )
+                    except PromptBudgetExceeded as overflow:
+                        if not revision_seven or self.rp_story_memory is None:
+                            raise
+                        if refresh_attempted:
+                            refresh_result = refresh or {}
+                            refresh_before = before_refresh or {}
+                            self.store.audit(
+                                "rp_story_memory_force_refresh",
+                                {
+                                    "request_id": request_id,
+                                    "pending_turns_before": refresh_before.get("pending_turns"),
+                                    "pending_turns_after": refresh_result.get("stats", {}).get(
+                                        "pending_turns"
+                                    ),
+                                    "batches": refresh_result.get("batches"),
+                                    "coverage_before": refresh_result.get("coverage_before"),
+                                    "coverage_after": refresh_result.get("coverage_after"),
+                                    "result": refresh_result.get("terminal_result"),
+                                    "hard_overflow": True,
+                                    "estimated_tokens": overflow.estimated_tokens,
+                                    "token_budget": overflow.token_budget,
+                                },
+                                request_id,
+                            )
+                            raise
+
+                        refresh_attempted = True
+                        before_refresh = self.rp_story_memory.stats()
+                        refresh_batches = 0
+
+                        def rebuilt_prompt_fits(checkpoint: dict[str, Any]) -> bool:
+                            nonlocal rp_story_memory, refresh_batches
+                            refresh_batches = int(checkpoint.get("batches") or 0)
+                            rp_story_memory = self.rp_story_memory.prompt_snapshot(
+                                normalized_story_corrections
+                            )
+                            self.rebuild_revision_seven_request(
+                                request,
+                                rp_story_memory,
+                                latest,
+                            )
+                            try:
+                                assemble_prompt()
+                            except PromptBudgetExceeded:
+                                return False
+                            return True
+
+                        try:
+                            async with asyncio.timeout(
+                                self.settings.model_attempt_timeout_seconds
+                            ):
+                                refresh = await self.rp_story_memory.catch_up(
+                                    authorization,
+                                    force=True,
+                                    fail_open=False,
+                                    request_id=request_id,
+                                    stop_when=rebuilt_prompt_fits,
+                                )
+                        except Exception as refresh_error:
+                            after_refresh = self.rp_story_memory.stats()
+                            self.store.audit(
+                                "rp_story_memory_force_refresh_failed",
+                                {
+                                    "request_id": request_id,
+                                    "pending_turns": before_refresh.get("pending_turns"),
+                                    "batches": refresh_batches,
+                                    "coverage_before": int(
+                                        before_refresh.get("covered_through_turn_id") or 0
+                                    ),
+                                    "coverage_after": int(
+                                        after_refresh.get("covered_through_turn_id") or 0
+                                    ),
+                                    "result": "failed",
+                                    "hard_overflow": True,
+                                    "estimated_tokens": overflow.estimated_tokens,
+                                    "token_budget": overflow.token_budget,
+                                    "error_type": type(refresh_error).__name__,
+                                },
+                                request_id,
+                            )
+                            raise overflow from refresh_error
+                        continue
+
+                    if refresh_attempted and refresh is not None:
+                        self.store.audit(
+                            "rp_story_memory_force_refresh",
+                            {
+                                "request_id": request_id,
+                                "pending_turns_before": (before_refresh or {}).get(
+                                    "pending_turns"
+                                ),
+                                "pending_turns_after": refresh.get("stats", {}).get(
+                                    "pending_turns"
+                                ),
+                                "batches": refresh.get("batches"),
+                                "coverage_before": refresh.get("coverage_before"),
+                                "coverage_after": refresh.get("coverage_after"),
+                                "result": refresh.get("terminal_result"),
+                                "hard_overflow": False,
+                            },
+                            request_id,
+                        )
+                    break
                 self.record_trace_event(
                     request_id=request_id,
                     phase_key="gateway_assembly",
@@ -516,7 +682,7 @@ class Adjudicator:
                         gateway_fallback_reason,
                         request_id,
                     )
-            except PermissionError:
+            except (PermissionError, PromptBudgetExceeded):
                 raise
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else "unknown"
@@ -928,7 +1094,15 @@ class Adjudicator:
             for character_id, value in characters.items()
         }
         if self.settings.rp_contract_revision >= 4:
-            pressure = self.relationship_mechanics.pressure_block(party_turn, names)
+            pressure = (
+                self.relationship_mechanics.pressure_block(
+                    party_turn,
+                    names,
+                    persist_seed_state=False,
+                )
+                if self.settings.rp_contract_revision >= 7
+                else self.relationship_mechanics.pressure_block(party_turn, names)
+            )
             resolution = self.relationship_mechanics.due_event_block(party_turn, names)
         else:
             changes = self.relationship_mechanics.advance_turn(party_turn)
@@ -1005,6 +1179,51 @@ class Adjudicator:
         exc = completed.exception()
         if exc:
             logger.warning("post_turn_helpers_task_failed campaign_id=%s error=%s", campaign_id, exc)
+
+    def rebuild_revision_seven_request(
+        self,
+        request: ChatCompletionRequest,
+        story_memory: dict[str, Any] | None,
+        current_action: str,
+    ) -> tuple[int | None, int]:
+        """Align the protected raw tail with one effective story-memory snapshot."""
+
+        covered_through = int(story_memory.get("to_turn_id") or 0) if story_memory else 0
+        messages = [
+            message
+            for message in request.messages
+            if message.role == "system"
+            and isinstance(message.content, str)
+            and message.content.startswith("PARTY_LORE_CARDS")
+        ]
+        for turn in self.store.turns_for_memory(after_turn_id=covered_through):
+            messages.append(ChatMessage(role="user", content=str(turn.get("player_message") or "")))
+            messages.append(
+                ChatMessage(role="assistant", content=str(turn.get("narrative_response") or ""))
+            )
+        if self.settings.party_memory_retrieval_enabled:
+            retrieved = self.store.search_archived_turns(
+                current_action,
+                through_turn_id=covered_through,
+                limit=self.settings.party_memory_retrieval_limit,
+            )
+            retrieval_block = archived_memory_retrieval_block(
+                retrieved,
+                self.settings.party_memory_retrieval_max_chars,
+            )
+            if retrieval_block:
+                messages.append(ChatMessage(role="system", content=retrieval_block))
+        messages.append(ChatMessage(role="user", content=current_action))
+        request.messages = messages
+        snapshot_id = (
+            int(story_memory["id"])
+            if story_memory is not None and story_memory.get("id") is not None
+            else None
+        )
+        request._latest_player_action = current_action
+        request._rp_story_memory_snapshot_id = snapshot_id
+        request._rp_story_memory_covered_through_turn_id = covered_through
+        return snapshot_id, covered_through
 
     def latest_user_message(self, request: ChatCompletionRequest) -> str:
         for message in reversed(request.messages):

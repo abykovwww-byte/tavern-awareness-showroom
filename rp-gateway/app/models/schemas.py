@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
+from app.core.config import RP_CONTRACT_MAX_REVISION
+
 
 WORLD_PROMPT_MAX_CHARS = 6_000
 WORLD_MARKDOWN_MAX_CHARS = 200_000
@@ -54,6 +56,9 @@ class ChatCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     _raw_transcript_chars: int | None = PrivateAttr(default=None)
+    _latest_player_action: str | None = PrivateAttr(default=None)
+    _rp_story_memory_snapshot_id: int | None = PrivateAttr(default=None)
+    _rp_story_memory_covered_through_turn_id: int | None = PrivateAttr(default=None)
     _narrator_settings_model: str | None = PrivateAttr(default=None)
 
     model: str | None = None
@@ -303,7 +308,7 @@ class PartyCheckpointCreate(BaseModel):
 class PartyBranchCreate(BaseModel):
     checkpoint_id: int = Field(ge=1)
     label: str = Field(min_length=1, max_length=160)
-    rp_contract_revision: int | None = Field(default=None, ge=0, le=6)
+    rp_contract_revision: int | None = Field(default=None, ge=0, le=RP_CONTRACT_MAX_REVISION)
 
 
 class PartyCharacterStateEditRequest(BaseModel):
@@ -336,7 +341,7 @@ class PartySummary(BaseModel):
     title: str
     scenario_type: ScenarioType
     rp_contract_version: Literal["rp-core.v1", "rp-core.v2"] = "rp-core.v1"
-    rp_contract_revision: int = Field(default=0, ge=0, le=6)
+    rp_contract_revision: int = Field(default=0, ge=0, le=RP_CONTRACT_MAX_REVISION)
     worldpack_id: str
     player_character_id: str
     model_profile_id: str
@@ -568,7 +573,7 @@ class AutoTestCreate(BaseModel):
     player_prompt: str = Field(min_length=1, max_length=12000)
     turn_count: int = Field(ge=1, le=30)
     player_model_profile_id: str = Field(min_length=1, max_length=240)
-    rp_contract_revision: int | None = Field(default=None, ge=0, le=6)
+    rp_contract_revision: int | None = Field(default=None, ge=0, le=RP_CONTRACT_MAX_REVISION)
 
 
 class PartyCheckRequest(BaseModel):

@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -67,18 +67,110 @@ class RPStoryMemoryUpdater:
         latest = self.store.effective_rp_story_memory()
         covered_through = int(latest["to_turn_id"]) if latest else 0
         pending = self.store.turns_for_memory(after_turn_id=covered_through)
+        enabled = self.settings.scenario_type == "rp"
+        pending_turn_threshold_exceeded = enabled and len(pending) >= self.update_turns
+        hard_overflow = self.latest_request_hard_overflow() if enabled else False
+        force_refresh = self.latest_force_refresh_diagnostics() if enabled else None
         return {
-            "enabled": self.settings.scenario_type == "rp",
+            "enabled": enabled,
             "scenario_type": self.settings.scenario_type,
             "update_every_turns": self.update_turns,
+            "pending_turn_threshold": self.update_turns,
             "batch_token_budget": self.batch_token_budget,
             "prompt_max_chars": self.settings.rp_story_memory_prompt_max_chars,
-            "reserved_prompt_tokens": self.settings.rp_story_memory_reserve_tokens if self.settings.scenario_type == "rp" else 0,
+            "reserved_prompt_tokens": self.settings.rp_story_memory_reserve_tokens if enabled else 0,
             "latest_revision": latest["revision"] if latest else None,
             "covered_through_turn_id": covered_through or None,
             "pending_turns": len(pending),
             "pending_tokens": turns_token_count(pending),
-            "update_pending": self.settings.scenario_type == "rp" and len(pending) >= self.update_turns,
+            "pending_turn_threshold_exceeded": pending_turn_threshold_exceeded,
+            "update_pending": pending_turn_threshold_exceeded,
+            "hard_overflow": hard_overflow,
+            "force_refresh_attempted": force_refresh is not None,
+            "force_refresh_request_id": (
+                force_refresh.get("request_id") if force_refresh is not None else None
+            ),
+            "force_refresh_batches": (
+                force_refresh.get("batches") if force_refresh is not None else 0
+            ),
+            "force_refresh_terminal_result": (
+                force_refresh.get("terminal_result") if force_refresh is not None else None
+            ),
+            "force_refresh_coverage_before": (
+                force_refresh.get("coverage_before") if force_refresh is not None else None
+            ),
+            "force_refresh_coverage_after": (
+                force_refresh.get("coverage_after") if force_refresh is not None else None
+            ),
+            "operator_status": (
+                "overflow"
+                if hard_overflow
+                else "lagging"
+                if pending_turn_threshold_exceeded
+                else "normal"
+            ),
+        }
+
+    def latest_request_hard_overflow(self) -> bool:
+        with self.store.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status, error
+                FROM turn_requests
+                WHERE campaign_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self.store.campaign_id,),
+            ).fetchone()
+        return bool(
+            row is not None
+            and row["status"] == "failed"
+            and "PromptBudgetExceeded" in str(row["error"] or "")
+        )
+
+    def latest_force_refresh_diagnostics(self) -> dict[str, Any] | None:
+        with self.store.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT request_id, event_type, event_json
+                FROM audit_events
+                WHERE campaign_id = ?
+                  AND event_type IN (
+                      'rp_story_memory_force_refresh',
+                      'rp_story_memory_force_refresh_failed'
+                  )
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (self.store.campaign_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            event = json.loads(row["event_json"])
+        except (TypeError, json.JSONDecodeError):
+            event = {}
+        if not isinstance(event, dict):
+            event = {}
+
+        def optional_int(key: str) -> int | None:
+            value = event.get(key)
+            return int(value) if isinstance(value, int) else None
+
+        return {
+            "request_id": str(row["request_id"] or event.get("request_id") or "") or None,
+            "batches": optional_int("batches") or 0,
+            "coverage_before": optional_int("coverage_before"),
+            "coverage_after": optional_int("coverage_after"),
+            "terminal_result": str(
+                event.get("result")
+                or (
+                    "failed"
+                    if row["event_type"] == "rp_story_memory_force_refresh_failed"
+                    else "unknown"
+                )
+            ),
         }
 
     def build_plan(self, force: bool = False) -> tuple[RPStoryMemoryPlan | None, str]:
@@ -107,6 +199,59 @@ class RPStoryMemoryUpdater:
             ),
             "ready",
         )
+
+    async def catch_up(
+        self,
+        authorization: str | None,
+        *,
+        force: bool = True,
+        fail_open: bool = False,
+        request_id: str | None = None,
+        max_batches: int = 64,
+        stop_when: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Advance story memory in bounded batches and report terminal coverage."""
+
+        if max_batches < 1:
+            raise ValueError("max_batches must be at least 1")
+        before = self.stats()
+        batches = 0
+        terminal_result = "max_batches_reached"
+        for _ in range(max_batches):
+            result = await self.update(
+                authorization,
+                force=force,
+                fail_open=fail_open,
+                request_id=request_id,
+            )
+            if not result.get("generated"):
+                terminal_result = str(result.get("reason") or "stopped")
+                break
+            batches += 1
+            if stop_when is not None and stop_when(
+                {
+                    "batches": batches,
+                    "story_memory": self.store.effective_rp_story_memory(),
+                    "stats": self.stats(),
+                }
+            ):
+                terminal_result = "stop_condition_met"
+                break
+        after = self.stats()
+        coverage_before = int(before.get("covered_through_turn_id") or 0)
+        coverage_after = int(after.get("covered_through_turn_id") or 0)
+        return {
+            "generated": batches > 0,
+            "reason": "generated" if batches > 0 else terminal_result,
+            "terminal_result": terminal_result,
+            "batches": batches,
+            "force_refresh_attempted": bool(force),
+            "force_refresh_batches": batches,
+            "coverage_before": coverage_before,
+            "coverage_after": coverage_after,
+            "story_memory": self.store.effective_rp_story_memory(),
+            "stats": after,
+        }
 
     def validate_corrections(self, corrections: list[dict[str, Any]] | None) -> list[dict[str, str]]:
         if not corrections:

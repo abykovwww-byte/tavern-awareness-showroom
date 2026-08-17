@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from app.core.config import Settings
+from app.core.config import RP_CONTRACT_MAX_REVISION, Settings
 from app.core.json_patch import apply_patch
 from app.models.schemas import (
     ModelProfileSummary,
@@ -254,7 +254,8 @@ class PartyStore:
             )
         connection.execute(
             "UPDATE parties SET rp_contract_revision = 0 "
-            "WHERE rp_contract_revision IS NULL OR rp_contract_revision < 0 OR rp_contract_revision > 6"
+            "WHERE rp_contract_revision IS NULL OR rp_contract_revision < 0 "
+            f"OR rp_contract_revision > {RP_CONTRACT_MAX_REVISION}"
         )
 
     def migrate_autotest_branches(self, connection: sqlite3.Connection) -> None:
@@ -956,11 +957,11 @@ class PartyStore:
             if request.scenario_type == "rp" and isinstance(rp_contract, dict)
             else 0
         )
-        if not 0 <= declared_revision <= 6:
+        if not 0 <= declared_revision <= RP_CONTRACT_MAX_REVISION:
             raise ValueError(f"worldpack {pack.id} declares unsupported RP contract revision {declared_revision}")
         rp_contract_revision = min(
             declared_revision,
-            max(0, min(int(self.settings.rp_contract_observed_revision), 6)),
+            max(0, min(int(self.settings.rp_contract_observed_revision), RP_CONTRACT_MAX_REVISION)),
         )
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
@@ -1518,7 +1519,7 @@ class PartyStore:
         target_revision = party.rp_contract_revision if rp_contract_revision is None else int(rp_contract_revision)
         if party.scenario_type != "rp" and target_revision != 0:
             raise ValueError("RP contract revision is available only for RP branches")
-        if not 0 <= target_revision <= min(declared_revision, 6):
+        if not 0 <= target_revision <= min(declared_revision, RP_CONTRACT_MAX_REVISION):
             raise ValueError(
                 f"RP contract revision must be between 0 and WorldPack candidate revision {declared_revision}"
             )

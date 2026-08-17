@@ -13,6 +13,7 @@ from app.services.context_estimator import estimate_tokens
 from app.services.intent_parser import IntentParser
 from app.services.narrative import (
     NarrativeClient,
+    PromptBudgetExceeded,
     archived_memory_retrieval_block,
     party_lore_cards_block,
     uncompacted_archive_fallback_block,
@@ -83,14 +84,53 @@ class PromptInspector:
         request = self.chat_request(latest)
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         rp_story_memory = self.rp_story_memory.prompt_snapshot() if self.rp_story_memory else None
-        messages = NarrativeClient(self.settings).narrative_messages(
-            request,
-            candidate_state,
-            outcome,
-            repair_instruction=None,
-            memory_summary=memory_summary,
-            rp_story_memory=rp_story_memory,
-        )
+        narrative = NarrativeClient(self.settings)
+        token_budget = narrative.input_token_budget(request)
+        try:
+            messages = narrative.narrative_messages(
+                request,
+                candidate_state,
+                outcome,
+                repair_instruction=None,
+                memory_summary=memory_summary,
+                rp_story_memory=rp_story_memory,
+            )
+        except PromptBudgetExceeded as exc:
+            covered_through = int(rp_story_memory.get("to_turn_id") or 0) if rp_story_memory else 0
+            story_stats = self.rp_story_memory.stats() if self.rp_story_memory else {}
+            story_diagnostics = self.story_memory_diagnostics(rp_story_memory, story_stats)
+            story_diagnostics["hard_overflow"] = True
+            story_diagnostics["operator_status"] = "overflow"
+            return {
+                "input": "[omitted: hard prompt overflow]",
+                "model": self.settings.narrative_model,
+                "source": "current_dry_run",
+                "dry_run": True,
+                "mutation": "none",
+                "turn": None,
+                "messages": [],
+                "blocks": [],
+                "estimated_prompt_tokens": exc.estimated_tokens,
+                "estimated_prompt_chars": None,
+                "hard_input_budget_tokens": exc.token_budget,
+                "hard_budget_status": "over_budget",
+                "hard_overflow": True,
+                "error": {
+                    "type": "PromptBudgetExceeded",
+                    "message": str(exc),
+                },
+                "inspection": {
+                    "memory_coverage_through_turn_id": covered_through or None,
+                    "raw": {
+                        "included_turn_ids": turn_ids(
+                            self.store.turns_for_memory(after_turn_id=covered_through)
+                        ),
+                        "excluded_turn_ids": [],
+                        "excluded_reason": None,
+                    },
+                    "story_memory": story_diagnostics,
+                },
+            }
         blocks = self.blocks(messages)
         payload = self.payload(
             latest,
@@ -99,6 +139,7 @@ class PromptInspector:
             source="current_dry_run",
             dry_run=True,
             inspection=self.memory_inspection(latest),
+            token_budget=token_budget,
         )
         payload.update(
             {
@@ -151,8 +192,11 @@ class PromptInspector:
         dry_run: bool,
         turn: dict[str, Any] | None = None,
         inspection: dict[str, Any] | None = None,
+        token_budget: int | None = None,
     ) -> dict[str, Any]:
-        return {
+        prompt_text = "\n".join(str(message.get("content") or "") for message in messages)
+        actual_prompt_tokens = estimate_tokens(prompt_text)
+        payload = {
             "input": latest,
             "model": self.settings.narrative_model,
             "source": source,
@@ -165,19 +209,38 @@ class PromptInspector:
             "estimated_prompt_chars": sum(len(block["content"]) for block in blocks),
             "inspection": inspection,
         }
+        if token_budget is not None:
+            payload.update(
+                {
+                    "hard_input_budget_tokens": token_budget,
+                    "hard_budget_status": (
+                        "within_budget"
+                        if actual_prompt_tokens <= token_budget
+                        else "over_budget"
+                    ),
+                    "hard_overflow": actual_prompt_tokens > token_budget,
+                }
+            )
+        return payload
 
     def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
+        revision_seven = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
+        story_memory = self.store.effective_rp_story_memory() if revision_seven else None
         if before_turn_id is None:
-            memory = self.store.latest_memory_coverage()
+            memory = story_memory if revision_seven else self.store.latest_memory_coverage()
             covered_through = int(memory["to_turn_id"]) if memory else 0
             turns = self.store.turns_for_memory(after_turn_id=covered_through)
         else:
+            covered_through = 0
             turns = self.store.turns_before(before_turn_id, limit=10_000)
-        overflow_turns, turns = split_turns_by_token_budget(
-            turns,
-            max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
-        )
+        if revision_seven and before_turn_id is None:
+            overflow_turns = []
+        else:
+            overflow_turns, turns = split_turns_by_token_budget(
+                turns,
+                max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
+            )
         if before_turn_id is None:
             lore_block = party_lore_cards_block(
                 self.store.lore_cards_for_prompt(
@@ -207,7 +270,16 @@ class PromptInspector:
             if retrieval_block:
                 messages.append(ChatMessage(role="system", content=retrieval_block))
         messages.append(ChatMessage(role="user", content=latest))
-        return ChatCompletionRequest(model=self.settings.narrative_model, messages=messages, stream=False)
+        request = ChatCompletionRequest(model=self.settings.narrative_model, messages=messages, stream=False)
+        request._latest_player_action = latest
+        request._raw_transcript_chars = sum(
+            len(str(turn.get("player_message") or "")) + len(str(turn.get("narrative_response") or ""))
+            for turn in self.store.turns_for_memory()
+        )
+        if revision_seven:
+            request._rp_story_memory_snapshot_id = int(story_memory["id"]) if story_memory else None
+            request._rp_story_memory_covered_through_turn_id = covered_through
+        return request
 
     def preview_state(self, state: dict[str, Any], patch: Any) -> dict[str, Any]:
         operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
@@ -292,8 +364,9 @@ class PromptInspector:
         }
 
     def memory_inspection(self, latest: str) -> dict[str, Any]:
-        coverage = self.store.latest_memory_coverage()
+        revision_seven = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
         story_memory = self.rp_story_memory.prompt_snapshot() if self.rp_story_memory else None
+        coverage = story_memory if revision_seven else self.store.latest_memory_coverage()
         covered_through = int(coverage["to_turn_id"]) if coverage else 0
         selected = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         selected_keys = {(item.get("memory_type"), item.get("id")) for item in selected}
@@ -309,10 +382,13 @@ class PromptInspector:
             if (item.get("memory_type"), item.get("id")) not in selected_keys
         ]
         raw_source = self.store.turns_for_memory(after_turn_id=covered_through)
-        omitted_raw, included_raw = split_turns_by_token_budget(
-            raw_source,
-            max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
-        )
+        if revision_seven:
+            omitted_raw, included_raw = [], raw_source
+        else:
+            omitted_raw, included_raw = split_turns_by_token_budget(
+                raw_source,
+                max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
+            )
         retrieval = self.store.explain_archived_retrieval(
             latest,
             through_turn_id=covered_through,
@@ -356,18 +432,53 @@ class PromptInspector:
             ],
         }
         if self.settings.scenario_type == "rp":
-            inspection["story_memory"] = {
-                "enabled": True,
-                "revision": story_memory.get("revision") if story_memory else None,
-                "covered_turn_ids": (
-                    [story_memory.get("from_turn_id"), story_memory.get("to_turn_id")]
-                    if story_memory
-                    else None
-                ),
-                "prompt_max_chars": self.settings.rp_story_memory_prompt_max_chars,
-                "reserved_tokens": self.settings.rp_story_memory_reserve_tokens,
-            }
+            story_stats = self.rp_story_memory.stats() if self.rp_story_memory else {}
+            inspection["story_memory"] = self.story_memory_diagnostics(story_memory, story_stats)
         return inspection
+
+    def story_memory_diagnostics(
+        self,
+        story_memory: dict[str, Any] | None,
+        story_stats: dict[str, Any],
+    ) -> dict[str, Any]:
+        pending_threshold = story_stats.get(
+            "pending_turn_threshold",
+            self.settings.rp_story_memory_update_turns,
+        )
+        pending_turns = int(story_stats.get("pending_turns") or 0)
+        threshold_exceeded = bool(
+            story_stats.get(
+                "pending_turn_threshold_exceeded",
+                pending_turns >= int(pending_threshold),
+            )
+        )
+        return {
+            "enabled": True,
+            "revision": story_memory.get("revision") if story_memory else None,
+            "covered_turn_ids": (
+                [story_memory.get("from_turn_id"), story_memory.get("to_turn_id")]
+                if story_memory
+                else None
+            ),
+            "prompt_max_chars": self.settings.rp_story_memory_prompt_max_chars,
+            "reserved_tokens": self.settings.rp_story_memory_reserve_tokens,
+            "pending_turns": pending_turns,
+            "pending_tokens": int(story_stats.get("pending_tokens") or 0),
+            "pending_turn_threshold": int(pending_threshold),
+            "pending_turn_threshold_exceeded": threshold_exceeded,
+            "hard_overflow": bool(story_stats.get("hard_overflow", False)),
+            "operator_status": story_stats.get("operator_status") or (
+                "lagging" if threshold_exceeded else "normal"
+            ),
+            "force_refresh": {
+                "attempted": bool(story_stats.get("force_refresh_attempted", False)),
+                "request_id": story_stats.get("force_refresh_request_id"),
+                "batches": int(story_stats.get("force_refresh_batches") or 0),
+                "terminal_result": story_stats.get("force_refresh_terminal_result"),
+                "coverage_before": story_stats.get("force_refresh_coverage_before"),
+                "coverage_after": story_stats.get("force_refresh_coverage_after"),
+            },
+        }
 
     def memory_entry_view(self, item: dict[str, Any], status: str) -> dict[str, Any]:
         return {

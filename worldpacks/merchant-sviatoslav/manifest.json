@@ -18,7 +18,7 @@
     "recommended": "rp",
     "supported": ["rp", "novel"]
   },
-  "rp_contract": {"schema_version": "rp-core.v2", "revision": 6},
+  "rp_contract": {"schema_version": "rp-core.v2", "revision": 7},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"

@@ -29,6 +29,15 @@ from app.services.rp_story_memory import story_memory_prompt_text
 logger = logging.getLogger(__name__)
 
 
+class PromptBudgetExceeded(RuntimeError):
+    """The revision-7 required prompt cannot fit the provider input window."""
+
+    def __init__(self, *, estimated_tokens: int, token_budget: int):
+        self.estimated_tokens = estimated_tokens
+        self.token_budget = token_budget
+        super().__init__("Required RP continuity context exceeds the provider input budget")
+
+
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     output_rules = [
         "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences.",
@@ -587,6 +596,12 @@ class NarrativeClient:
             messages,
             self.input_token_budget(request),
             max_prompt_chars=max_prompt_chars,
+            protect_history=(
+                self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
+            ),
+            fail_on_token_overflow=(
+                self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
+            ),
         )
 
     def apply_prompt_cache_policy(self, payload: dict[str, Any]) -> None:
@@ -843,6 +858,8 @@ def fit_messages_to_context(
     token_budget: int,
     *,
     max_prompt_chars: int | None = None,
+    protect_history: bool = False,
+    fail_on_token_overflow: bool = False,
 ) -> list[dict[str, str]]:
     """Keep the latest action and mandatory instructions inside the real provider input budget."""
     fitted = [dict(message) for message in messages]
@@ -851,6 +868,36 @@ def fit_messages_to_context(
         over_token_budget = estimate_tokens(prompt_text) > token_budget
         over_prompt_chars = max_prompt_chars is not None and len(prompt_text) > max_prompt_chars
         if not over_token_budget and not over_prompt_chars:
+            break
+        if protect_history:
+            # Revision 7 keeps the legacy percentage target best-effort and
+            # evicts whole optional blocks only for the provider's hard budget.
+            if not over_token_budget:
+                break
+            optional_prefixes = (
+                "RETRIEVED_ARCHIVE_SCENES",
+                "LONG_TERM_PARTY_MEMORY",
+                "PARTY_LORE_CARDS",
+                "RELEVANT_CHARACTERS",
+            )
+            trim_index = next(
+                (
+                    index
+                    for prefix in optional_prefixes
+                    for index, message in enumerate(fitted)
+                    if message.get("role") == "system"
+                    and message.get("content", "").startswith(prefix)
+                ),
+                None,
+            )
+            if trim_index is not None:
+                fitted.pop(trim_index)
+                continue
+            if fail_on_token_overflow:
+                raise PromptBudgetExceeded(
+                    estimated_tokens=estimate_tokens(prompt_text),
+                    token_budget=token_budget,
+                )
             break
         history_indices = [
             index
@@ -956,12 +1003,20 @@ def rp_story_memory_block(
     max_chars: int,
     rp_contract_revision: int = 0,
 ) -> str:
+    coverage_rule = ""
+    if rp_contract_revision >= 7:
+        covered_through = int(snapshot.get("to_turn_id") or 0)
+        coverage_rule = (
+            f"covered_through_turn_id={covered_through}\n"
+            f"Raw turn pairs after {covered_through} are newer and override this snapshot on conflict.\n"
+        )
     return (
         "RP_STORY_MEMORY\n"
         "This is the bounded living continuity ledger for this RP party. It may summarize confirmed facts, character "
         "arcs, possessions, projects, active and resolved threads, unresolved hooks, and chronology. Use it to preserve "
         "long-range continuity, but treat current canonical state and AUTHORITATIVE_OUTCOME as higher authority. Do not "
         "turn uncertainty into fact and do not assume omitted detail was erased.\n"
+        f"{coverage_rule}"
         f"{story_memory_prompt_text(snapshot, max_chars, rp_contract_revision)}"
     )
 

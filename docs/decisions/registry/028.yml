@@ -1,0 +1,24 @@
+- requirement: "Revision 7 narrator prompt contains every complete non-excluded raw pair newer than effective RP story-memory coverage"
+  level: каркас
+  store: "rp_story_memory_snapshots, turns and recorded prompt_json"
+  assertion: prompt_presence
+  expectation: revision7_complete_uncovered_tail_reaches_provider_prompt
+  probe_command: null
+  expected: null
+  waiver: "Focused offline coverage is part of PR1; deployed provider-prompt evidence and live source-hash proof remain pending."
+- requirement: "A required revision 7 prompt that remains over budget after bounded force-refresh never calls narrator or mutates the player turn"
+  level: каркас
+  store: "turn_requests, audit_events, state_versions, turns and relationship projections"
+  assertion: absence
+  expectation: revision7_hard_overflow_fails_before_narrator_and_turn_mutation
+  probe_command: null
+  expected: null
+  waiver: "Focused fail-before-provider coverage is part of PR1; deployed negative evidence remains pending."
+- requirement: "Ordinary party revision equals the persisted minimum of WorldPack declaration and explicit observed revision without auto-migrating existing parties"
+  level: каркас
+  store: "parties, party_branches and Gateway runtime settings"
+  assertion: projection
+  expectation: revision7_party_stamp_is_persisted_and_existing_parties_remain_pinned
+  probe_command: null
+  expected: null
+  waiver: "Focused API, SQLite and settings coverage is part of PR1; deployed runtime evidence remains pending."

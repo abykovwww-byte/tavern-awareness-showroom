@@ -6,7 +6,7 @@ const htmlSource = fs.readFileSync(require.resolve("./index.html"), "utf8");
 
 assert.match(
   htmlSource,
-  /id="adminAutotestRevisionInput"[^>]*type="number"[^>]*min="0"[^>]*max="6"/,
+  /id="adminAutotestRevisionInput"[^>]*type="number"[^>]*min="0"[^>]*max="7"/,
   "autotest form must expose the bounded candidate revision",
 );
 assert.match(

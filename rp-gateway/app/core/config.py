@@ -6,6 +6,9 @@ import os
 from dataclasses import dataclass
 
 
+RP_CONTRACT_MAX_REVISION = 7
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:

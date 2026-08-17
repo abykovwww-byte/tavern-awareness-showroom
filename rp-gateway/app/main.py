@@ -2772,13 +2772,18 @@ def party_chat_request(
     provider: str | None = None,
     narrator_settings: dict[str, Any] | None = None,
 ) -> ChatCompletionRequest:
-    memory = store.latest_memory_coverage()
+    revision_seven_rp = settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+    story_memory = store.effective_rp_story_memory() if revision_seven_rp else None
+    memory = story_memory if revision_seven_rp else store.latest_memory_coverage()
     covered_through = int(memory["to_turn_id"]) if memory else 0
     all_turns = store.turns_for_memory()
     turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
-    current_message_tokens = estimate_tokens(request.content)
-    history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
-    overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
+    if revision_seven_rp:
+        overflow_turns, raw_turns = [], turns
+    else:
+        current_message_tokens = estimate_tokens(request.content)
+        history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
+        overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
     messages: list[ChatMessage] = []
     lore_block = party_lore_cards_block(
         store.lore_cards_for_prompt(
@@ -2819,6 +2824,10 @@ def party_chat_request(
         len(str(turn.get("player_message") or "")) + len(str(turn.get("narrative_response") or ""))
         for turn in all_turns
     )
+    chat_request._latest_player_action = request.content
+    if revision_seven_rp:
+        chat_request._rp_story_memory_snapshot_id = int(story_memory["id"]) if story_memory else None
+        chat_request._rp_story_memory_covered_through_turn_id = covered_through
     if provider and narrator_settings:
         apply_party_narrator_settings(chat_request, provider, model, narrator_settings)
     return chat_request
