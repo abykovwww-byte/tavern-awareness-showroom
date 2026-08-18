@@ -2,9 +2,10 @@
 
 **Дата:** 2026-08-17
 
-**Статус:** PR1 local candidate. Этот план задаёт порядок поставки, но не
+**Статус:** PR1 source slice merged и применён; canary-plumbing follow-up и
+revision-7 live proof ещё не завершены. Этот план задаёт порядок поставки, но не
 активирует revision `7`, не мигрирует существующие партии и не подтверждает
-deploy/live readiness. В PR1 принят только
+live readiness. В PR1 принят только
 [Decision 028](../decisions/028-rp-uncovered-tail-and-overflow.md).
 
 ## Цель
@@ -145,7 +146,9 @@ Offline regressions обязаны доказать:
 checkpoint/autotest branch. Нужно сопоставить effective snapshot, eligible turn
 IDs, recorded `prompt_json`, narrator attempt, state version и неизменные hashes
 source party. Только этот store-to-prompt proof позволяет поднять Decision 028 до
-`подключено`.
+`подключено`. Canary runner или Light GUI должны явно запросить revision `7` и
+проверить revision созданной branch; унаследованная revision `6` означает ошибку
+plumbing, а не результат проверки DC1.
 
 ## Последующие gates
 

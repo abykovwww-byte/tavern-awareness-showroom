@@ -33,11 +33,16 @@ powershell.exe -File scripts/run-rp-stack-evals.ps1 `
   -PlayerModelProfileId <profile-id> `
   -PlayerPrompt "Take the next in-world action only." `
   -TurnCount 1 `
+  -RpContractRevision 7 `
   -SemanticResponsesFile <provider-canary-saved-responses.json> `
   -ConfirmProviderRun
 ```
 
-The canary requires the explicit `-ConfirmProviderRun` switch, allows at most five turns from this runner, never records the cookie, and requests stop if its bounded poll timeout expires.
+The canary requires the explicit `-ConfirmProviderRun` switch, allows at most
+five turns from this runner, never records the cookie, and requests stop if its
+bounded poll timeout expires. When testing a candidate above the observed
+revision, pass `-RpContractRevision` explicitly. The report records both
+requested and effective branch revisions and fails if they differ.
 Each `-SemanticResponsesFile` must identify `source.producer` as
 `provider-canary`; pass the parameter more than once for repeated runs. The
 report includes every separate metric and its min/max spread across repeats.

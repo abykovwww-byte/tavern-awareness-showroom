@@ -2703,8 +2703,8 @@ async function createAdminAutotest(event) {
   }
   const revisionText = els.adminAutotestRevisionInput.value.trim();
   const candidateRevision = revisionText === "" ? undefined : Number(revisionText);
-  if (candidateRevision !== undefined && (!Number.isInteger(candidateRevision) || candidateRevision < 0 || candidateRevision > 6)) {
-    showToast("Candidate revision RP-контракта должна быть от 0 до 6.");
+  if (candidateRevision !== undefined && (!Number.isInteger(candidateRevision) || candidateRevision < 0 || candidateRevision > 7)) {
+    showToast("Candidate revision RP-контракта должна быть от 0 до 7.");
     return;
   }
   try {

@@ -9,9 +9,9 @@
 только первый delivery slice.
 
 **Delivery status:** `каркас`. Контракт зарегистрирован в
-[`registry/028.yml`](registry/028.yml), source и focused offline regressions
-относятся только к candidate revision `7`. Merge, apply, provider-canary и
-live-store proof ещё не подтверждены. Observed revision остаётся `6`.
+[`registry/028.yml`](registry/028.yml); source slice PR #54 merged и применён на
+`abykovserv`, offline и container checks зелёные. Canary-plumbing follow-up и
+revision-7 live-store proof ещё не завершены. Observed revision остаётся `6`.
 
 ## Context
 
@@ -100,6 +100,9 @@ snapshot advance/rollback races, zero narrator call и отсутствие play
 `Подключено` возможно только после deployed canary на изолированной Merchant
 checkpoint/autotest branch. Recorded prompt должен содержать все и только полные
 пары после нового coverage; source-party raw/state hashes обязаны совпасть.
+Запрос обязан явно передать `rp_contract_revision: 7`, а созданная branch —
+вернуть и сохранить revision `7`; наследование source revision `6` не является
+evidence этого решения.
 
 ## Consequences
 

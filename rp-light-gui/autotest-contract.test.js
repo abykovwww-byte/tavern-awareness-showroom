@@ -16,6 +16,21 @@ assert.match(
 );
 assert.match(
   appSource,
+  /candidateRevision > 7/,
+  "the client validator must accept revision 7",
+);
+assert.doesNotMatch(
+  appSource,
+  /candidateRevision > 6/,
+  "the stale revision-6 ceiling must not remain in the client",
+);
+assert.match(
+  appSource,
+  /Candidate revision RP-контракта должна быть от 0 до 7\./,
+  "the client validation message must match the supported range",
+);
+assert.match(
+  appSource,
   /rp_contract_revision: candidateRevision/,
   "autotest payload must pass the requested candidate revision",
 );

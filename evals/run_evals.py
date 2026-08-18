@@ -197,18 +197,26 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
     history_hash_before = canonical_hash(source_history_before)
     state_hash_before = canonical_hash(source_state_before)
 
+    create_payload = {
+        "source_party_id": args.source_party_id,
+        "player_prompt": args.player_prompt,
+        "turn_count": args.turn_count,
+        "player_model_profile_id": args.player_model_profile_id,
+    }
+    if args.rp_contract_revision is not None:
+        create_payload["rp_contract_revision"] = args.rp_contract_revision
     created = client.request(
         "POST",
         "/api/admin/autotests",
-        {
-            "source_party_id": args.source_party_id,
-            "player_prompt": args.player_prompt,
-            "turn_count": args.turn_count,
-            "player_model_profile_id": args.player_model_profile_id,
-        },
+        create_payload,
     )
     run_id = created["run"]["id"]
     branch_id = created["branch"]["id"]
+    effective_rp_contract_revision = created["branch"].get("rp_contract_revision")
+    revision_matched = (
+        args.rp_contract_revision is None
+        or effective_rp_contract_revision == args.rp_contract_revision
+    )
     deadline = time.monotonic() + args.timeout_seconds
     run: dict[str, Any] = created["run"]
     timed_out = False
@@ -249,7 +257,9 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
         not timed_out
         and run.get("status") == "completed"
         and run.get("completed_turns") == args.turn_count
+        and int(run.get("fallback_turns") or 0) == 0
         and source_unchanged
+        and revision_matched
         and all(report["passed"] for report in semantic_runs)
     )
     metric_spread = {
@@ -270,6 +280,9 @@ def provider_canary(args: argparse.Namespace) -> dict[str, Any]:
         "source_history_hash_after": history_hash_after,
         "source_state_hash_before": state_hash_before,
         "source_state_hash_after": state_hash_after,
+        "requested_rp_contract_revision": args.rp_contract_revision,
+        "effective_rp_contract_revision": effective_rp_contract_revision,
+        "rp_contract_revision_matched": revision_matched,
         "branch_id": branch_id,
         "run": selected_run,
         "semantic_acceptance": {
@@ -354,6 +367,7 @@ def parse_args() -> argparse.Namespace:
     canary.add_argument("--player-model-profile-id", required=True)
     canary.add_argument("--player-prompt", required=True)
     canary.add_argument("--turn-count", type=int, default=1)
+    canary.add_argument("--rp-contract-revision", type=int, choices=range(0, 8))
     canary.add_argument("--timeout-seconds", type=int, choices=range(30, 901), default=300)
     canary.add_argument("--poll-seconds", type=float, default=2.0)
     canary.add_argument("--confirm-provider-run", action="store_true")
