@@ -62,7 +62,14 @@ class WorldInstructor:
         verb = verb.lower()
         if verb in {"apply", "confirm"}:
             proposal_id = rest.strip() or "latest"
-            state = self.store.apply_pending_patch(proposal_id, reason=f"world_apply:{request_id}")
+            state = self.store.apply_pending_patch(
+                proposal_id,
+                reason=f"world_apply:{request_id}",
+                scene_state_enabled=(
+                    self.settings.scenario_type == "rp"
+                    and self.settings.rp_contract_revision >= 7
+                ),
+            )
             self.store.audit("world_apply", {"proposal_id": proposal_id, "state_version": state["meta"]["state_version"]}, request_id)
             return self.chat_response(
                 f"World patch applied: {state['last_turn']['state_patch_id']}\nState version: {state['meta']['state_version']}",
@@ -74,7 +81,12 @@ class WorldInstructor:
             self.store.audit("world_discard", {"proposal_id": discarded}, request_id)
             return self.chat_response(f"World proposal discarded: {discarded}", model)
         if verb in {"rollback", "undo"}:
-            state = self.store.rollback()
+            state = self.store.rollback(
+                scene_state_enabled=(
+                    self.settings.scenario_type == "rp"
+                    and self.settings.rp_contract_revision >= 7
+                )
+            )
             self.store.audit("world_rollback", {"state_version": state["meta"]["state_version"]}, request_id)
             return self.chat_response(f"World state rolled back.\nState version: {state['meta']['state_version']}", model)
         if verb in {"show", "state", "status"}:

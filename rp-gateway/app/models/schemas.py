@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
@@ -86,6 +86,76 @@ class Intent(BaseModel):
     resource_amount: float = 1.0
 
 
+class SceneAllowance(BaseModel):
+    """Finite scene transitions authorized before narrator generation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    current_location_id: str = Field(default="unknown", min_length=1, max_length=128)
+    allowed_destination_ids: list[str] = Field(default_factory=list, max_length=64)
+    allowed_arrival_ids: list[str] = Field(default_factory=list, max_length=64)
+    allowed_departure_ids: list[str] = Field(default_factory=list, max_length=64)
+    stable_affiliations: dict[str, str] = Field(default_factory=dict, max_length=64)
+    character_aliases: dict[str, list[str]] = Field(default_factory=dict, max_length=64)
+
+
+class SceneClaims(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    location_id: str = Field(min_length=1, max_length=128)
+    present_character_ids: list[str] = Field(max_length=64)
+
+    @field_validator("present_character_ids")
+    @classmethod
+    def validate_present_character_ids(cls, value: list[str]) -> list[str]:
+        if any(not item or len(item) > 128 for item in value):
+            raise ValueError("present_character_ids must contain IDs with 1..128 characters")
+        if value != sorted(set(value)):
+            raise ValueError("present_character_ids must be sorted and unique")
+        return value
+
+
+class MovePlayerSceneOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["move_player"]
+    location_id: str = Field(min_length=1, max_length=128)
+    evidence: str = Field(min_length=1, max_length=512)
+
+
+class CharacterArriveSceneOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["character_arrive"]
+    character_id: str = Field(min_length=1, max_length=128)
+    location_id: str = Field(min_length=1, max_length=128)
+    evidence: str = Field(min_length=1, max_length=512)
+
+
+class CharacterDepartSceneOperation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    type: Literal["character_depart"]
+    character_id: str = Field(min_length=1, max_length=128)
+    location_id: str = Field(min_length=1, max_length=128)
+    evidence: str = Field(min_length=1, max_length=512)
+
+
+SceneOperation = Annotated[
+    MovePlayerSceneOperation | CharacterArriveSceneOperation | CharacterDepartSceneOperation,
+    Field(discriminator="type"),
+]
+
+
+class RPNarratorBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["rp-gateway.rp-narrator-bundle.v1"]
+    narrative_text: str = Field(min_length=1, max_length=200_000)
+    scene_claims: SceneClaims
+    scene_delta: list[SceneOperation] = Field(max_length=16)
+
+
 class Outcome(BaseModel):
     check_id: str
     action_type: CheckType
@@ -100,6 +170,7 @@ class Outcome(BaseModel):
     consequences: list[str] = Field(default_factory=list)
     forbidden_reinterpretations: list[str] = Field(default_factory=list)
     authoritative_block: str
+    scene_allowance: SceneAllowance | None = Field(default=None, exclude=True)
 
 
 class PatchOperation(BaseModel):

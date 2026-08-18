@@ -21,7 +21,7 @@ from app.services.context_estimator import estimate_party_context
 from app.services.narrative import PromptBudgetExceeded, fit_messages_to_context, response_text
 from app.services.prompt_tools import PromptInspector
 from app.services.rp_story_memory import RPStoryMemoryUpdater, empty_story_memory
-from app.services.state_store import StateStore
+from app.services.state_store import StateStore, StateVersionConflict
 from test_gateway import client, create_demo_party, write_worldpack
 
 
@@ -166,6 +166,26 @@ def make_story_store(tmp_path: Path) -> StateStore:
     )
 
 
+def seed_known_scene_location(store: StateStore) -> None:
+    state = store.get_state()
+    state["player"]["location"] = "test-location"
+    state["locations"] = {"test-location": {"name": "Test location"}}
+    with store.connect() as connection:
+        connection.execute(
+            """
+            UPDATE state_versions
+            SET state_json = ?
+            WHERE campaign_id = ? AND version = ?
+            """,
+            (
+                json.dumps(state, ensure_ascii=False),
+                store.campaign_id,
+                int(state["meta"]["state_version"]),
+            ),
+        )
+    store.write_state_file(state)
+
+
 def record_story_turns(store: StateStore, count: int) -> None:
     for party_turn in range(1, count + 1):
         store.record_turn(
@@ -211,6 +231,7 @@ def revision_seven_overflow_adjudicator(
         campaign_id,
         str(tmp_path / f"{campaign_id}-state.json"),
     )
+    seed_known_scene_location(store)
     for party_turn in range(1, 4):
         store.record_turn(
             f"existing-turn-{party_turn}",
@@ -319,7 +340,12 @@ def test_revision_seven_raw_tail_follows_effective_story_memory_coverage(tmp_pat
         ("assistant", "Narrator consequence 3"),
         ("user", "Current player action"),
     ]
-    retrieval = next(message.content for message in request.messages if message.role == "system")
+    retrieval = next(
+        message.content
+        for message in request.messages
+        if message.role == "system"
+        and message.content.startswith("RETRIEVED_ARCHIVE_SCENES")
+    )
     assert "Player action 1" in retrieval
     assert "Player action 2" not in retrieval
     assert request._latest_player_action == "Current player action"
@@ -445,7 +471,15 @@ def test_adjudicator_refreshes_lagging_story_memory_once_before_narration_and_co
     assert catch_up_results[0]["batches"] == 1
     assert catch_up_results[0]["coverage_before"] == 1
     assert catch_up_results[0]["coverage_after"] == 3
-    assert provider_requests == [(3, [("user", "Current player action")])]
+    assert len(provider_requests) == 1
+    assert provider_requests[0][0] == 3
+    assert [message for message in provider_requests[0][1] if message[0] != "system"] == [
+        ("user", "Current player action")
+    ]
+    assert any(
+        role == "system" and content.startswith("SCENE_STATE_BOUNDARY")
+        for role, content in provider_requests[0][1]
+    )
     assert request._rp_story_memory_snapshot_id == store.effective_rp_story_memory()["id"]
     assert response_text(result)
     assert campaign_table_count(store, "turns") == turns_before + 1
@@ -464,7 +498,7 @@ def test_adjudicator_rebuilds_after_each_forced_batch_and_stops_when_prompt_fits
         tmp_path,
         campaign_id="overflow-refresh-incremental",
         story_batch_tokens=1,
-        context_tokens=4_000,
+        context_tokens=4_500,
     )
     assert adjudicator.rp_story_memory is not None
     catch_up_results: list[dict] = []
@@ -512,16 +546,17 @@ def test_adjudicator_rebuilds_after_each_forced_batch_and_stops_when_prompt_fits
     assert catch_up_results[0]["batches"] == 1
     assert catch_up_results[0]["coverage_before"] == 1
     assert catch_up_results[0]["coverage_after"] == 2
-    assert provider_requests == [
-        (
-            2,
-            [
-                ("user", "Player action 3 " + "x " * 1_200),
-                ("assistant", "Narrator consequence 3 " + "y " * 1_200),
-                ("user", "Current player action"),
-            ],
-        )
+    assert len(provider_requests) == 1
+    assert provider_requests[0][0] == 2
+    assert [message for message in provider_requests[0][1] if message[0] != "system"] == [
+        ("user", "Player action 3 " + "x " * 1_200),
+        ("assistant", "Narrator consequence 3 " + "y " * 1_200),
+        ("user", "Current player action"),
     ]
+    assert any(
+        role == "system" and content.startswith("SCENE_STATE_BOUNDARY")
+        for role, content in provider_requests[0][1]
+    )
 
 
 def test_adjudicator_rejects_second_overflow_without_narration_or_projection_changes(
@@ -808,20 +843,21 @@ def test_adjudicator_rebuilds_when_story_snapshot_advances_before_narrator(
     )
 
     assert assembly_calls >= 3
-    assert provider_requests == [
-        (
-            2,
-            [
-                ("user", "Player action 3 " + "x " * 1_200),
-                ("assistant", "Narrator consequence 3 " + "y " * 1_200),
-                ("user", "Current player action"),
-            ],
-        )
+    assert len(provider_requests) == 1
+    assert provider_requests[0][0] == 2
+    assert [message for message in provider_requests[0][1] if message[0] != "system"] == [
+        ("user", "Player action 3 " + "x " * 1_200),
+        ("assistant", "Narrator consequence 3 " + "y " * 1_200),
+        ("user", "Current player action"),
     ]
+    assert any(
+        role == "system" and content.startswith("SCENE_STATE_BOUNDARY")
+        for role, content in provider_requests[0][1]
+    )
     assert request._rp_story_memory_snapshot_id == store.effective_rp_story_memory()["id"]
 
 
-def test_adjudicator_rechecks_budget_after_story_snapshot_is_invalidated(
+def test_adjudicator_fails_before_provider_when_state_changes_during_assembly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -849,6 +885,7 @@ def test_adjudicator_rechecks_budget_after_story_snapshot_is_invalidated(
         campaign_id,
         str(tmp_path / f"{campaign_id}-state.json"),
     )
+    seed_known_scene_location(store)
     store.record_turn(
         "kept-turn",
         "kept-request",
@@ -919,21 +956,28 @@ def test_adjudicator_rechecks_budget_after_story_snapshot_is_invalidated(
         PartyMessageRequest(content="Current player action"),
         settings,
     )
+    turns_before = campaign_table_count(store, "turns")
+    versions_before = campaign_table_count(store, "state_versions")
 
-    result = asyncio.run(
-        adjudicator.handle_chat(
-            request,
-            authorization=None,
-            idempotency_key="snapshot-rollback-before-narrator",
-            request_id="req-snapshot-rollback-before-narrator",
+    with pytest.raises(StateVersionConflict):
+        asyncio.run(
+            adjudicator.handle_chat(
+                request,
+                authorization=None,
+                idempotency_key="snapshot-rollback-before-narrator",
+                request_id="req-snapshot-rollback-before-narrator",
+            )
         )
-    )
 
     assert len(catch_up_results) == 1
     assert catch_up_results[0]["coverage_before"] == 0
     assert catch_up_results[0]["coverage_after"] == 1
     assert assembly_calls >= 2
-    assert provider_requests == [(1, [("user", "Current player action")])]
-    assert response_text(result)
+    assert provider_requests == []
+    assert campaign_table_count(store, "turns") == turns_before
+    assert campaign_table_count(store, "state_versions") == versions_before + 1
+    saved_request = store.get_turn_request("req-snapshot-rollback-before-narrator")
+    assert saved_request is not None
+    assert saved_request["status"] == "failed"
     assert request._rp_story_memory_snapshot_id == store.effective_rp_story_memory()["id"]
     assert request._rp_story_memory_covered_through_turn_id == 1

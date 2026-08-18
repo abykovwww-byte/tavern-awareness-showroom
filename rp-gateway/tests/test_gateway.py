@@ -4214,6 +4214,94 @@ def test_narrative_retries_provider_rejection_with_configured_fallback(
     assert response["choices"][0]["message"]["content"] == "Fallback scene."
 
 
+@pytest.mark.parametrize("fallback_succeeds", [True, False])
+def test_narrative_retries_network_error_with_configured_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    fallback_succeeds: bool,
+) -> None:
+    attempted_models: list[str] = []
+    trace_attempts: list[dict[str, object]] = []
+
+    class NetworkFallbackAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "NetworkFallbackAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            attempted_models.append(str(payload["model"]))
+            request = httpx.Request("POST", url)
+            if len(attempted_models) == 1 or not fallback_succeeds:
+                raise httpx.ConnectError("provider network unavailable", request=request)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": "Fallback scene."}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", NetworkFallbackAsyncClient)
+    settings = Settings(
+        nvidia_api_base="https://provider.example/v1",
+        nvidia_api_key="test-key",
+        narrative_model="primary/model",
+        nvidia_fallback_models=("fallback/model",),
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    outcome = Outcome(
+        check_id="network-fallback",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: success.",
+    )
+    narrative = NarrativeClient(settings, trace_attempts.append)
+
+    if fallback_succeeds:
+        response = asyncio.run(
+            narrative.complete(
+                request,
+                base_state(),
+                outcome,
+                None,
+                request_id="req-network-fallback",
+            )
+        )
+        assert response["choices"][0]["message"]["content"] == "Fallback scene."
+        assert [attempt["status"] for attempt in trace_attempts] == ["failed", "completed"]
+    else:
+        with pytest.raises(httpx.ConnectError):
+            asyncio.run(
+                narrative.complete(
+                    request,
+                    base_state(),
+                    outcome,
+                    None,
+                    request_id="req-network-fallback",
+                )
+            )
+        assert [attempt["status"] for attempt in trace_attempts] == ["failed", "failed"]
+
+    assert attempted_models == ["primary/model", "fallback/model"]
+    assert [attempt["model"] for attempt in trace_attempts] == attempted_models
+
+
 def test_repair_prompt_is_compact_and_does_not_replay_party_history():
     settings = Settings(
         llm_provider="openrouter",

@@ -52,6 +52,8 @@ SYSTEM_BLOCK_IDS = (
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
     ("ACTIVE_TRAINING_TURN_CONTRACT", "training_turn_contract"),
     ("TRAINING_INTERACTION_CONTRACT", "training_interaction_contract"),
+    ("SCENE_STATE_CONTRACT", "scene_state_contract"),
+    ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
 )
 
 
@@ -97,6 +99,7 @@ def make_store(tmp_path: Path, campaign_id: str, *, turn: int) -> StateStore:
     state["meta"]["turn"] = turn
     state["player"]["known_world_facts"] = ["PRIVATE_STATE_VALUE"]
     state["characters"]["advisor"]["name"] = "PRIVATE_CHARACTER_NAME"
+    state["locations"]["court"] = {"name": "Court"}
     state_path = tmp_path / f"{campaign_id}-state.json"
     state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     return StateStore(str(tmp_path / f"{campaign_id}.db"), campaign_id, str(state_path))

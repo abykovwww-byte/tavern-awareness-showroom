@@ -41,6 +41,11 @@ def snapshot_adjudicator(
         campaign_id,
         str(tmp_path / f"{campaign_id}-state.json"),
     )
+    known_scene_state = store.get_state()
+    known_scene_state["meta"]["state_version"] = 2
+    known_scene_state["player"]["location"] = "test-location"
+    known_scene_state["locations"] = {"test-location": {"name": "Test location"}}
+    store.insert_state_version(known_scene_state, reason="test:known-scene-location")
     for party_turn in range(1, turn_count + 1):
         store.record_turn(
             f"existing-turn-{party_turn}",

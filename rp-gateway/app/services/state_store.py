@@ -13,11 +13,16 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from app.core.json_patch import apply_patch
-from app.models.schemas import StatePatch
+from app.models.schemas import PatchOperation, StatePatch
+from app.services.scene_state import initial_scene_state, mark_scene_stale
 from app.services.trace_redaction import redact_trace_value
 
 
 logger = logging.getLogger(__name__)
+
+
+class StateVersionConflict(RuntimeError):
+    """A generated turn was based on a state version that is no longer current."""
 
 
 def now_ts() -> int:
@@ -1141,8 +1146,8 @@ class StateStore:
                             INSERT INTO turns(
                                 campaign_id, idempotency_key, request_id, player_message,
                                 narrative_response, response_json, prompt_json, metadata_json,
-                                state_version, party_turn, created_at
-                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                state_version, party_turn, excluded_from_memory, created_at
+                            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 target_campaign_id,
@@ -1155,6 +1160,7 @@ class StateStore:
                                 row["metadata_json"],
                                 row["state_version"],
                                 row["party_turn"],
+                                row["excluded_from_memory"],
                                 row["created_at"],
                             ),
                         )
@@ -1367,6 +1373,37 @@ class StateStore:
 
     def bootstrap_state(self) -> None:
         if self.current_version() is not None:
+            authoritative = self.get_state()
+            authoritative_version = int(
+                (authoritative.get("meta") or {}).get("state_version") or 0
+            )
+            recover_mirror = not self.state_path.exists()
+            if not recover_mirror:
+                try:
+                    mirrored = json.loads(self.state_path.read_text(encoding="utf-8"))
+                    mirrored_meta = mirrored.get("meta") if isinstance(mirrored, dict) else None
+                    mirrored_version = (
+                        mirrored_meta.get("state_version")
+                        if isinstance(mirrored_meta, dict)
+                        else None
+                    )
+                    recover_mirror = (
+                        not isinstance(mirrored_version, int)
+                        or isinstance(mirrored_version, bool)
+                        or mirrored_version != authoritative_version
+                        or mirrored_meta.get("campaign_id") != self.campaign_id
+                    )
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    recover_mirror = True
+            if recover_mirror:
+                try:
+                    self.write_state_file(authoritative)
+                except OSError as exc:
+                    logger.warning(
+                        "state_mirror_recovery_failed campaign_id=%s error=%s",
+                        self.campaign_id,
+                        f"{type(exc).__name__}: {exc}",
+                    )
             return
         if self.state_path.exists():
             state = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -1620,19 +1657,22 @@ class StateStore:
         after_turn_id: int = 0,
         to_turn_id: int | None = None,
         limit: int | None = None,
+        include_noncanonical_fallback: bool = False,
     ) -> list[dict[str, Any]]:
         query = """
             SELECT id, request_id, player_message, narrative_response,
-                   state_version, party_turn, metadata_json, created_at
+                   state_version, party_turn, metadata_json, excluded_from_memory, created_at
             FROM turns
-            WHERE campaign_id = ? AND id > ? AND excluded_from_memory = 0
+            WHERE campaign_id = ? AND id > ?
         """
         params: list[Any] = [self.campaign_id, after_turn_id]
+        if not include_noncanonical_fallback:
+            query += " AND excluded_from_memory = 0"
         if to_turn_id is not None:
             query += " AND id <= ?"
             params.append(to_turn_id)
         query += " ORDER BY id ASC"
-        if limit is not None:
+        if limit is not None and not include_noncanonical_fallback:
             query += " LIMIT ?"
             params.append(limit)
         with self.connect() as connection:
@@ -1646,7 +1686,20 @@ class StateStore:
             except (TypeError, json.JSONDecodeError):
                 metadata = {}
             turn["metadata"] = metadata if isinstance(metadata, dict) else {}
+            excluded = bool(turn.pop("excluded_from_memory", 0))
+            noncanonical_fallback = bool(
+                turn["metadata"].get("fallback")
+                and turn["metadata"].get("story_memory_canonical") is False
+                and turn["metadata"].get("rollback_excluded") is not True
+            )
+            if excluded and not (include_noncanonical_fallback and noncanonical_fallback):
+                continue
+            if excluded and noncanonical_fallback and include_noncanonical_fallback:
+                turn["narrative_response"] = "NON_CANONICAL_SAFE_FALLBACK"
+                turn["noncanonical_safe_fallback"] = True
             turns.append(turn)
+            if include_noncanonical_fallback and limit is not None and len(turns) >= limit:
+                break
         return turns
 
     def search_archived_turns(self, query: str, through_turn_id: int, limit: int = 3) -> list[dict[str, Any]]:
@@ -1675,9 +1728,9 @@ class StateStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, player_message, narrative_response, state_version
+                SELECT id, player_message, narrative_response, state_version, metadata_json
                 FROM turns
-                WHERE campaign_id = ? AND id <= ?
+                WHERE campaign_id = ? AND id <= ? AND excluded_from_memory = 0
                 ORDER BY id DESC
                 """,
                 (self.campaign_id, through_turn_id),
@@ -1688,6 +1741,13 @@ class StateStore:
         newest_turn_id = int(rows[0]["id"]) if rows else through_turn_id
         for row in rows:
             item = dict(row)
+            raw_metadata = item.pop("metadata_json", None)
+            try:
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if isinstance(metadata, dict) and metadata.get("story_memory_canonical") is False:
+                continue
             text = f"{item['player_message']}\n{item['narrative_response']}".lower()
             text_tokens = archive_word_tokens(text)
             text_stems = {archive_stem(token) for token in text_tokens}
@@ -2142,14 +2202,86 @@ class StateStore:
             "model": row["model"],
         }
 
-    def preview_patch(self, patch: StatePatch) -> dict[str, Any]:
+    def preview_patch(
+        self,
+        patch: StatePatch,
+        *,
+        scene_state_enabled: bool = False,
+        trusted_internal: bool = False,
+    ) -> dict[str, Any]:
         state = self.get_state()
+        if not trusted_internal:
+            patch = self.scene_safe_external_patch(
+                state,
+                patch,
+                scene_state_enabled=scene_state_enabled,
+            )
         operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
         return apply_patch(state, operations)
+
+    @staticmethod
+    def scene_sensitive_patch_path(path: str) -> bool:
+        if path == "/player" or path == "/player/location":
+            return True
+        if path == "/locations" or path.startswith("/locations/"):
+            return True
+        if path == "/factions" or path.startswith("/factions/"):
+            return True
+        if path == "/characters":
+            return True
+        if not path.startswith("/characters/"):
+            return False
+        parts = path.split("/")
+        if len(parts) == 3:
+            return True
+        return len(parts) >= 4 and parts[3] in {"location", "status", "loyalty"}
+
+    @classmethod
+    def scene_safe_external_patch(
+        cls,
+        state: dict[str, Any],
+        patch: StatePatch,
+        *,
+        scene_state_enabled: bool = False,
+    ) -> StatePatch:
+        if any(
+            operation.path == "/scene_state"
+            or operation.path.startswith("/scene_state/")
+            for operation in patch.patch
+        ):
+            raise ValueError("external patches cannot write scene_state")
+        if (
+            not scene_state_enabled
+            and "scene_state" not in state
+        ) or not any(
+            cls.scene_sensitive_patch_path(operation.path) for operation in patch.patch
+        ):
+            return patch
+        stale_scene = mark_scene_stale(state, "world_change")
+        return patch.model_copy(
+            update={
+                "patch": [
+                    *patch.patch,
+                    PatchOperation(
+                        op="replace" if "scene_state" in state else "add",
+                        path="/scene_state",
+                        value=stale_scene,
+                        reason="Scene projection becomes stale in the same external world change.",
+                        turn=patch.turn,
+                    ),
+                ]
+            }
+        )
 
     def create_patch_proposal(self, patch: StatePatch) -> str:
         if not patch.check_id:
             raise ValueError("patch.check_id is required for proposals")
+        if any(
+            operation.path == "/scene_state"
+            or operation.path.startswith("/scene_state/")
+            for operation in patch.patch
+        ):
+            raise ValueError("external patches cannot write scene_state")
         with self.connect() as connection:
             connection.execute(
                 """
@@ -2246,7 +2378,13 @@ class StateStore:
             )
             return str(row["check_id"])
 
-    def apply_pending_patch(self, proposal_id: str = "latest", reason: str = "world_instruction_apply") -> dict[str, Any]:
+    def apply_pending_patch(
+        self,
+        proposal_id: str = "latest",
+        reason: str = "world_instruction_apply",
+        *,
+        scene_state_enabled: bool = False,
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             if proposal_id == "latest":
                 row = connection.execute(
@@ -2299,6 +2437,11 @@ class StateStore:
                 if existing:
                     raise ValueError(f"patch for check_id {patch.check_id} is already applied")
 
+            patch = self.scene_safe_external_patch(
+                state,
+                patch,
+                scene_state_enabled=scene_state_enabled,
+            )
             operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
             candidate = apply_patch(state, operations)
             candidate.setdefault("meta", {})
@@ -2312,10 +2455,10 @@ class StateStore:
             connection.execute(
                 """
                 UPDATE state_patches
-                SET applied = 1, applied_at = ?
+                SET patch_json = ?, applied = 1, applied_at = ?
                 WHERE id = ?
                 """,
-                (now_ts(), row["id"]),
+                (patch.model_dump_json(), now_ts(), row["id"]),
             )
             connection.execute(
                 """
@@ -2327,7 +2470,13 @@ class StateStore:
         self.write_state_file(candidate)
         return candidate
 
-    def apply_state_patch(self, patch: StatePatch, reason: str) -> dict[str, Any]:
+    def apply_state_patch(
+        self,
+        patch: StatePatch,
+        reason: str,
+        *,
+        scene_state_enabled: bool = False,
+    ) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
                 """
@@ -2352,6 +2501,11 @@ class StateStore:
                 if existing:
                     raise ValueError(f"patch for check_id {patch.check_id} is already applied")
 
+            patch = self.scene_safe_external_patch(
+                state,
+                patch,
+                scene_state_enabled=scene_state_enabled,
+            )
             operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
             candidate = apply_patch(state, operations)
             candidate.setdefault("meta", {})
@@ -2381,6 +2535,258 @@ class StateStore:
         self.write_state_file(candidate)
         return candidate
 
+    def commit_turn(
+        self,
+        patch: StatePatch,
+        *,
+        reason: str,
+        idempotency_key: str,
+        request_id: str,
+        player_message: str,
+        narrative_response: str,
+        response_json: dict[str, Any],
+        expected_state_version: int | None = None,
+        prompt_messages: list[dict[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        consumed_artifact_event_ids: list[int] | None = None,
+        workspace_files: list[dict[str, Any]] | None = None,
+        consumed_workspace_event_ids: list[int] | None = None,
+        party_turn: int | None = None,
+        audit_events: list[tuple[str, dict[str, Any]]] | None = None,
+        excluded_from_memory: bool = False,
+    ) -> tuple[dict[str, Any], int]:
+        """Commit all authoritative turn rows in one SQLite transaction."""
+
+        committed_state: dict[str, Any]
+        turn_id: int
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_turn = connection.execute(
+                "SELECT id, state_version FROM turns WHERE campaign_id = ? AND idempotency_key = ?",
+                (self.campaign_id, idempotency_key),
+            ).fetchone()
+            if existing_turn is not None:
+                state_row = connection.execute(
+                    "SELECT state_json FROM state_versions WHERE campaign_id = ? AND version = ?",
+                    (self.campaign_id, int(existing_turn["state_version"])),
+                ).fetchone()
+                if state_row is None:
+                    raise RuntimeError("committed turn points to a missing state version")
+                return json.loads(state_row["state_json"]), int(existing_turn["id"])
+
+            current = connection.execute(
+                """
+                SELECT state_json, version FROM state_versions
+                WHERE campaign_id = ? ORDER BY version DESC LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if current is None:
+                state = self.empty_state()
+                version = 0
+            else:
+                state = json.loads(current["state_json"])
+                version = int(current["version"])
+            if expected_state_version is not None and version != int(expected_state_version):
+                raise StateVersionConflict(
+                    f"state version changed during narration: expected {expected_state_version}, current {version}"
+                )
+            if patch.check_id:
+                duplicate = connection.execute(
+                    "SELECT 1 FROM state_patches WHERE campaign_id = ? AND check_id = ? AND applied = 1",
+                    (self.campaign_id, patch.check_id),
+                ).fetchone()
+                if duplicate is not None:
+                    raise ValueError(f"patch for check_id {patch.check_id} is already applied")
+
+            operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
+            committed_state = apply_patch(state, operations)
+            committed_state.setdefault("meta", {})
+            committed_state["meta"]["state_version"] = version + 1
+            committed_state["meta"]["turn"] = max(
+                int(committed_state["meta"].get("turn", 0)) + 1,
+                patch.turn,
+            )
+            committed_state["meta"]["last_updated"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            committed_state.setdefault("last_turn", {})
+            committed_state["last_turn"]["turn"] = committed_state["meta"]["turn"]
+            committed_state["last_turn"]["state_patch_id"] = (
+                patch.check_id or f"gateway-v{version + 1}"
+            )
+            actual_party_turn = (
+                int(party_turn)
+                if party_turn is not None
+                else int(committed_state["meta"]["turn"])
+            )
+            timestamp = now_ts()
+            connection.execute(
+                """
+                INSERT INTO state_patches(campaign_id, check_id, patch_json, applied, created_at, applied_at)
+                VALUES(?, ?, ?, 1, ?, ?)
+                """,
+                (self.campaign_id, patch.check_id, patch.model_dump_json(), timestamp, timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    version + 1,
+                    json.dumps(committed_state, ensure_ascii=False),
+                    timestamp,
+                    reason,
+                ),
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO turns(
+                    campaign_id, idempotency_key, request_id, player_message,
+                    narrative_response, response_json, prompt_json, metadata_json,
+                    state_version, party_turn, excluded_from_memory, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    idempotency_key,
+                    request_id,
+                    player_message,
+                    narrative_response,
+                    json.dumps(response_json, ensure_ascii=False),
+                    json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
+                    json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                    version + 1,
+                    actual_party_turn,
+                    int(bool(excluded_from_memory)),
+                    timestamp,
+                ),
+            )
+            turn_id = int(cursor.lastrowid)
+
+            for artifact in artifacts or []:
+                public = artifact.get("public") if isinstance(artifact, dict) else None
+                policy = artifact.get("policy") if isinstance(artifact, dict) else None
+                if not isinstance(public, dict) or not isinstance(policy, dict):
+                    raise ValueError("invalid training artifact persistence record")
+                connection.execute(
+                    """
+                    INSERT INTO training_artifacts(
+                        id, campaign_id, turn_id, artifact_key, artifact_revision,
+                        blueprint_id, public_json, policy_json, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        public["artifact_id"], self.campaign_id, turn_id,
+                        public["artifact_key"], int(public["artifact_revision"]),
+                        public["blueprint_id"], json.dumps(public, ensure_ascii=False),
+                        json.dumps(policy, ensure_ascii=False), timestamp,
+                    ),
+                )
+            for workspace_file in workspace_files or []:
+                public = workspace_file.get("public") if isinstance(workspace_file, dict) else None
+                policy = workspace_file.get("policy") if isinstance(workspace_file, dict) else None
+                if not isinstance(public, dict) or not isinstance(policy, dict):
+                    raise ValueError("invalid training workspace persistence record")
+                connection.execute(
+                    """
+                    INSERT INTO training_workspace_files(
+                        id, campaign_id, file_key, file_revision, blueprint_id, folder_id,
+                        turn_id, available_from_turn, available_until_turn, public_json,
+                        policy_json, materialized_turn, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(campaign_id, file_key, file_revision) DO NOTHING
+                    """,
+                    (
+                        public["file_id"], self.campaign_id, public["file_key"],
+                        int(public["file_revision"]), public["blueprint_id"], public["folder_id"],
+                        turn_id, int(public["available_from_turn"]), public.get("available_until_turn"),
+                        json.dumps(public, ensure_ascii=False), json.dumps(policy, ensure_ascii=False),
+                        int(public["materialized_turn"]), timestamp,
+                    ),
+                )
+            artifact_event_ids = [int(value) for value in consumed_artifact_event_ids or []]
+            if artifact_event_ids:
+                placeholders = ",".join("?" for _ in artifact_event_ids)
+                connection.execute(
+                    f"""
+                    UPDATE training_artifact_events SET consumed_turn_id = ?
+                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                    """,
+                    (turn_id, self.campaign_id, *artifact_event_ids),
+                )
+            workspace_event_ids = [int(value) for value in consumed_workspace_event_ids or []]
+            if workspace_event_ids:
+                placeholders = ",".join("?" for _ in workspace_event_ids)
+                connection.execute(
+                    f"""
+                    UPDATE training_workspace_events SET consumed_turn_id = ?
+                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                    """,
+                    (turn_id, self.campaign_id, *workspace_event_ids),
+                )
+            for event_type, payload in audit_events or []:
+                event_payload = dict(payload)
+                event_payload.setdefault("turn_id", turn_id)
+                connection.execute(
+                    """
+                    INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.campaign_id,
+                        request_id,
+                        str(event_type),
+                        json.dumps(event_payload, ensure_ascii=False),
+                        timestamp,
+                    ),
+                )
+            completed = connection.execute(
+                """
+                UPDATE turn_requests
+                SET status = 'completed', response_json = ?, error = NULL, updated_at = ?
+                WHERE campaign_id = ? AND idempotency_key = ? AND status = 'running'
+                """,
+                (
+                    json.dumps(response_json, ensure_ascii=False),
+                    timestamp,
+                    self.campaign_id,
+                    idempotency_key,
+                ),
+            )
+            if completed.rowcount != 1:
+                raise RuntimeError("turn request is not running at atomic commit")
+
+        try:
+            self.write_state_file(committed_state)
+        except OSError as exc:
+            logger.warning(
+                "state_mirror_write_failed campaign_id=%s request_id=%s error=%s",
+                self.campaign_id,
+                request_id,
+                f"{type(exc).__name__}: {exc}",
+            )
+            try:
+                self.audit(
+                    "state_mirror_write_failed",
+                    {
+                        "request_id": request_id,
+                        "state_version": committed_state["meta"]["state_version"],
+                        "error_type": type(exc).__name__,
+                    },
+                    request_id,
+                )
+            except sqlite3.Error:
+                logger.exception("state_mirror_failure_audit_failed request_id=%s", request_id)
+        try:
+            self.link_turn_diagnostics(turn_id, request_id, actual_party_turn)
+        except Exception:  # noqa: BLE001 - diagnostic linkage is post-commit best effort
+            logger.exception("turn_diagnostic_link_failed request_id=%s", request_id)
+        return committed_state, turn_id
+
     def insert_state_version(self, state: dict[str, Any], reason: str) -> None:
         version = int(state.get("meta", {}).get("state_version", 1))
         with self.connect() as connection:
@@ -2398,7 +2804,13 @@ class StateStore:
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, self.state_path)
 
-    def rollback(self, target_version: int | None = None) -> dict[str, Any]:
+    def rollback(
+        self,
+        target_version: int | None = None,
+        *,
+        scene_state_enabled: bool = False,
+    ) -> dict[str, Any]:
+        scene_state_enabled = scene_state_enabled or "scene_state" in self.get_state()
         with self.connect() as connection:
             if target_version is None:
                 current = self.current_version()
@@ -2410,6 +2822,8 @@ class StateStore:
             if row is None:
                 raise ValueError(f"state version not found: {target_version}")
             restored = json.loads(row["state_json"])
+            if scene_state_enabled and "scene_state" not in restored:
+                restored["scene_state"] = initial_scene_state(restored)
             latest = self.current_version() or target_version
             restored["meta"]["state_version"] = latest + 1
             restored["meta"]["turn"] = int(restored["meta"].get("turn", 0)) + 1
@@ -2440,7 +2854,6 @@ class StateStore:
                       SELECT 1
                       FROM turns AS turn_record
                       WHERE turn_record.campaign_id = snapshot.campaign_id
-                        AND turn_record.excluded_from_memory = 0
                         AND turn_record.state_version > ?
                         AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
                   )
@@ -2459,6 +2872,26 @@ class StateStore:
                 """,
                 (self.campaign_id, self.campaign_id, target_version),
             )
+            excluded_rows = connection.execute(
+                """
+                SELECT id, metadata_json FROM turns
+                WHERE campaign_id = ? AND state_version > ?
+                """,
+                (self.campaign_id, target_version),
+            ).fetchall()
+            for excluded_row in excluded_rows:
+                try:
+                    metadata = json.loads(excluded_row["metadata_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                metadata["rollback_excluded"] = True
+                metadata["memory_exclusion_reason"] = "rollback"
+                connection.execute(
+                    "UPDATE turns SET metadata_json = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), int(excluded_row["id"])),
+                )
             connection.execute(
                 """
                 UPDATE turns SET excluded_from_memory = 1
@@ -2589,7 +3022,7 @@ class StateStore:
                 """
                 UPDATE turn_requests
                 SET status = 'failed', error = ?, updated_at = ?
-                WHERE campaign_id = ? AND idempotency_key = ?
+                WHERE campaign_id = ? AND idempotency_key = ? AND status = 'running'
                 """,
                 (error[:500], now_ts(), self.campaign_id, idempotency_key),
             )

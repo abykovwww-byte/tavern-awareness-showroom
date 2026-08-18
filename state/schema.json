@@ -100,12 +100,52 @@
         "state_patch_id": { "type": "string" }
       }
     },
+    "scene_state": {
+      "$ref": "#/$defs/scene_state"
+    },
     "uncertain_facts": {
       "type": "array",
       "items": { "$ref": "#/$defs/fact" }
     }
   },
   "$defs": {
+    "scene_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "location_id",
+        "present_character_ids",
+        "stable_affiliations",
+        "as_of_state_version",
+        "as_of_party_turn",
+        "stale",
+        "stale_reason"
+      ],
+      "properties": {
+        "schema_version": { "const": "rp-gateway.scene-state.v1" },
+        "location_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "present_character_ids": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "stable_affiliations": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "minLength": 1, "maxLength": 128 },
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "as_of_state_version": { "type": "integer", "minimum": 1 },
+        "as_of_party_turn": { "type": "integer", "minimum": 0 },
+        "stale": { "type": "boolean" },
+        "stale_reason": {
+          "type": ["string", "null"],
+          "maxLength": 128
+        }
+      }
+    },
     "fact": {
       "type": "object",
       "additionalProperties": false,

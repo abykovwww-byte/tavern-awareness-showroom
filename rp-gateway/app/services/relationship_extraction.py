@@ -54,6 +54,14 @@ class RelationshipExtractionService:
                 "events": [],
             }
         turn = self._recorded_turn(turn_id)
+        if turn.get("noncanonical_safe_fallback"):
+            return {
+                "processed": False,
+                "applied": False,
+                "turn_id": int(turn_id),
+                "reason": "noncanonical_safe_fallback",
+                "events": [],
+            }
         request_id = str(turn.get("request_id") or "") or None
         party_turn = turn.get("party_turn")
         if isinstance(party_turn, bool) or not isinstance(party_turn, int) or party_turn < 0:
@@ -367,7 +375,12 @@ class RelationshipExtractionService:
     def _recorded_turn(self, turn_id: int) -> dict[str, Any]:
         if isinstance(turn_id, bool) or not isinstance(turn_id, int) or turn_id <= 0:
             raise ValueError("turn_id must be a positive integer")
-        rows = self.store.turns_for_memory(after_turn_id=turn_id - 1, to_turn_id=turn_id, limit=1)
+        rows = self.store.turns_for_memory(
+            after_turn_id=turn_id - 1,
+            to_turn_id=turn_id,
+            limit=1,
+            include_noncanonical_fallback=True,
+        )
         if not rows or int(rows[0]["id"]) != turn_id:
             raise ValueError(f"turn not found: {turn_id}")
         return rows[0]

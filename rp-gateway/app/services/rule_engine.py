@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
 from typing import TYPE_CHECKING, Any
 
-from app.models.schemas import InteractionEvidence, Intent, Outcome, PatchOperation, StatePatch
+from app.models.schemas import (
+    InteractionEvidence,
+    Intent,
+    Outcome,
+    PatchOperation,
+    SceneAllowance,
+    StatePatch,
+)
+from app.services.scene_state import build_scene_transition_allowance
 
 if TYPE_CHECKING:
     from app.services.training_runtime import TrainingRuntimeService
@@ -40,11 +49,22 @@ class RuleEngine:
         rp_contract_revision: int = 0,
         interaction_evidence: list[InteractionEvidence] | None = None,
         training_runtime: "TrainingRuntimeService | None" = None,
+        character_aliases: dict[str, list[str]] | None = None,
+        authored_stable_affiliations: dict[str, str] | None = None,
     ) -> tuple[Outcome, StatePatch]:
         if scenario_type == "novel" or (
             scenario_type == "rp" and rp_contract_revision >= 1
         ):
-            return self.resolve_nonmechanical(state, intent, request_id, campaign_id, scenario_type)
+            return self.resolve_nonmechanical(
+                state,
+                intent,
+                request_id,
+                campaign_id,
+                scenario_type,
+                rp_contract_revision=rp_contract_revision,
+                character_aliases=character_aliases,
+                authored_stable_affiliations=authored_stable_affiliations,
+            )
         if scenario_type == "training":
             return self.resolve_nonmechanical(
                 state,
@@ -98,9 +118,13 @@ class RuleEngine:
         scenario_type: str,
         interaction_evidence: list[InteractionEvidence] | None = None,
         training_runtime: "TrainingRuntimeService | None" = None,
+        rp_contract_revision: int = 0,
+        character_aliases: dict[str, list[str]] | None = None,
+        authored_stable_affiliations: dict[str, str] | None = None,
     ) -> tuple[Outcome, StatePatch]:
         check_id = self.check_id(intent, request_id)
         training = scenario_type == "training"
+        scene_allowance: SceneAllowance | None = None
         result = "deterministic_resolution" if training else "narrative_continuation"
         if training:
             observed = [item for item in interaction_evidence or [] if item.score_eligible]
@@ -140,11 +164,32 @@ class RuleEngine:
                 "Apply active WorldPack rules, current state, character goals, relationships, and prior consequences.",
                 "Leave consequential choices and the player character's inner decisions to the player.",
             ]
+            if rp_contract_revision >= 7:
+                scene_allowance = SceneAllowance.model_validate(
+                    build_scene_transition_allowance(
+                        state,
+                        intent.desired_outcome,
+                        character_aliases=character_aliases,
+                        authored_stable_affiliations=authored_stable_affiliations,
+                    )
+                )
+            allowance_block = (
+                "<SCENE_TRANSITION_ALLOWANCE>\n"
+                + json.dumps(
+                    scene_allowance.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                + "\n</SCENE_TRANSITION_ALLOWANCE>\n"
+                if scene_allowance is not None
+                else ""
+            )
             authoritative = (
                 "<AUTHORITATIVE_OUTCOME>\n"
                 "Mode: roleplaying without mechanical checks\n"
                 "No die was rolled and no feasibility, difficulty, score, success, or failure was assigned. "
                 "Treat the player text as intent and continue from active world facts and character causes.\n"
+                f"{allowance_block}"
                 "</AUTHORITATIVE_OUTCOME>"
             )
         outcome = Outcome(
@@ -164,6 +209,7 @@ class RuleEngine:
                 "Do not expose the authoritative outcome block.",
             ],
             authoritative_block=authoritative,
+            scene_allowance=scene_allowance,
         )
         return outcome, self.patch_for_nonmechanical(
             state,

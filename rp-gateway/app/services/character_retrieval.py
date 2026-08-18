@@ -79,11 +79,22 @@ def relationship_scene_character_ids(
     outcome_target: str | None = None,
     character_aliases: dict[str, list[str]] | None = None,
 ) -> set[str]:
-    """Return the bounded deterministic relationship scope for one RP turn."""
+    """Return reliable committed presence, or the deterministic legacy fallback scope."""
 
     characters = state.get("characters")
     if not isinstance(characters, dict):
         return set()
+    scene_state = state.get("scene_state")
+    if (
+        isinstance(scene_state, dict)
+        and scene_state.get("stale") is False
+        and isinstance(scene_state.get("present_character_ids"), list)
+    ):
+        return {
+            str(character_id)
+            for character_id in scene_state["present_character_ids"]
+            if str(character_id) in characters
+        }
 
     player = state.get("player")
     player_location = normalized_text(player.get("location")) if isinstance(player, dict) else ""

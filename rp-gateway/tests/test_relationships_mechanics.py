@@ -128,7 +128,10 @@ def make_scene_store(tmp_path: Path, campaign_id: str = "relationship-scene") ->
                     },
                 },
                 "factions": {},
-                "locations": {},
+                "locations": {
+                    "market": {"name": "Рынок"},
+                    "harbour": {"name": "Гавань"},
+                },
                 "resources": {},
                 "relationships": {
                     "player-maria": {
@@ -735,7 +738,23 @@ def test_revision_seven_handle_chat_passes_current_action_into_relationship_scop
         captured_pressure.append(kwargs.get("relationship_pressure"))  # type: ignore[arg-type]
         return {
             "choices": [
-                {"message": {"role": "assistant", "content": "Мария отвечает издали."}}
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "schema_version": "rp-gateway.rp-narrator-bundle.v1",
+                                "narrative_text": "Мария отвечает издали.",
+                                "scene_claims": {
+                                    "location_id": "market",
+                                    "present_character_ids": ["ivan"],
+                                },
+                                "scene_delta": [],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                }
             ]
         }
 

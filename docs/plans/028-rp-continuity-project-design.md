@@ -15,8 +15,14 @@ offline gates выполнены, а applied isolated canary поднял его
 остаются `каркас`. Optional branch-aware context/preview wiring реализован
 локально: focused дал `4 passed`, полный Gateway — `449 passed`,
 `scripts/ci.ps1` — success; merge, apply и live proof ещё нет. Semantic
-continuity и уровень `наблюдается` не доказаны. Этот план не активирует revision
-`7`, не мигрирует существующие партии и не повышает observed revision выше `6`.
+continuity и уровень `наблюдается` не доказаны. Четвёртый document-first
+контракт принят в
+[Decision 031](../decisions/031-rp-scene-state-and-atomic-continuity.md); все его
+registry-строки остаются `каркас`. Локальная source implementation, focused
+tests, полный Gateway (`547 passed`) и `scripts/ci.ps1` выполнены; merge, apply и
+live proof отсутствуют.
+Этот план не активирует revision `7`, не мигрирует существующие партии и не
+повышает observed revision выше `6`.
 
 ## Цель
 
@@ -51,13 +57,15 @@ negative gate; это не меняет readiness DC1.
 | 1 | DC1: полный uncovered tail и hard-overflow recovery | Нет coverage gap; невместимый required prompt не достигает narrator |
 | 2 | [Derived pre-scene relationship scope](../decisions/029-scene-scoped-relationship-pressure.md) | Отсутствующий NPC не попадает в сцену только из-за relationship obligation |
 | 3 | [Prompt authority, structural deduplication и diagnostics](../decisions/030-rp-prompt-authority-and-deduplication.md) | Один authoritative representation на continuity tier; assembly объяснима без prompt content |
-| 4 | Scene projection, continuity gate и atomic commit | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
+| 4 | [Scene projection, continuity gate и atomic commit](../decisions/031-rp-scene-state-and-atomic-continuity.md) | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
 PR1 поставил первую строку, а deployed PR2 подключил вторую по Decision 029.
 Третья строка принята document-first по Decision 030 и подключена только в части
 prompt hierarchy/structural deduplication; её hard-budget и diagnostics-parity
-gates остаются `каркас`. Только четвёртая строка остаётся roadmap без отдельного
-принятого ADR. Ни одна из них не является runtime-контрактом PR2.
+gates остаются `каркас`. Четвёртая строка принята document-first по Decision 031,
+её local source/offline gates выполнены, но все registry-строки остаются
+`каркас`; runtime delivery и live proof отсутствуют. Ни один новый slice не
+меняет readiness предыдущих.
 
 ## Общие инварианты
 
@@ -303,18 +311,75 @@ Opening-scene persistence/parity не входит в DC3 и остаётся pe
 четвёртого opening/atomic-commit slice; observed revision `7` до этого gate не
 активируется и сейчас остаётся `6`.
 
+## PR4 / DC4
+
+Decision 031 задаёт для normal и opening revision-7 turns минимальный private
+narrator bundle:
+
+```text
+schema_version + narrative_text
+scene_claims { location_id, present_character_ids[] }
+scene_delta[]
+```
+
+Gateway проверяет known IDs, literal bounded evidence, previous scene и current
+player action. `scene_delta` разрешает только typed movement/presence changes.
+Явное non-negated first-person движение в named destination позволяет narrator
+выбрать existing known location ID для player; такой allowance не применяется к
+NPC, `Outcome.target`, third-person mention, correction или negation.
+
+Accepted anchored delta формирует canonical `scene_state`. Allowed operation с
+unmatched evidence сразу, без repair/provider call, durable dropped с actual
+value/evidence, а scene projection получает stale/as-of marker. Repair остаётся
+только для hard schema/unknown/forbidden/unauthorized/scene-claim violations.
+Unauthorized transition после repair завершается без canonical commit, даже если
+operation отсутствует или dropped.
+
+Pre-bundle transport exhaustion может записать atomic noncanonical fallback
+turn. Его metadata содержит `story_memory_canonical=false`; fallback narrator
+prose исключён из raw/story-memory/chapter/retrieval/relationship canon, а player
+input и unresolved stale/as-of marker явно входят в следующий prompt. После
+получения invalid bundle допустима одна repair-попытка, но не safe fallback.
+
+Normal и opening accepted turns сохраняют state version, scene state,
+turn/private adjudication metadata и request completion одной SQLite transaction.
+`current.json` остаётся best-effort mirror после commit. Explicit scene-affecting
+world commands не пишут `scene_state` напрямую, а atomically помечают projection
+stale; rollback восстанавливает historical projection либо stale bootstrap.
+
+Stable affiliations ограничены authored canonical loyalty/faction и optional
+finite WorldPack-owned map. Узкий sentence guard ловит только explicit конфликт
+known character+affiliation aliases и отправляет его в hard repair; неизвестная
+free prose остаётся вне semantic judge, а mechanic relationship roles не
+становятся narrative affiliation.
+
+### Gates PR4
+
+Локальная source implementation и обязательные offline gates выполнены, но все
+четыре строки registry 031 остаются `каркас`. Реализованы
+strict-schema/authorization/anchoring regressions, раздельные tests
+для immediate no-repair authorized-unanchored drop, unauthorized hidden-by-drop
+failure и finite affiliation conflict, opening
+parity, noncanonical fallback exclusion, world-command stale policy и полный
+failure-injection набор на каждой atomic write boundary. Отдельно проверяется,
+что post-commit failure `current.json` не откатывает SQLite.
+
+Полный local CI выполнен. Далее нужны merge, pull-based apply и isolated
+revision-7 live proofs
+normal/opening, hard no-commit и pre-bundle fallback. Валидный provider response
+или green CI не поднимает readiness и не доказывает semantic continuity.
+
 ## Последующие gates
 
-Четвёртый slice получает собственный ADR и registry только перед своей
-реализацией. Для незавершённых slice отдельно обязательны focused tests, полный
+Для незавершённых gates каждого slice отдельно обязательны focused tests, полный
 CI, merge, pull-based apply, container/HTTP verification и изолированный
 live-store proof. Observed revision повышается с `6` до `7` отдельным rollout
-change только после всех четырёх proofs.
+change только после всех четырёх proofs и explicit activation decision.
 
 ## Сознательно отложено
 
 - автоматическая миграция или ремонт существующих партий «Купец»/«Староста»;
-- scene-state backfill и semantic contradiction judge;
+- автоматический scene-state backfill и semantic contradiction judge;
 - provider-specific tokenizer и semantic compression protected tail;
 - event sourcing, новые таблицы или maintenance UI;
 - заявления `наблюдается`/`держится` до later-party causal evidence и endurance
@@ -325,6 +390,7 @@ change только после всех четырёх proofs.
 - [Decision 028](../decisions/028-rp-uncovered-tail-and-overflow.md)
 - [Decision 029](../decisions/029-scene-scoped-relationship-pressure.md)
 - [Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md)
+- [Decision 031](../decisions/031-rp-scene-state-and-atomic-continuity.md)
 - [Decision 026](../decisions/026-rp-core-delivery.md)
 - [Decision 024](../decisions/024-simplified-rp-core.md)
 - [Decision 022](../decisions/022-readiness-and-observability-policy.md)

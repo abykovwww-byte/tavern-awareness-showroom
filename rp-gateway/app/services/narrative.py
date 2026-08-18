@@ -22,6 +22,7 @@ from app.services.character_retrieval import (
 from app.services.context_budget import estimate_tokens
 from app.services.nvidia_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
+from app.services.scene_state import initial_scene_state, scene_claim_baseline
 from app.services.trace_redaction import redact_trace_value
 from app.services.rp_story_memory import story_memory_prompt_text
 
@@ -61,6 +62,8 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("WORLD_ABSOLUTE_RULES", "world_absolute_rules"),
     ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
+    ("SCENE_STATE_CONTRACT", "scene_state_contract"),
+    ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
 )
 
 
@@ -139,6 +142,37 @@ def prompt_authority_block() -> str:
         "PROMPT_AUTHORITY_HIERARCHY\n"
         "authoritative_outcome_current_action > uncovered_raw_tail > rp_story_memory > archive\n"
         "The current action is intent, not an automatic fact."
+    )
+
+
+def scene_state_prompt_block(state: dict[str, Any]) -> str:
+    reliable = initial_scene_state(state)
+    lines = [
+            "SCENE_STATE_CONTRACT",
+            "Return exactly one JSON object and no Markdown fence or surrounding text.",
+            "schema_version must be rp-gateway.rp-narrator-bundle.v1.",
+            "The only root fields are schema_version, narrative_text, scene_claims, and scene_delta.",
+            "scene_claims contains only location_id and a sorted unique present_character_ids array.",
+            "scene_delta contains at most 16 operations and permits only move_player, character_arrive, or character_depart with bounded literal evidence.",
+            "Never declare player beliefs, emotions, decisions, goals, or arbitrary player facts.",
+            "Use only known IDs. scene_claims must describe the narration after applying only transitions authorized by SCENE_TRANSITION_ALLOWANCE.",
+            "LAST_RELIABLE_SCENE_STATE",
+            json.dumps(reliable, ensure_ascii=False, separators=(",", ":")),
+        ]
+    return "\n".join(lines)
+
+
+def scene_reanchor_prompt_block(state: dict[str, Any]) -> str | None:
+    if not initial_scene_state(state)["stale"]:
+        return None
+    reanchor = scene_claim_baseline(state)
+    return "SCENE_REANCHOR_BASELINE\n" + json.dumps(
+        {
+            "location_id": reanchor["location_id"],
+            "present_character_ids": reanchor["present_character_ids"],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
 
 
@@ -290,7 +324,7 @@ class NarrativeClient:
             )
             started = time.perf_counter()
             try:
-                data = self.mock_completion(outcome, repair_instruction, artifact_contract)
+                data = self.mock_completion(outcome, repair_instruction, artifact_contract, state=state)
             except Exception as exc:
                 self.record_trace_attempt(
                     request_id=request_id,
@@ -321,6 +355,7 @@ class NarrativeClient:
         attempts = self.model_attempts(self.settings.narrative_model)
         last_timeout: httpx.TimeoutException | None = None
         last_status: httpx.HTTPStatusError | None = None
+        last_request_error: httpx.RequestError | None = None
         rate_limit_retries = 0
         trace_attempt_index = 0
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -391,6 +426,34 @@ class NarrativeClient:
                         if index < len(attempts) - 1:
                             break
                         raise timeout_error from exc
+                    except httpx.RequestError as exc:
+                        last_request_error = exc
+                        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                        logger.warning(
+                            "llm_attempt_network_error request_id=%s check_id=%s model=%s "
+                            "attempt=%s/%s elapsed_ms=%s error_type=%s fallback=%s",
+                            request_id,
+                            outcome.check_id,
+                            model,
+                            index + 1,
+                            len(attempts),
+                            elapsed_ms,
+                            type(exc).__name__,
+                            index < len(attempts) - 1,
+                        )
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=attempt_payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            error=exc,
+                        )
+                        if index < len(attempts) - 1:
+                            break
+                        raise
                     if response.status_code == 429:
                         error = provider_rate_limit_error(response, self.settings.llm_provider, model)
                         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -516,6 +579,8 @@ class NarrativeClient:
             raise last_status
         if last_timeout:
             raise last_timeout
+        if last_request_error:
+            raise last_request_error
         raise RuntimeError(f"No model attempts configured for provider {self.settings.llm_provider}")
 
     def record_trace_attempt(
@@ -624,6 +689,7 @@ class NarrativeClient:
             "completed_threads": state.get("completed_threads", []),
             "uncertain_facts": state.get("uncertain_facts", []),
             "constraints": state.get("world_constraints", []),
+            "scene_state": initial_scene_state(state) if revision_seven else None,
         }
         rules = self.scenario_rules()
         if repair_instruction:
@@ -633,6 +699,10 @@ class NarrativeClient:
         ]
         if revision_seven:
             messages.append({"role": "system", "content": prompt_authority_block()})
+            messages.append({"role": "system", "content": scene_state_prompt_block(state)})
+            reanchor_block = scene_reanchor_prompt_block(state)
+            if reanchor_block:
+                messages.append({"role": "system", "content": reanchor_block})
         if self.settings.world_system_prompt:
             messages.append(
                 {
@@ -783,6 +853,10 @@ class NarrativeClient:
         ]
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
             messages.append({"role": "system", "content": prompt_authority_block()})
+            messages.append({"role": "system", "content": scene_state_prompt_block(state)})
+            reanchor_block = scene_reanchor_prompt_block(state)
+            if reanchor_block:
+                messages.append({"role": "system", "content": reanchor_block})
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
@@ -834,13 +908,19 @@ class NarrativeClient:
                 "player-facing header and never remain in the previous time window."
             )
         if self.settings.rp_contract_revision >= 1:
-            return common + (
+            rules = common + (
                 "You are the GM and narrator of a roleplaying game without mechanical checks. Treat the latest player "
                 "message as intent, not as an automatic fact or a request for hidden adjudication. Never invent dice, "
                 "difficulty, modifiers, scores, success, or failure. Difficulty comes only from active WorldPack rules, "
                 "current state, NPC goals, available information, resources, relationships, and prior consequences. "
                 "Obey every WORLD_ABSOLUTE_RULES item and end with a playable opening for the next player action."
             )
+            if self.settings.rp_contract_revision >= 7:
+                rules += (
+                    " Keep the complete player-visible prose inside narrative_text and return the private revision-7 "
+                    "scene bundle required by SCENE_STATE_CONTRACT."
+                )
+            return rules
         return common + (
             "You are the GM and narrator of a roleplaying game. The RP Gateway has already resolved the D20 check. "
             "Describe that fixed result as fiction. Do not reroll, change the result, create an equivalent hidden "
@@ -853,6 +933,7 @@ class NarrativeClient:
         outcome: Outcome,
         repair_instruction: str | None,
         artifact_contract: dict[str, Any] | None = None,
+        state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         mode = self.settings.nvidia_api_base.removeprefix("mock://")
         if mode == "timeout":
@@ -913,6 +994,20 @@ class NarrativeClient:
                     "narrative_text": narrative_text,
                     "artifacts": artifacts,
                     **({"workspace_files": workspace_files} if workspace_contract else {}),
+                },
+                ensure_ascii=False,
+            )
+        elif self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
+            scene = initial_scene_state(state or {})
+            content = json.dumps(
+                {
+                    "schema_version": "rp-gateway.rp-narrator-bundle.v1",
+                    "narrative_text": content,
+                    "scene_claims": {
+                        "location_id": scene["location_id"],
+                        "present_character_ids": scene["present_character_ids"],
+                    },
+                    "scene_delta": [],
                 },
                 ensure_ascii=False,
             )

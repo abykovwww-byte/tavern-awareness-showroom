@@ -29,6 +29,7 @@ def recorded_prompt_assembly(
         after_turn_id=turn_id - 1,
         to_turn_id=turn_id,
         limit=1,
+        include_noncanonical_fallback=True,
     )
     if not turns or int(turns[0].get("id") or 0) != turn_id:
         return None
@@ -72,6 +73,7 @@ def estimate_party_context(
     memory_text = first_system_content(prompt_messages, "LONG_TERM_PARTY_MEMORY")
     story_memory_text = first_system_content(prompt_messages, "RP_STORY_MEMORY")
     recorded_story_coverage = story_memory_prompt_coverage(story_memory_text)
+    scene_state_text = first_system_content(prompt_messages, "SCENE_STATE")
     relevant_characters_text = first_system_content(prompt_messages, "RELEVANT_CHARACTERS")
     history_text = "\n".join(str(message.get("content") or "") for message in non_system_messages[:-1])
     memory_summary = store.latest_memory_coverage()
@@ -178,6 +180,7 @@ def estimate_party_context(
         estimate["rp_story_memory_force_refresh_coverage_after"] = story_stats.get(
             "force_refresh_coverage_after"
         )
+        estimate["scene_state_tokens"] = estimate_tokens(scene_state_text) if scene_state_text else 0
     return estimate
 
 
@@ -289,6 +292,7 @@ def empty_recorded_context(
         estimate["rp_story_memory_force_refresh_coverage_after"] = story_stats.get(
             "force_refresh_coverage_after"
         )
+        estimate["scene_state_tokens"] = 0
     return estimate
 
 

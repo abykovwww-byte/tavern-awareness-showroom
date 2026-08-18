@@ -21,13 +21,26 @@ from app.services.narrative import (
 )
 from app.services.rule_engine import RuleEngine
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.relationship_attribution import normalized_aliases
+from app.services.scene_state import (
+    scene_state_boundary_block,
+    unresolved_noncanonical_fallback_turns,
+)
 from app.services.state_store import StateStore
 
 
 class PromptInspector:
-    def __init__(self, settings: Any, store: StateStore):
+    def __init__(
+        self,
+        settings: Any,
+        store: StateStore,
+        relationship_model: dict[str, Any] | None = None,
+        scene_contract: dict[str, Any] | None = None,
+    ):
         self.settings = settings
         self.store = store
+        self.relationship_model = relationship_model
+        self.scene_contract = scene_contract
         self.intent_parser = IntentParser()
         self.rule_engine = RuleEngine()
         self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
@@ -87,6 +100,8 @@ class PromptInspector:
             scenario_type=self.settings.scenario_type,
             rp_contract_version=self.settings.rp_contract_version,
             rp_contract_revision=self.settings.rp_contract_revision,
+            character_aliases=self.character_aliases(),
+            authored_stable_affiliations=self.authored_stable_affiliations(),
         )
         candidate_state = self.preview_state(state, patch)
         request = self.chat_request(latest)
@@ -134,7 +149,7 @@ class PromptInspector:
                     "memory_coverage_through_turn_id": covered_through or None,
                     "raw": {
                         "included_turn_ids": turn_ids(
-                            self.store.turns_for_memory(after_turn_id=covered_through)
+                            self.turns_for_prompt(after_turn_id=covered_through)
                         ),
                         "excluded_turn_ids": [],
                         "excluded_reason": None,
@@ -152,7 +167,7 @@ class PromptInspector:
                 messages,
                 story_memory_covered_through_turn_id=covered_through,
                 raw_tail_turn_ids=turn_ids(
-                    self.store.turns_for_memory(after_turn_id=covered_through)
+                    self.turns_for_prompt(after_turn_id=covered_through)
                 ),
                 omitted_blocks=prompt_diagnostics.get("omitted_blocks"),
             )
@@ -191,6 +206,8 @@ class PromptInspector:
             scenario_type=self.settings.scenario_type,
             rp_contract_version=self.settings.rp_contract_version,
             rp_contract_revision=self.settings.rp_contract_revision,
+            character_aliases=self.character_aliases(),
+            authored_stable_affiliations=self.authored_stable_affiliations(),
         )
         request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
         memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
@@ -258,10 +275,26 @@ class PromptInspector:
         if before_turn_id is None:
             memory = story_memory if revision_seven else self.store.latest_memory_coverage()
             covered_through = int(memory["to_turn_id"]) if memory else 0
-            turns = self.store.turns_for_memory(after_turn_id=covered_through)
+            all_turns = self.turns_for_prompt()
+            turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
+            if revision_seven:
+                turns = list(
+                    {
+                        int(turn["id"]): turn
+                        for turn in [
+                            *[
+                                item
+                                for item in all_turns
+                                if item.get("noncanonical_safe_fallback")
+                            ],
+                            *turns,
+                        ]
+                    }.values()
+                )
+                turns.sort(key=lambda turn: int(turn["id"]))
         else:
             covered_through = 0
-            turns = self.store.turns_before(before_turn_id, limit=10_000)
+            turns = self.turns_for_prompt(to_turn_id=before_turn_id - 1)
         if revision_seven and before_turn_id is None:
             overflow_turns = []
         else:
@@ -285,6 +318,14 @@ class PromptInspector:
             )
             if fallback_block:
                 messages.append(ChatMessage(role="system", content=fallback_block))
+        if revision_seven:
+            messages.insert(
+                0,
+                ChatMessage(
+                    role="system",
+                    content=scene_state_boundary_block(self.store.get_state()),
+                ),
+            )
         for turn in turns:
             messages.append(ChatMessage(role="user", content=turn["player_message"]))
             messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
@@ -302,7 +343,7 @@ class PromptInspector:
         request._latest_player_action = latest
         request._raw_transcript_chars = sum(
             len(str(turn.get("player_message") or "")) + len(str(turn.get("narrative_response") or ""))
-            for turn in self.store.turns_for_memory()
+            for turn in self.turns_for_prompt()
         )
         if revision_seven:
             request._rp_story_memory_snapshot_id = int(story_memory["id"]) if story_memory else None
@@ -411,7 +452,7 @@ class PromptInspector:
             for item in all_memory
             if (item.get("memory_type"), item.get("id")) not in selected_keys
         ]
-        raw_source = self.store.turns_for_memory(after_turn_id=covered_through)
+        raw_source = self.turns_for_prompt(after_turn_id=covered_through)
         if revision_seven:
             omitted_raw, included_raw = [], raw_source
         else:
@@ -508,6 +549,42 @@ class PromptInspector:
                 "coverage_before": story_stats.get("force_refresh_coverage_before"),
                 "coverage_after": story_stats.get("force_refresh_coverage_after"),
             },
+        }
+
+    def turns_for_prompt(
+        self,
+        *,
+        after_turn_id: int = 0,
+        to_turn_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        revision_seven = (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 7
+        )
+        turns = self.store.turns_for_memory(
+            after_turn_id=after_turn_id,
+            to_turn_id=to_turn_id,
+            include_noncanonical_fallback=revision_seven,
+        )
+        if not revision_seven:
+            return turns
+        return unresolved_noncanonical_fallback_turns(self.store.get_state(), turns)
+
+    def character_aliases(self) -> dict[str, list[str]] | None:
+        if self.settings.scenario_type != "rp" or self.settings.rp_contract_revision < 7:
+            return None
+        return normalized_aliases(self.relationship_model or {})
+
+    def authored_stable_affiliations(self) -> dict[str, str] | None:
+        if self.settings.scenario_type != "rp" or self.settings.rp_contract_revision < 7:
+            return None
+        values = (self.scene_contract or {}).get("stable_affiliations")
+        if not isinstance(values, dict):
+            return None
+        return {
+            str(character_id): affiliation
+            for character_id, affiliation in values.items()
+            if isinstance(character_id, str) and isinstance(affiliation, str)
         }
 
     def memory_entry_view(self, item: dict[str, Any], status: str) -> dict[str, Any]:

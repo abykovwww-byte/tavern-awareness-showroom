@@ -14,6 +14,7 @@ import httpx
 
 from app.core.config import Settings
 from app.services.context_budget import oldest_turns_within_token_budget, turns_token_count
+from app.services.scene_state import unresolved_noncanonical_fallback_turns
 from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import service_model_settings
 from app.services.state_store import StateStore
@@ -66,7 +67,7 @@ class RPStoryMemoryUpdater:
     def stats(self) -> dict[str, Any]:
         latest = self.store.effective_rp_story_memory()
         covered_through = int(latest["to_turn_id"]) if latest else 0
-        pending = self.store.turns_for_memory(after_turn_id=covered_through)
+        pending = self.story_memory_turns(after_turn_id=covered_through)
         enabled = self.settings.scenario_type == "rp"
         pending_turn_threshold_exceeded = enabled and len(pending) >= self.update_turns
         hard_overflow = self.latest_request_hard_overflow() if enabled else False
@@ -178,7 +179,7 @@ class RPStoryMemoryUpdater:
             return None, "not_rp"
         previous = self.store.effective_rp_story_memory()
         covered_through = int(previous["to_turn_id"]) if previous else 0
-        pending = self.store.turns_for_memory(after_turn_id=covered_through)
+        pending = self.story_memory_turns(after_turn_id=covered_through)
         if not pending:
             return None, "up_to_date"
         has_user_correction = any(turn_story_memory_corrections(turn) for turn in pending)
@@ -274,7 +275,7 @@ class RPStoryMemoryUpdater:
         if latest is None:
             return None
         covered_through = int(latest["to_turn_id"])
-        pending = self.store.turns_for_memory(after_turn_id=covered_through)
+        pending = self.story_memory_turns(after_turn_id=covered_through)
         has_pending_corrections = any(turn_story_memory_corrections(turn) for turn in pending)
         if not has_pending_corrections and not corrections:
             return latest
@@ -330,7 +331,11 @@ class RPStoryMemoryUpdater:
                 service_candidate = service_story_memory_candidate(
                     previous_memory,
                     generated["memory"],
-                    [int(turn["id"]) for turn in plan.turns],
+                    [
+                        int(turn["id"])
+                        for turn in plan.turns
+                        if not turn.get("noncanonical_safe_fallback")
+                    ],
                     self.settings.rp_story_memory_max_chars,
                 )
                 generated["memory"] = reconcile_story_memory(
@@ -348,7 +353,11 @@ class RPStoryMemoryUpdater:
                 state_version=plan.state_version,
                 memory=generated["memory"],
                 model=generated.get("model") or plan.model,
-                contributing_turn_ids=[int(turn["id"]) for turn in plan.turns],
+                contributing_turn_ids=[
+                    int(turn["id"])
+                    for turn in plan.turns
+                    if not turn.get("noncanonical_safe_fallback")
+                ],
                 base_snapshot_id=(
                     int(plan.previous_memory["id"])
                     if plan.previous_memory
@@ -537,6 +546,8 @@ class RPStoryMemoryUpdater:
         memory = normalize_story_memory(previous, self.settings.rp_story_memory_max_chars)
         chronology = list(memory["chronology"])
         for turn in plan.turns:
+            if turn.get("noncanonical_safe_fallback"):
+                continue
             chronology.append(
                 {
                     "text": f"Ход {turn['id']}: игрок — {clip(turn['player_message'], 220)}; ведущий — {clip(turn['narrative_response'], 280)}",
@@ -546,12 +557,16 @@ class RPStoryMemoryUpdater:
                 }
             )
         memory["chronology"] = chronology
-        memory["current_situation"] = {
-            "text": clip(plan.turns[-1]["narrative_response"], 1200),
-            "status": "active",
-            "authority": "narrator",
-            "source_turn_ids": [int(plan.turns[-1]["id"])],
-        }
+        canonical_turns = [
+            turn for turn in plan.turns if not turn.get("noncanonical_safe_fallback")
+        ]
+        if canonical_turns:
+            memory["current_situation"] = {
+                "text": clip(canonical_turns[-1]["narrative_response"], 1200),
+                "status": "active",
+                "authority": "narrator",
+                "source_turn_ids": [int(canonical_turns[-1]["id"])],
+            }
         return normalize_story_memory(memory, self.settings.rp_story_memory_max_chars)
 
     def state_excerpt(self, state: dict[str, Any]) -> str:
@@ -600,9 +615,19 @@ class RPStoryMemoryUpdater:
                 "state_version": turn["state_version"],
                 "player_message": clip(turn["player_message"], 1400),
                 "narrative_response": clip(turn["narrative_response"], 1800),
+                "story_memory_canonical": not bool(turn.get("noncanonical_safe_fallback")),
             }
             for turn in turns
         ]
+
+    def story_memory_turns(self, *, after_turn_id: int) -> list[dict[str, Any]]:
+        turns = self.store.turns_for_memory(
+            after_turn_id=after_turn_id,
+            include_noncanonical_fallback=self.settings.rp_contract_revision >= 7,
+        )
+        if self.settings.rp_contract_revision < 7:
+            return turns
+        return unresolved_noncanonical_fallback_turns(self.store.get_state(), turns)
 
     def service_settings(self) -> Settings:
         return service_model_settings(self.settings)

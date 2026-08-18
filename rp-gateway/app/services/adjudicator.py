@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings
-from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
+from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome, PatchOperation, StatePatch
 from app.services.character_retrieval import relationship_scene_character_ids
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
@@ -29,7 +30,15 @@ from app.services.relationship_attribution import normalized_aliases
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
 from app.services.rule_engine import RuleEngine
-from app.services.state_store import StateStore
+from app.services.scene_state import (
+    SceneMaterialization,
+    fallback_scene_state,
+    initial_scene_state,
+    materialize_scene_bundle,
+    scene_state_boundary_block,
+    unresolved_noncanonical_fallback_turns,
+)
+from app.services.state_store import StateStore, StateVersionConflict
 from app.services.training_artifacts import ArtifactMaterialization, TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService, WorkspaceMaterialization
@@ -48,6 +57,10 @@ class RequestAlreadyRunning(RuntimeError):
         self.idempotency_key = idempotency_key
 
 
+class SceneContinuityError(RuntimeError):
+    """The narrator bundle still violates hard scene continuity after repair."""
+
+
 class Adjudicator:
     _post_turn_helper_campaigns: set[str] = set()
     _service_tasks: dict[str, asyncio.Task[None]] = {}
@@ -60,6 +73,7 @@ class Adjudicator:
         training_workspace: TrainingWorkspaceService | None = None,
         training_runtime: TrainingRuntimeService | None = None,
         relationship_model: dict[str, Any] | None = None,
+        scene_contract: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -74,6 +88,7 @@ class Adjudicator:
         self.training_workspace = training_workspace
         self.training_runtime = training_runtime
         self.relationship_model = relationship_model if settings.scenario_type == "rp" else None
+        self.scene_contract = scene_contract if settings.scenario_type == "rp" else None
         self.relationship_mechanics = (
             RelationshipMechanics(
                 store,
@@ -231,6 +246,7 @@ class Adjudicator:
                 return response
 
             state = self.store.get_state()
+            expected_state_version = int(state.get("meta", {}).get("state_version") or 0)
             rp_no_checks = (
                 self.settings.scenario_type == "rp"
                 and self.settings.rp_contract_revision >= 1
@@ -249,6 +265,12 @@ class Adjudicator:
                 rp_contract_revision=self.settings.rp_contract_revision,
                 interaction_evidence=interaction_evidence,
                 training_runtime=self.training_runtime,
+                character_aliases=(
+                    normalized_aliases(self.relationship_model or {})
+                    if self.settings.scenario_type == "rp"
+                    else None
+                ),
+                authored_stable_affiliations=self.authored_stable_affiliations(),
             )
             narrative_state = self.preview_applied_state(patch)
             artifact_contract = (
@@ -285,6 +307,14 @@ class Adjudicator:
             prompt_assembly: dict[str, Any] | None = None
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
+            scene_result: SceneMaterialization | None = None
+            scene_before = (
+                initial_scene_state(state, self.authored_stable_affiliations())
+                if revision_seven
+                else None
+            )
+            bundle_received = False
+            fallback_noncanonical = False
             try:
                 relationship_projection_before = self.trace_projection_snapshot()
                 relationship_pressure = self.relationship_pressure(
@@ -504,6 +534,22 @@ class Adjudicator:
                     },
                     party_turn=expected_party_turn,
                 )
+                if revision_seven:
+                    current_state_version = int(self.store.current_version() or 0)
+                    if current_state_version != expected_state_version:
+                        self.store.audit(
+                            "state_version_conflict_pre_provider",
+                            {
+                                "request_id": request_id,
+                                "expected_state_version": expected_state_version,
+                                "current_state_version": current_state_version,
+                            },
+                            request_id,
+                        )
+                        raise StateVersionConflict(
+                            "state version changed during narrator assembly: "
+                            f"expected {expected_state_version}, current {current_state_version}"
+                        )
                 llm_calls += 1
                 raw = await self.narrative.complete(
                     request,
@@ -517,7 +563,27 @@ class Adjudicator:
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
                 )
-                text = response_text(raw)
+                bundle_received = True
+                if revision_seven:
+                    scene_result = materialize_scene_bundle(
+                        raw,
+                        state,
+                        latest_user_message=latest,
+                        party_turn=patch.turn,
+                        authoritative_outcome={
+                            **outcome.model_dump(mode="json"),
+                            "scene_allowance": (
+                                outcome.scene_allowance.model_dump(mode="json")
+                                if outcome.scene_allowance is not None
+                                else None
+                            ),
+                        },
+                    )
+                    text = scene_result.text
+                    if scene_result.valid:
+                        raw = with_text(raw, text)
+                else:
+                    text = response_text(raw)
                 if self.training_artifacts:
                     artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                     if artifact_result.valid:
@@ -530,7 +596,11 @@ class Adjudicator:
                     text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
                 if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
                     raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
-                if self.settings.scenario_type == "rp" and not text.strip():
+                if (
+                    self.settings.scenario_type == "rp"
+                    and not text.strip()
+                    and not (revision_seven and scene_result is not None and not scene_result.valid)
+                ):
                     self.store.audit(
                         "llm_invalid_response",
                         {
@@ -556,6 +626,7 @@ class Adjudicator:
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
+                scene_valid = scene_result.valid if scene_result is not None else True
                 if validation is not None:
                     self.record_trace_event(
                         request_id=request_id,
@@ -563,13 +634,18 @@ class Adjudicator:
                         alignment_key="validation",
                         lane="main",
                         event_type="validation",
-                        status="completed" if validation.valid and interaction_valid else "failed",
+                        status=(
+                            "completed"
+                            if validation.valid and interaction_valid and scene_valid
+                            else "failed"
+                        ),
                         payload={
                             "input": {"response": text},
                             "output": {
                                 "valid": validation.valid and interaction_valid,
                                 "violations": [
                                     *validation.violations,
+                                    *(scene_result.violations if scene_result else []),
                                     *(artifact_result.violations if artifact_result else []),
                                     *(workspace_result.violations if workspace_result else []),
                                 ],
@@ -580,9 +656,13 @@ class Adjudicator:
                     )
                 training_runtime_enabled = bool(self.training_runtime and self.training_runtime.enabled)
                 repair_attempts = (
-                    self.settings.training_repair_attempts
-                    if training_runtime_enabled
-                    else self.settings.max_repair_attempts
+                    1
+                    if revision_seven
+                    else (
+                        self.settings.training_repair_attempts
+                        if training_runtime_enabled
+                        else self.settings.max_repair_attempts
+                    )
                 )
                 training_repair_allowed = True
                 if training_runtime_enabled and self.training_runtime:
@@ -596,7 +676,7 @@ class Adjudicator:
                         violation not in runtime_violation_set for violation in validation.violations
                     )
                 if validation is not None and (
-                    (not validation.valid or not interaction_valid)
+                    (not validation.valid or not interaction_valid or not scene_valid)
                     and repair_attempts > 0
                     and training_repair_allowed
                 ):
@@ -606,6 +686,10 @@ class Adjudicator:
                         if training_runtime_enabled and self.training_runtime
                         else validation.repair_instruction
                     )
+                    if scene_result is not None and not scene_result.valid:
+                        repair_instruction = " ".join(
+                            [repair_instruction, scene_result.repair_instruction]
+                        ).strip()
                     if artifact_result and not artifact_result.valid:
                         repair_instruction = " ".join(
                             [
@@ -620,6 +704,23 @@ class Adjudicator:
                                 "Верни корректный workspace_files только с разрешёнными file_key, blueprint_id и строковыми slots.",
                             ]
                         ).strip()
+                    if revision_seven:
+                        current_state_version = int(self.store.current_version() or 0)
+                        if current_state_version != expected_state_version:
+                            self.store.audit(
+                                "state_version_conflict_pre_provider",
+                                {
+                                    "request_id": request_id,
+                                    "expected_state_version": expected_state_version,
+                                    "current_state_version": current_state_version,
+                                    "repair": True,
+                                },
+                                request_id,
+                            )
+                            raise StateVersionConflict(
+                                "state version changed before narrator repair: "
+                                f"expected {expected_state_version}, current {current_state_version}"
+                            )
                     llm_calls += 1
                     raw = await self.narrative.complete(
                         request,
@@ -635,7 +736,26 @@ class Adjudicator:
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
                     )
-                    text = response_text(raw)
+                    if revision_seven:
+                        scene_result = materialize_scene_bundle(
+                            raw,
+                            state,
+                            latest_user_message=latest,
+                            party_turn=patch.turn,
+                            authoritative_outcome={
+                                **outcome.model_dump(mode="json"),
+                                "scene_allowance": (
+                                    outcome.scene_allowance.model_dump(mode="json")
+                                    if outcome.scene_allowance is not None
+                                    else None
+                                ),
+                            },
+                        )
+                        text = scene_result.text
+                        if scene_result.valid:
+                            raw = with_text(raw, text)
+                    else:
+                        text = response_text(raw)
                     if self.training_artifacts:
                         artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                         if artifact_result.valid:
@@ -658,18 +778,22 @@ class Adjudicator:
                         training_runtime=self.training_runtime,
                         interaction_contract=interaction_contract,
                     )
+                    scene_valid = scene_result.valid if scene_result is not None else True
                     self.record_trace_event(
                         request_id=request_id,
                         phase_key="validation:repair",
                         alignment_key="validation",
                         lane="main",
                         event_type="validation",
-                        status="completed" if validation.valid else "failed",
+                        status="completed" if validation.valid and scene_valid else "failed",
                         payload={
                             "input": {"response": text},
                             "output": {
-                                "valid": validation.valid,
-                                "violations": validation.violations,
+                                "valid": validation.valid and scene_valid,
+                                "violations": [
+                                    *validation.violations,
+                                    *(scene_result.violations if scene_result else []),
+                                ],
                             },
                             "metadata": {"repair": True},
                         },
@@ -678,6 +802,17 @@ class Adjudicator:
                 interaction_valid = (artifact_result.valid if artifact_result else True) and (
                     workspace_result.valid if workspace_result else True
                 )
+                if scene_result is not None and not scene_result.valid:
+                    self.store.audit(
+                        "scene_continuity_failed",
+                        {
+                            "request_id": request_id,
+                            "violations": scene_result.violations,
+                            "repair_attempted": repaired,
+                        },
+                        request_id,
+                    )
+                    raise SceneContinuityError("; ".join(scene_result.violations))
                 if validation is not None and (not validation.valid or not interaction_valid):
                     gateway_fallback_reason = "validation_failed"
                     transport_status = "invalid_response"
@@ -694,6 +829,8 @@ class Adjudicator:
                         },
                         request_id,
                     )
+                    if revision_seven:
+                        raise RuntimeError("LLM response failed narrative validation after bundle parsing")
                     if not allow_gateway_fallback:
                         raise RuntimeError("LLM response failed narrative validation")
                     text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
@@ -712,28 +849,72 @@ class Adjudicator:
                     {"request_id": request_id, "model": self.settings.narrative_model, "status": status},
                     request_id,
                 )
-                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
+                if revision_seven and bundle_received:
+                    raise
+                if self.settings.scenario_type == "rp" and not revision_seven:
                     raise RuntimeError(f"Narrative provider HTTP {status}") from exc
+                if not allow_gateway_fallback:
+                    raise
                 provider_fallback_reason = f"http_{status}"
                 transport_status = "provider_error"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
-                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+                raw = self.provider_fallback_response(
+                    outcome, text, provider_fallback_reason, request_id, audit=not revision_seven
+                )
+                fallback_noncanonical = revision_seven
             except httpx.TimeoutException as exc:
                 self.store.audit("llm_timeout", {"request_id": request_id, "model": self.settings.narrative_model}, request_id)
-                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
+                if revision_seven and bundle_received:
+                    raise
+                if self.settings.scenario_type == "rp" and not revision_seven:
                     raise RuntimeError("Narrative provider timed out") from exc
+                if not allow_gateway_fallback:
+                    raise
                 provider_fallback_reason = "timeout"
                 transport_status = "provider_timeout"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
-                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+                raw = self.provider_fallback_response(
+                    outcome, text, provider_fallback_reason, request_id, audit=not revision_seven
+                )
+                fallback_noncanonical = revision_seven
             except ProviderRateLimitError as exc:
                 self.store.audit("llm_rate_limited", {"request_id": request_id, **exc.details}, request_id)
-                if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
+                if revision_seven and bundle_received:
+                    raise
+                if self.settings.scenario_type == "rp" and not revision_seven:
+                    raise
+                if not allow_gateway_fallback:
                     raise
                 provider_fallback_reason = "rate_limited"
                 transport_status = "provider_error"
                 text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
-                raw = self.provider_fallback_response(outcome, text, provider_fallback_reason, request_id)
+                raw = self.provider_fallback_response(
+                    outcome, text, provider_fallback_reason, request_id, audit=not revision_seven
+                )
+                fallback_noncanonical = revision_seven
+            except httpx.RequestError as exc:
+                self.store.audit(
+                    "llm_network_error",
+                    {
+                        "request_id": request_id,
+                        "model": self.settings.narrative_model,
+                        "error_type": type(exc).__name__,
+                    },
+                    request_id,
+                )
+                if revision_seven and bundle_received:
+                    raise
+                if self.settings.scenario_type == "rp" and not revision_seven:
+                    raise RuntimeError("Narrative provider request failed") from exc
+                if not allow_gateway_fallback:
+                    raise
+                provider_fallback_reason = "network_error"
+                transport_status = "provider_error"
+                text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
+                raw = self.provider_fallback_response(
+                    outcome, text, provider_fallback_reason, request_id, audit=not revision_seven
+                )
+                fallback_noncanonical = revision_seven
             except RuntimeError as exc:
                 if self.settings.scenario_type == "rp" or not allow_gateway_fallback:
                     raise
@@ -770,20 +951,53 @@ class Adjudicator:
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
             text = response_text(response)
-            updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
-            version = int(updated_state.get("meta", {}).get("state_version", 0))
+            scene_after: dict[str, Any] | None = None
+            if revision_seven:
+                if fallback_noncanonical:
+                    scene_after = fallback_scene_state(
+                        state,
+                        self.authored_stable_affiliations(),
+                    )
+                elif scene_result is not None and scene_result.valid:
+                    scene_after = scene_result.scene_state
+                else:
+                    raise SceneContinuityError("revision-7 turn has no valid scene projection")
+                if fallback_noncanonical:
+                    patch = StatePatch(
+                        turn=patch.turn,
+                        check_id=patch.check_id,
+                        source=patch.source,
+                        patch=[],
+                    )
+                if not fallback_noncanonical:
+                    patch.patch.extend(
+                        self.scene_legacy_operations(state, scene_result, patch.turn)
+                    )
+                patch.patch.append(
+                    PatchOperation(
+                        op="replace" if "scene_state" in state else "add",
+                        path="/scene_state",
+                        value=scene_after,
+                        reason="Commits the deterministic revision-7 scene projection with the turn.",
+                        turn=patch.turn,
+                    )
+                )
+            projected_state = self.preview_applied_state(patch)
             final_validation = None if (
                 self.settings.scenario_type == "rp" and self.settings.rp_contract_revision < 3
             ) else self.validator.validate(
                 text,
                 outcome,
-                updated_state,
+                projected_state,
                 campaign_id=self.settings.campaign_id,
                 latest_user_message=latest,
                 scenario_type=self.settings.scenario_type,
                 training_runtime=self.training_runtime,
                 interaction_contract=interaction_contract,
             )
+            if final_validation is not None and not final_validation.valid:
+                raise RuntimeError("final narrative validation changed before commit")
+            version = int(projected_state.get("meta", {}).get("state_version", 0))
             self.record_trace_event(
                 request_id=request_id,
                 phase_key="validation:final",
@@ -807,7 +1021,7 @@ class Adjudicator:
                     ),
                     "metadata": {"repair": repaired},
                 },
-                party_turn=int(updated_state["meta"]["turn"]),
+                party_turn=int(projected_state["meta"]["turn"]),
             )
             turn_metadata = self.turn_metadata(
                 turn_kind="narrative",
@@ -822,71 +1036,183 @@ class Adjudicator:
             )
             if prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = prompt_assembly
-            turn_id = self.store.record_turn(
-                idempotency_key,
-                request_id,
-                latest,
-                text,
-                response,
-                version,
-                prompt_messages,
-                turn_metadata,
-                artifacts=artifact_result.persistence_records if artifact_result else [],
-                consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
-                workspace_files=workspace_result.persistence_records if workspace_result else [],
-                consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
-                party_turn=int(updated_state["meta"]["turn"]),
-            )
-            self.record_trace_event(
-                request_id=request_id,
-                phase_key="turn_commit",
-                alignment_key="turn_commit",
-                lane="main",
-                event_type="turn_commit",
-                status="completed",
-                payload={
-                    "output": {
-                        "turn_id": turn_id,
-                        "state_version": version,
-                        "party_turn": int(updated_state["meta"]["turn"]),
+            if revision_seven:
+                turn_metadata.update(
+                    {
+                        "scene_claims": scene_result.claims if scene_result is not None else None,
+                        "applied_scene_delta": (
+                            scene_result.applied_operations if scene_result is not None else []
+                        ),
+                        "dropped_scene_delta": (
+                            scene_result.dropped_operations if scene_result is not None else []
+                        ),
+                        "scene_state_before": scene_before,
+                        "scene_state_after": scene_after,
+                        "scene_state_stale": bool(scene_after and scene_after.get("stale")),
+                        "story_memory_canonical": not fallback_noncanonical,
                     }
-                },
-                party_turn=int(updated_state["meta"]["turn"]),
-                turn_id=turn_id,
-            )
-            if self.relationship_mechanics is not None and self.settings.rp_contract_revision >= 4:
-                relationship_projection_before = self.trace_projection_snapshot()
-                self.relationship_mechanics.advance_turn(int(updated_state["meta"]["turn"]))
-                self.capture_projection_changes(
-                    request_id,
-                    relationship_projection_before,
-                    source="relationship_turn_advance",
-                    reason="post_commit_relationship_advance",
-                    lane="main",
                 )
-            self.store.complete_turn_request(idempotency_key, response)
+                atomic_audit_events: list[tuple[str, dict[str, Any]]] = []
+                if scene_result is not None and scene_result.dropped_operations:
+                    atomic_audit_events.append(
+                        (
+                            "scene_delta_operations_dropped",
+                            {
+                                "request_id": request_id,
+                                "dropped_scene_delta": scene_result.dropped_operations,
+                            },
+                        )
+                    )
+                if fallback_noncanonical:
+                    atomic_audit_events.append(
+                        (
+                            "llm_safe_fallback",
+                            {
+                                "request_id": request_id,
+                                "check_id": outcome.check_id,
+                                "model": self.settings.narrative_model,
+                                "reason": provider_fallback_reason or gateway_fallback_reason,
+                                "story_memory_canonical": False,
+                            },
+                        )
+                    )
+                atomic_audit_events.append(
+                    (
+                        "turn_complete",
+                        {
+                            "request_id": request_id,
+                            "campaign_id": self.settings.campaign_id,
+                            "duration_ms": duration_ms,
+                            "llm_calls": llm_calls,
+                            "model": self.settings.narrative_model,
+                            "validator_valid": (
+                                final_validation.valid
+                                if final_validation is not None
+                                else None
+                            ),
+                            "repair": repaired,
+                            "fallback_reason": (
+                                provider_fallback_reason or gateway_fallback_reason
+                            ),
+                            "provider_fallback_reason": provider_fallback_reason,
+                            "gateway_fallback_reason": gateway_fallback_reason,
+                            "check_id": outcome.check_id,
+                            "result": outcome.result,
+                        },
+                    )
+                )
+                updated_state, turn_id = self.store.commit_turn(
+                    patch,
+                    reason=f"turn:{request_id}",
+                    idempotency_key=idempotency_key,
+                    request_id=request_id,
+                    player_message=latest,
+                    narrative_response=text,
+                    response_json=response,
+                    expected_state_version=expected_state_version,
+                    prompt_messages=prompt_messages,
+                    metadata=turn_metadata,
+                    artifacts=artifact_result.persistence_records if artifact_result else [],
+                    consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
+                    workspace_files=workspace_result.persistence_records if workspace_result else [],
+                    consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
+                    party_turn=int(projected_state["meta"]["turn"]),
+                    audit_events=atomic_audit_events,
+                    excluded_from_memory=fallback_noncanonical,
+                )
+                version = int(updated_state.get("meta", {}).get("state_version", 0))
+            else:
+                updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
+                version = int(updated_state.get("meta", {}).get("state_version", 0))
+                turn_id = self.store.record_turn(
+                    idempotency_key,
+                    request_id,
+                    latest,
+                    text,
+                    response,
+                    version,
+                    prompt_messages,
+                    turn_metadata,
+                    artifacts=artifact_result.persistence_records if artifact_result else [],
+                    consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
+                    workspace_files=workspace_result.persistence_records if workspace_result else [],
+                    consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
+                    party_turn=int(updated_state["meta"]["turn"]),
+                )
+            try:
+                self.record_trace_event(
+                    request_id=request_id,
+                    phase_key="turn_commit",
+                    alignment_key="turn_commit",
+                    lane="main",
+                    event_type="turn_commit",
+                    status="completed",
+                    payload={
+                        "output": {
+                            "turn_id": turn_id,
+                            "state_version": version,
+                            "party_turn": int(updated_state["meta"]["turn"]),
+                        }
+                    },
+                    party_turn=int(updated_state["meta"]["turn"]),
+                    turn_id=turn_id,
+                )
+            except Exception:  # noqa: BLE001 - revision-7 authority is already committed
+                if not revision_seven:
+                    raise
+                logger.exception("turn_commit_trace_failed request_id=%s", request_id)
+            if (
+                self.relationship_mechanics is not None
+                and self.settings.rp_contract_revision >= 4
+                and not fallback_noncanonical
+            ):
+                try:
+                    relationship_projection_before = self.trace_projection_snapshot()
+                    self.relationship_mechanics.advance_turn(int(updated_state["meta"]["turn"]))
+                    self.capture_projection_changes(
+                        request_id,
+                        relationship_projection_before,
+                        source="relationship_turn_advance",
+                        reason="post_commit_relationship_advance",
+                        lane="main",
+                    )
+                except Exception:  # noqa: BLE001 - revision-7 authority is already committed
+                    if not revision_seven:
+                        raise
+                    logger.exception(
+                        "postcommit_relationship_advance_failed request_id=%s",
+                        request_id,
+                    )
+            if not revision_seven:
+                self.store.complete_turn_request(idempotency_key, response)
             if self.settings.scenario_type == "rp" and not rp_no_checks:
                 self.store.record_check(turn_id, outcome)
-            self.store.audit(
-                "turn_complete",
-                {
-                    "request_id": request_id,
-                    "turn_id": turn_id,
-                    "campaign_id": self.settings.campaign_id,
-                    "duration_ms": duration_ms,
-                    "llm_calls": llm_calls,
-                    "model": self.settings.narrative_model,
-                    "validator_valid": final_validation.valid if final_validation is not None else None,
-                    "repair": repaired,
-                    "fallback_reason": provider_fallback_reason or gateway_fallback_reason,
-                    "provider_fallback_reason": provider_fallback_reason,
-                    "gateway_fallback_reason": gateway_fallback_reason,
-                    "check_id": outcome.check_id,
-                    "result": outcome.result,
-                },
-                request_id,
-            )
-            await self.after_turn_recorded(authorization, request_id)
+            if not revision_seven:
+                self.store.audit(
+                    "turn_complete",
+                    {
+                        "request_id": request_id,
+                        "turn_id": turn_id,
+                        "campaign_id": self.settings.campaign_id,
+                        "duration_ms": duration_ms,
+                        "llm_calls": llm_calls,
+                        "model": self.settings.narrative_model,
+                        "validator_valid": final_validation.valid if final_validation is not None else None,
+                        "repair": repaired,
+                        "fallback_reason": provider_fallback_reason or gateway_fallback_reason,
+                        "provider_fallback_reason": provider_fallback_reason,
+                        "gateway_fallback_reason": gateway_fallback_reason,
+                        "check_id": outcome.check_id,
+                        "result": outcome.result,
+                    },
+                    request_id,
+                )
+            try:
+                await self.after_turn_recorded(authorization, request_id)
+            except Exception:  # noqa: BLE001 - revision-7 authority is already committed
+                if not revision_seven:
+                    raise
+                logger.exception("postcommit_helpers_failed request_id=%s", request_id)
             return response
         except Exception as exc:
             self.store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
@@ -956,7 +1282,7 @@ class Adjudicator:
         return metadata
 
     def preview_applied_state(self, patch: Any) -> dict[str, Any]:
-        candidate = self.store.preview_patch(patch)
+        candidate = self.store.preview_patch(patch, trusted_internal=True)
         version = self.store.current_version() or int(candidate.get("meta", {}).get("state_version", 1))
         candidate.setdefault("meta", {})
         candidate["meta"]["state_version"] = version + 1
@@ -984,18 +1310,27 @@ class Adjudicator:
             self.settings.scenario_type,
         )
 
-    def provider_fallback_response(self, outcome: Outcome, text: str, reason: str, request_id: str) -> dict[str, Any]:
-        self.store.audit(
-            "llm_safe_fallback",
-            {
-                "request_id": request_id,
-                "check_id": outcome.check_id,
-                "model": self.settings.narrative_model,
-                "reason": reason,
-            },
-            request_id,
-        )
-        return {
+    def provider_fallback_response(
+        self,
+        outcome: Outcome,
+        text: str,
+        reason: str,
+        request_id: str,
+        *,
+        audit: bool = True,
+    ) -> dict[str, Any]:
+        if audit:
+            self.store.audit(
+                "llm_safe_fallback",
+                {
+                    "request_id": request_id,
+                    "check_id": outcome.check_id,
+                    "model": self.settings.narrative_model,
+                    "reason": reason,
+                },
+                request_id,
+            )
+        response = {
             "id": f"fallback-{outcome.check_id}",
             "object": "chat.completion",
             "created": int(time.time()),
@@ -1009,6 +1344,17 @@ class Adjudicator:
             ],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
+            if reason in {"timeout", "rate_limited"}:
+                public_reason = reason
+            elif re.fullmatch(r"http_4\d\d", reason):
+                public_reason = "http_client_error"
+            elif re.fullmatch(r"http_5\d\d", reason):
+                public_reason = "http_server_error"
+            else:
+                public_reason = "http_error"
+            response["gateway_fallback"] = {"reason": public_reason}
+        return response
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
         job_types = ["memory"]
@@ -1107,6 +1453,52 @@ class Adjudicator:
                 )
             return
         raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")
+
+    def authored_stable_affiliations(self) -> dict[str, str] | None:
+        contract = self.scene_contract if isinstance(self.scene_contract, dict) else {}
+        raw = contract.get("stable_affiliations")
+        if not isinstance(raw, dict):
+            return None
+        return {
+            str(character_id): affiliation
+            for character_id, affiliation in raw.items()
+            if isinstance(character_id, str)
+            and isinstance(affiliation, str)
+            and 0 < len(character_id) <= 128
+            and 0 < len(affiliation) <= 128
+        }
+
+    @staticmethod
+    def scene_legacy_operations(
+        state: dict[str, Any],
+        materialization: SceneMaterialization | None,
+        turn: int,
+    ) -> list[PatchOperation]:
+        if materialization is None:
+            return []
+        operations: list[PatchOperation] = []
+        characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
+        for scene_operation in materialization.applied_operations:
+            operation_type = scene_operation["type"]
+            if operation_type == "move_player":
+                path = "/player/location"
+                op = "replace" if "location" in state.get("player", {}) else "add"
+            else:
+                character_id = str(scene_operation["character_id"])
+                escaped = character_id.replace("~", "~0").replace("/", "~1")
+                path = f"/characters/{escaped}/location"
+                character = characters.get(character_id)
+                op = "replace" if isinstance(character, dict) and "location" in character else "add"
+            operations.append(
+                PatchOperation(
+                    op=op,
+                    path=path,
+                    value=scene_operation["location_id"],
+                    reason=f"Mirrors applied {operation_type} into the canonical legacy location field.",
+                    turn=turn,
+                )
+            )
+        return operations
 
     def relationship_pressure(
         self,
@@ -1251,13 +1643,30 @@ class Adjudicator:
 
         covered_through = int(story_memory.get("to_turn_id") or 0) if story_memory else 0
         messages = [
+            ChatMessage(role="system", content=scene_state_boundary_block(self.store.get_state())),
+            *[
             message
             for message in request.messages
             if message.role == "system"
             and isinstance(message.content, str)
             and message.content.startswith("PARTY_LORE_CARDS")
+            ],
         ]
-        raw_tail_turns = self.store.turns_for_memory(after_turn_id=covered_through)
+        all_turns = unresolved_noncanonical_fallback_turns(
+            self.store.get_state(),
+            self.store.turns_for_memory(include_noncanonical_fallback=True),
+        )
+        raw_tail_turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
+        unresolved_fallbacks = [
+            turn for turn in all_turns if turn.get("noncanonical_safe_fallback")
+        ]
+        raw_tail_turns = list(
+            {
+                int(turn["id"]): turn
+                for turn in [*unresolved_fallbacks, *raw_tail_turns]
+            }.values()
+        )
+        raw_tail_turns.sort(key=lambda turn: int(turn["id"]))
         for turn in raw_tail_turns:
             messages.append(ChatMessage(role="user", content=str(turn.get("player_message") or "")))
             messages.append(
