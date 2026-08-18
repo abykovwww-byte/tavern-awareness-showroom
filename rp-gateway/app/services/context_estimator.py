@@ -16,6 +16,27 @@ from app.services.state_store import StateStore
 TOKEN_CHARS = 2.5
 
 
+def recorded_prompt_assembly(
+    store: StateStore,
+    latest_turn: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Read the content-free assembly record committed with the selected prompt."""
+
+    turn_id = int((latest_turn or {}).get("id") or 0)
+    if turn_id <= 0:
+        return None
+    turns = store.turns_for_memory(
+        after_turn_id=turn_id - 1,
+        to_turn_id=turn_id,
+        limit=1,
+    )
+    if not turns or int(turns[0].get("id") or 0) != turn_id:
+        return None
+    metadata = turns[0].get("metadata")
+    value = metadata.get("prompt_assembly") if isinstance(metadata, dict) else None
+    return dict(value) if isinstance(value, dict) else None
+
+
 def estimate_party_context(
     store: StateStore,
     settings: Settings,
@@ -102,6 +123,8 @@ def estimate_party_context(
         "last_request_id": latest_turn.get("request_id") if latest_turn else None,
         "notes": notes_for_context(context_limit_tokens, omitted_history_turns_estimate, retained_history_messages),
     }
+    if settings.scenario_type == "rp" and settings.rp_contract_revision >= 7:
+        estimate["prompt_assembly"] = recorded_prompt_assembly(store, latest_turn)
     if settings.scenario_type == "rp":
         story_stats = RPStoryMemoryUpdater(settings, store).stats()
         estimate["rp_story_memory_tokens"] = estimate_tokens(story_memory_text) if story_memory_text else 0
@@ -215,6 +238,12 @@ def empty_recorded_context(
         "last_request_id": latest_turn.get("request_id") if latest_turn else None,
         "notes": [note],
     }
+    if (
+        settings.scenario_type == "rp"
+        and settings.rp_contract_revision >= 7
+        and store is not None
+    ):
+        estimate["prompt_assembly"] = recorded_prompt_assembly(store, latest_turn)
     if settings.scenario_type == "rp":
         story_stats = RPStoryMemoryUpdater(settings, store).stats() if store is not None else {}
         pending_threshold = int(

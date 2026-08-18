@@ -9,13 +9,14 @@ from typing import Any
 from app.core.json_patch import PatchError, apply_patch
 from app.models.schemas import ChatCompletionRequest, ChatMessage
 from app.services.context_budget import split_turns_by_token_budget
-from app.services.context_estimator import estimate_tokens
+from app.services.context_estimator import estimate_tokens, recorded_prompt_assembly
 from app.services.intent_parser import IntentParser
 from app.services.narrative import (
     NarrativeClient,
     PromptBudgetExceeded,
     archived_memory_retrieval_block,
     party_lore_cards_block,
+    prompt_assembly_diagnostics,
     uncompacted_archive_fallback_block,
 )
 from app.services.rule_engine import RuleEngine
@@ -44,6 +45,12 @@ class PromptInspector:
             except (TypeError, ValueError, json.JSONDecodeError):
                 messages = None
             if isinstance(messages, list) and all(isinstance(message, dict) for message in messages):
+                prompt_assembly = (
+                    recorded_prompt_assembly(self.store, latest_turn)
+                    if self.settings.scenario_type == "rp"
+                    and self.settings.rp_contract_revision >= 7
+                    else None
+                )
                 messages = self.public_messages(messages)
                 public_turn = dict(latest_turn)
                 public_turn["prompt_json"] = json.dumps(messages, ensure_ascii=False)
@@ -55,6 +62,7 @@ class PromptInspector:
                     source="recorded_last_turn",
                     dry_run=False,
                     turn=public_turn,
+                    prompt_assembly=prompt_assembly,
                 )
         if latest_turn:
             reconstructed = self.reconstruct_last_prompt(latest_turn)
@@ -86,6 +94,8 @@ class PromptInspector:
         rp_story_memory = self.rp_story_memory.prompt_snapshot() if self.rp_story_memory else None
         narrative = NarrativeClient(self.settings)
         token_budget = narrative.input_token_budget(request)
+        revision_seven = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
+        prompt_diagnostics: dict[str, Any] = {}
         try:
             messages = narrative.narrative_messages(
                 request,
@@ -94,6 +104,7 @@ class PromptInspector:
                 repair_instruction=None,
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
+                diagnostics=prompt_diagnostics if revision_seven else None,
             )
         except PromptBudgetExceeded as exc:
             covered_through = int(rp_story_memory.get("to_turn_id") or 0) if rp_story_memory else 0
@@ -132,6 +143,19 @@ class PromptInspector:
                 },
             }
         blocks = self.blocks(messages)
+        prompt_assembly = None
+        if revision_seven:
+            covered_through = int(
+                request._rp_story_memory_covered_through_turn_id or 0
+            )
+            prompt_assembly = prompt_assembly_diagnostics(
+                messages,
+                story_memory_covered_through_turn_id=covered_through,
+                raw_tail_turn_ids=turn_ids(
+                    self.store.turns_for_memory(after_turn_id=covered_through)
+                ),
+                omitted_blocks=prompt_diagnostics.get("omitted_blocks"),
+            )
         payload = self.payload(
             latest,
             messages,
@@ -140,6 +164,7 @@ class PromptInspector:
             dry_run=True,
             inspection=self.memory_inspection(latest),
             token_budget=token_budget,
+            prompt_assembly=prompt_assembly,
         )
         payload.update(
             {
@@ -193,6 +218,7 @@ class PromptInspector:
         turn: dict[str, Any] | None = None,
         inspection: dict[str, Any] | None = None,
         token_budget: int | None = None,
+        prompt_assembly: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         prompt_text = "\n".join(str(message.get("content") or "") for message in messages)
         actual_prompt_tokens = estimate_tokens(prompt_text)
@@ -209,6 +235,8 @@ class PromptInspector:
             "estimated_prompt_chars": sum(len(block["content"]) for block in blocks),
             "inspection": inspection,
         }
+        if prompt_assembly is not None:
+            payload["prompt_assembly"] = prompt_assembly
         if token_budget is not None:
             payload.update(
                 {
@@ -329,6 +357,8 @@ class PromptInspector:
         ]
 
     def system_block_label(self, content: str, index: int) -> tuple[str, str]:
+        if content.startswith("PROMPT_AUTHORITY_HIERARCHY"):
+            return "prompt_authority", "PROMPT_AUTHORITY_HIERARCHY"
         if content.startswith("LONG_TERM_PARTY_MEMORY"):
             return "long_term_memory", "LONG_TERM_PARTY_MEMORY"
         if content.startswith("RP_STORY_MEMORY"):

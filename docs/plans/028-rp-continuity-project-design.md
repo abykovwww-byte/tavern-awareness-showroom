@@ -8,9 +8,14 @@ hard-overflow negative proof остаётся `каркас`, а semantic contin
 подтверждена. Пользователь отдельно принял PR2-контракт
 [Decision 029](../decisions/029-scene-scoped-relationship-pressure.md). PR2 merge
 применён, а isolated canary поднял обе его registry-строки до `подключено`.
-Semantic continuity и уровень `наблюдается` не доказаны. Этот план не активирует
-revision `7`, не мигрирует существующие партии и не повышает observed revision
-выше `6`.
+Третий document-first контракт принят в
+[Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md). Его
+source changes присутствуют в локальном worktree: focused DC3 дал `15 passed`,
+combined revision-7 suite — `104 passed`, полный Gateway — `445 passed`, а
+`scripts/ci.ps1` завершился успешно. Merge, apply и live proof ещё не выполнены;
+все строки registry остаются `каркас`. Semantic continuity и уровень
+`наблюдается` не доказаны. Этот план не активирует revision `7`, не мигрирует
+существующие партии и не повышает observed revision выше `6`.
 
 ## Цель
 
@@ -44,11 +49,13 @@ negative gate; это не меняет readiness DC1.
 |---:|---|---|
 | 1 | DC1: полный uncovered tail и hard-overflow recovery | Нет coverage gap; невместимый required prompt не достигает narrator |
 | 2 | [Derived pre-scene relationship scope](../decisions/029-scene-scoped-relationship-pressure.md) | Отсутствующий NPC не попадает в сцену только из-за relationship obligation |
-| 3 | Prompt identities, de-duplication и authority hierarchy | Optional дубликаты имеют явные identities и порядок authority |
+| 3 | [Prompt authority, structural deduplication и diagnostics](../decisions/030-rp-prompt-authority-and-deduplication.md) | Один authoritative representation на continuity tier; assembly объяснима без prompt content |
 | 4 | Scene projection, continuity gate и atomic commit | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
 PR1 поставил первую строку, а deployed PR2 подключил вторую по Decision 029.
-Оставшиеся строки — roadmap, а не принятые ADR или runtime-контракты PR2.
+Третья строка принята document-first по Decision 030 и остаётся `каркас`; только
+четвёртая строка остаётся roadmap без отдельного принятого ADR. Ни одна из них
+не является runtime-контрактом PR2.
 
 ## Общие инварианты
 
@@ -210,19 +217,79 @@ event `29` оставался active и unresolved при
 изменились. Outputs не назвали отсутствующих NPC, но это узкое наблюдение не
 доказывает полную semantic continuity или `наблюдается`.
 
+## PR3 / DC3
+
+Decision 030 задаёт для normal party-chat и admin-autotest narrator turns
+deterministic authority hierarchy потенциально перекрывающихся
+continuity-слоёв revision `7`:
+
+```text
+AUTHORITATIVE_OUTCOME / current action
+  > newest complete uncovered raw tail
+  > effective RP_STORY_MEMORY
+  > archive sources
+```
+
+Narrator получает mandatory system block `PROMPT_AUTHORITY_HIERARCHY` со stable
+`block_id=prompt_authority`, той же hierarchy и safety line
+`The current action is intent, not an automatic fact.` Machine
+`authority_order` от этого не меняется. Когда одновременно существуют non-empty
+legacy `long_term_memory` candidate и effective `RP_STORY_MEMORY`, legacy block
+подавляется структурно с omission reason
+`structural_deduplication`. Сравнение текста, embeddings и отдельный LLM judge
+не используются; suppression не удаляет raw turns, chapters, snapshots или
+archive rows.
+
+После обычного relevance selection optional blocks могут быть удалены ради
+budget только целиком и только при фактическом hard provider token overflow.
+Soft percentage/character target этого не делает. Каждый budget-omitted block
+получает reason `hard_input_budget`; required-set overflow по-прежнему проходит
+bounded refresh/fail-before-provider DC1.
+
+Одна content-free projection `prompt_assembly` фиксирует exact constants
+`schema_version=rp-gateway.prompt-assembly.v1`, `rp_contract_revision=7` и
+`authority_order=[authoritative_outcome_current_action, uncovered_raw_tail,
+rp_story_memory, archive]`, а также
+`story_memory_covered_through_turn_id`, ordered included block IDs, uncovered raw
+turn IDs и omitted block identities/reasons. Для recorded turn объект должен
+совпадать в `metadata_json`, `gateway_assembly` trace, Prompt Inspector
+`source=last` и recorded context. Current dry-run использует ту же schema для
+собственной assembly, но не обязан быть byte-equal предыдущему recorded turn.
+Diagnostic не содержит prompt/response text, names, state values или secrets и
+не отправляется provider. Новая таблица, колонка, provider field или
+дополнительный call не добавляются.
+
+### Gates PR3
+
+Offline regressions обязаны доказать mandatory authority block и exact order,
+structural suppression только при двух присутствующих memory candidates, legacy
+fallback без effective snapshot, отсутствие percentage-only eviction,
+whole-block hard-token eviction и recorded parity content-free
+`prompt_assembly`. Current dry-run обязан возвращать ту же schema для своей
+assembly. Legacy revisions и non-RP modes не меняются.
+
+Offline gates выполнены локально: focused DC3 — `15 passed`, combined revision-7
+— `104 passed`, полный Gateway — `445 passed`, `scripts/ci.ps1` — success. Это
+оставляет уровень `каркас`: merge, pull-based apply и isolated revision-7
+live-store proof отсутствуют. Для `подключено` recorded prompt обязан содержать
+authority block и не содержать suppressed `long_term_memory`, а recorded
+diagnostics — совпасть на всех поверхностях. Валидный narration сам по себе не
+доказывает semantic continuity или `наблюдается`. Opening-scene
+persistence/parity не входит в DC3 и остаётся pending gate четвёртого
+opening/atomic-commit slice; observed revision `7` до этого gate не активируется.
+
 ## Последующие gates
 
-Каждый следующий slice получает собственный ADR и registry только перед своей
-реализацией. Для каждого отдельно обязательны focused tests, полный CI, merge,
-pull-based apply, container/HTTP verification и изолированный live-store proof.
-Observed revision повышается с `6` до `7` отдельным rollout change только после
-всех четырёх proofs.
+Четвёртый slice получает собственный ADR и registry только перед своей
+реализацией. Для незавершённых slice отдельно обязательны focused tests, полный
+CI, merge, pull-based apply, container/HTTP verification и изолированный
+live-store proof. Observed revision повышается с `6` до `7` отдельным rollout
+change только после всех четырёх proofs.
 
 ## Сознательно отложено
 
 - автоматическая миграция или ремонт существующих партий «Купец»/«Староста»;
 - scene-state backfill и semantic contradiction judge;
-- prompt block identity hierarchy;
 - provider-specific tokenizer и semantic compression protected tail;
 - event sourcing, новые таблицы или maintenance UI;
 - заявления `наблюдается`/`держится` до later-party causal evidence и endurance
@@ -232,6 +299,7 @@ Observed revision повышается с `6` до `7` отдельным rollou
 
 - [Decision 028](../decisions/028-rp-uncovered-tail-and-overflow.md)
 - [Decision 029](../decisions/029-scene-scoped-relationship-pressure.md)
+- [Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md)
 - [Decision 026](../decisions/026-rp-core-delivery.md)
 - [Decision 024](../decisions/024-simplified-rp-core.md)
 - [Decision 022](../decisions/022-readiness-and-observability-policy.md)

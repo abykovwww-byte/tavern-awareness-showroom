@@ -38,6 +38,110 @@ class PromptBudgetExceeded(RuntimeError):
         super().__init__("Required RP continuity context exceeds the provider input budget")
 
 
+PROMPT_ASSEMBLY_SCHEMA_VERSION = "rp-gateway.prompt-assembly.v1"
+PROMPT_ASSEMBLY_REVISION = 7
+PROMPT_AUTHORITY_ORDER = (
+    "authoritative_outcome_current_action",
+    "uncovered_raw_tail",
+    "rp_story_memory",
+    "archive",
+)
+PROMPT_SYSTEM_BLOCK_IDS = (
+    ("PROMPT_AUTHORITY_HIERARCHY", "prompt_authority"),
+    ("RP_STORY_MEMORY", "rp_story_memory"),
+    ("LONG_TERM_PARTY_MEMORY", "long_term_memory"),
+    ("WORLD_SYSTEM_PROMPT", "world_system_prompt"),
+    ("WORLD_AUTHORS_NOTE", "world_authors_note"),
+    ("ACTIVE_TRAINING_TURN_CONTRACT", "training_turn_contract"),
+    ("TRAINING_INTERACTION_CONTRACT", "training_interaction_contract"),
+    ("RELEVANT_CHARACTERS", "relevant_characters"),
+    ("RETRIEVED_ARCHIVE_SCENES", "retrieved_archive_scenes"),
+    ("UNCOMPACTED_ARCHIVE_FALLBACK", "uncompacted_archive_fallback"),
+    ("PARTY_LORE_CARDS", "party_lore_cards"),
+    ("WORLD_ABSOLUTE_RULES", "world_absolute_rules"),
+    ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
+    ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
+)
+
+
+def prompt_block_id(message: dict[str, Any], index: int) -> str:
+    """Return one content-free stable identity for an assembled prompt block."""
+
+    if message.get("role") != "system":
+        return "raw_turns"
+    content = str(message.get("content") or "")
+    for prefix, block_id in PROMPT_SYSTEM_BLOCK_IDS:
+        if content.startswith(prefix):
+            return block_id
+    if index == 0:
+        return "system_rules"
+    if content.startswith("Relevant state summary:"):
+        return "state_summary"
+    if "AUTHORITATIVE_OUTCOME" in content:
+        return "authoritative_outcome"
+    return "system_other"
+
+
+def prompt_block_ids(messages: list[dict[str, str]]) -> list[str]:
+    block_ids: list[str] = []
+    for index, message in enumerate(messages):
+        block_id = prompt_block_id(message, index)
+        if block_id not in block_ids:
+            block_ids.append(block_id)
+    return block_ids
+
+
+def prompt_assembly_diagnostics(
+    messages: list[dict[str, str]],
+    *,
+    story_memory_covered_through_turn_id: int,
+    raw_tail_turn_ids: list[int],
+    omitted_blocks: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical content-free revision-7 prompt assembly record."""
+
+    return {
+        "schema_version": PROMPT_ASSEMBLY_SCHEMA_VERSION,
+        "rp_contract_revision": PROMPT_ASSEMBLY_REVISION,
+        "authority_order": list(PROMPT_AUTHORITY_ORDER),
+        "story_memory_covered_through_turn_id": int(
+            story_memory_covered_through_turn_id or 0
+        ),
+        "included_block_ids": prompt_block_ids(messages),
+        "raw_tail_turn_ids": [int(turn_id) for turn_id in raw_tail_turn_ids],
+        "omitted_blocks": [
+            {
+                "block_id": str(item.get("block_id") or ""),
+                "reason": str(item.get("reason") or ""),
+            }
+            for item in (omitted_blocks or [])
+            if item.get("block_id") and item.get("reason")
+        ],
+    }
+
+
+def record_prompt_omission(
+    diagnostics: dict[str, Any] | None,
+    *,
+    block_id: str,
+    reason: str,
+) -> None:
+    if diagnostics is None:
+        return
+    omitted = diagnostics.setdefault("omitted_blocks", [])
+    item = {"block_id": block_id, "reason": reason}
+    if isinstance(omitted, list) and item not in omitted:
+        omitted.append(item)
+
+
+def prompt_authority_block() -> str:
+    return (
+        "PROMPT_AUTHORITY_HIERARCHY\n"
+        "authoritative_outcome_current_action > uncovered_raw_tail > rp_story_memory > archive\n"
+        "The current action is intent, not an automatic fact."
+    )
+
+
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     output_rules = [
         "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences.",
@@ -488,7 +592,14 @@ class NarrativeClient:
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
+        diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
+        revision_seven = (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= PROMPT_ASSEMBLY_REVISION
+        )
+        if revision_seven and diagnostics is not None:
+            diagnostics.clear()
         relevant_characters = retrieve_relevant_characters(
             state,
             latest_player_action(request.messages),
@@ -520,6 +631,8 @@ class NarrativeClient:
         messages = [
             {"role": "system", "content": rules},
         ]
+        if revision_seven:
+            messages.append({"role": "system", "content": prompt_authority_block()})
         if self.settings.world_system_prompt:
             messages.append(
                 {
@@ -553,8 +666,14 @@ class NarrativeClient:
             )
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
-        if memory_summary:
+        if memory_summary and not (revision_seven and rp_story_memory):
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
+        elif memory_summary and revision_seven and rp_story_memory:
+            record_prompt_omission(
+                diagnostics,
+                block_id="long_term_memory",
+                reason="structural_deduplication",
+            )
         # Keep the immutable rules/world prefix followed by the growing transcript.
         # Providers with implicit prompt caches can then reuse both across turns.
         request_messages = [message for message in request.messages if isinstance(message.content, str)]
@@ -602,6 +721,7 @@ class NarrativeClient:
             fail_on_token_overflow=(
                 self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
             ),
+            diagnostics=diagnostics if revision_seven else None,
         )
 
     def apply_prompt_cache_policy(self, payload: dict[str, Any]) -> None:
@@ -661,6 +781,8 @@ class NarrativeClient:
                 ),
             }
         ]
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
+            messages.append({"role": "system", "content": prompt_authority_block()})
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
@@ -860,6 +982,7 @@ def fit_messages_to_context(
     max_prompt_chars: int | None = None,
     protect_history: bool = False,
     fail_on_token_overflow: bool = False,
+    diagnostics: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """Keep the latest action and mandatory instructions inside the real provider input budget."""
     fitted = [dict(message) for message in messages]
@@ -891,7 +1014,12 @@ def fit_messages_to_context(
                 None,
             )
             if trim_index is not None:
-                fitted.pop(trim_index)
+                removed = fitted.pop(trim_index)
+                record_prompt_omission(
+                    diagnostics,
+                    block_id=prompt_block_id(removed, trim_index),
+                    reason="hard_input_budget",
+                )
                 continue
             if fail_on_token_overflow:
                 raise PromptBudgetExceeded(

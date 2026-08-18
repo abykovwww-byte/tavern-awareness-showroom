@@ -20,6 +20,7 @@ from app.services.narrative import (
     PromptBudgetExceeded,
     ProviderRateLimitError,
     archived_memory_retrieval_block,
+    prompt_assembly_diagnostics,
     response_text,
     with_text,
 )
@@ -281,6 +282,7 @@ class Adjudicator:
             gateway_fallback_reason: str | None = None
             transport_status = "ok"
             prompt_messages: list[dict[str, str]] | None = None
+            prompt_assembly: dict[str, Any] | None = None
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
             try:
@@ -301,6 +303,8 @@ class Adjudicator:
                 rp_story_memory: dict[str, Any] | None = None
                 story_snapshot_id: int | None = None
                 story_coverage = 0
+                raw_tail_turn_ids: list[int] = []
+                prompt_diagnostics: dict[str, Any] = {}
 
                 def assemble_prompt() -> list[dict[str, str]]:
                     return self.narrative.narrative_messages(
@@ -313,6 +317,7 @@ class Adjudicator:
                         artifact_contract=interaction_contract,
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
+                        diagnostics=prompt_diagnostics if revision_seven else None,
                     )
 
                 refresh_attempted = False
@@ -330,7 +335,7 @@ class Adjudicator:
                                 else None
                             )
                             if revision_seven:
-                                story_snapshot_id, story_coverage = (
+                                story_snapshot_id, story_coverage, raw_tail_turn_ids = (
                                     self.rebuild_revision_seven_request(
                                         request,
                                         rp_story_memory,
@@ -469,6 +474,22 @@ class Adjudicator:
                             request_id,
                         )
                     break
+                if revision_seven:
+                    prompt_assembly = prompt_assembly_diagnostics(
+                        prompt_messages,
+                        story_memory_covered_through_turn_id=story_coverage,
+                        raw_tail_turn_ids=raw_tail_turn_ids,
+                        omitted_blocks=prompt_diagnostics.get("omitted_blocks"),
+                    )
+                assembly_details: dict[str, Any] = {
+                    "message_count": len(prompt_messages),
+                    "relationship_pressure_included": bool(relationship_pressure),
+                    "training_turn_contract_included": bool(training_turn_contract),
+                    "interaction_contract_included": bool(interaction_contract),
+                    "assembly_trace": self.prompt_assembly_trace(prompt_messages, latest),
+                }
+                if prompt_assembly is not None:
+                    assembly_details["prompt_assembly"] = prompt_assembly
                 self.record_trace_event(
                     request_id=request_id,
                     phase_key="gateway_assembly",
@@ -479,13 +500,7 @@ class Adjudicator:
                     payload={
                         "capture_status": "complete",
                         "input": {"messages": prompt_messages},
-                        "details": {
-                            "message_count": len(prompt_messages),
-                            "relationship_pressure_included": bool(relationship_pressure),
-                            "training_turn_contract_included": bool(training_turn_contract),
-                            "interaction_contract_included": bool(interaction_contract),
-                            "assembly_trace": self.prompt_assembly_trace(prompt_messages, latest),
-                        },
+                        "details": assembly_details,
                     },
                     party_turn=expected_party_turn,
                 )
@@ -794,6 +809,19 @@ class Adjudicator:
                 },
                 party_turn=int(updated_state["meta"]["turn"]),
             )
+            turn_metadata = self.turn_metadata(
+                turn_kind="narrative",
+                validator_valid=final_validation.valid if final_validation is not None else None,
+                repaired=repaired,
+                fallback_reason=provider_fallback_reason or gateway_fallback_reason,
+                transport_status=transport_status,
+                outcome=outcome.model_dump(mode="json"),
+                llm_calls=llm_calls,
+                interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
+                story_memory_corrections=normalized_story_corrections,
+            )
+            if prompt_assembly is not None:
+                turn_metadata["prompt_assembly"] = prompt_assembly
             turn_id = self.store.record_turn(
                 idempotency_key,
                 request_id,
@@ -802,17 +830,7 @@ class Adjudicator:
                 response,
                 version,
                 prompt_messages,
-                self.turn_metadata(
-                    turn_kind="narrative",
-                    validator_valid=final_validation.valid if final_validation is not None else None,
-                    repaired=repaired,
-                    fallback_reason=provider_fallback_reason or gateway_fallback_reason,
-                    transport_status=transport_status,
-                    outcome=outcome.model_dump(mode="json"),
-                    llm_calls=llm_calls,
-                    interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
-                    story_memory_corrections=normalized_story_corrections,
-                ),
+                turn_metadata,
                 artifacts=artifact_result.persistence_records if artifact_result else [],
                 consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
                 workspace_files=workspace_result.persistence_records if workspace_result else [],
@@ -1228,7 +1246,7 @@ class Adjudicator:
         request: ChatCompletionRequest,
         story_memory: dict[str, Any] | None,
         current_action: str,
-    ) -> tuple[int | None, int]:
+    ) -> tuple[int | None, int, list[int]]:
         """Align the protected raw tail with one effective story-memory snapshot."""
 
         covered_through = int(story_memory.get("to_turn_id") or 0) if story_memory else 0
@@ -1239,7 +1257,8 @@ class Adjudicator:
             and isinstance(message.content, str)
             and message.content.startswith("PARTY_LORE_CARDS")
         ]
-        for turn in self.store.turns_for_memory(after_turn_id=covered_through):
+        raw_tail_turns = self.store.turns_for_memory(after_turn_id=covered_through)
+        for turn in raw_tail_turns:
             messages.append(ChatMessage(role="user", content=str(turn.get("player_message") or "")))
             messages.append(
                 ChatMessage(role="assistant", content=str(turn.get("narrative_response") or ""))
@@ -1266,7 +1285,7 @@ class Adjudicator:
         request._latest_player_action = current_action
         request._rp_story_memory_snapshot_id = snapshot_id
         request._rp_story_memory_covered_through_turn_id = covered_through
-        return snapshot_id, covered_through
+        return snapshot_id, covered_through, [int(turn["id"]) for turn in raw_tail_turns]
 
     def latest_user_message(self, request: ChatCompletionRequest) -> str:
         for message in reversed(request.messages):
