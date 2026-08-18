@@ -6,10 +6,11 @@
 поднял требования полного uncovered tail и revision stamp до `подключено`, но
 hard-overflow negative proof остаётся `каркас`, а semantic continuity не
 подтверждена. Пользователь отдельно принял PR2-контракт
-[Decision 029](../decisions/029-scene-scoped-relationship-pressure.md); его source
-и offline regressions завершены локально, а merge, deploy и live proof ещё нет. Этот план не
-активирует revision `7`, не мигрирует существующие партии и не повышает observed
-revision выше `6`.
+[Decision 029](../decisions/029-scene-scoped-relationship-pressure.md). PR2 merge
+применён, а isolated canary поднял обе его registry-строки до `подключено`.
+Semantic continuity и уровень `наблюдается` не доказаны. Этот план не активирует
+revision `7`, не мигрирует существующие партии и не повышает observed revision
+выше `6`.
 
 ## Цель
 
@@ -46,8 +47,8 @@ negative gate; это не меняет readiness DC1.
 | 3 | Prompt identities, de-duplication и authority hierarchy | Optional дубликаты имеют явные identities и порядок authority |
 | 4 | Scene projection, continuity gate и atomic commit | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
-PR1 поставляет только первую строку. Для второй строки принят Decision 029;
-оставшиеся строки — roadmap, а не принятые ADR или runtime-контракты PR2.
+PR1 поставил первую строку, а deployed PR2 подключил вторую по Decision 029.
+Оставшиеся строки — roadmap, а не принятые ADR или runtime-контракты PR2.
 
 ## Общие инварианты
 
@@ -193,6 +194,22 @@ pressure, а authoritative relationship rows — подтверждать, чт�
 `favour` осталось active. Обычный source state «Купца»/«Старосты», где почти все
 modeled NPC перечислены в `active_threads`, сам по себе этого не доказывает.
 
+Deployed merge `fb13eecd56351d885e3309f6464a7d3a2e2b04e3` прошёл apply
+2026-08-18 11:36:50 MSK и container gate `429 passed, 1 skipped`.
+`autotest_53d37c3afef0` создал revision-7 branch `branch_9b616d225e4e` от
+revision-6 source fixture и завершил `2/2` ходов без fallback или terminal error.
+Warm-up с одним validation repair только материализовал `favour` event Бажены
+`29`; proof turn выполнил один narrator call без repair.
+
+На proof turn игрок и Милена были в `red-clay-ravine`, а Бажена оставалась в
+`olshanitsa-village` и active thread без action alias или `Outcome.target`.
+Recorded prompt содержал один relationship system-block с Миленой; Бажена,
+Радогост, due header и private numeric/JSON fields отсутствовали. После omission
+event `29` оставался active и unresolved при
+`due_turn=10 <= party_turn=13`; source state и six-table structural hash не
+изменились. Outputs не назвали отсутствующих NPC, но это узкое наблюдение не
+доказывает полную semantic continuity или `наблюдается`.
+
 ## Последующие gates
 
 Каждый следующий slice получает собственный ADR и registry только перед своей
@@ -208,7 +225,8 @@ Observed revision повышается с `6` до `7` отдельным rollou
 - prompt block identity hierarchy;
 - provider-specific tokenizer и semantic compression protected tail;
 - event sourcing, новые таблицы или maintenance UI;
-- заявления `наблюдается`/`держится` до live evidence и endurance run.
+- заявления `наблюдается`/`держится` до later-party causal evidence и endurance
+  run.
 
 ## Источники
 

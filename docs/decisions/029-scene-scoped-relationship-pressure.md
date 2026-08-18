@@ -7,10 +7,12 @@
 **Decision status: Accepted.** Пользователь явно поручил второй delivery slice
 [Plan 028](../plans/028-rp-continuity-project-design.md).
 
-**Delivery status:** `каркас`. Source integration и focused offline regressions
-завершены локально; PR merge, deploy и live causal proof ещё не завершены и
-зафиксированы в [`registry/029.yml`](registry/029.yml). Revision `7` остаётся
-candidate, observed revision — `6`.
+**Delivery status:** `подключено` для обеих строк
+[`registry/029.yml`](registry/029.yml). Merge
+`fb13eecd56351d885e3309f6464a7d3a2e2b04e3` применён на сервере, а deployed
+isolated canary подтвердил prompt filtering и durable omission в реальном тракте
+хода. Это не уровень `наблюдается` и не доказательство полной semantic
+continuity. Revision `7` остаётся candidate, observed revision — `6`.
 
 ## Context
 
@@ -111,6 +113,41 @@ warm-up turn либо явно задокументированного bootstra
 и после omission должны подтвердить, что отсутствующее due obligation осталось
 active. Один validator status или семантически правдоподобный ответ модели этого
 не доказывает.
+
+Merge `fb13eecd56351d885e3309f6464a7d3a2e2b04e3` применён
+2026-08-18 11:36:50 MSK; контейнерный набор завершился результатом
+`429 passed, 1 skipped`. Source fixture `party_56b358768466` осталась на revision
+`6`. Checkpoint `43` скопировал state version `12` и source prefix по turn
+`1453`; branch `branch_9b616d225e4e` с campaign identity
+`party_56b358768466--branch_9b616d225e4e` сохранила revision `7`.
+`autotest_53d37c3afef0` завершил два хода из двух без fallback и terminal error.
+
+Warm-up turn `1458` после одного validation repair материализовал exact mutation
+`100`: для отсутствующей Бажены появился `favour` event `29` со status `active`,
+`opened_turn=0` и `due_turn=10`. Этот repaired warm-up использовался только для
+подготовки derived rows и не считался proof turn. На proof turn `1459`
+(`party_turn=13`) был один narrator call без repair. Игрок и Милена находились в
+`red-clay-ravine`; Бажена с canonical location `olshanitsa-village` оставалась
+участницей active thread, но не была названа действием и не являлась
+`Outcome.target`.
+
+Recorded proof prompt содержал один relationship system-block, в котором
+присутствовала Милена. Aliases и storage ID Бажены, а также Радогост и due-event
+header отсутствовали; private numeric/JSON fields не раскрылись, current action
+остался последним.
+После хода event `29` остался `active` и unresolved, все resolution fields —
+`null`, а `due_turn=10` оставался меньше либо равен proof turn `13`. Source state
+version `12`, turn `11` и SHA-256
+`16cbf2c6125fc577550c4cb3dd1c75fe0506bb500a7337cb4713cbb4d7021e83`, а также
+полный six-table structural hash (`turns`, `state_versions` и derived tables) не
+изменились. Нормализованный branch prefix
+совпал с checkpoint; различался только глобальный `turns.id`, остальные
+одиннадцать полей совпали.
+
+Оба narrator outputs не назвали Бажену или Радогоста, а proof output назвал
+Милену. Это узкое semantic observation согласуется с recorded prompt, но не
+доказывает исправленную continuity, уровень `наблюдается` или готовность
+revision `7` к observed rollout.
 
 ## Consequences
 
