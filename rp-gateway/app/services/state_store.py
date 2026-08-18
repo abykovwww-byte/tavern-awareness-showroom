@@ -1638,6 +1638,28 @@ class StateStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def turn_metadata(self, turn_id: int) -> dict[str, Any]:
+        """Read stored metadata without applying narrative-memory eligibility rules."""
+
+        if turn_id <= 0:
+            return {}
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT metadata_json
+                FROM turns
+                WHERE campaign_id = ? AND id = ?
+                """,
+                (self.campaign_id, turn_id),
+            ).fetchone()
+        if row is None or not row["metadata_json"]:
+            return {}
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return metadata if isinstance(metadata, dict) else {}
+
     def turns_before(self, turn_id: int, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

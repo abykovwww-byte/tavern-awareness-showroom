@@ -25,16 +25,8 @@ def recorded_prompt_assembly(
     turn_id = int((latest_turn or {}).get("id") or 0)
     if turn_id <= 0:
         return None
-    turns = store.turns_for_memory(
-        after_turn_id=turn_id - 1,
-        to_turn_id=turn_id,
-        limit=1,
-        include_noncanonical_fallback=True,
-    )
-    if not turns or int(turns[0].get("id") or 0) != turn_id:
-        return None
-    metadata = turns[0].get("metadata")
-    value = metadata.get("prompt_assembly") if isinstance(metadata, dict) else None
+    metadata = store.turn_metadata(turn_id)
+    value = metadata.get("prompt_assembly")
     return dict(value) if isinstance(value, dict) else None
 
 

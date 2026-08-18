@@ -14,9 +14,29 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome, Part
 from app.services.adjudicator import Adjudicator
 from app.services.context_budget import estimate_tokens
 from app.services.context_estimator import estimate_party_context
-from app.services.narrative import NarrativeClient, fit_messages_to_context
+from app.services.narrative import (
+    PROMPT_SYSTEM_BLOCK_IDS,
+    NarrativeClient,
+    archived_memory_retrieval_block,
+    fit_messages_to_context,
+    long_term_memory_block,
+    party_lore_cards_block,
+    prompt_authority_block,
+    prompt_block_id,
+    prompt_block_ids,
+    relevant_characters_block,
+    rp_story_memory_block,
+    scene_reanchor_prompt_block,
+    scene_state_prompt_block,
+    training_artifact_prompt_block,
+    training_turn_prompt_block,
+    uncompacted_archive_fallback_block,
+    world_absolute_rules_block,
+)
 from app.services.prompt_tools import PromptInspector
+from app.services.relationships import RelationshipMechanics
 from app.services.rp_story_memory import empty_story_memory
+from app.services.scene_state import initial_scene_state
 from app.services.state_store import StateStore
 from test_gateway import base_state
 
@@ -37,49 +57,8 @@ PROMPT_ASSEMBLY_KEYS = {
     "raw_tail_turn_ids",
     "omitted_blocks",
 }
-SYSTEM_BLOCK_IDS = (
-    ("PROMPT_AUTHORITY_HIERARCHY", "prompt_authority"),
-    ("LONG_TERM_PARTY_MEMORY", "long_term_memory"),
-    ("RP_STORY_MEMORY", "rp_story_memory"),
-    ("WORLD_SYSTEM_PROMPT", "world_system_prompt"),
-    ("WORLD_AUTHORS_NOTE", "world_authors_note"),
-    ("RELEVANT_CHARACTERS", "relevant_characters"),
-    ("RETRIEVED_ARCHIVE_SCENES", "retrieved_archive_scenes"),
-    ("UNCOMPACTED_ARCHIVE_FALLBACK", "uncompacted_archive_fallback"),
-    ("PARTY_LORE_CARDS", "party_lore_cards"),
-    ("WORLD_ABSOLUTE_RULES", "world_absolute_rules"),
-    ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
-    ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
-    ("ACTIVE_TRAINING_TURN_CONTRACT", "training_turn_contract"),
-    ("TRAINING_INTERACTION_CONTRACT", "training_interaction_contract"),
-    ("SCENE_STATE_CONTRACT", "scene_state_contract"),
-    ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
-)
-
-
-def prompt_block_id(message: dict[str, Any], index: int) -> str:
-    if message.get("role") != "system":
-        return "raw_turns"
-    content = str(message.get("content") or "")
-    if index == 0:
-        return "system_rules"
-    for prefix, block_id in SYSTEM_BLOCK_IDS:
-        if content.startswith(prefix):
-            return block_id
-    if content.startswith("Relevant state summary:"):
-        return "state_summary"
-    if "AUTHORITATIVE_OUTCOME" in content:
-        return "authoritative_outcome"
-    return "system_other"
-
-
 def expected_prompt_block_ids(messages: list[dict[str, Any]]) -> list[str]:
-    result: list[str] = []
-    for index, message in enumerate(messages):
-        block_id = prompt_block_id(message, index)
-        if block_id not in result:
-            result.append(block_id)
-    return result
+    return prompt_block_ids(messages)
 
 
 def assert_prompt_assembly_schema(value: dict[str, Any]) -> None:
@@ -282,6 +261,126 @@ def test_revision_seven_hard_budget_eviction_is_whole_block_with_exact_reasons()
     assert soft_diagnostics.get("omitted_blocks", []) == []
 
 
+def test_registered_prompt_block_ids_match_their_real_emitters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = base_state()
+    state["world_constraints"] = [
+        {"id": "rule-1", "kind": "absolute", "source": "worldpack", "text": "Hold."}
+    ]
+    stale_state = json.loads(json.dumps(state))
+    stale_scene = initial_scene_state(stale_state)
+    stale_scene.update({"stale": True, "stale_reason": "world_change"})
+    stale_state["scene_state"] = stale_scene
+
+    store = make_store(tmp_path, "prompt-block-emitters", turn=1)
+    relationships = RelationshipMechanics(store, {}, rp_contract_revision=7)
+    monkeypatch.setattr(
+        relationships.store,
+        "pressure_rows",
+        lambda _party_turn: [
+            {
+                "character_id": "advisor",
+                "axis": "loyalty",
+                "band": "steady",
+                "causes": [{"weight": 1}],
+                "events": [],
+            }
+        ],
+    )
+    monkeypatch.setattr(relationships, "_band", lambda *_args: {"label": "steady"})
+    monkeypatch.setattr(
+        relationships,
+        "_qualitative_cause_pressure",
+        lambda _causes: "recent cause",
+    )
+    relationship_pressure = relationships.pressure_block(
+        1,
+        {"advisor": "Advisor"},
+        persist_seed_state=False,
+        character_ids={"advisor"},
+    )
+    relationship_resolution = relationships.resolved_event_block(
+        [
+            {
+                "action": "resolved",
+                "character_id": "advisor",
+                "event_id": "favour",
+                "resolution": "delivered",
+            }
+        ],
+        {"advisor": "Advisor"},
+    )
+
+    world_settings = replace(
+        revision_seven_settings("prompt-block-emitters"),
+        world_authors_note="Author note",
+    )
+    world_messages = NarrativeClient(world_settings).narrative_messages(
+        narrative_request(),
+        state,
+        neutral_outcome(),
+        repair_instruction=None,
+    )
+    world_system = next(
+        message["content"]
+        for message in world_messages
+        if message["content"].startswith("WORLD_SYSTEM_PROMPT")
+    )
+    world_authors_note = next(
+        message["content"]
+        for message in world_messages
+        if message["content"].startswith("WORLD_AUTHORS_NOTE")
+    )
+
+    reanchor = scene_reanchor_prompt_block(stale_state)
+    emitted_blocks = {
+        "prompt_authority": prompt_authority_block(),
+        "rp_story_memory": rp_story_memory_block(story_snapshot(), 10_000, 7),
+        "long_term_memory": long_term_memory_block(legacy_memory_summary()),
+        "world_system_prompt": world_system,
+        "world_authors_note": world_authors_note,
+        "training_turn_contract": training_turn_prompt_block({}),
+        "training_interaction_contract": training_artifact_prompt_block({}),
+        "relevant_characters": relevant_characters_block([{"id": "advisor"}]),
+        "retrieved_archive_scenes": archived_memory_retrieval_block(
+            [{"id": 1, "player_message": "ask", "narrative_response": "answer"}],
+            1_000,
+        ),
+        "uncompacted_archive_fallback": uncompacted_archive_fallback_block(
+            [{"id": 1, "player_message": "ask", "narrative_response": "answer"}],
+            1_000,
+        ),
+        "party_lore_cards": party_lore_cards_block(
+            [
+                {
+                    "id": "card-1",
+                    "title": "Card",
+                    "content": "Fact",
+                    "keywords": ["fact"],
+                    "source_turn_ids": [1],
+                }
+            ]
+        ),
+        "world_absolute_rules": world_absolute_rules_block(state),
+        "relationship_pressure": relationship_pressure,
+        "relationship_event_resolution": relationship_resolution,
+        "scene_state_contract": scene_state_prompt_block(state),
+        "scene_reanchor_baseline": reanchor,
+    }
+
+    assert len(PROMPT_SYSTEM_BLOCK_IDS) == len(emitted_blocks)
+    assert len({block_id for _prefix, block_id in PROMPT_SYSTEM_BLOCK_IDS}) == len(
+        PROMPT_SYSTEM_BLOCK_IDS
+    )
+    for prefix, expected_id in PROMPT_SYSTEM_BLOCK_IDS:
+        content = emitted_blocks[expected_id]
+        assert isinstance(content, str) and content
+        assert content.startswith(prefix)
+        assert prompt_block_id({"role": "system", "content": content}, 1) == expected_id
+
+
 def test_revision_seven_recorded_prompt_assembly_is_content_free_and_matches_all_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -376,6 +475,72 @@ def test_revision_seven_recorded_prompt_assembly_is_content_free_and_matches_all
     assert_prompt_assembly_schema(current_assembly)
     assert current_assembly != recorded
     assert current_assembly["raw_tail_turn_ids"] == [*turn_ids[1:], committed_turn_id]
+
+
+def test_excluded_latest_turn_keeps_recorded_prompt_assembly_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign_id = "prompt-authority-excluded-turn"
+    store = make_store(tmp_path, campaign_id, turn=1)
+    record_history(store, 1)
+    settings = revision_seven_settings(campaign_id)
+    request_id = "req_prompt_authority_excluded_turn"
+
+    run_recorded_turn(
+        store,
+        settings,
+        current_action="record a diagnostic before rollback",
+        idempotency_key="prompt-authority-excluded-turn",
+        request_id=request_id,
+        monkeypatch=monkeypatch,
+    )
+    _prompt, metadata, _trace, _response, committed_turn_id = recorded_prompt_evidence(
+        store, request_id
+    )
+    recorded = metadata["prompt_assembly"]
+    assert store.current_version() > 1
+
+    store.rollback(target_version=1, scene_state_enabled=True)
+
+    with store.connect() as connection:
+        excluded = connection.execute(
+            """
+            SELECT excluded_from_memory, metadata_json
+            FROM turns
+            WHERE campaign_id = ? AND id = ?
+            """,
+            (campaign_id, committed_turn_id),
+        ).fetchone()
+    assert excluded is not None
+    assert int(excluded["excluded_from_memory"]) == 1
+    assert json.loads(excluded["metadata_json"])["rollback_excluded"] is True
+    assert all(
+        int(turn["id"]) != committed_turn_id
+        for turn in store.turns_for_memory(to_turn_id=committed_turn_id)
+    )
+    assert all(
+        int(turn["id"]) != committed_turn_id
+        for turn in store.turns_for_memory(
+            to_turn_id=committed_turn_id,
+            include_noncanonical_fallback=True,
+        )
+    )
+
+    last_preview = PromptInspector(settings, store).preview("", source="last")
+    context = estimate_party_context(store, settings, None)
+
+    assert last_preview["source"] == "recorded_last_turn"
+    assert last_preview["prompt_assembly"] == recorded
+    assert context["prompt_source"] == "recorded_last_turn"
+    assert context["prompt_assembly"] == recorded
+    public_diagnostics = json.dumps(
+        {"preview": last_preview, "context": context},
+        ensure_ascii=False,
+    )
+    assert "rollback_excluded" not in public_diagnostics
+    assert "applied_scene_delta" not in public_diagnostics
+    assert "dropped_scene_delta" not in public_diagnostics
 
 
 def test_revision_seven_without_story_snapshot_keeps_long_term_memory(

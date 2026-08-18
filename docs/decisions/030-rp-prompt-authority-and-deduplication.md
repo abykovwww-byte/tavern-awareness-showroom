@@ -10,8 +10,10 @@
 — `104 passed`, полный Gateway — `445 passed`, а `scripts/ci.ps1` завершился
 успешно. Основной source contract достиг applied candidate runtime, и isolated
 live canary подключил первую строку registry. Branch-aware read-only diagnostics
-follow-up реализован локально: focused дал `4 passed`, полный Gateway —
-`449 passed`, `scripts/ci.ps1` — success; merge, apply и live proof ещё нет.
+follow-up merged в PR59 и applied; exact isolated-branch parity live ещё не
+доказана. Текущий narrow hardening excluded-turn metadata и emitter-to-ID
+contract дал focused `17 passed`; merge, apply и live proof этого follow-up пока
+отсутствуют.
 
 **Delivery status:** первая строка [`registry/030.yml`](registry/030.yml) имеет
 уровень `подключено`; hard-budget eviction и cross-surface diagnostics parity
@@ -138,14 +140,25 @@ prompt/response text, character names, state values, secrets или provider
 payload.
 
 Один и тот же объект под ключом `prompt_assembly` используется для normal
-party-chat/admin-autotest turns в Prompt Inspector, context diagnostics,
-`gateway_assembly` trace detail и `metadata_json` committed turn. Для
-сохранённого хода значения в turn metadata,
-Prompt Inspector с `source=last` и recorded context обязаны совпадать. Current
-dry-run preview вычисляет ту же schema для собственной текущей assembly; он не
-обязан быть byte-equal diagnostic предыдущего recorded turn. Existing access
-control и sanitization сохраняются: diagnostic не раскрывает hidden relationship
-content и не становится runtime authority.
+party-chat/admin-autotest turns в JSON/API ответе Prompt Inspector, context
+diagnostics, `gateway_assembly` trace detail и `metadata_json` committed turn.
+Для сохранённого хода значения в turn metadata, Prompt Inspector с
+`source=last` и recorded context обязаны совпадать даже после
+`excluded_from_memory=1`: memory eligibility не удаляет content-free audit
+metadata. Current dry-run preview вычисляет ту же schema для собственной
+текущей assembly; он не обязан быть byte-equal diagnostic предыдущего recorded
+turn. Existing access control и sanitization сохраняются: diagnostic не
+раскрывает hidden relationship content и не становится runtime authority.
+
+`prompt_assembly` и committed `prompt_json` описывают initial full narrator
+assembly и transport retries с теми же messages. Compact validation-repair
+является отдельной provider attempt и не заменяет эти две recorded surfaces;
+его exact input остаётся доступен отдельно в private admin Turn Trace. Поэтому
+`prompt_assembly` нельзя трактовать как описание последней repair attempt.
+
+Проекция возвращается только JSON-полями `preview.prompt_assembly` и
+`context.prompt_assembly`. Отдельного renderer или branch selector для неё в
+Light GUI, shared UI и Showcase в этом slice нет.
 
 Новая таблица, колонка, provider request field или дополнительный provider call
 не добавляются. Diagnostic хранится в существующих JSON metadata/trace payload;
@@ -173,9 +186,9 @@ settings и persisted branch revision, а в ответе возвращает �
 Оба endpoint остаются read-only: не создают provider call, turn, snapshot или
 ветку и не меняют source/branch state. Этот wiring нужен для live-проверки
 третьей строки registry, но сам по себе не доказывает cross-surface parity.
-Локальная реализация, четыре focused regression, полный Gateway `449 passed` и
-repository CI присутствуют; merge, apply и live proof follow-up пока
-отсутствуют, поэтому его readiness остаётся `каркас`.
+Реализация, четыре focused regression, полный Gateway `449 passed` и repository
+CI merged в PR59 и applied. Exact isolated-branch cross-surface live proof пока
+отсутствует, поэтому readiness третьей registry-строки остаётся `каркас`.
 
 ## Verification boundary
 
@@ -193,6 +206,10 @@ Focused offline regressions должны доказать:
   token overflow;
 - parity одного content-free `prompt_assembly` между committed turn metadata,
   Prompt Inspector `source=last`, recorded context и `gateway_assembly` trace;
+- сохранение этой parity после `excluded_from_memory=1` без возврата хода в
+  story-memory/archive eligibility;
+- соответствие каждого registered stable block ID output реального emitter, а
+  не тестовой копии prefix table;
 - ту же exact schema для current dry-run preview без требования byte equality с
   предыдущим recorded turn;
 - отсутствие prompt text, response text, character names, state values и
@@ -217,22 +234,22 @@ combined source projections SHA
 строку до `подключено` и не является semantic-output proof.
 
 Canary не входил в фактический hard provider token overflow, поэтому вторая
-строка остаётся `каркас`. Branch-aware diagnostics пока реализован и проверен
-только локально; applied exact parity между metadata, trace, Prompt Inspector
-`source=last` и recorded context не доказана, поэтому третья строка также
-остаётся `каркас`.
+строка остаётся `каркас`. Branch-aware diagnostics merged и applied, но exact
+parity между metadata, trace, Prompt Inspector `source=last` и recorded context
+на isolated branch не доказана, поэтому третья строка также остаётся `каркас`.
 
 Opening-scene `prompt_assembly` persistence/parity остаётся отдельным pending
 gate четвёртого opening/atomic-commit slice Plan 028. Он не считается доказанным
 этим решением, и observed revision `7` не может быть активирована до его
 реализации и проверки.
 
-Для подключения третьей строки branch diagnostics должен быть merged, applied и
-проверен на isolated revision-7 branch: сохранённые turn metadata/trace, Prompt
-Inspector `source=last` и recorded context обязаны вернуть один и тот же
-`prompt_assembly`, а source party — сохранить свою persisted legacy revision и
-exact state/projection hashes. Одного валидного narrator ответа недостаточно для
-уровня `наблюдается` или semantic continuity claim.
+Для подключения третьей строки branch diagnostics и текущий excluded-turn
+hardening должны быть applied и проверены на isolated revision-7 branch:
+сохранённые turn metadata/trace, Prompt Inspector `source=last` и recorded
+context обязаны вернуть один и тот же `prompt_assembly`, а source party —
+сохранить свою persisted legacy revision и exact state/projection hashes. Одного
+валидного narrator ответа недостаточно для уровня `наблюдается` или semantic
+continuity claim.
 
 ## Consequences
 
@@ -246,6 +263,9 @@ exact state/projection hashes. Одного валидного narrator отве
 
 - semantic text-equivalence judge, embeddings или content hashing oracle;
 - новая memory model, tokenizer dependency, table, column или provider field;
+- отдельный `prompt_assembly` для compact validation-repair или замена initial
+  committed `prompt_json` repair payload;
+- renderer `prompt_assembly` или branch selector в Light GUI/shared UI/Showcase;
 - изменение lore/relevant-character/relationship relevance rules;
 - opening-scene assembly persistence/parity; это обязательный pending gate
   четвёртого slice, а не разрешение активировать observed revision `7`;

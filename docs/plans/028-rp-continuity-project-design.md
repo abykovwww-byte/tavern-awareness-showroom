@@ -12,10 +12,10 @@ hard-overflow negative proof остаётся `каркас`, а semantic contin
 [Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md). Его
 offline gates выполнены, а applied isolated canary поднял его первую registry-row
 до `подключено`. Hard-budget eviction и cross-surface diagnostics parity
-остаются `каркас`. Optional branch-aware context/preview wiring реализован
-локально: focused дал `4 passed`, полный Gateway — `449 passed`,
-`scripts/ci.ps1` — success; merge, apply и live proof ещё нет. Semantic
-continuity и уровень `наблюдается` не доказаны. Четвёртый document-first
+остаются `каркас`. Optional branch-aware context/preview wiring merged в PR59 и
+applied, но exact live parity ещё не доказана. Narrow excluded-turn/emitter-ID
+hardening дал focused `17 passed`; merge, apply и live proof этого follow-up ещё
+нет. Semantic continuity и уровень `наблюдается` не доказаны. Четвёртый document-first
 контракт принят в
 [Decision 031](../decisions/031-rp-scene-state-and-atomic-continuity.md); все его
 registry-строки остаются `каркас`. Локальная source implementation, focused
@@ -269,6 +269,13 @@ Diagnostic не содержит prompt/response text, names, state values ил�
 не отправляется provider. Новая таблица, колонка, provider field или
 дополнительный call не добавляются.
 
+Recorded projection и `prompt_json` описывают initial full narrator assembly и
+transport retries с теми же messages. Compact validation-repair не заменяет эти
+surfaces и виден отдельно только в private admin Turn Trace. Exclusion хода из
+narrative memory не скрывает content-free projection из JSON/API diagnostics.
+Light GUI/shared UI/Showcase отдельный renderer или branch selector для неё не
+получают.
+
 Для штатного isolated-branch proof follow-up добавляет optional query
 `branch_id` к read-only `GET /api/parties/{party_id}/context` и
 `POST /api/parties/{party_id}/prompt/preview`. Без параметра public contract и
@@ -276,9 +283,9 @@ response source party не меняются; с параметром Gateway и�
 branch store, source-party runtime settings и persisted branch revision и
 возвращает `branch_id`.
 Raw `state_campaign_id` наружу не передаётся, provider/state/turn mutation не
-возникает. Wiring реализован локально; четыре focused test, полный Gateway
-`449 passed` и repository CI проходят, но до merge/apply/live proof он имеет
-уровень `каркас` и не закрывает diagnostics-parity row сам по себе.
+возникает. Wiring, четыре focused test, полный Gateway `449 passed` и repository
+CI merged в PR59 и applied, но без exact isolated-branch live parity
+diagnostics-row остаётся `каркас`.
 
 ### Gates PR3
 
@@ -287,7 +294,10 @@ structural suppression только при двух присутствующих
 fallback без effective snapshot, отсутствие percentage-only eviction,
 whole-block hard-token eviction и recorded parity content-free
 `prompt_assembly`. Current dry-run обязан возвращать ту же schema для своей
-assembly. Legacy revisions и non-RP modes не меняются.
+assembly. Excluded latest turn обязан сохранять projection во всех recorded
+diagnostic surfaces, не возвращаясь в narrative memory; outputs каждого
+registered prompt-block emitter обязаны классифицироваться в свой stable ID.
+Legacy revisions и non-RP modes не меняются.
 
 Offline gates выполнены: focused DC3 — `15 passed`, combined revision-7 —
 `104 passed`, полный Gateway — `445 passed`, `scripts/ci.ps1` — success. Applied
@@ -303,9 +313,9 @@ individual table hashes совпали с baseline. Поэтому hierarchy/ded
 имеет уровень `подключено`.
 
 Canary не входил в actual hard provider token overflow, поэтому hard-budget row
-остаётся `каркас`. Branch diagnostics wiring пока не applied, а точное равенство
-recorded metadata, trace, Prompt Inspector `source=last` и context на isolated
-branch не проверено; diagnostics row также остаётся `каркас`. Валидный narration
+остаётся `каркас`. Branch diagnostics wiring merged и applied, но точное
+равенство recorded metadata, trace, Prompt Inspector `source=last` и context на
+isolated branch не проверено; diagnostics row также остаётся `каркас`. Валидный narration
 сам по себе не доказывает semantic continuity или `наблюдается`.
 Opening-scene persistence/parity не входит в DC3 и остаётся pending gate
 четвёртого opening/atomic-commit slice; observed revision `7` до этого gate не
