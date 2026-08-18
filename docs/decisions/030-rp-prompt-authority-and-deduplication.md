@@ -6,15 +6,17 @@
 
 **Decision status: Accepted.** Пользователь явно поручил третий delivery slice
 [Plan 028](../plans/028-rp-continuity-project-design.md). Решение принимает
-контракт document-first. Source changes присутствуют в локальном worktree:
-focused DC3 дал `15 passed`, combined revision-7 suite — `104 passed`, полный
-Gateway — `445 passed`, а `scripts/ci.ps1` завершился успешно. Merge, apply и
-live proof ещё не выполнены.
+контракт document-first. Focused DC3 дал `15 passed`, combined revision-7 suite
+— `104 passed`, полный Gateway — `445 passed`, а `scripts/ci.ps1` завершился
+успешно. Основной source contract достиг applied candidate runtime, и isolated
+live canary подключил первую строку registry. Branch-aware read-only diagnostics
+follow-up реализован локально: focused дал `4 passed`, полный Gateway —
+`449 passed`, `scripts/ci.ps1` — success; merge, apply и live proof ещё нет.
 
-**Delivery status:** `каркас` для всех строк
-[`registry/030.yml`](registry/030.yml). Revision `7` остаётся candidate, observed
-revision — `6`. Этот статус не является заявлением об исправленной semantic
-continuity.
+**Delivery status:** первая строка [`registry/030.yml`](registry/030.yml) имеет
+уровень `подключено`; hard-budget eviction и cross-surface diagnostics parity
+остаются `каркас`. Revision `7` остаётся candidate, observed revision — `6`.
+Этот статус не является заявлением об исправленной semantic continuity.
 
 ## Context
 
@@ -150,6 +152,31 @@ content и не становится runtime authority.
 сам narrator его не получает. Existing exact `prompt_json` и trace input остаются
 источниками аудита фактического provider request.
 
+### Branch-aware read-only diagnostics
+
+Для штатной проверки isolated candidate branch Gateway принимает необязательный
+query-параметр `branch_id` на двух существующих read-only endpoint:
+
+```text
+GET  /api/parties/{party_id}/context?branch_id={branch_id}
+POST /api/parties/{party_id}/prompt/preview?branch_id={branch_id}
+     {"content":"...", "source":"current|last"}
+```
+
+Тело preview не меняется. Без `branch_id` сохраняются прежние source-party path
+и response shape. С параметром Gateway разрешает ветку только внутри той же
+party и owner scope, выбирает её isolated state store, source-party runtime
+settings и persisted branch revision, а в ответе возвращает тот же `branch_id`. Неизвестная, чужая
+или относящаяся к другой партии ветка получает `404`; raw `state_campaign_id`
+публичным входом не становится.
+
+Оба endpoint остаются read-only: не создают provider call, turn, snapshot или
+ветку и не меняют source/branch state. Этот wiring нужен для live-проверки
+третьей строки registry, но сам по себе не доказывает cross-surface parity.
+Локальная реализация, четыре focused regression, полный Gateway `449 passed` и
+repository CI присутствуют; merge, apply и live proof follow-up пока
+отсутствуют, поэтому его readiness остаётся `каркас`.
+
 ## Verification boundary
 
 Focused offline regressions должны доказать:
@@ -173,25 +200,39 @@ Focused offline regressions должны доказать:
 - совместимость revisions `0..6` и non-RP modes без новой таблицы, provider
   field или provider call.
 
-Эта offline boundary выполнена в локальном worktree: focused DC3 regressions —
-`15 passed`, combined revision-7 набор — `104 passed`, полный Gateway —
-`445 passed`; repository gate `scripts/ci.ps1` также завершился успешно. Эти
-результаты подтверждают уровень `каркас`, но не merge, apply, real-turn deploy
-или live-store effect.
+Эта offline boundary выполнена: focused DC3 regressions — `15 passed`, combined
+revision-7 набор — `104 passed`, полный Gateway — `445 passed`; repository gate
+`scripts/ci.ps1` также завершился успешно.
+
+Isolated live canary `autotest_2eb4d5e1a53f` на revision-7 branch
+`branch_ccf0d535a98c` подтвердил exact structural deduplication первой строки
+registry. Primary provider attempt завершился `403`, последующий
+`openrouter/auto` — `200`; оба получили exact same prompt. Validation repair и
+Gateway safe-fallback text не использовались; второй provider attempt был
+transport model fallback после `403`. Source party сохранила persisted revision `0`: canonical state
+SHA `dc076bcc31535f4b38a5ffbc9a14373b136a15a520f86c59b372377cd1d01164`,
+combined source projections SHA
+`2e86389f74ff6f7c05490cc0f65bb1c18b224b3e533b12800d108fb01d6dfe73`, а
+каждый individual table hash совпал с baseline. Это поднимает только первую
+строку до `подключено` и не является semantic-output proof.
+
+Canary не входил в фактический hard provider token overflow, поэтому вторая
+строка остаётся `каркас`. Branch-aware diagnostics пока реализован и проверен
+только локально; applied exact parity между metadata, trace, Prompt Inspector
+`source=last` и recorded context не доказана, поэтому третья строка также
+остаётся `каркас`.
 
 Opening-scene `prompt_assembly` persistence/parity остаётся отдельным pending
 gate четвёртого opening/atomic-commit slice Plan 028. Он не считается доказанным
 этим решением, и observed revision `7` не может быть активирована до его
 реализации и проверки.
 
-`Подключено` требует merged и applied source implementation, полного repository
-gate и isolated revision-7 branch proof. Recorded provider prompt должен
-содержать mandatory `PROMPT_AUTHORITY_HIERARCHY`, подтвердить отсутствие
-suppressed `long_term_memory`, а сохранённые turn metadata/trace, Prompt
-Inspector `source=last` и recorded context — один и тот же `prompt_assembly`. Source
-party должна остаться на revision `6` с неизменёнными raw/state hashes. Одного
-валидного narrator ответа недостаточно для уровня `наблюдается` или semantic
-continuity claim.
+Для подключения третьей строки branch diagnostics должен быть merged, applied и
+проверен на isolated revision-7 branch: сохранённые turn metadata/trace, Prompt
+Inspector `source=last` и recorded context обязаны вернуть один и тот же
+`prompt_assembly`, а source party — сохранить свою persisted legacy revision и
+exact state/projection hashes. Одного валидного narrator ответа недостаточно для
+уровня `наблюдается` или semantic continuity claim.
 
 ## Consequences
 

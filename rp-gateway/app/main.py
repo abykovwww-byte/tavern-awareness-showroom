@@ -1275,18 +1275,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/api/parties/{party_id}/context")
-    def get_party_context(request: Request, party_id: str) -> dict[str, Any]:
+    def get_party_context(
+        request: Request,
+        party_id: str,
+        branch_id: str | None = None,
+    ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
-            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
-            party_settings = runtime_settings_for_party(party)
+            owner_id = owner_user_id(request)
+            party = party_store.get_party(party_id, owner_user_id=owner_id)
+            if branch_id is not None:
+                party_state_store = party_store.store_for_branch(
+                    party_id,
+                    branch_id,
+                    owner_user_id=owner_id,
+                )
+                party_settings = runtime_settings_for_branch(party, branch_id)
+            else:
+                party_state_store = party_store.store_for_party(
+                    party_id,
+                    owner_user_id=owner_id,
+                )
+                party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {
+        payload = {
             "party_id": party_id,
             "context": estimate_party_context(party_state_store, party_settings, model_profile),
         }
+        if branch_id is not None:
+            payload["branch_id"] = branch_id
+        return payload
 
     @app.get("/api/parties/{party_id}/characters")
     def get_party_characters(request: Request, party_id: str) -> dict[str, Any]:
@@ -1370,18 +1389,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/parties/{party_id}/prompt/preview")
-    def preview_party_prompt(http_request: Request, party_id: str, request: PartyPromptPreviewRequest) -> dict[str, Any]:
+    def preview_party_prompt(
+        http_request: Request,
+        party_id: str,
+        request: PartyPromptPreviewRequest,
+        branch_id: str | None = None,
+    ) -> dict[str, Any]:
         try:
-            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
-            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
-            party_settings = runtime_settings_for_party(party)
+            owner_id = owner_user_id(http_request)
+            party = party_store.get_party(party_id, owner_user_id=owner_id)
+            if branch_id is not None:
+                party_state_store = party_store.store_for_branch(
+                    party_id,
+                    branch_id,
+                    owner_user_id=owner_id,
+                )
+                party_settings = runtime_settings_for_branch(party, branch_id)
+            else:
+                party_state_store = party_store.store_for_party(
+                    party_id,
+                    owner_user_id=owner_id,
+                )
+                party_settings = runtime_settings_for_party(party)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         try:
             preview = PromptInspector(party_settings, party_state_store).preview(request.content, source=request.source)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"party_id": party_id, "preview": preview}
+        payload = {"party_id": party_id, "preview": preview}
+        if branch_id is not None:
+            payload["branch_id"] = branch_id
+        return payload
 
     @app.post("/api/parties/{party_id}/start")
     async def start_party(

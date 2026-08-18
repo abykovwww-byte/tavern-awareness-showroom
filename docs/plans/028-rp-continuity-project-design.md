@@ -10,12 +10,13 @@ hard-overflow negative proof остаётся `каркас`, а semantic contin
 применён, а isolated canary поднял обе его registry-строки до `подключено`.
 Третий document-first контракт принят в
 [Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md). Его
-source changes присутствуют в локальном worktree: focused DC3 дал `15 passed`,
-combined revision-7 suite — `104 passed`, полный Gateway — `445 passed`, а
-`scripts/ci.ps1` завершился успешно. Merge, apply и live proof ещё не выполнены;
-все строки registry остаются `каркас`. Semantic continuity и уровень
-`наблюдается` не доказаны. Этот план не активирует revision `7`, не мигрирует
-существующие партии и не повышает observed revision выше `6`.
+offline gates выполнены, а applied isolated canary поднял его первую registry-row
+до `подключено`. Hard-budget eviction и cross-surface diagnostics parity
+остаются `каркас`. Optional branch-aware context/preview wiring реализован
+локально: focused дал `4 passed`, полный Gateway — `449 passed`,
+`scripts/ci.ps1` — success; merge, apply и live proof ещё нет. Semantic
+continuity и уровень `наблюдается` не доказаны. Этот план не активирует revision
+`7`, не мигрирует существующие партии и не повышает observed revision выше `6`.
 
 ## Цель
 
@@ -53,9 +54,10 @@ negative gate; это не меняет readiness DC1.
 | 4 | Scene projection, continuity gate и atomic commit | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
 PR1 поставил первую строку, а deployed PR2 подключил вторую по Decision 029.
-Третья строка принята document-first по Decision 030 и остаётся `каркас`; только
-четвёртая строка остаётся roadmap без отдельного принятого ADR. Ни одна из них
-не является runtime-контрактом PR2.
+Третья строка принята document-first по Decision 030 и подключена только в части
+prompt hierarchy/structural deduplication; её hard-budget и diagnostics-parity
+gates остаются `каркас`. Только четвёртая строка остаётся roadmap без отдельного
+принятого ADR. Ни одна из них не является runtime-контрактом PR2.
 
 ## Общие инварианты
 
@@ -259,6 +261,17 @@ Diagnostic не содержит prompt/response text, names, state values ил�
 не отправляется provider. Новая таблица, колонка, provider field или
 дополнительный call не добавляются.
 
+Для штатного isolated-branch proof follow-up добавляет optional query
+`branch_id` к read-only `GET /api/parties/{party_id}/context` и
+`POST /api/parties/{party_id}/prompt/preview`. Без параметра public contract и
+response source party не меняются; с параметром Gateway использует isolated
+branch store, source-party runtime settings и persisted branch revision и
+возвращает `branch_id`.
+Raw `state_campaign_id` наружу не передаётся, provider/state/turn mutation не
+возникает. Wiring реализован локально; четыре focused test, полный Gateway
+`449 passed` и repository CI проходят, но до merge/apply/live proof он имеет
+уровень `каркас` и не закрывает diagnostics-parity row сам по себе.
+
 ### Gates PR3
 
 Offline regressions обязаны доказать mandatory authority block и exact order,
@@ -268,15 +281,27 @@ whole-block hard-token eviction и recorded parity content-free
 `prompt_assembly`. Current dry-run обязан возвращать ту же schema для своей
 assembly. Legacy revisions и non-RP modes не меняются.
 
-Offline gates выполнены локально: focused DC3 — `15 passed`, combined revision-7
-— `104 passed`, полный Gateway — `445 passed`, `scripts/ci.ps1` — success. Это
-оставляет уровень `каркас`: merge, pull-based apply и isolated revision-7
-live-store proof отсутствуют. Для `подключено` recorded prompt обязан содержать
-authority block и не содержать suppressed `long_term_memory`, а recorded
-diagnostics — совпасть на всех поверхностях. Валидный narration сам по себе не
-доказывает semantic continuity или `наблюдается`. Opening-scene
-persistence/parity не входит в DC3 и остаётся pending gate четвёртого
-opening/atomic-commit slice; observed revision `7` до этого gate не активируется.
+Offline gates выполнены: focused DC3 — `15 passed`, combined revision-7 —
+`104 passed`, полный Gateway — `445 passed`, `scripts/ci.ps1` — success. Applied
+canary `autotest_2eb4d5e1a53f` на revision-7 branch
+`branch_ccf0d535a98c` подтвердил exact structural deduplication. Primary attempt
+получил `403`, последующий transport model-fallback `openrouter/auto` — `200`;
+оба получили exact same prompt. Validation repair и Gateway safe-fallback text
+отсутствовали. Source сохранил revision `0`, canonical
+state SHA `dc076bcc31535f4b38a5ffbc9a14373b136a15a520f86c59b372377cd1d01164` и
+combined source projections SHA
+`2e86389f74ff6f7c05490cc0f65bb1c18b224b3e533b12800d108fb01d6dfe73`; все
+individual table hashes совпали с baseline. Поэтому hierarchy/deduplication row
+имеет уровень `подключено`.
+
+Canary не входил в actual hard provider token overflow, поэтому hard-budget row
+остаётся `каркас`. Branch diagnostics wiring пока не applied, а точное равенство
+recorded metadata, trace, Prompt Inspector `source=last` и context на isolated
+branch не проверено; diagnostics row также остаётся `каркас`. Валидный narration
+сам по себе не доказывает semantic continuity или `наблюдается`.
+Opening-scene persistence/parity не входит в DC3 и остаётся pending gate
+четвёртого opening/atomic-commit slice; observed revision `7` до этого gate не
+активируется и сейчас остаётся `6`.
 
 ## Последующие gates
 

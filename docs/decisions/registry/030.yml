@@ -1,11 +1,11 @@
 - requirement: "Revision 7 normal party-chat and admin-autotest narrator prompts contain one mandatory PROMPT_AUTHORITY_HIERARCHY block with stable prompt_authority identity and the safety line that current action is intent rather than an automatic fact, follow its strict AUTHORITATIVE_OUTCOME/current-action, uncovered-raw-tail, RP_STORY_MEMORY, archive hierarchy and suppress a non-empty long_term_memory candidate as structural_deduplication when effective RP story memory is also present"
-  level: каркас
+  level: подключено
   store: "recorded prompt_json, effective RP story-memory snapshot, raw turns and archive inputs"
   assertion: prompt_presence
   expectation: revision7_prompt_authority_is_structurally_deduplicated
   probe_command: null
   expected: null
-  waiver: "Local source and offline evidence are present: focused DC3 15 passed, combined revision-7 104 passed, full Gateway 445 passed and scripts/ci.ps1 passed. Merge, apply and isolated live prompt proof remain pending; no semantic continuity or observed-revision claim is made."
+  waiver: "Applied isolated live evidence: autotest_2eb4d5e1a53f on revision-7 branch_ccf0d535a98c passed exact structural deduplication. The primary attempt returned 403 and the subsequent openrouter/auto transport model-fallback attempt returned 200; both received the exact same prompt. No validation repair or Gateway safe-fallback text was used. Source persisted revision 0, canonical state SHA dc076bcc31535f4b38a5ffbc9a14373b136a15a520f86c59b372377cd1d01164, combined source projections SHA 2e86389f74ff6f7c05490cc0f65bb1c18b224b3e533b12800d108fb01d6dfe73 and every individual table hash matched baseline. No semantic continuity or observed-revision claim is made."
 - requirement: "Revision 7 normal party-chat and admin-autotest optional prompt blocks are evicted only as whole blocks on actual hard provider token overflow and record hard_input_budget as the omission reason"
   level: каркас
   store: "recorded prompt_json and hard input budget diagnostics"
@@ -13,7 +13,7 @@
   expectation: revision7_optional_blocks_evict_only_on_hard_overflow
   probe_command: null
   expected: null
-  waiver: "Focused and combined offline regressions now prove whole-block omission and hard_input_budget reasons, and the full Gateway/scripts/ci.ps1 gates passed. The DC1 deployed canary fit without entering hard overflow; merge/apply and Decision 030 live negative proof remain pending."
+  waiver: "Focused and combined offline regressions prove whole-block omission and hard_input_budget reasons, and the full Gateway/scripts/ci.ps1 gates passed. The deployed Decision 030 row-1 canary did not enter actual hard provider token overflow, so live negative proof remains pending."
 - requirement: "Revision 7 normal party-chat and admin-autotest turns persist one content-free rp-gateway.prompt-assembly.v1 projection with exact story-memory coverage and raw-tail IDs in existing turn metadata and trace; recorded values match Prompt Inspector source=last and recorded context, while current dry-run uses the same schema for its own assembly"
   level: каркас
   store: "existing turn metadata_json, turn_trace_events, Prompt Inspector preview and context diagnostics"
@@ -21,4 +21,4 @@
   expectation: revision7_prompt_assembly_diagnostics_are_content_free_and_consistent
   probe_command: null
   expected: null
-  waiver: "Local source plus focused/combined regressions now prove the canonical projection, exact boundary fields and recorded cross-surface parity; full Gateway 445 passed and scripts/ci.ps1 passed. Merge, apply and live proof remain pending. Opening-scene parity is deferred to the fourth Plan 028 slice and remains an observed-revision-7 blocker."
+  waiver: "Core source plus focused/combined regressions prove the canonical projection and offline recorded parity. Optional branch_id wiring for read-only context and prompt preview is implemented locally with 4 focused tests, full Gateway 449 passed and scripts/ci.ps1 passed, but is not merged, applied or live-proven; exact isolated-branch parity across metadata, trace, Prompt Inspector source=last and recorded context remains pending. Opening-scene parity is deferred to the fourth Plan 028 slice and remains an observed-revision-7 blocker."
