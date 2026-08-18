@@ -8,10 +8,11 @@
 [Plan 028](../plans/028-rp-continuity-project-design.md); это решение принимает
 только первый delivery slice.
 
-**Delivery status:** `каркас`. Контракт зарегистрирован в
-[`registry/028.yml`](registry/028.yml); source slice PR #54 merged и применён на
-`abykovserv`, offline и container checks зелёные. Canary-plumbing follow-up и
-revision-7 live-store proof ещё не завершены. Observed revision остаётся `6`.
+**Delivery status:** `подключено` для positive fit-path. Контракт зарегистрирован
+в [`registry/028.yml`](registry/028.yml): полный uncovered tail и revision stamp
+подтверждены на deployed изолированной ветке, но hard-overflow negative proof
+остаётся на уровне `каркас`. Это mixed registry, а не закрытие всего DC1.
+Observed revision остаётся `6`.
 
 ## Context
 
@@ -103,6 +104,20 @@ checkpoint/autotest branch. Recorded prompt должен содержать вс
 Запрос обязан явно передать `rp_contract_revision: 7`, а созданная branch —
 вернуть и сохранить revision `7`; наследование source revision `6` не является
 evidence этого решения.
+
+Deployed canary `autotest_e3e62b5ea73d` на branch
+`branch_e1664fcbbe07` выполнил эту positive проверку. Source party осталась на
+revision `6`, explicit branch сохранила revision `7`; snapshot `70` покрывал
+turn IDs `1435..1450`, а записанный provider prompt содержал ровно одну полную
+verbatim-пару uncovered tail с turn ID `1451`, без covered-пар и с текущим
+действием последним. Source raw/state hashes не изменились. Narrator был вызван
+один раз, transport и validator завершились успешно, без fallback и repair.
+
+Этот canary не вошёл в hard-overflow и потому не доказывает fail-before-provider
+ветку. Его narrative также сместил действие в другую локацию и не подтвердил
+устойчивость ролей текущей сцены. Это не опровергает узкий prompt-presence
+контракт DC1, но не позволяет заявлять `наблюдается`, исправленную continuity или
+готовность candidate revision `7` к observed rollout.
 
 ## Consequences
 

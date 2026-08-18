@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
+from app.services.character_retrieval import relationship_scene_character_ids
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import (
@@ -23,6 +24,7 @@ from app.services.narrative import (
     with_text,
 )
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.relationship_attribution import normalized_aliases
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
 from app.services.rule_engine import RuleEngine
@@ -283,7 +285,11 @@ class Adjudicator:
             workspace_result: WorkspaceMaterialization | None = None
             try:
                 relationship_projection_before = self.trace_projection_snapshot()
-                relationship_pressure = self.relationship_pressure(narrative_state)
+                relationship_pressure = self.relationship_pressure(
+                    narrative_state,
+                    latest_player_message=latest,
+                    outcome_target=outcome.target,
+                )
                 self.capture_projection_changes(
                     request_id,
                     relationship_projection_before,
@@ -1084,26 +1090,56 @@ class Adjudicator:
             return
         raise RuntimeError(f"{job['job_type']} service job exceeded 64 batches")
 
-    def relationship_pressure(self, state: dict[str, Any]) -> str | None:
+    def relationship_pressure(
+        self,
+        state: dict[str, Any],
+        *,
+        latest_player_message: str = "",
+        outcome_target: str | None = None,
+    ) -> str | None:
         if self.relationship_mechanics is None:
             return None
         party_turn = int(state.get("meta", {}).get("turn", 0))
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
+        declared_aliases = normalized_aliases(self.relationship_model or {})
         names = {
-            str(character_id): self.relationship_character_name(str(character_id), value)
+            str(character_id): self.relationship_character_name(
+                str(character_id),
+                value,
+                declared_aliases.get(str(character_id))
+                if self.settings.rp_contract_revision >= 7
+                else None,
+            )
             for character_id, value in characters.items()
         }
+        scene_character_ids = None
+        if self.settings.rp_contract_revision >= 7:
+            scene_character_ids = relationship_scene_character_ids(
+                state,
+                latest_player_message,
+                outcome_target=outcome_target,
+                character_aliases=declared_aliases,
+            )
         if self.settings.rp_contract_revision >= 4:
             pressure = (
                 self.relationship_mechanics.pressure_block(
                     party_turn,
                     names,
                     persist_seed_state=False,
+                    character_ids=scene_character_ids,
                 )
                 if self.settings.rp_contract_revision >= 7
                 else self.relationship_mechanics.pressure_block(party_turn, names)
             )
-            resolution = self.relationship_mechanics.due_event_block(party_turn, names)
+            resolution = (
+                self.relationship_mechanics.due_event_block(
+                    party_turn,
+                    names,
+                    character_ids=scene_character_ids,
+                )
+                if self.settings.rp_contract_revision >= 7
+                else self.relationship_mechanics.due_event_block(party_turn, names)
+            )
         else:
             changes = self.relationship_mechanics.advance_turn(party_turn)
             pressure = self.relationship_mechanics.pressure_block(party_turn, names)
@@ -1163,11 +1199,18 @@ class Adjudicator:
         return result
 
     @staticmethod
-    def relationship_character_name(character_id: str, value: Any) -> str:
+    def relationship_character_name(
+        character_id: str,
+        value: Any,
+        declared_aliases: list[str] | None = None,
+    ) -> str:
         if isinstance(value, dict):
             explicit = value.get("name") or value.get("display_name")
             if isinstance(explicit, str) and explicit.strip():
                 return explicit.strip()
+        for alias in declared_aliases or []:
+            if isinstance(alias, str) and alias.strip():
+                return alias.strip()
         return character_id.replace("-", " ").replace("_", " ").title()
 
     def post_turn_helpers_done(self, campaign_id: str, completed: asyncio.Task[None]) -> None:

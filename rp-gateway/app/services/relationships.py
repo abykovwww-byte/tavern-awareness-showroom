@@ -200,14 +200,22 @@ class RelationshipMechanics:
         character_names: dict[str, str],
         *,
         persist_seed_state: bool = True,
+        character_ids: set[str] | None = None,
     ) -> str | None:
         """Return the deliberately non-numeric narrator pressure block."""
         if persist_seed_state:
             self._ensure_seed_state()
         rows = self.store.pressure_rows(party_turn)
+        allowed_character_ids = (
+            set(character_ids)
+            if self.rp_contract_revision >= 7 and character_ids is not None
+            else None
+        )
         rendered: list[str] = []
         for row in rows:
             character_id = str(row["character_id"])
+            if allowed_character_ids is not None and character_id not in allowed_character_ids:
+                continue
             name = character_names.get(character_id)
             if not name:
                 # Falling back to a storage identifier would violate the prompt boundary.
@@ -268,14 +276,31 @@ class RelationshipMechanics:
             + "\n".join(rendered)
         )
 
-    def due_event_block(self, party_turn: int, character_names: dict[str, str]) -> str | None:
+    def due_event_block(
+        self,
+        party_turn: int,
+        character_names: dict[str, str],
+        *,
+        character_ids: set[str] | None = None,
+    ) -> str | None:
         """Describe due revision-4 consequences without committing their resolution."""
+        allowed_character_ids = (
+            set(character_ids)
+            if self.rp_contract_revision >= 7 and character_ids is not None
+            else None
+        )
         due_changes = [
             self._event_change("resolved", event, resolution="delivered")
             for event in self.store.active_events(party_turn)
             if str(event["event_id"]) == "favour"
+            and isinstance(event.get("due_turn"), int)
+            and not isinstance(event.get("due_turn"), bool)
             and int(event["due_turn"]) <= party_turn
             and self._event_basis_active(event, party_turn)
+            and (
+                allowed_character_ids is None
+                or str(event["character_id"]) in allowed_character_ids
+            )
         ]
         return self.resolved_event_block(due_changes, character_names)
 

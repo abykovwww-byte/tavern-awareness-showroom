@@ -2,11 +2,14 @@
 
 **Дата:** 2026-08-17
 
-**Статус:** PR1 source slice merged и применён; canary-plumbing follow-up и
-revision-7 live proof ещё не завершены. Этот план задаёт порядок поставки, но не
-активирует revision `7`, не мигрирует существующие партии и не подтверждает
-live readiness. В PR1 принят только
-[Decision 028](../decisions/028-rp-uncovered-tail-and-overflow.md).
+**Статус:** PR1 и canary plumbing merged и применены. Positive Merchant canary
+поднял требования полного uncovered tail и revision stamp до `подключено`, но
+hard-overflow negative proof остаётся `каркас`, а semantic continuity не
+подтверждена. Пользователь отдельно принял PR2-контракт
+[Decision 029](../decisions/029-scene-scoped-relationship-pressure.md); его source
+и offline regressions завершены локально, а merge, deploy и live proof ещё нет. Этот план не
+активирует revision `7`, не мигрирует существующие партии и не повышает observed
+revision выше `6`.
 
 ## Цель
 
@@ -31,18 +34,20 @@ player input
 ## Порядок поставки
 
 Проект разделён на четыре самостоятельных delivery slice. Каждый получает
-отдельные решение, PR, apply и live-store proof. Последующий slice не входит в
-delivery cycle, пока предыдущий не доказан на изолированной live-партии.
+отдельные решение, PR, apply и live-store proof. Незакрытый gate предыдущего
+slice не считается закрытым из-за начала следующего и продолжает блокировать
+observed rollout. Пользователь явно открыл PR2 при оставшемся DC1 hard-overflow
+negative gate; это не меняет readiness DC1.
 
 | Порядок | Срез | Граница результата |
 |---:|---|---|
 | 1 | DC1: полный uncovered tail и hard-overflow recovery | Нет coverage gap; невместимый required prompt не достигает narrator |
-| 2 | Scene-scoped relationship pressure | Отсутствующий NPC не попадает в сцену только из-за relationship obligation |
+| 2 | [Derived pre-scene relationship scope](../decisions/029-scene-scoped-relationship-pressure.md) | Отсутствующий NPC не попадает в сцену только из-за relationship obligation |
 | 3 | Prompt identities, de-duplication и authority hierarchy | Optional дубликаты имеют явные identities и порядок authority |
 | 4 | Scene projection, continuity gate и atomic commit | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
-PR1 реализует только первую строку. Названия следующих строк — roadmap, а не
-принятые ADR или реализованные runtime-контракты.
+PR1 поставляет только первую строку. Для второй строки принят Decision 029;
+оставшиеся строки — roadmap, а не принятые ADR или runtime-контракты PR2.
 
 ## Общие инварианты
 
@@ -142,13 +147,51 @@ Offline regressions обязаны доказать:
 - sanitized preview/context без world/player prompt text;
 - stamp matrix `6/7 -> 6`, `7/7 -> 7`, `7/6 -> 6`, non-RP -> `0`.
 
-После merge и apply live proof выполняется только на изолированной Merchant
-checkpoint/autotest branch. Нужно сопоставить effective snapshot, eligible turn
-IDs, recorded `prompt_json`, narrator attempt, state version и неизменные hashes
-source party. Только этот store-to-prompt proof позволяет поднять Decision 028 до
-`подключено`. Canary runner или Light GUI должны явно запросить revision `7` и
-проверить revision созданной branch; унаследованная revision `6` означает ошибку
-plumbing, а не результат проверки DC1.
+Deployed canary `autotest_e3e62b5ea73d` на branch
+`branch_e1664fcbbe07` явно запросил и сохранил revision `7`, пока source party
+осталась на revision `6`. Effective snapshot `70` покрывал turn IDs
+`1435..1450`; eligible tail `[1451]` вошёл в recorded `prompt_json` ровно одной
+полной verbatim-парой, covered-пары не просочились, текущее действие осталось
+последним. Source raw/state hashes не изменились. Narrator выполнил один вызов с
+успешными transport/validator status, без fallback и repair.
+
+Этот result поднимает tail и revision-stamp requirements до `подключено`, но не
+весь registry. Canary fit не вошёл в hard-overflow, поэтому live-доказательство
+zero narrator calls и отсутствия turn/state/relationship mutation при конечном
+overflow остаётся `каркас`. Narrative сместил действие в другую локацию и не
+подтвердил устойчивость ролей: это не отменяет точный prompt-presence proof, но
+не доказывает исправленную continuity и не позволяет заявлять `наблюдается`.
+
+## PR2 / DC2
+
+Decision 029 ограничивает relationship pressure производным pre-scene набором.
+На candidate revision `7` персонаж может войти в него только по совпадению с
+`player.location`, explicit whole-alias в текущем действии или `Outcome.target`.
+Уже eligible-кандидат получает score `100` за action-or-target, `30` за location
+и дополнительно `20` за membership в structured `active_threads`. Active thread
+сам по себе не расширяет набор. Кандидаты сортируются по убыванию score и stable
+ID и ограничиваются существующим top-6.
+
+Причина или due event сами по себе не являются сигналом присутствия. Absent due
+`favour` скрывается из prompt, но остаётся durable и `active`; omission не
+закрывает и не истекает событие. Guidance возвращается только после нового
+derived relevance, а delivery по-прежнему требует matching committed evidence.
+Новая state-проекция сцены, таблица или LLM-классификатор не добавляются.
+
+### Gates PR2
+
+Offline regressions должны доказать каждый из трёх eligibility-сигналов,
+исключение active-thread-only/relationship-only NPC, rank enrichment без
+расширения набора, deterministic top-6, durable omission и совместимость
+revisions `0..6`/non-RP. `Подключено` требует deployed isolated branch с
+отдельной absent-NPC fixture: другая location, без current-action alias и
+`Outcome.target`, даже если NPC остаётся в active thread. Поскольку checkpoint
+fork не переносит derived relationship rows, proof turn выполняется после
+warm-up либо явно задокументированного bootstrap. Recorded provider prompt должен
+одновременно содержать relevant pressure и скрывать absent ordinary/due
+pressure, а authoritative relationship rows — подтверждать, что omitted due
+`favour` осталось active. Обычный source state «Купца»/«Старосты», где почти все
+modeled NPC перечислены в `active_threads`, сам по себе этого не доказывает.
 
 ## Последующие gates
 
@@ -162,7 +205,7 @@ Observed revision повышается с `6` до `7` отдельным rollou
 
 - автоматическая миграция или ремонт существующих партий «Купец»/«Староста»;
 - scene-state backfill и semantic contradiction judge;
-- prompt block identity hierarchy и scene-scoped relationship filter;
+- prompt block identity hierarchy;
 - provider-specific tokenizer и semantic compression protected tail;
 - event sourcing, новые таблицы или maintenance UI;
 - заявления `наблюдается`/`держится` до live evidence и endurance run.
@@ -170,6 +213,7 @@ Observed revision повышается с `6` до `7` отдельным rollou
 ## Источники
 
 - [Decision 028](../decisions/028-rp-uncovered-tail-and-overflow.md)
+- [Decision 029](../decisions/029-scene-scoped-relationship-pressure.md)
 - [Decision 026](../decisions/026-rp-core-delivery.md)
 - [Decision 024](../decisions/024-simplified-rp-core.md)
 - [Decision 022](../decisions/022-readiness-and-observability-policy.md)

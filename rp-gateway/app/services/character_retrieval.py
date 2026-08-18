@@ -72,6 +72,69 @@ def retrieve_relevant_characters(
     ]
 
 
+def relationship_scene_character_ids(
+    state: dict[str, Any],
+    latest_player_message: str,
+    *,
+    outcome_target: str | None = None,
+    character_aliases: dict[str, list[str]] | None = None,
+) -> set[str]:
+    """Return the bounded deterministic relationship scope for one RP turn."""
+
+    characters = state.get("characters")
+    if not isinstance(characters, dict):
+        return set()
+
+    player = state.get("player")
+    player_location = normalized_text(player.get("location")) if isinstance(player, dict) else ""
+    action = normalized_text(latest_player_message)
+    target = normalized_text(outcome_target)
+    declared_aliases = character_aliases or {}
+    active_thread_ids = character_ids_in_threads(state.get("active_threads"))
+    ranked: list[tuple[int, str]] = []
+
+    for raw_id, raw_character in characters.items():
+        if not isinstance(raw_id, str) or not isinstance(raw_character, dict):
+            continue
+        character_id = raw_id.strip()
+        if not character_id:
+            continue
+        aliases = {
+            normalized_text(character_id),
+            normalized_text(raw_character.get("name")),
+            normalized_text(raw_character.get("display_name")),
+            *(
+                normalized_text(alias)
+                for alias in declared_aliases.get(character_id, [])
+                if isinstance(alias, str)
+            ),
+        }
+        aliases.discard("")
+        mentioned = any(f" {alias} " in f" {action} " for alias in aliases)
+        targeted = any(f" {alias} " in f" {target} " for alias in aliases)
+        same_location = bool(
+            player_location
+            and normalized_text(raw_character.get("location")) == player_location
+        )
+        if not (mentioned or targeted or same_location):
+            continue
+
+        score = 0
+        if mentioned or targeted:
+            score += 100
+        if same_location:
+            score += 30
+        if character_id in active_thread_ids:
+            score += 20
+        ranked.append((score, character_id))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return {
+        character_id
+        for _score, character_id in ranked[:MAX_RETRIEVED_CHARACTERS]
+    }
+
+
 def selected_character_relationships(state: dict[str, Any], characters: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     selected_ids = {entry.get("id") for entry in characters if isinstance(entry.get("id"), str)}
     relationships = state.get("relationships")

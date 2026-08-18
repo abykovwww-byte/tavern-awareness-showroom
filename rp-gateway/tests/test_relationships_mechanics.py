@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from pathlib import Path
 
 import pytest
 
+from app.core.config import Settings
+from app.models.schemas import ChatCompletionRequest, ChatMessage
+from app.services.adjudicator import Adjudicator
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
 from app.services.state_store import StateStore
@@ -68,6 +72,114 @@ def make_store(tmp_path: Path, campaign_id: str = "relationship-mechanics") -> S
         encoding="utf-8",
     )
     return StateStore(str(tmp_path / "state.db"), campaign_id, str(state_path))
+
+
+def make_scene_store(tmp_path: Path, campaign_id: str = "relationship-scene") -> StateStore:
+    state_path = tmp_path / f"{campaign_id}.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "meta": {
+                    "campaign_id": campaign_id,
+                    "schema_version": "1.0.0",
+                    "state_version": 1,
+                    "turn": 1,
+                    "last_updated": "1970-01-01T00:00:00Z",
+                },
+                "player": {
+                    "location": "market",
+                    "status": "active",
+                    "reputation": {},
+                    "resources": {},
+                    "known_abilities": [],
+                    "constraints": [],
+                    "known_world_facts": [],
+                },
+                # Deliberately omit name/display_name: revision 7 must use the
+                # declared display alias and never fall back to the storage ID.
+                "characters": {
+                    "ivan": {
+                        "status": "alive",
+                        "location": "market",
+                        "attitude_to_player": "neutral",
+                        "trust": 0,
+                        "fear": 0,
+                        "loyalty": "self",
+                        "current_goal": "trade",
+                        "knowledge": [],
+                        "secrets": [],
+                        "obligations": [],
+                        "hard_constraints": [],
+                        "last_confirmed_update": 0,
+                    },
+                    "maria": {
+                        "status": "alive",
+                        "location": "harbour",
+                        "attitude_to_player": "neutral",
+                        "trust": 0,
+                        "fear": 0,
+                        "loyalty": "self",
+                        "current_goal": "sail",
+                        "knowledge": [],
+                        "secrets": [],
+                        "obligations": [],
+                        "hard_constraints": [],
+                        "last_confirmed_update": 0,
+                    },
+                },
+                "factions": {},
+                "locations": {},
+                "resources": {},
+                "relationships": {
+                    "player-maria": {
+                        "from": "player",
+                        "to": "maria",
+                        "trust": 5,
+                        "suspicion": 0,
+                        "notes": [],
+                    }
+                },
+                "active_threads": [],
+                "completed_threads": [],
+                "world_constraints": [],
+                "timeline": [],
+                "last_turn": {
+                    "turn": 1,
+                    "player_message": "",
+                    "narrator_response": "",
+                    "state_patch_id": "seed",
+                },
+                "uncertain_facts": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return StateStore(
+        str(tmp_path / f"{campaign_id}.db"),
+        campaign_id,
+        str(state_path),
+    )
+
+
+def add_favourable_pressure(mechanics: RelationshipMechanics, character_id: str) -> None:
+    mechanics.store.add_cause(
+        character_id=character_id,
+        axis="loyalty",
+        event_id="scene-pressure",
+        weight=20,
+        turn_id=0,
+        party_turn=0,
+        expires_turn=None,
+        evidence="private fixture evidence",
+        source="fixture",
+    )
+    mechanics.store.set_axis_state(
+        character_id=character_id,
+        axis="loyalty",
+        band="favourable",
+        band_since_turn=0,
+    )
 
 
 def make_legacy_deadline_nullable(store: StateStore) -> None:
@@ -530,6 +642,221 @@ def test_non_boundary_cause_reaches_qualitative_pressure(tmp_path: Path) -> None
     assert pressure is not None
     assert "Иван" in pressure and "Недавние поступки ослабили доверие" in pressure
     assert "loss_10_a" not in pressure and "-10" not in pressure
+
+
+def test_revision_seven_adjudicator_filters_pressure_and_due_without_mutation(
+    tmp_path: Path,
+) -> None:
+    store = make_scene_store(tmp_path)
+    adjudicator = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=7),
+        store,
+        relationship_model=relationship_model(),
+    )
+    assert adjudicator.relationship_mechanics is not None
+    add_favourable_pressure(adjudicator.relationship_mechanics, "ivan")
+    add_favourable_pressure(adjudicator.relationship_mechanics, "maria")
+    adjudicator.relationship_mechanics.store.open_event(
+        character_id="maria",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    state = store.get_state()
+    projections_before = store.trace_projection_snapshot()
+
+    local_only = adjudicator.relationship_pressure(
+        state,
+        latest_player_message="Я осматриваю рынок.",
+    )
+
+    assert local_only is not None
+    assert "Иван" in local_only
+    assert "Мария" not in local_only
+    assert "ivan" not in local_only.casefold()
+    assert store.trace_projection_snapshot() == projections_before
+    assert adjudicator.relationship_mechanics.store.event_rows("maria", "favour")[0]["status"] == "active"
+
+    explicitly_addressed = adjudicator.relationship_pressure(
+        state,
+        latest_player_message="Мария, ответь мне.",
+    )
+
+    assert explicitly_addressed is not None
+    assert "Мария" in explicitly_addressed
+    assert "RELATIONSHIP_EVENT_RESOLUTION" in explicitly_addressed
+    assert adjudicator.relationship_mechanics.store.event_rows("maria", "favour")[0]["status"] == "active"
+    assert store.trace_projection_snapshot() == projections_before
+    private_markers = (
+        "maria",
+        "favour",
+        "due_turn",
+        "loyalty",
+        "scene-pressure",
+        "private fixture evidence",
+        "20",
+    )
+    assert all(marker not in explicitly_addressed.casefold() for marker in private_markers)
+
+
+def test_revision_seven_handle_chat_passes_current_action_into_relationship_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_scene_store(tmp_path, "relationship-scene-wiring")
+    settings = Settings(
+        app_env="test",
+        campaign_id=store.campaign_id,
+        scenario_type="rp",
+        rp_contract_version="rp-core.v2",
+        rp_contract_revision=7,
+        nvidia_api_base="mock://success",
+        nvidia_api_key="test-key",
+        service_nvidia_api_base="mock://success",
+        service_nvidia_api_key="test-service-key",
+        local_llm_enabled=False,
+        post_turn_helpers_inline=False,
+        party_memory_retrieval_enabled=False,
+    )
+    adjudicator = Adjudicator(settings, store, relationship_model=relationship_model())
+    assert adjudicator.relationship_mechanics is not None
+    add_favourable_pressure(adjudicator.relationship_mechanics, "maria")
+    adjudicator.relationship_mechanics.store.open_event(
+        character_id="maria",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    captured_pressure: list[str | None] = []
+
+    async def capture_complete(*args: object, **kwargs: object) -> dict:
+        captured_pressure.append(kwargs.get("relationship_pressure"))  # type: ignore[arg-type]
+        return {
+            "choices": [
+                {"message": {"role": "assistant", "content": "Мария отвечает издали."}}
+            ]
+        }
+
+    async def skip_post_turn_helpers(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(adjudicator.narrative, "complete", capture_complete)
+    monkeypatch.setattr(adjudicator, "after_turn_recorded", skip_post_turn_helpers)
+
+    asyncio.run(
+        adjudicator.handle_chat(
+            ChatCompletionRequest(
+                model="mock-narrator",
+                messages=[ChatMessage(role="user", content="Мария, ответь мне.")],
+            ),
+            authorization=None,
+            idempotency_key="relationship-scene-wiring",
+            request_id="req-relationship-scene-wiring",
+        )
+    )
+
+    assert len(captured_pressure) == 1
+    assert captured_pressure[0] is not None
+    assert "Мария" in captured_pressure[0]
+    assert "RELATIONSHIP_EVENT_RESOLUTION" in captured_pressure[0]
+    assert adjudicator.relationship_mechanics.store.event_rows("maria", "favour")[0]["status"] == "active"
+
+
+@pytest.mark.parametrize("revision", range(7))
+def test_revisions_zero_through_six_ignore_scene_allowlist(
+    tmp_path: Path,
+    revision: int,
+) -> None:
+    mechanics = RelationshipMechanics(
+        make_scene_store(tmp_path, f"legacy-scene-{revision}"),
+        relationship_model(),
+        rp_contract_revision=revision,
+    )
+    add_favourable_pressure(mechanics, "ivan")
+    add_favourable_pressure(mechanics, "maria")
+    mechanics.store.open_event(
+        character_id="maria",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+
+    pressure = mechanics.pressure_block(
+        1,
+        {"ivan": "Иван", "maria": "Мария"},
+        persist_seed_state=False,
+        character_ids={"ivan"},
+    )
+
+    assert pressure is not None
+    assert "Иван" in pressure and "Мария" in pressure
+    if revision >= 4:
+        due = mechanics.due_event_block(
+            1,
+            {"ivan": "Иван", "maria": "Мария"},
+            character_ids={"ivan"},
+        )
+        assert due is not None and "Мария" in due
+
+
+@pytest.mark.parametrize("scenario_type", ["novel", "training"])
+def test_non_rp_modes_keep_relationship_pressure_disabled(
+    tmp_path: Path,
+    scenario_type: str,
+) -> None:
+    store = make_scene_store(tmp_path, f"non-rp-{scenario_type}")
+    adjudicator = Adjudicator(
+        Settings(scenario_type=scenario_type, rp_contract_revision=7),
+        store,
+        relationship_model=relationship_model(),
+    )
+
+    assert adjudicator.relationship_mechanics is None
+    assert adjudicator.relationship_pressure(
+        store.get_state(),
+        latest_player_message="Мария, ответь мне.",
+    ) is None
+
+
+def test_revision_seven_nullable_legacy_due_is_read_only_and_does_not_crash(
+    tmp_path: Path,
+) -> None:
+    store = make_scene_store(tmp_path, "nullable-scene-due")
+    adjudicator = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=7),
+        store,
+        relationship_model=relationship_model(),
+    )
+    assert adjudicator.relationship_mechanics is not None
+    add_favourable_pressure(adjudicator.relationship_mechanics, "maria")
+    adjudicator.relationship_mechanics.store.open_event(
+        character_id="maria",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    make_legacy_deadline_nullable(store)
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE narrative_events SET due_turn = NULL WHERE campaign_id = ?",
+            (store.campaign_id,),
+        )
+    projections_before = store.trace_projection_snapshot()
+
+    pressure = adjudicator.relationship_pressure(
+        store.get_state(),
+        latest_player_message="Мария, ответь мне.",
+    )
+
+    assert pressure is not None and "Мария" in pressure
+    assert store.trace_projection_snapshot() == projections_before
+    event_row = adjudicator.relationship_mechanics.store.event_rows("maria", "favour")[0]
+    assert event_row["status"] == "active"
+    assert event_row["due_turn"] is None
 
 
 def test_legacy_active_event_deadline_is_repaired_before_advance(tmp_path: Path) -> None:
