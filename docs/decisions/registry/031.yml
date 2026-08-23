@@ -1,32 +1,32 @@
 - requirement: "Revision 7 normal and opening narrator requests use the strict minimal rp-gateway.rp-narrator-bundle.v1 shape with one typed scene_claims snapshot and bounded scene_delta allowlist; hard schema errors, unknown IDs, forbidden fields, unauthorized transitions, scene-claim mismatch and recognized conflicts with finite WorldPack-authored affiliations receive one repair and then no canonical scene/state/turn commit"
-  level: каркас
+  level: подключено
   store: "private provider response, canonical prior scene state, current player action, Outcome and turn request/audit diagnostics"
   assertion: absence
   expectation: revision7_invalid_scene_bundle_never_commits
   probe_command: null
   expected: null
-  waiver: "Local source implementation and focused failure-boundary regressions are complete. Merge, apply and isolated live negative proof remain pending; observed revision remains 6."
+  waiver: "Merged/applied implementation and isolated live-store proofs exercised strict accepted opening/normal bundles in party_16f68f4f2ba3 and repeated hard mismatch in party_48fd541fdb8d. The mismatch produced the exact unauthorized-location violation on initial and one repair attempt, then failed with HTTP 502 and no turn/state commit. External provider calls were zero; deterministic canary establishes only подключено, while observed revision remains 6 pending a separate explicit activation."
 - requirement: "Revision 7 persists canonical scene_state from known location and character IDs plus finite WorldPack-authored affiliations, applies only authorized scene_delta anchored to the declared snapshot, and without repair or another provider call durably records actual value and evidence when an authorized operation with unmatched evidence is dropped with audit and stale/as-of state"
-  level: каркас
+  level: подключено
   store: "canonical state_versions.state_json, private turns.metadata_json and existing audit/trace storage"
   assertion: projection
   expectation: revision7_scene_state_and_delta_are_typed_anchored_and_durable
   probe_command: null
   expected: null
-  waiver: "Local typed projection and offline regressions are complete. Merge, apply and live proof remain pending; no semantic continuity claim is made."
+  waiver: "In applied isolated live-store party_16f68f4f2ba3 one anchored movement was durably applied, then one authorized unanchored operation was dropped without repair or an extra provider call; bounded value/evidence, audit, stale scene and the next-prompt as-of marker were present. Deterministic canary establishes only подключено and makes no semantic continuity or observed-behavior claim."
 - requirement: "Revision 7 normal and opening accepted bundles atomically commit state version, scene state, turn/private adjudication metadata and request completion in SQLite; opening records Decision 030 prompt assembly, scene-affecting explicit world commands mark state stale, rollback restores or bootstraps stale state, and current.json remains a best-effort post-commit mirror"
-  level: каркас
+  level: подключено
   store: "SQLite state_versions, turns, turn_requests and audit/event records plus secondary party current.json mirror"
   assertion: projection
   expectation: revision7_scene_turn_commit_is_atomic_for_normal_opening_and_world_boundaries
   probe_command: null
   expected: null
-  waiver: "Required local failure-injection, opening-parity, world-command and post-commit mirror tests are complete. Merge, apply and live proof remain pending."
+  waiver: "Required failure-injection/world-command/mirror regressions remained green, and applied isolated live-store party_16f68f4f2ba3 recorded accepted opening plus two normal turns as exactly 3 turns, 4 state versions and 3 completed requests; idempotent opening retry added nothing. Existing protected hashes matched baseline. Deterministic canary establishes only подключено; observed revision remains 6 pending separate explicit activation."
 - requirement: "Revision 7 Gateway safe fallback is allowed only after pre-bundle transport exhaustion and atomically records a noncanonical fallback turn with story_memory_canonical=false and stale/as-of scene marker; fallback narrator prose is excluded from raw, story-memory, chapter, archive/retrieval and relationship canon while player input and the unresolved marker remain explicit for the next prompt"
-  level: каркас
+  level: подключено
   store: "turn request attempts, private turn metadata, stale scene state, recorded next prompt and canonical memory/retrieval projections"
   assertion: absence
   expectation: revision7_prebundle_fallback_is_durable_but_noncanonical
   probe_command: null
   expected: null
-  waiver: "Local atomic fallback, canonical-exclusion and next-prompt marker regressions are complete. Merge, apply and isolated live proof remain pending; observed revision remains 6."
+  waiver: "Applied isolated live-store party_ad201794ce31 atomically recorded the pre-bundle transport fallback with excluded_from_memory=1, story_memory_canonical=false, stale scene and audit. Fallback prose was absent from the next prompt, while player input and the unresolved marker were present and relationship canon rows remained zero. External provider calls were zero; deterministic canary establishes only подключено, while observed revision remains 6 pending separate explicit activation."

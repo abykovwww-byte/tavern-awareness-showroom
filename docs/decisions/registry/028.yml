@@ -7,13 +7,13 @@
   expected: null
   waiver: "Deployed Merchant canary autotest_e3e62b5ea73d on branch_e1664fcbbe07 recorded exactly the verbatim uncovered pair after effective coverage with no covered-pair leakage, while source raw/state hashes stayed unchanged; semantic continuity and endurance remain unproven."
 - requirement: "A required revision 7 prompt that remains over budget after bounded force-refresh never calls narrator or mutates the player turn"
-  level: каркас
+  level: подключено
   store: "turn_requests, audit_events, state_versions, turns and relationship projections"
   assertion: absence
   expectation: revision7_hard_overflow_fails_before_narrator_and_turn_mutation
   probe_command: null
   expected: null
-  waiver: "Focused fail-before-provider coverage is part of PR1, but the deployed positive canary fit without entering hard overflow; live zero-narrator and zero-turn/state/relationship-mutation evidence remains pending."
+  waiver: "Applied paired live-store proof used isolated revision-7 parties on deployed Gateway code. party_39f2d3cd6307 advanced coverage 1634->1636 and pending turns 2->0 before one mock narrator call and one committed turn. party_4a07c4ad0613 advanced coverage 1638->1640 but remained over budget at estimated 26917 versus 4000, made zero narrator calls, failed its request and added no turn, state version or relationship projection; only the allowed maintenance story-memory snapshot changed. External provider calls were zero and all pre-existing protected hashes matched baseline. Deterministic canary does not establish semantic continuity, observed behavior or endurance."
 - requirement: "Ordinary party revision equals the persisted minimum of WorldPack declaration and explicit observed revision without auto-migrating existing parties"
   level: подключено
   store: "parties, party_branches and Gateway runtime settings"

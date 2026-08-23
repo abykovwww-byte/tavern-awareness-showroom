@@ -8,11 +8,12 @@
 [Plan 028](../plans/028-rp-continuity-project-design.md); это решение принимает
 только первый delivery slice.
 
-**Delivery status:** `подключено` для positive fit-path. Контракт зарегистрирован
-в [`registry/028.yml`](registry/028.yml): полный uncovered tail и revision stamp
-подтверждены на deployed изолированной ветке, но hard-overflow negative proof
-остаётся на уровне `каркас`. Это mixed registry, а не закрытие всего DC1.
-Observed revision остаётся `6`.
+**Delivery status:** `подключено` для всех строк
+[`registry/028.yml`](registry/028.yml). Полный uncovered tail и revision stamp
+подтверждены на deployed изолированной ветке, а paired live-store canary закрыл
+fit-after-refresh и hard-overflow fail-before-narrator paths. Deterministic
+canary не доказывает уровень `наблюдается`; observed revision остаётся `6` до
+отдельного explicit activation decision.
 
 ## Context
 
@@ -98,12 +99,14 @@ snapshot advance/rollback races, zero narrator call и отсутствие play
 при конечном overflow, sanitized diagnostics и stamp matrix
 `6/7 -> 6`, `7/7 -> 7`, `7/6 -> 6`, non-RP -> `0`.
 
-`Подключено` возможно только после deployed canary на изолированной Merchant
+Tail/stamp proof требует deployed canary на изолированной Merchant
 checkpoint/autotest branch. Recorded prompt должен содержать все и только полные
 пары после нового coverage; source-party raw/state hashes обязаны совпасть.
 Запрос обязан явно передать `rp_contract_revision: 7`, а созданная branch —
 вернуть и сохранить revision `7`; наследование source revision `6` не является
-evidence этого решения.
+evidence этого решения. Hard-overflow proof отдельно требует deployed
+revision-7 turn path с force-refresh, точными narrator/turn/state boundaries и
+неизменностью существующих партий.
 
 Deployed canary `autotest_e3e62b5ea73d` на branch
 `branch_e1664fcbbe07` выполнил эту positive проверку. Source party осталась на
@@ -113,11 +116,21 @@ verbatim-пару uncovered tail с turn ID `1451`, без covered-пар и с 
 действием последним. Source raw/state hashes не изменились. Narrator был вызван
 один раз, transport и validator завершились успешно, без fallback и repair.
 
-Этот canary не вошёл в hard-overflow и потому не доказывает fail-before-provider
-ветку. Его narrative также сместил действие в другую локацию и не подтвердил
-устойчивость ролей текущей сцены. Это не опровергает узкий prompt-presence
-контракт DC1, но не позволяет заявлять `наблюдается`, исправленную continuity или
-готовность candidate revision `7` к observed rollout.
+Paired isolated live-store proof затем проверил обе force-refresh развилки на
+deployed Gateway-коде. Party `party_39f2d3cd6307` продвинула coverage
+`1634 -> 1636`, сократила pending turns `2 -> 0`, после пересборки выполнила один
+mock narrator call и committed один turn. Party `party_4a07c4ad0613` продвинула
+coverage `1638 -> 1640`, но после пересборки осталась в hard overflow
+(`estimated_tokens=26917`, `budget_tokens=4000`): narrator не вызывался, request
+получил status `failed`, новые turn/state version и relationship projections не
+появились. Допустимым side effect остался только maintenance story-memory
+snapshot. External provider calls были равны нулю, SQLite `quick_check` прошёл,
+а hashes всех существовавших до canary партий и проекций совпали с baseline.
+
+Merchant narration по-прежнему не подтверждает устойчивость ролей, а paired
+proof использовал deterministic provider boundary. Поэтому все строки DC1 имеют
+уровень только `подключено`: исправленная semantic continuity, `наблюдается`,
+`держится` и готовность revision `7` к observed rollout не заявляются.
 
 ## Consequences
 

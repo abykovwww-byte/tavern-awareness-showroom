@@ -9,12 +9,14 @@
 минимальный contract document-first; локальная source implementation теперь
 следует этому принятому контракту.
 
-**Delivery status:** `каркас` для всех строк
-[`registry/031.yml`](registry/031.yml). Локальная implementation, focused
-failure-boundary tests, полный Gateway (`547 passed`) и `scripts/ci.ps1`
-выполнены; merge, apply и live proof ещё не выполнены. Revision `7` остаётся
-candidate, observed revision — `6`. Это решение не является заявлением об
-исправленной semantic continuity.
+**Delivery status:** `подключено` для всех строк
+[`registry/031.yml`](registry/031.yml). Source implementation merged и applied;
+deployed container suite завершилась результатом `548 passed, 1 skipped`, а
+isolated live-store proofs закрыли normal/opening, hard no-commit, anchoring/drop
+и pre-bundle fallback boundaries. Revision `7` остаётся candidate, observed
+revision — `6` до отдельного explicit activation decision. Deterministic canary
+не является заявлением об исправленной semantic continuity или уровне
+`наблюдается`.
 
 ## Context
 
@@ -332,6 +334,29 @@ next prompt и SQLite hashes должны согласоваться; source par
 неизменной. Отдельный negative canary нужен для hard no-commit boundary, а
 pre-bundle canary — для noncanonical fallback. Валидный provider response сам по
 себе не доказывает semantic continuity, `наблюдается` или `держится`.
+
+Deployed isolated live-store party `party_16f68f4f2ba3` выполнила accepted
+opening и два normal turns: итоговые authoritative counts составили `3` turns,
+`4` state versions и `3` completed requests, повтор opening с тем же idempotency
+key не создал новых записей. Anchored movement дал ровно одну applied operation;
+следующая authorized, но unanchored operation была dropped без repair или
+второго provider call, durable сохранила value/evidence и audit, а scene стала
+stale с marker в следующем prompt.
+
+Negative party `party_48fd541fdb8d` получила одинаковый unauthorized-location
+violation на initial и единственной repair attempt. Request завершился `502` и
+status `failed`; counts остались `0` turns, `1` initial state version и `1`
+request, то есть canonical commit отсутствовал. Pre-bundle timeout party
+`party_ad201794ce31` atomically сохранила один fallback turn/state с
+`excluded_from_memory=1`, `story_memory_canonical=false`, stale scene и audit.
+Fallback prose отсутствовал в следующем prompt, player input и unresolved marker
+присутствовали, relationship canon rows остались равны нулю.
+
+Все canaries использовали deployed Gateway code и production SQLite только в
+новых isolated revision-7 parties; external provider calls были равны нулю,
+SQLite `quick_check` прошёл, а hashes всех существовавших партий и protected
+stores совпали с baseline. Это уровень `подключено`, не `наблюдается` или
+`держится`; observed revision остаётся `6` до отдельного explicit activation.
 
 ## Privacy and retention
 

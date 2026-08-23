@@ -2,27 +2,17 @@
 
 **Дата:** 2026-08-17
 
-**Статус:** PR1 и canary plumbing merged и применены. Positive Merchant canary
-поднял требования полного uncovered tail и revision stamp до `подключено`, но
-hard-overflow negative proof остаётся `каркас`, а semantic continuity не
-подтверждена. Пользователь отдельно принял PR2-контракт
-[Decision 029](../decisions/029-scene-scoped-relationship-pressure.md). PR2 merge
-применён, а isolated canary поднял обе его registry-строки до `подключено`.
-Третий document-first контракт принят в
-[Decision 030](../decisions/030-rp-prompt-authority-and-deduplication.md). Его
-offline gates выполнены, а applied isolated canary поднял его первую registry-row
-до `подключено`. Hard-budget eviction и cross-surface diagnostics parity
-остаются `каркас`. Optional branch-aware context/preview wiring merged в PR59 и
-applied, но exact live parity ещё не доказана. Narrow excluded-turn/emitter-ID
-hardening дал focused `17 passed`; merge, apply и live proof этого follow-up ещё
-нет. Semantic continuity и уровень `наблюдается` не доказаны. Четвёртый document-first
-контракт принят в
-[Decision 031](../decisions/031-rp-scene-state-and-atomic-continuity.md); все его
-registry-строки остаются `каркас`. Локальная source implementation, focused
-tests, полный Gateway (`547 passed`) и `scripts/ci.ps1` выполнены; merge, apply и
-live proof отсутствуют.
-Этот план не активирует revision `7`, не мигрирует существующие партии и не
-повышает observed revision выше `6`.
+**Статус:** все четыре delivery slice merged, применены и имеют isolated
+live-store proof уровня `подключено`. Decision 028 закрыта парой positive/reject
+hard-overflow canary, Decision 029 — scene-filtered relationship canary,
+Decision 030 — structural deduplication, whole-block hard-budget eviction и
+four-surface `prompt_assembly` parity, Decision 031 — accepted opening/normal,
+hard no-commit и pre-bundle noncanonical fallback. Deployed Gateway suite после
+apply: `548 passed, 1 skipped`; четыре runtime-сервиса healthy, опубликованные UI
+отвечают `200`. Это causal proof механизма на deterministic isolated canaries,
+а не semantic continuity, `наблюдается` или endurance. План не активирует
+revision `7`, не мигрирует существующие партии и не повышает observed revision
+выше `6`: для этого остаётся отдельное explicit rollout decision.
 
 ## Цель
 
@@ -59,13 +49,10 @@ negative gate; это не меняет readiness DC1.
 | 3 | [Prompt authority, structural deduplication и diagnostics](../decisions/030-rp-prompt-authority-and-deduplication.md) | Один authoritative representation на continuity tier; assembly объяснима без prompt content |
 | 4 | [Scene projection, continuity gate и atomic commit](../decisions/031-rp-scene-state-and-atomic-continuity.md) | Сцена валидируется и сохраняется вместе с ходом как одна транзакция |
 
-PR1 поставил первую строку, а deployed PR2 подключил вторую по Decision 029.
-Третья строка принята document-first по Decision 030 и подключена только в части
-prompt hierarchy/structural deduplication; её hard-budget и diagnostics-parity
-gates остаются `каркас`. Четвёртая строка принята document-first по Decision 031,
-её local source/offline gates выполнены, но все registry-строки остаются
-`каркас`; runtime delivery и live proof отсутствуют. Ни один новый slice не
-меняет readiness предыдущих.
+PR1–PR4 поставлены в указанном порядке. Все registry-строки Decisions 028–031
+имеют уровень `подключено` по отдельным live-store proofs; ни один более поздний
+slice не использовался как замена доказательству предыдущего. Observed rollout
+остаётся отдельным gate.
 
 ## Общие инварианты
 
@@ -173,12 +160,22 @@ Deployed canary `autotest_e3e62b5ea73d` на branch
 последним. Source raw/state hashes не изменились. Narrator выполнил один вызов с
 успешными transport/validator status, без fallback и repair.
 
-Этот result поднимает tail и revision-stamp requirements до `подключено`, но не
-весь registry. Canary fit не вошёл в hard-overflow, поэтому live-доказательство
-zero narrator calls и отсутствия turn/state/relationship mutation при конечном
-overflow остаётся `каркас`. Narrative сместил действие в другую локацию и не
-подтвердил устойчивость ролей: это не отменяет точный prompt-presence proof, но
-не доказывает исправленную continuity и не позволяет заявлять `наблюдается`.
+Этот ранний result поднял tail и revision-stamp requirements до `подключено`.
+После финального apply paired production-store canary закрыла оставшийся
+hard-overflow gate:
+
+- `party_39f2d3cd6307`: force-refresh продвинул coverage `1634 -> 1636` и
+  pending turns `2 -> 0`, после пересборки narrator был вызван один раз и ход
+  atomically committed;
+- `party_4a07c4ad0613`: force-refresh продвинул coverage `1638 -> 1640`, но
+  required prompt остался `26917 > 4000`; request завершился failed до narrator,
+  без нового turn/state version и без relationship projection rows.
+
+Обе ветки читались из authoritative production SQLite; защищённые existing-party
+table/state-file hashes не изменились, внешних provider calls не было. Поэтому
+все строки Decision 028 имеют уровень `подключено`. Ранний Merchant narration,
+сместивший действие, по-прежнему не является доказательством semantic continuity
+или уровня `наблюдается`.
 
 ## PR2 / DC2
 
@@ -283,9 +280,9 @@ response source party не меняются; с параметром Gateway и�
 branch store, source-party runtime settings и persisted branch revision и
 возвращает `branch_id`.
 Raw `state_campaign_id` наружу не передаётся, provider/state/turn mutation не
-возникает. Wiring, четыре focused test, полный Gateway `449 passed` и repository
-CI merged в PR59 и applied, но без exact isolated-branch live parity
-diagnostics-row остаётся `каркас`.
+возникает. Branch wiring merged в PR59, excluded-turn/emitter-ID hardening — в
+PR61; оба applied. Exact recorded parity подтверждена на excluded latest turn
+`party_ad201794ce31`, поэтому diagnostics-row имеет уровень `подключено`.
 
 ### Gates PR3
 
@@ -312,14 +309,24 @@ combined source projections SHA
 individual table hashes совпали с baseline. Поэтому hierarchy/deduplication row
 имеет уровень `подключено`.
 
-Canary не входил в actual hard provider token overflow, поэтому hard-budget row
-остаётся `каркас`. Branch diagnostics wiring merged и applied, но точное
-равенство recorded metadata, trace, Prompt Inspector `source=last` и context на
-isolated branch не проверено; diagnostics row также остаётся `каркас`. Валидный narration
-сам по себе не доказывает semantic continuity или `наблюдается`.
-Opening-scene persistence/parity не входит в DC3 и остаётся pending gate
-четвёртого opening/atomic-commit slice; observed revision `7` до этого gate не
-активируется и сейчас остаётся `6`.
+После финального apply две отдельные production-store canary закрыли оставшиеся
+строки Decision 030:
+
+- `party_1bc1a1204dde`: full prompt `15360` вошёл в фактический hard input
+  budget `15359` только после удаления целого optional
+  `relevant_characters`; required set был `12669`, metadata и trace записали
+  exact `{block_id: relevant_characters, reason: hard_input_budget}`, narrator
+  был вызван один раз, turn/state committed, external provider calls — `0`;
+- excluded latest fallback turn партии `party_ad201794ce31` вернул один и тот
+  же content-free `prompt_assembly` из turn metadata, gateway trace, Prompt
+  Inspector `source=last` и recorded context; SHA-256 проекции
+  `ddd7998d28273a07fc33bf597a1e7fc8af66d906546b5f545edd3a647ec2a335`.
+
+Opening-scene persistence/parity отдельно подтверждена DC4 canary. Все три
+строки Decision 030 имеют уровень `подключено`; initial full assembly по-прежнему
+не описывает compact validation-repair input, а dedicated GUI renderer не
+добавлен. Валидный narration сам по себе не доказывает semantic continuity или
+`наблюдается`; observed revision остаётся `6` до отдельной активации.
 
 ## PR4 / DC4
 
@@ -365,26 +372,35 @@ free prose остаётся вне semantic judge, а mechanic relationship role
 
 ### Gates PR4
 
-Локальная source implementation и обязательные offline gates выполнены, но все
-четыре строки registry 031 остаются `каркас`. Реализованы
-strict-schema/authorization/anchoring regressions, раздельные tests
-для immediate no-repair authorized-unanchored drop, unauthorized hidden-by-drop
-failure и finite affiliation conflict, opening
-parity, noncanonical fallback exclusion, world-command stale policy и полный
-failure-injection набор на каждой atomic write boundary. Отдельно проверяется,
-что post-commit failure `current.json` не откатывает SQLite.
+Source implementation, обязательные offline gates, merge, pull-based apply и
+isolated production-store proof выполнены. Live evidence разделено по границам:
 
-Полный local CI выполнен. Далее нужны merge, pull-based apply и isolated
-revision-7 live proofs
-normal/opening, hard no-commit и pre-bundle fallback. Валидный provider response
-или green CI не поднимает readiness и не доказывает semantic continuity.
+- `party_16f68f4f2ba3`: accepted opening и normal turns дали totals
+  `turns/state_versions/requests = 3/4/3`; anchored movement applied, authorized
+  unanchored operation dropped без repair, с audit и stale/as-of scene marker;
+- `party_48fd541fdb8d`: initial и единственный repair повторили точный
+  unauthorized location mismatch; request failed, turn не появился, bootstrap
+  state не продвинулся;
+- `party_ad201794ce31`: pre-bundle timeout committed excluded noncanonical
+  fallback со stale scene; fallback prose отсутствует в следующем prompt, а
+  player input и unresolved marker присутствуют; relationship canon rows — `0`.
+
+Opening retry также подтвердил idempotency. World-command/rollback и каждую
+atomic failure boundary продолжают доказывать focused offline tests; live
+canary доказывает deployed principal paths и authoritative before/after store.
+Все четыре строки Decision 031 имеют уровень `подключено`. External provider
+calls не выполнялись, поэтому semantic continuity, `наблюдается` и endurance не
+заявляются.
 
 ## Последующие gates
 
-Для незавершённых gates каждого slice отдельно обязательны focused tests, полный
-CI, merge, pull-based apply, container/HTTP verification и изолированный
-live-store proof. Observed revision повышается с `6` до `7` отдельным rollout
-change только после всех четырёх proofs и explicit activation decision.
+Все implementation/readiness gates четырёх slice закрыты на уровне
+`подключено`. Следующий шаг не является пятым implementation slice: observed
+revision повышается с `6` до `7` отдельным rollout change только после explicit
+activation decision. После apply нужен отдельный live-proof, что новая ordinary
+party читает и сохраняет observed revision `7`, а existing parties остаются
+pinned; `наблюдается` и `держится` требуют последующих реальных партий и
+endurance, а не этих synthetic canaries.
 
 ## Сознательно отложено
 

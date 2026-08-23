@@ -8,17 +8,16 @@
 [Plan 028](../plans/028-rp-continuity-project-design.md). Решение принимает
 контракт document-first. Focused DC3 дал `15 passed`, combined revision-7 suite
 — `104 passed`, полный Gateway — `445 passed`, а `scripts/ci.ps1` завершился
-успешно. Основной source contract достиг applied candidate runtime, и isolated
-live canary подключил первую строку registry. Branch-aware read-only diagnostics
-follow-up merged в PR59 и applied; exact isolated-branch parity live ещё не
-доказана. Текущий narrow hardening excluded-turn metadata и emitter-to-ID
-contract дал focused `17 passed`; merge, apply и live proof этого follow-up пока
-отсутствуют.
+успешно. Основной source contract, branch-aware read-only diagnostics и narrow
+excluded-turn/emitter-ID hardening merged и applied; deployed container suite
+завершилась результатом `548 passed, 1 skipped`. Три isolated live proofs
+подключили structural deduplication, whole-block hard-budget eviction и
+cross-surface diagnostics parity.
 
-**Delivery status:** первая строка [`registry/030.yml`](registry/030.yml) имеет
-уровень `подключено`; hard-budget eviction и cross-surface diagnostics parity
-остаются `каркас`. Revision `7` остаётся candidate, observed revision — `6`.
-Этот статус не является заявлением об исправленной semantic continuity.
+**Delivery status:** все строки [`registry/030.yml`](registry/030.yml) имеют
+уровень `подключено`. Revision `7` остаётся candidate, observed revision — `6`
+до отдельного explicit activation decision. Этот статус не является заявлением
+об исправленной semantic continuity или уровнем `наблюдается`.
 
 ## Context
 
@@ -184,11 +183,13 @@ settings и persisted branch revision, а в ответе возвращает �
 публичным входом не становится.
 
 Оба endpoint остаются read-only: не создают provider call, turn, snapshot или
-ветку и не меняют source/branch state. Этот wiring нужен для live-проверки
-третьей строки registry, но сам по себе не доказывает cross-surface parity.
-Реализация, четыре focused regression, полный Gateway `449 passed` и repository
-CI merged в PR59 и applied. Exact isolated-branch cross-surface live proof пока
-отсутствует, поэтому readiness третьей registry-строки остаётся `каркас`.
+ветку и не меняют source/branch state. Реализация, четыре focused regression,
+полный Gateway `449 passed` и repository CI merged в PR59 и applied. Narrow
+excluded-turn/emitter-ID hardening также merged и applied. Isolated live-store
+party `party_ad201794ce31` затем доказала cross-surface parity для исключённого
+latest turn: metadata, `gateway_assembly` trace, Prompt Inspector `source=last`
+и recorded context вернули один `prompt_assembly` с SHA-256
+`ddd7998d28273a07fc33bf597a1e7fc8af66d906546b5f545edd3a647ec2a335`.
 
 ## Verification boundary
 
@@ -230,26 +231,32 @@ transport model fallback после `403`. Source party сохранила persi
 SHA `dc076bcc31535f4b38a5ffbc9a14373b136a15a520f86c59b372377cd1d01164`,
 combined source projections SHA
 `2e86389f74ff6f7c05490cc0f65bb1c18b224b3e533b12800d108fb01d6dfe73`, а
-каждый individual table hash совпал с baseline. Это поднимает только первую
-строку до `подключено` и не является semantic-output proof.
+каждый individual table hash совпал с baseline. Это подключает первую строку и
+не является semantic-output proof.
 
-Canary не входил в фактический hard provider token overflow, поэтому вторая
-строка остаётся `каркас`. Branch-aware diagnostics merged и applied, но exact
-parity между metadata, trace, Prompt Inspector `source=last` и recorded context
-на isolated branch не доказана, поэтому третья строка также остаётся `каркас`.
+Отдельная revision-7 party `party_1bc1a1204dde` проверила фактический hard input
+budget. Full assembly оценивалась в `15360` tokens при budget `15359`, required
+set — в `12669`; единственным optional candidate был `relevant_characters`.
+Gateway omitted ровно весь block с exact record
+`{block_id: relevant_characters, reason: hard_input_budget}`, и его message
+целиком отсутствовал в provider prompt. Metadata и trace совпали, один mock
+narrator call завершил request и добавил ровно один turn/state version. External
+provider calls были равны нулю, hashes существующих protected stores совпали с
+baseline. Это подключает вторую строку без percentage-only или partial eviction.
 
-Opening-scene `prompt_assembly` persistence/parity остаётся отдельным pending
-gate четвёртого opening/atomic-commit slice Plan 028. Он не считается доказанным
-этим решением, и observed revision `7` не может быть активирована до его
-реализации и проверки.
+Excluded latest fallback turn party `party_ad201794ce31` подключил третью строку:
+metadata, `gateway_assembly` trace, Prompt Inspector `source=last` и recorded
+context вернули byte-equivalent content-free projection с SHA-256
+`ddd7998d28273a07fc33bf597a1e7fc8af66d906546b5f545edd3a647ec2a335`, хотя
+turn имел `excluded_from_memory=1`. Проекция по-прежнему описывает initial full
+narrator assembly; compact validation-repair остаётся отдельной attempt в
+private admin Turn Trace и не переписывает recorded `prompt_assembly`.
 
-Для подключения третьей строки branch diagnostics и текущий excluded-turn
-hardening должны быть applied и проверены на isolated revision-7 branch:
-сохранённые turn metadata/trace, Prompt Inspector `source=last` и recorded
-context обязаны вернуть один и тот же `prompt_assembly`, а source party —
-сохранить свою persisted legacy revision и exact state/projection hashes. Одного
-валидного narrator ответа недостаточно для уровня `наблюдается` или semantic
-continuity claim.
+Opening persistence остаётся границей Decision 031 и проверена его отдельным
+live-store proof. Все deterministic canaries подтверждают только исполнение в
+реальном deployed turn path: semantic continuity, `наблюдается` и `держится` не
+доказаны. Observed revision остаётся `6` до отдельного explicit activation
+decision.
 
 ## Consequences
 
@@ -267,8 +274,9 @@ continuity claim.
   committed `prompt_json` repair payload;
 - renderer `prompt_assembly` или branch selector в Light GUI/shared UI/Showcase;
 - изменение lore/relevant-character/relationship relevance rules;
-- opening-scene assembly persistence/parity; это обязательный pending gate
-  четвёртого slice, а не разрешение активировать observed revision `7`;
+- opening-scene assembly persistence/parity; этот gate принадлежал четвёртому
+  slice и теперь закрыт Decision 031, но сам по себе не активирует observed
+  revision `7`;
 - `scene_state`, persisted presence или scene-state fast path;
 - structured narrator response bundle, continuity validator, fallback policy или
   atomic scene-state/turn commit;
