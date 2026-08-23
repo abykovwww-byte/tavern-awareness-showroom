@@ -15,10 +15,10 @@ excluded-turn/emitter-ID hardening merged и applied; deployed container suite
 cross-surface diagnostics parity.
 
 **Delivery status:** все строки [`registry/030.yml`](registry/030.yml) имеют
-уровень `подключено`. На момент live proof effective observed revision была `6`;
-отдельный activation change теперь задаёт source target `7`, effective только
-после apply/stamp proof. Этот статус не является заявлением об исправленной
-semantic continuity или уровнем `наблюдается`.
+уровень `подключено`. На момент DC3 live proof effective observed revision была
+`6`; последующий activation merge применён и ordinary-party stamp proof
+подтвердил effective observed revision `7`. Этот rollout не повышает DC3 выше
+`подключено` и не является заявлением об исправленной semantic continuity.
 
 ## Context
 
@@ -37,7 +37,7 @@ DC1 защищает полный raw tail новее effective RP story-memory 
 ## Decision
 
 Решение применяется только к normal party-chat и admin-autotest narrator turns
-с `scenario_type=rp` на candidate revision `7`. Opening-scene path не входит в
+с `scenario_type=rp` на effective revision `7`. Opening-scene path не входит в
 DC3. Revisions `0..6`, `novel` и `training` сохраняют прежнее поведение.
 
 ### Authority hierarchy
@@ -265,7 +265,8 @@ live-store proof. Все deterministic canaries подтверждают тол�
 - Optional budget reduction становится объяснимой и воспроизводимой.
 - Preview, context и recorded execution можно сравнивать без копирования текста
   prompt в новый diagnostic.
-- Candidate support не поднимает observed revision и не мигрирует партии.
+- Observed revision `7` применяется только к новым ordinary parties и не
+  мигрирует существующие партии.
 
 ## Non-goals
 
@@ -276,12 +277,12 @@ live-store proof. Все deterministic canaries подтверждают тол�
 - renderer `prompt_assembly` или branch selector в Light GUI/shared UI/Showcase;
 - изменение lore/relevant-character/relationship relevance rules;
 - opening-scene assembly persistence/parity; этот gate принадлежал четвёртому
-  slice и теперь закрыт Decision 031, но сам по себе не активирует observed
-  revision `7`;
+  slice и теперь закрыт Decision 031, но сам по себе не был основанием для
+  activation observed revision `7`;
 - `scene_state`, persisted presence или scene-state fast path;
 - structured narrator response bundle, continuity validator, fallback policy или
   atomic scene-state/turn commit;
-- автоматическая миграция existing parties или activation observed revision `7`.
+- автоматическая миграция existing parties.
 
 ## Related decisions
 

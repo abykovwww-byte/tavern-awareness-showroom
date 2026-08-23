@@ -21,4 +21,4 @@
   expectation: revision7_party_stamp_is_persisted_and_existing_parties_remain_pinned
   probe_command: null
   expected: null
-  waiver: "Deployed runtime kept observed revision 6 while Merchant declared 7; the canary explicitly requested and persisted branch revision 7, and its source party remained pinned at revision 6 with unchanged raw/state hashes. Fresh ordinary-party creation under declared 7 and observed 6 was not separately exercised."
+  waiver: "Activation merge a4076b0938f2b152f77e675e8545156ce783a8f3 was applied on 2026-08-23 and container env reported observed revision 7. Live Gateway API created ordinary Starosta party_b286ed285388 at declared/API/SQLite/runtime revision 7, control party_7928b20be697 at declared/API/SQLite/runtime revision 6, and novel party_517a98233313 at API/SQLite/runtime revision 0 without starting them: turns, turn requests and service/provider calls were all zero. Exact rows and revision maps of the prior 63 parties and 18 branches plus their state-tree hashes matched before/after; the novel follow-up repeated equality for the then-existing 65 parties. This stamp proof does not establish semantic continuity or endurance."

@@ -12,9 +12,11 @@
 [`registry/028.yml`](registry/028.yml). Полный uncovered tail и revision stamp
 подтверждены на deployed изолированной ветке, а paired live-store canary закрыл
 fit-after-refresh и hard-overflow fail-before-narrator paths. На момент этого
-evidence run effective observed revision была `6`. Deterministic canary не
-доказывает уровень `наблюдается`; отдельный activation change задаёт source
-target `7`, effective только после pull-based apply и post-apply stamp proof.
+evidence run effective observed revision была `6`. Последующий activation merge
+`a4076b0938f2b152f77e675e8545156ce783a8f3` применён, а ordinary-party stamp
+proof подтвердил effective observed revision `7` без миграции прежних parties.
+Ни deterministic canary, ни activation stamp не доказывают уровень
+`наблюдается`.
 
 ## Context
 
@@ -28,7 +30,7 @@ Raw transcript остаётся durable source history. Мягкая 50% charact
 
 ## Decision
 
-Решение применяется только к `scenario_type=rp` candidate revision `7`.
+Решение применяется только к `scenario_type=rp` с effective revision `7`.
 Revisions `0..6`, `novel` и `training` не меняются.
 
 ### Полный uncovered tail
@@ -76,14 +78,22 @@ derived seed; штатный post-commit advance создаёт его толь�
 
 ### Revision stamp
 
-Поддерживаемый публичный диапазон становится `0..7`. Во время candidate evidence
-effective observed revision оставалась `6`; отдельный activation change задаёт
-source target `7`, который становится effective только после apply. Обычная
-новая RP-партия сохраняет точное
+Поддерживаемый публичный диапазон — `0..7`. После pull-based apply 23 августа
+2026 года effective observed revision равна `7`. Обычная новая RP-партия
+сохраняет точное
 `min(WorldPack declared revision, RP_CONTRACT_OBSERVED_REVISION)`, runtime читает
 persisted party revision, existing parties не повышаются автоматически. Явная
 checkpoint/autotest branch может запросить candidate revision в пределах
 WorldPack declaration. Non-RP всегда использует `0`.
+
+Live stamp proof создал через обычный Gateway API, не запуская opening/narrator,
+`party_b286ed285388` («Староста», declared `7`) и `party_7928b20be697`
+(declared `6`), а follow-up `party_517a98233313` проверил `novel`. API, SQLite и
+runtime settings сохранили соответственно `7`, `6` и `0`; у всех трёх parties
+отсутствуют turns, turn requests и service/provider calls.
+Полные rows/revision maps прежних `63` parties и `18` branches, а также их
+state-tree hashes совпали до/после; novel proof повторил equality для уже `65`
+parties.
 
 ### Diagnostics
 
@@ -133,14 +143,16 @@ snapshot. External provider calls были равны нулю, SQLite `quick_ch
 Merchant narration по-прежнему не подтверждает устойчивость ролей, а paired
 proof использовал deterministic provider boundary. Поэтому все строки DC1 имеют
 уровень только `подключено`: исправленная semantic continuity, `наблюдается`,
-`держится` и готовность revision `7` к observed rollout не заявляются.
+`держится` не заявляются. Последующий activation stamp отдельно подтвердил
+ordinary availability revision `7`, но не расширил evidence механизма.
 
 ## Consequences
 
 - 50% остаётся мягкой long-party целью.
 - Редкий overflow может синхронно вызвать существующую service model.
 - Невместимый required prompt приводит к явному отказу, а не тихой потере tail.
-- Candidate support не поднимает observed revision и не мигрирует партии.
+- Observed revision `7` применяется только к новым ordinary parties и не
+  мигрирует существующие партии.
 
 ## Non-goals
 

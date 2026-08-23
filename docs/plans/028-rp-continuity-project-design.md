@@ -10,10 +10,11 @@ four-surface `prompt_assembly` parity, Decision 031 — accepted opening/normal,
 hard no-commit и pre-bundle noncanonical fallback. Deployed Gateway suite после
 apply: `548 passed, 1 skipped`; четыре runtime-сервиса healthy, опубликованные UI
 отвечают `200`. Это causal proof механизма на deterministic isolated canaries,
-а не semantic continuity, `наблюдается` или endurance. Пользователь отдельно
-поручил довести revision `7` до production; этот activation change задаёт target
-observed revision `7`, но effective production status фиксируется только после
-pull-based apply и post-apply live proof. Existing parties не мигрируют.
+а не semantic continuity, `наблюдается` или endurance. Отдельный activation
+merge `a4076b0938f2b152f77e675e8545156ce783a8f3` применён 23 августа 2026 года;
+container env и ordinary-party stamp proof подтвердили effective observed
+revision `7`. Existing parties не мигрировали, а readiness всех четырёх slice
+остаётся только `подключено`.
 
 ## Цель
 
@@ -59,10 +60,10 @@ slice не использовался как замена доказательс
 
 - Gateway остаётся authority для revision, state, memory coverage, prompt и
   commit.
-- Candidate `7` действует только для `scenario_type=rp`; revisions `0..6`,
+- Revision `7` действует только для `scenario_type=rp`; revisions `0..6`,
   `novel` и `training` сохраняют прежнее поведение.
-- Observed revision остаётся `6`, пока все срезы не получили отдельные live
-  proofs и rollout-решение.
+- Observed revision оставалась `6`, пока все срезы не получили отдельные live
+  proofs и rollout-решение; после отдельного activation она равна `7`.
 - Existing party сохраняет persisted revision; auto-migration отсутствует.
 - Raw turns не удаляются и не переписываются ради prompt budget.
 - Новые сервисы, telemetry, vector store, tokenizer dependency и второй LLM
@@ -81,9 +82,10 @@ min(WorldPack declared revision, RP_CONTRACT_OBSERVED_REVISION)
 ```
 
 Это значение сохраняется в party row и затем читается runtime-настройками именно
-из партии. WorldPack может объявить candidate `7`, пока inventory продолжает
-явно задавать observed `6`. Только явно созданная checkpoint/autotest branch
-может запросить candidate revision выше source party. Non-RP получает `0`.
+из партии. Во время candidate phase WorldPack объявлял `7`, пока inventory явно
+задавал observed `6`; после activation inventory задаёт `7`. Явно созданная
+checkpoint/autotest branch по-прежнему может запросить допустимую revision выше
+source party. Non-RP получает `0`.
 
 ### Coverage и raw tail
 
@@ -181,7 +183,7 @@ table/state-file hashes не изменились, внешних provider calls
 ## PR2 / DC2
 
 Decision 029 ограничивает relationship pressure производным pre-scene набором.
-На candidate revision `7` персонаж может войти в него только по совпадению с
+На revision `7` персонаж может войти в него только по совпадению с
 `player.location`, explicit whole-alias в текущем действии или `Outcome.target`.
 Уже eligible-кандидат получает score `100` за action-or-target, `30` за location
 и дополнительно `20` за membership в structured `active_threads`. Active thread
@@ -398,22 +400,39 @@ calls не выполнялись, поэтому semantic continuity, `набл
 
 Все implementation/readiness gates четырёх slice закрыты на уровне
 `подключено`. 23 августа 2026 года пользователь явно поручил продолжить до
-production, поэтому отдельный rollout change повышает inventory target observed
-revision с `6` до `7`; это не пятый implementation slice и не auto-migration.
-До успешного pull-based apply production остаётся на ранее подтверждённом `6`.
+production; отдельный rollout change повысил inventory target observed revision
+с `6` до `7`. Merge
+`a4076b0938f2b152f77e675e8545156ce783a8f3` был применён на `abykovserv` с
+`16:21:00` до `16:23:40 MSK`; Ansible recap: `ok=68`, `changed=7`,
+`unreachable=0`, `failed=0`. Это не пятый implementation slice и не
+auto-migration.
 
-После apply обязательный read-only/live-store proof должен показать:
+Post-apply proof подтвердил:
 
-- container env `RP_CONTRACT_OBSERVED_REVISION=7`;
-- новая ordinary RP-party с declared revision `7` сохраняет revision `7` в API,
-  SQLite и party runtime settings без provider call;
-- revisions/hashes всех существовавших до rollout parties и branches неизменны;
-- non-RP остаётся revision `0`, а declared revision `6` по-прежнему даёт `6`.
+- server checkout точно равен activation merge, container env сообщает
+  `RP_CONTRACT_OBSERVED_REVISION=7`;
+- новая ordinary «Староста» `party_b286ed285388` с declared revision `7`
+  сохраняет `7` в live API, SQLite и party runtime settings;
+- control party `party_7928b20be697` на declared revision `6` сохраняет `6`, а
+  novel-party `party_517a98233313` сохраняет `0` на тех же трёх поверхностях;
+  существующая training-party `party_03d29eda3d3e` также остаётся на `0`;
+- все три stamp-party имеют `0` turns, `0` turn requests и `0` service/provider
+  calls; временные API-сессии удалены;
+- полные строки прежних `63` parties и `18` branches сохранили exact hashes
+  `d25f42554a471b31aadaf7030deb275e4dc9f4c9c300de74497a302783979a3a` и
+  `101c07c138a87eb2eee5c53839d6853be9f797830460b296f9d7ba2da3ac6390`;
+  revision maps и state-tree hashes также совпали до/после; follow-up novel
+  proof повторил equality для уже `65` parties с rows hash
+  `113f4b210f529b0f0649228d7813cda9c854e5780fd6e351bc35d2f09b58a2f7`;
+- SQLite `quick_check=ok`, четыре runtime-сервиса healthy с `restarts=0`,
+  Light GUI/Showcase отвечают `200`, deployed suite дала
+  `548 passed, 1 skipped`.
 
 Rollback inventory обратно на `6` ограничит только новые партии: уже созданная
 revision-7 party останется pinned на `7`, потому что автоматический downgrade так
 же запрещён, как auto-migration вверх. `Наблюдается` и `держится` требуют
-последующих реальных партий и endurance, а не activation stamp proof.
+последующих реальных партий и endurance, а не выполненный activation stamp
+proof.
 
 ## Сознательно отложено
 

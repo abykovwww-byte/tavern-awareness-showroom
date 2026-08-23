@@ -11,9 +11,10 @@
 [`registry/029.yml`](registry/029.yml). Merge
 `fb13eecd56351d885e3309f6464a7d3a2e2b04e3` применён на сервере, а deployed
 isolated canary подтвердил prompt filtering и durable omission в реальном тракте
-хода. На момент canary effective observed revision была `6`; отдельный activation
-change теперь задаёт source target `7`, effective только после apply/stamp proof.
-Это не уровень `наблюдается` и не доказательство полной semantic continuity.
+хода. На момент canary effective observed revision была `6`; последующий
+activation merge применён и ordinary-party stamp proof подтвердил effective
+observed revision `7`. Это не повышает evidence DC2 выше `подключено` и не
+доказывает полную semantic continuity.
 
 ## Context
 
@@ -29,7 +30,7 @@ change теперь задаёт source target `7`, effective только по�
 
 ## Decision
 
-Для `scenario_type=rp` на candidate revision `7` Gateway вычисляет bounded набор
+Для `scenario_type=rp` на effective revision `7` Gateway вычисляет bounded набор
 `relationship_scene_character_ids` непосредственно перед рендерингом
 relationship pressure. Набор является производным значением одного запроса, не
 сохраняется. Персонаж становится eligible только по одному из трёх сигналов:
@@ -81,8 +82,10 @@ Narrator-visible block сохраняет текущую sanitization: допу�
 target/accomplice IDs и raw payload остаются внутри Gateway.
 
 Revisions `0..6`, `novel` и `training` сохраняют текущий путь. Existing source
-parties не мигрируют. Candidate проверяется только на checkpoint/autotest branch;
-source raw history, canonical state и relationship rows не меняются.
+parties не мигрируют. До activation contract проверялся только на
+checkpoint/autotest branch; после activation он применяется к новым ordinary
+RP-parties с persisted revision `7`. Source raw history, canonical state и
+relationship rows не меняются.
 
 ## Verification boundary
 
@@ -147,8 +150,8 @@ version `12`, turn `11` и SHA-256
 
 Оба narrator outputs не назвали Бажену или Радогоста, а proof output назвал
 Милену. Это узкое semantic observation согласуется с recorded prompt, но не
-доказывает исправленную continuity, уровень `наблюдается` или готовность
-revision `7` к observed rollout.
+доказывает исправленную continuity или уровень `наблюдается`; последующий
+activation stamp не меняет эту evidence boundary.
 
 ## Consequences
 

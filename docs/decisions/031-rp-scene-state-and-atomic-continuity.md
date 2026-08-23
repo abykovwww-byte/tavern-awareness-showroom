@@ -13,10 +13,11 @@
 [`registry/031.yml`](registry/031.yml). Source implementation merged и applied;
 deployed container suite завершилась результатом `548 passed, 1 skipped`, а
 isolated live-store proofs закрыли normal/opening, hard no-commit, anchoring/drop
-и pre-bundle fallback boundaries. На момент proofs effective observed revision
-была `6`; отдельный activation change теперь задаёт source target `7`, effective
-только после apply/stamp proof. Deterministic canary не является заявлением об
-исправленной semantic continuity или уровне `наблюдается`.
+и pre-bundle fallback boundaries. На момент этих proofs effective observed
+revision была `6`; последующий activation merge применён и ordinary-party stamp
+proof подтвердил effective observed revision `7`. Ни deterministic canary, ни
+activation stamp не являются заявлением об исправленной semantic continuity или
+уровне `наблюдается`.
 
 ## Context
 
@@ -378,7 +379,8 @@ TTL не вводятся; existing secret-redaction и access control оста�
   незаметно: drop, audit и stale marker обязательны.
 - Transport fallback остаётся видимым пользователю и durable как
   noncanonical turn, но его narrator prose не становится фактом истории.
-- Candidate support не поднимает observed revision и не мигрирует parties.
+- Observed revision `7` применяется только к новым ordinary parties и не
+  мигрирует существующие parties.
 
 ## Non-goals
 
@@ -390,7 +392,7 @@ TTL не вводятся; existing secret-redaction и access control оста�
 - новая state/event-sourcing database, service, table или filesystem authority;
 - UI для ручного редактирования `scene_state`;
 - автоматический repair существующих партий «Купец»/«Староста»;
-- изменение readiness Decision 028–030 или activation observed revision `7`.
+- изменение readiness Decision 028–030.
 
 ## Related decisions
 
