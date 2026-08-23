@@ -10,9 +10,10 @@ four-surface `prompt_assembly` parity, Decision 031 — accepted opening/normal,
 hard no-commit и pre-bundle noncanonical fallback. Deployed Gateway suite после
 apply: `548 passed, 1 skipped`; четыре runtime-сервиса healthy, опубликованные UI
 отвечают `200`. Это causal proof механизма на deterministic isolated canaries,
-а не semantic continuity, `наблюдается` или endurance. План не активирует
-revision `7`, не мигрирует существующие партии и не повышает observed revision
-выше `6`: для этого остаётся отдельное explicit rollout decision.
+а не semantic continuity, `наблюдается` или endurance. Пользователь отдельно
+поручил довести revision `7` до production; этот activation change задаёт target
+observed revision `7`, но effective production status фиксируется только после
+pull-based apply и post-apply live proof. Existing parties не мигрируют.
 
 ## Цель
 
@@ -326,7 +327,8 @@ Opening-scene persistence/parity отдельно подтверждена DC4 c
 строки Decision 030 имеют уровень `подключено`; initial full assembly по-прежнему
 не описывает compact validation-repair input, а dedicated GUI renderer не
 добавлен. Валидный narration сам по себе не доказывает semantic continuity или
-`наблюдается`; observed revision остаётся `6` до отдельной активации.
+`наблюдается`; во время этого DC3 evidence run effective observed revision была
+`6`, а отдельный activation не расширяет доказанную границу canary.
 
 ## PR4 / DC4
 
@@ -392,15 +394,26 @@ canary доказывает deployed principal paths и authoritative before/aft
 calls не выполнялись, поэтому semantic continuity, `наблюдается` и endurance не
 заявляются.
 
-## Последующие gates
+## Explicit activation rollout
 
 Все implementation/readiness gates четырёх slice закрыты на уровне
-`подключено`. Следующий шаг не является пятым implementation slice: observed
-revision повышается с `6` до `7` отдельным rollout change только после explicit
-activation decision. После apply нужен отдельный live-proof, что новая ordinary
-party читает и сохраняет observed revision `7`, а existing parties остаются
-pinned; `наблюдается` и `держится` требуют последующих реальных партий и
-endurance, а не этих synthetic canaries.
+`подключено`. 23 августа 2026 года пользователь явно поручил продолжить до
+production, поэтому отдельный rollout change повышает inventory target observed
+revision с `6` до `7`; это не пятый implementation slice и не auto-migration.
+До успешного pull-based apply production остаётся на ранее подтверждённом `6`.
+
+После apply обязательный read-only/live-store proof должен показать:
+
+- container env `RP_CONTRACT_OBSERVED_REVISION=7`;
+- новая ordinary RP-party с declared revision `7` сохраняет revision `7` в API,
+  SQLite и party runtime settings без provider call;
+- revisions/hashes всех существовавших до rollout parties и branches неизменны;
+- non-RP остаётся revision `0`, а declared revision `6` по-прежнему даёт `6`.
+
+Rollback inventory обратно на `6` ограничит только новые партии: уже созданная
+revision-7 party останется pinned на `7`, потому что автоматический downgrade так
+же запрещён, как auto-migration вверх. `Наблюдается` и `держится` требуют
+последующих реальных партий и endurance, а не activation stamp proof.
 
 ## Сознательно отложено
 

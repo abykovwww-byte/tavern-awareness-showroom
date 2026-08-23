@@ -11,8 +11,9 @@
 [`registry/029.yml`](registry/029.yml). Merge
 `fb13eecd56351d885e3309f6464a7d3a2e2b04e3` применён на сервере, а deployed
 isolated canary подтвердил prompt filtering и durable omission в реальном тракте
-хода. Это не уровень `наблюдается` и не доказательство полной semantic
-continuity. Revision `7` остаётся candidate, observed revision — `6`.
+хода. На момент canary effective observed revision была `6`; отдельный activation
+change теперь задаёт source target `7`, effective только после apply/stamp proof.
+Это не уровень `наблюдается` и не доказательство полной semantic continuity.
 
 ## Context
 

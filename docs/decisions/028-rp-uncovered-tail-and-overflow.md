@@ -11,9 +11,10 @@
 **Delivery status:** `подключено` для всех строк
 [`registry/028.yml`](registry/028.yml). Полный uncovered tail и revision stamp
 подтверждены на deployed изолированной ветке, а paired live-store canary закрыл
-fit-after-refresh и hard-overflow fail-before-narrator paths. Deterministic
-canary не доказывает уровень `наблюдается`; observed revision остаётся `6` до
-отдельного explicit activation decision.
+fit-after-refresh и hard-overflow fail-before-narrator paths. На момент этого
+evidence run effective observed revision была `6`. Deterministic canary не
+доказывает уровень `наблюдается`; отдельный activation change задаёт source
+target `7`, effective только после pull-based apply и post-apply stamp proof.
 
 ## Context
 
@@ -75,8 +76,10 @@ derived seed; штатный post-commit advance создаёт его толь�
 
 ### Revision stamp
 
-Поддерживаемый публичный диапазон становится `0..7`, но observed revision
-остаётся `6`. Обычная новая RP-партия сохраняет точное
+Поддерживаемый публичный диапазон становится `0..7`. Во время candidate evidence
+effective observed revision оставалась `6`; отдельный activation change задаёт
+source target `7`, который становится effective только после apply. Обычная
+новая RP-партия сохраняет точное
 `min(WorldPack declared revision, RP_CONTRACT_OBSERVED_REVISION)`, runtime читает
 persisted party revision, existing parties не повышаются автоматически. Явная
 checkpoint/autotest branch может запросить candidate revision в пределах

@@ -13,10 +13,10 @@
 [`registry/031.yml`](registry/031.yml). Source implementation merged и applied;
 deployed container suite завершилась результатом `548 passed, 1 skipped`, а
 isolated live-store proofs закрыли normal/opening, hard no-commit, anchoring/drop
-и pre-bundle fallback boundaries. Revision `7` остаётся candidate, observed
-revision — `6` до отдельного explicit activation decision. Deterministic canary
-не является заявлением об исправленной semantic continuity или уровне
-`наблюдается`.
+и pre-bundle fallback boundaries. На момент proofs effective observed revision
+была `6`; отдельный activation change теперь задаёт source target `7`, effective
+только после apply/stamp proof. Deterministic canary не является заявлением об
+исправленной semantic continuity или уровне `наблюдается`.
 
 ## Context
 
@@ -356,7 +356,8 @@ Fallback prose отсутствовал в следующем prompt, player inp
 новых isolated revision-7 parties; external provider calls были равны нулю,
 SQLite `quick_check` прошёл, а hashes всех существовавших партий и protected
 stores совпали с baseline. Это уровень `подключено`, не `наблюдается` или
-`держится`; observed revision остаётся `6` до отдельного explicit activation.
+`держится`; во время этого evidence run effective observed revision оставалась
+`6`, а последующий activation не меняет доказанную границу canary.
 
 ## Privacy and retention
 

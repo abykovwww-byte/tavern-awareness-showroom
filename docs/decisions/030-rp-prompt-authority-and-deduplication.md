@@ -15,9 +15,10 @@ excluded-turn/emitter-ID hardening merged и applied; deployed container suite
 cross-surface diagnostics parity.
 
 **Delivery status:** все строки [`registry/030.yml`](registry/030.yml) имеют
-уровень `подключено`. Revision `7` остаётся candidate, observed revision — `6`
-до отдельного explicit activation decision. Этот статус не является заявлением
-об исправленной semantic continuity или уровнем `наблюдается`.
+уровень `подключено`. На момент live proof effective observed revision была `6`;
+отдельный activation change теперь задаёт source target `7`, effective только
+после apply/stamp proof. Этот статус не является заявлением об исправленной
+semantic continuity или уровнем `наблюдается`.
 
 ## Context
 
@@ -255,8 +256,8 @@ private admin Turn Trace и не переписывает recorded `prompt_assem
 Opening persistence остаётся границей Decision 031 и проверена его отдельным
 live-store proof. Все deterministic canaries подтверждают только исполнение в
 реальном deployed turn path: semantic continuity, `наблюдается` и `держится` не
-доказаны. Observed revision остаётся `6` до отдельного explicit activation
-decision.
+доказаны. Во время этих canaries effective observed revision оставалась `6`;
+отдельный source target `7` не меняет границу самого evidence.
 
 ## Consequences
 
