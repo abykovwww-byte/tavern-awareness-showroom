@@ -7,9 +7,15 @@
 **Decision status: Accepted.** The active RP Stack supports only `rp` and
 `training` scenario creation and does not route any new request to NVIDIA.
 
-**Implementation readiness: `каркас`.** Delivery evidence is tracked in
-[`registry/036.yml`](registry/036.yml). This change is source-only until a
-separate merge, pull-based Ansible apply, and live verification are completed.
+**Implementation readiness: `подключено`.** Delivery evidence is tracked in
+[`registry/036.yml`](registry/036.yml). PR
+[#68](https://github.com/abykovwww-byte/ubuntu_ansible_palybooks/pull/68)
+was merged as `0fb0ab0dd794e55eb9b2177c227c1591f97841c0`, applied through
+`ansible-local-apply.service`, and verified against the rebuilt containers,
+HTTP/API, read-only SQLite aggregates, and both browser clients on 2026-08-24.
+The production-image forced-local-outage regression proves the no-switch path;
+no real provider outage or historical NVIDIA party turn was triggered on live
+data, so this evidence does not claim `наблюдается` or `держится`.
 
 ## Context
 
@@ -93,7 +99,9 @@ repository implementation fails closed for such a runtime binding.
 - migrating an NVIDIA party to OpenRouter, Gemini, or local model;
 - adding a routing abstraction, provider registry service, or dependency;
 - changing RP revision 8 mechanics, retention policy, or deployment state;
-- deploying, mutating the live database, merging, or pushing this slice.
+- manually deleting or rewriting live rows, bypassing the branch/PR/pull-based
+  deployment path, or running a destructive provider canary against a legacy
+  party.
 
 ## Related decisions
 
