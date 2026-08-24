@@ -18,6 +18,12 @@ proof подтвердил effective observed revision `7` без миграци
 Ни deterministic canary, ни activation stamp не доказывают уровень
 `наблюдается`.
 
+Для revision `8+` window и overflow policy заменены
+[Decision 032](032-rp-history-first-prompt-and-sectioned-memory.md): последние
+50 units объединяются со всем непокрытым хвостом, lore удаляется первым, затем
+с головы допускаются только safely covered целые units до минимума 20. Этот ADR
+и его evidence остаются без изменений для revision `7`.
+
 ## Context
 
 Effective RP story memory может отставать от committed turns. Если percentage

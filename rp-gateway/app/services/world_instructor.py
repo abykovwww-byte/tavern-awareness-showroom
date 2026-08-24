@@ -67,7 +67,7 @@ class WorldInstructor:
                 reason=f"world_apply:{request_id}",
                 scene_state_enabled=(
                     self.settings.scenario_type == "rp"
-                    and self.settings.rp_contract_revision >= 7
+                    and self.settings.rp_contract_revision == 7
                 ),
             )
             self.store.audit("world_apply", {"proposal_id": proposal_id, "state_version": state["meta"]["state_version"]}, request_id)
@@ -84,7 +84,7 @@ class WorldInstructor:
             state = self.store.rollback(
                 scene_state_enabled=(
                     self.settings.scenario_type == "rp"
-                    and self.settings.rp_contract_revision >= 7
+                    and self.settings.rp_contract_revision == 7
                 )
             )
             self.store.audit("world_rollback", {"state_version": state["meta"]["state_version"]}, request_id)

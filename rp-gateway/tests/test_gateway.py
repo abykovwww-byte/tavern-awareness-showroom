@@ -42,6 +42,7 @@ from app.services.provider_catalog import (
 from app.services.prompt_tools import PromptInspector
 from app.services.relationship_store import RelationshipStore
 from app.services.relationship_extraction import RelationshipExtractionService
+from app.services.rp_history import AUTO_START_HISTORY_MESSAGE
 from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.service_model_client import ServiceModelClient
@@ -2324,6 +2325,90 @@ def test_party_start_endpoint_is_idempotent_and_party_isolated(tmp_path: Path):
     assert repeated.json()["already_started"] is True
     assert len(c.get(f"/api/parties/{first['id']}/history").json()["turns"]) == 1
     assert c.get(f"/api/parties/{second['id']}/history").json()["turns"] == []
+
+
+def test_revision_eight_party_start_keeps_plain_opening_as_assistant_only_in_next_prompt(
+    tmp_path: Path,
+) -> None:
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    manifest_path = pack_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": 8}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    c = client(tmp_path, rp_contract_observed_revision=8)
+    party = create_demo_party(c, title="Revision 8 opening")
+
+    started = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "rev8-opening"},
+        headers={"X-Request-ID": "req_rev8_opening"},
+    )
+
+    assert started.status_code == 200, started.text
+    opening_text = started.json()["message"]["content"]
+    assert opening_text
+    assert not opening_text.lstrip().startswith(("{", "```json"))
+
+    continued = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Я осматриваю комнату.", "idempotency_key": "rev8-after-opening"},
+        headers={"X-Request-ID": "req_rev8_after_opening"},
+    )
+
+    assert continued.status_code == 200, continued.text
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    with store.connect() as connection:
+        turns = connection.execute(
+            """
+            SELECT player_message, narrative_response, prompt_json, metadata_json
+            FROM turns
+            WHERE campaign_id = ?
+            ORDER BY id ASC
+            """,
+            (store.campaign_id,),
+        ).fetchall()
+        attempt = connection.execute(
+            """
+            SELECT payload_json
+            FROM turn_trace_events
+            WHERE campaign_id = ? AND request_id = ?
+              AND phase_key = 'narrator:attempt:1'
+            """,
+            (store.campaign_id, "req_rev8_after_opening"),
+        ).fetchone()
+
+    assert len(turns) == 2
+    assert turns[0]["player_message"] == AUTO_START_HISTORY_MESSAGE
+    assert turns[0]["narrative_response"] == opening_text
+    opening_metadata = json.loads(turns[0]["metadata_json"])
+    assert opening_metadata["turn_kind"] == "opening_scene"
+    assert opening_metadata["rp_contract_revision"] == 8
+    for removed_scene_key in ("scene_claims", "scene_state_before", "scene_state_after"):
+        assert removed_scene_key not in opening_metadata
+    assert "scene_state" not in c.get(f"/api/parties/{party['id']}/state").json()["state"]
+
+    assert attempt is not None
+    provider_messages = json.loads(attempt["payload_json"])["input"]["payload"]["messages"]
+    stored_messages = json.loads(turns[1]["prompt_json"])
+    for messages in (provider_messages, stored_messages):
+        assert not any(
+            message["role"] == "user" and message["content"] == AUTO_START_HISTORY_MESSAGE
+            for message in messages
+        )
+        assert [
+            message
+            for message in messages
+            if message["role"] == "assistant" and message["content"] == opening_text
+        ] == [{"role": "assistant", "content": opening_text}]
+        serialized = json.dumps(messages, ensure_ascii=False)
+        for removed_scene_marker in (
+            "SCENE_STATE",
+            "SCENE_TRANSITION_ALLOWANCE",
+            "scene_claims",
+            "scene_delta",
+            "rp-gateway.rp-narrator-bundle",
+        ):
+            assert removed_scene_marker not in serialized
 
 
 def test_party_start_reports_running_idempotency_request(tmp_path: Path):

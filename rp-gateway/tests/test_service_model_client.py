@@ -71,6 +71,8 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
             request_id="req_trace_7",
             party_turn=5,
             attempt=2,
+            section_key="situation",
+            update_id="story:situation:through-8",
             prompt=json.dumps(payload["messages"], ensure_ascii=False, separators=(",", ":")),
             payload=payload,
         )
@@ -88,6 +90,8 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
     assert trace["provider"] == "openrouter"
     assert trace["model"] == "service/model"
     assert trace["attempt"] == 2
+    assert trace["section_key"] == "situation"
+    assert trace["update_id"] == "story:situation:through-8"
     assert trace["latency_ms"] >= 0
     assert trace["http_status"] == 200
     assert json.loads(trace["usage_json"]) == {
@@ -98,10 +102,52 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
     }
     assert trace["error_json"] is None
     assert trace["trace_schema_version"] == TRACE_SCHEMA_VERSION
-    assert trace["prompt_text"]
-    assert trace["raw_response"]
-    assert "Summarize turn 7." in trace["prompt_text"]
-    assert "structured result" in trace["raw_response"]
+
+
+def test_complete_uses_explicit_role_provider_and_model_without_payload_leakage(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "choices": [{"message": {"content": "{}"}}],
+            },
+        )
+
+    settings = settings_for(tmp_path)
+    client = ServiceModelClient(settings, transport=httpx.MockTransport(handler))
+    asyncio.run(
+        client.complete(
+            role="rp_story_memory_section",
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            party_id="party-rev8",
+            turn_id=8,
+            section_key="situation",
+            update_id="update-rev8",
+            prompt="[]",
+            payload={
+                "model": "must-be-overridden",
+                "messages": [{"role": "user", "content": "update"}],
+            },
+        )
+    )
+
+    assert captured["model"] == "deepseek/deepseek-v4-pro"
+    assert "provider" not in captured
+    assert "section_key" not in captured
+    assert "update_id" not in captured
+    trace = rows(settings)[0]
+    assert trace["provider"] == "openrouter"
+    assert trace["model"] == "deepseek/deepseek-v4-pro"
+    assert trace["prompt_text"] == "[]"
+    assert "deepseek/deepseek-v4-pro" in trace["raw_response"]
 
 
 def test_complete_logs_error_status_and_raw_provider_response(tmp_path: Path) -> None:
@@ -121,6 +167,8 @@ def test_complete_logs_error_status_and_raw_provider_response(tmp_path: Path) ->
                 request_id="req_world_3",
                 party_turn=3,
                 attempt=1,
+                section_key="threads",
+                update_id="story:threads:through-8",
                 prompt="Draft a state patch.",
                 model="service/model",
             )
@@ -133,6 +181,8 @@ def test_complete_logs_error_status_and_raw_provider_response(tmp_path: Path) ->
     assert trace["party_turn"] == 3
     assert trace["model"] == "service/model"
     assert trace["attempt"] == 1
+    assert trace["section_key"] == "threads"
+    assert trace["update_id"] == "story:threads:through-8"
     assert trace["http_status"] == 503
     assert json.loads(trace["error_json"])["type"] == "HTTPStatusError"
     assert trace["usage_json"] is None
@@ -430,12 +480,16 @@ def test_migration_adds_trace_columns_to_legacy_table_idempotently(tmp_path: Pat
         "usage_json",
         "error_json",
         "trace_schema_version",
+        "section_key",
+        "update_id",
     } <= columns
     assert legacy is not None
     assert legacy["prompt_text"] == "prompt"
     assert legacy["raw_response"] == "response"
     assert legacy["request_id"] is None
     assert legacy["trace_schema_version"] is None
+    assert legacy["section_key"] is None
+    assert legacy["update_id"] is None
 
 
 def test_global_service_model_consumers_do_not_bypass_service_model_client() -> None:

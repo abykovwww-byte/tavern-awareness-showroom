@@ -417,9 +417,11 @@ class StateStore:
                     created_at INTEGER NOT NULL,
                     model TEXT NOT NULL,
                     invalidated INTEGER NOT NULL DEFAULT 0,
+                    base_snapshot_id INTEGER,
+                    update_id TEXT,
                     FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
                     UNIQUE(campaign_id, revision),
-                    UNIQUE(campaign_id, to_turn_id)
+                    UNIQUE(campaign_id, update_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_rp_story_memory_campaign_to
                     ON rp_story_memory_snapshots(campaign_id, to_turn_id DESC, revision DESC);
@@ -523,29 +525,98 @@ class StateStore:
         )
 
     def migrate_rp_story_memory_columns(self, connection: sqlite3.Connection) -> None:
-        columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(rp_story_memory_snapshots)").fetchall()
-        }
-        if "invalidated" in columns:
-            return
-        connection.execute(
-            "ALTER TABLE rp_story_memory_snapshots "
-            "ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0"
-        )
-        connection.execute(
-            """
-            UPDATE rp_story_memory_snapshots AS snapshot
-            SET invalidated = 1
-            WHERE EXISTS (
-                SELECT 1
-                FROM turns AS turn_record
-                WHERE turn_record.campaign_id = snapshot.campaign_id
-                  AND turn_record.excluded_from_memory = 1
-                  AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
+        column_rows = connection.execute(
+            "PRAGMA table_info(rp_story_memory_snapshots)"
+        ).fetchall()
+        columns = {str(row["name"]) for row in column_rows}
+        had_invalidated = "invalidated" in columns
+        unique_columns: set[tuple[str, ...]] = set()
+        for index_row in connection.execute(
+            "PRAGMA index_list(rp_story_memory_snapshots)"
+        ).fetchall():
+            if not bool(index_row["unique"]):
+                continue
+            index_name = str(index_row["name"]).replace("'", "''")
+            unique_columns.add(
+                tuple(
+                    str(row["name"])
+                    for row in connection.execute(
+                        f"PRAGMA index_info('{index_name}')"
+                    ).fetchall()
+                )
             )
-            """
+
+        requires_rebuild = (
+            "invalidated" not in columns
+            or "base_snapshot_id" not in columns
+            or "update_id" not in columns
+            or ("campaign_id", "to_turn_id") in unique_columns
+            or ("campaign_id", "update_id") not in unique_columns
         )
+        if requires_rebuild:
+            invalidated_value = "invalidated" if "invalidated" in columns else "0"
+            base_snapshot_value = "base_snapshot_id" if "base_snapshot_id" in columns else "NULL"
+            update_value = "update_id" if "update_id" in columns else "NULL"
+            connection.execute(
+                "ALTER TABLE rp_story_memory_snapshots "
+                "RENAME TO rp_story_memory_snapshots_legacy_rev8"
+            )
+            connection.execute(
+                """
+                CREATE TABLE rp_story_memory_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    from_turn_id INTEGER NOT NULL,
+                    to_turn_id INTEGER NOT NULL,
+                    state_version INTEGER NOT NULL,
+                    memory_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    model TEXT NOT NULL,
+                    invalidated INTEGER NOT NULL DEFAULT 0,
+                    base_snapshot_id INTEGER,
+                    update_id TEXT,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
+                    UNIQUE(campaign_id, revision),
+                    UNIQUE(campaign_id, update_id)
+                )
+                """
+            )
+            connection.execute(
+                f"""
+                INSERT INTO rp_story_memory_snapshots(
+                    id, campaign_id, revision, from_turn_id, to_turn_id,
+                    state_version, memory_json, created_at, model, invalidated,
+                    base_snapshot_id, update_id
+                )
+                SELECT id, campaign_id, revision, from_turn_id, to_turn_id,
+                       state_version, memory_json, created_at, model, {invalidated_value},
+                       {base_snapshot_value}, {update_value}
+                FROM rp_story_memory_snapshots_legacy_rev8
+                """
+            )
+            connection.execute("DROP TABLE rp_story_memory_snapshots_legacy_rev8")
+            connection.execute(
+                """
+                CREATE INDEX idx_rp_story_memory_campaign_to
+                    ON rp_story_memory_snapshots(campaign_id, to_turn_id DESC, revision DESC)
+                """
+            )
+
+        if not had_invalidated:
+            connection.execute(
+                """
+                UPDATE rp_story_memory_snapshots AS snapshot
+                SET invalidated = 1
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM turns AS turn_record
+                    WHERE turn_record.campaign_id = snapshot.campaign_id
+                      AND turn_record.excluded_from_memory = 1
+                      AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
+                )
+                """
+            )
 
     def migrate_relationship_turn_columns(self, connection: sqlite3.Connection) -> None:
         cause_columns = {
@@ -1885,19 +1956,46 @@ class StateStore:
         model: str,
         contributing_turn_ids: list[int] | None = None,
         base_snapshot_id: int | None = None,
+        update_id: str | None = None,
+        allow_same_coverage: bool = False,
     ) -> dict[str, Any] | None:
         turn_ids = list(dict.fromkeys(int(turn_id) for turn_id in contributing_turn_ids or []))
+        normalized_update_id = str(update_id).strip() if update_id is not None else None
+        if update_id is not None and not normalized_update_id:
+            raise ValueError("update_id must not be blank")
+        if allow_same_coverage and normalized_update_id is None:
+            raise ValueError("allow_same_coverage requires update_id")
         with self.connect() as connection:
-            existing = connection.execute(
-                "SELECT * FROM rp_story_memory_snapshots WHERE campaign_id = ? AND to_turn_id = ?",
-                (self.campaign_id, int(to_turn_id)),
-            ).fetchone()
-            if existing is not None:
-                return (
-                    self.rp_story_memory_from_row(existing)
-                    if not bool(existing["invalidated"])
-                    else None
-                )
+            connection.execute("BEGIN IMMEDIATE")
+            if normalized_update_id is not None:
+                existing_update = connection.execute(
+                    """
+                    SELECT * FROM rp_story_memory_snapshots
+                    WHERE campaign_id = ? AND update_id = ?
+                    """,
+                    (self.campaign_id, normalized_update_id),
+                ).fetchone()
+                if existing_update is not None:
+                    return (
+                        self.rp_story_memory_from_row(existing_update)
+                        if not bool(existing_update["invalidated"])
+                        else None
+                    )
+            if not allow_same_coverage:
+                existing = connection.execute(
+                    """
+                    SELECT * FROM rp_story_memory_snapshots
+                    WHERE campaign_id = ? AND to_turn_id = ?
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (self.campaign_id, int(to_turn_id)),
+                ).fetchone()
+                if existing is not None:
+                    return (
+                        self.rp_story_memory_from_row(existing)
+                        if not bool(existing["invalidated"])
+                        else None
+                    )
             row = connection.execute(
                 "SELECT COALESCE(MAX(revision), 0) AS revision FROM rp_story_memory_snapshots WHERE campaign_id = ?",
                 (self.campaign_id,),
@@ -1921,15 +2019,18 @@ class StateStore:
                 f"""
                 INSERT INTO rp_story_memory_snapshots(
                     campaign_id, revision, from_turn_id, to_turn_id,
-                    state_version, memory_json, created_at, model
+                    state_version, memory_json, created_at, model,
+                    base_snapshot_id, update_id
                 )
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 WHERE (
                     ? IS NULL
-                    OR EXISTS (
-                        SELECT 1
+                    OR ? = (
+                        SELECT id
                         FROM rp_story_memory_snapshots
-                        WHERE campaign_id = ? AND id = ? AND invalidated = 0
+                        WHERE campaign_id = ? AND invalidated = 0
+                        ORDER BY to_turn_id DESC, revision DESC
+                        LIMIT 1
                     )
                 )
                 {turn_guard}
@@ -1944,8 +2045,10 @@ class StateStore:
                     now_ts(),
                     model,
                     base_snapshot_id,
-                    self.campaign_id,
+                    normalized_update_id,
                     base_snapshot_id,
+                    base_snapshot_id,
+                    self.campaign_id,
                     *(
                         (self.campaign_id, *turn_ids, len(turn_ids))
                         if turn_ids
@@ -1977,6 +2080,8 @@ class StateStore:
             "created_at": row["created_at"],
             "model": row["model"],
             "invalidated": bool(row["invalidated"]),
+            "base_snapshot_id": row["base_snapshot_id"],
+            "update_id": row["update_id"],
         }
 
     def latest_memory_coverage(self) -> dict[str, Any] | None:
@@ -2228,7 +2333,7 @@ class StateStore:
         self,
         patch: StatePatch,
         *,
-        scene_state_enabled: bool = False,
+        scene_state_enabled: bool | None = None,
         trusted_internal: bool = False,
     ) -> dict[str, Any]:
         state = self.get_state()
@@ -2264,7 +2369,7 @@ class StateStore:
         state: dict[str, Any],
         patch: StatePatch,
         *,
-        scene_state_enabled: bool = False,
+        scene_state_enabled: bool | None = None,
     ) -> StatePatch:
         if any(
             operation.path == "/scene_state"
@@ -2272,10 +2377,12 @@ class StateStore:
             for operation in patch.patch
         ):
             raise ValueError("external patches cannot write scene_state")
-        if (
-            not scene_state_enabled
-            and "scene_state" not in state
-        ) or not any(
+        effective_scene_state_enabled = (
+            "scene_state" in state
+            if scene_state_enabled is None
+            else scene_state_enabled
+        )
+        if not effective_scene_state_enabled or not any(
             cls.scene_sensitive_patch_path(operation.path) for operation in patch.patch
         ):
             return patch
@@ -2405,7 +2512,7 @@ class StateStore:
         proposal_id: str = "latest",
         reason: str = "world_instruction_apply",
         *,
-        scene_state_enabled: bool = False,
+        scene_state_enabled: bool | None = None,
     ) -> dict[str, Any]:
         with self.connect() as connection:
             if proposal_id == "latest":
@@ -2497,7 +2604,7 @@ class StateStore:
         patch: StatePatch,
         reason: str,
         *,
-        scene_state_enabled: bool = False,
+        scene_state_enabled: bool | None = None,
     ) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
@@ -2830,9 +2937,10 @@ class StateStore:
         self,
         target_version: int | None = None,
         *,
-        scene_state_enabled: bool = False,
+        scene_state_enabled: bool | None = None,
     ) -> dict[str, Any]:
-        scene_state_enabled = scene_state_enabled or "scene_state" in self.get_state()
+        if scene_state_enabled is None:
+            scene_state_enabled = "scene_state" in self.get_state()
         with self.connect() as connection:
             if target_version is None:
                 current = self.current_version()

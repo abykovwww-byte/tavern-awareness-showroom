@@ -10,17 +10,24 @@ from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome
 from app.services.adjudicator import Adjudicator
 from app.services.narrative import NarrativeClient
+from app.services.rp_history import RP_MEMORY_SECTION_KEYS, story_memory_safe_coverage
 from app.services.rp_story_memory import (
     RPStoryMemoryUpdater,
     STORY_FIELD_LIMITS,
     STORY_MEMORY_SCHEMA,
+    STORY_MEMORY_SECTION_FIELDS,
+    STORY_MEMORY_SECTIONS_MAX_TOKENS,
     apply_user_story_memory_corrections,
+    completion_finish_reason,
+    empty_sectioned_story_memory,
     empty_story_memory,
+    normalize_sectioned_story_memory,
     normalize_story_memory,
     reconcile_story_memory,
     story_fact_id,
     validate_story_memory_corrections,
 )
+from app.services.service_model_client import ServiceCompletion, ServiceModelClient, service_prompt_text
 from app.services.state_store import StateStore
 
 
@@ -56,6 +63,16 @@ def story_document(label: str = "старый канон") -> dict[str, object]:
         "unresolved_hooks": ["Кто поджёг архив?"],
         "current_situation": "Герой стоит у закрытых ворот.",
         "chronology": ["Герой получил ключ."],
+    }
+
+
+def empty_combined_sections() -> dict[str, dict[str, object]]:
+    return {
+        section_key: {
+            field: None if field == "current_situation" else []
+            for field in STORY_MEMORY_SECTION_FIELDS[section_key]
+        }
+        for section_key in RP_MEMORY_SECTION_KEYS
     }
 
 
@@ -1208,6 +1225,400 @@ def test_story_memory_user_correction_retracts_existing_fact_by_stable_id() -> N
 
     assert [item["status"] for item in merged["rules_and_abilities"]] == ["retracted", "active"]
     assert [item["source_turn_ids"] for item in merged["rules_and_abilities"]] == [[43], [43]]
+
+
+def test_revision8_waits_through_fifty_then_updates_all_sections_in_one_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, campaign_id="rev8-first-batch")
+    settings = Settings(scenario_type="rp", rp_contract_revision=8)
+    updater = RPStoryMemoryUpdater(settings, store)
+    record_turns(store, 50)
+
+    assert updater.should_enqueue() is False
+    waiting = asyncio.run(updater.update(None, request_id="request-50"))
+    assert waiting["generated"] is False
+    assert waiting["reason"] == "waiting_for_raw_window"
+
+    record_turns(store, 1, start=51)
+    combined_calls: list[dict[str, list[int]]] = []
+    targeted_calls: list[str] = []
+
+    async def generated_sections(
+        plan: object,
+        section_turns: dict[str, list[dict[str, object]]],
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        combined_calls.append(
+            {
+                section_key: [int(turn["id"]) for turn in section_turns[section_key]]
+                for section_key in RP_MEMORY_SECTION_KEYS
+            }
+        )
+        return {
+            "sections": empty_combined_sections(),
+            "errors": {},
+            "model": settings.rp_story_memory_model,
+            "turns": section_turns,
+        }
+
+    async def unexpected_targeted_retry(*args: object, **kwargs: object) -> dict[str, object]:
+        targeted_calls.append(str(args[1]))
+        raise AssertionError("valid empty sections must not be retried")
+
+    monkeypatch.setattr(updater, "generate_sections", generated_sections)
+    monkeypatch.setattr(updater, "generate_section", unexpected_targeted_retry)
+    result = asyncio.run(updater.update(None, request_id="request-51", fail_open=False))
+
+    assert result["generated"] is True
+    assert len(combined_calls) == 1
+    assert all(
+        combined_calls[0][section_key] == list(range(1, 9))
+        for section_key in RP_MEMORY_SECTION_KEYS
+    )
+    assert targeted_calls == []
+    snapshot = result["story_memory"]
+    assert story_memory_safe_coverage(snapshot) == 8
+    assert snapshot["memory"]["observed_through_turn_id"] == 51
+    assert {
+        key: snapshot["memory"]["section_status"][key]
+        for key in RP_MEMORY_SECTION_KEYS
+    } == {
+        key: {"coverage": 8, "status": "fresh"}
+        for key in RP_MEMORY_SECTION_KEYS
+    }
+    assert updater.should_enqueue() is False
+
+
+def test_revision8_retry_updates_only_failed_sections_even_after_new_cadence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, campaign_id="rev8-partial-retry")
+    settings = Settings(scenario_type="rp", rp_contract_revision=8)
+    updater = RPStoryMemoryUpdater(settings, store)
+    record_turns(store, 51)
+
+    main_calls = 0
+    first_targeted_calls: list[str] = []
+
+    async def partial_sections(
+        plan: object,
+        section_turns: dict[str, list[dict[str, object]]],
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        nonlocal main_calls
+        main_calls += 1
+        sections = empty_combined_sections()
+        sections.pop("characters")
+        return {
+            "sections": sections,
+            "errors": {"characters": "forced structural failure"},
+            "model": settings.rp_story_memory_model,
+            "turns": section_turns,
+        }
+
+    async def failing_targeted_retry(
+        plan: object,
+        section_key: str,
+        turns: list[dict[str, object]],
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        first_targeted_calls.append(section_key)
+        raise ValueError("forced targeted failure")
+
+    monkeypatch.setattr(updater, "generate_sections", partial_sections)
+    monkeypatch.setattr(updater, "generate_section", failing_targeted_retry)
+    first = asyncio.run(updater.update(None, request_id="same-job", fail_open=True))
+    assert main_calls == 1
+    assert first_targeted_calls == ["characters"]
+    assert first["retry_required"] is True
+    assert first["failed_sections"] == ["characters"]
+    assert story_memory_safe_coverage(first["story_memory"]) == 0
+
+    record_turns(store, 4, start=52)
+    retry_calls: list[tuple[str, list[int]]] = []
+
+    async def successful_retry(
+        plan: object,
+        section_key: str,
+        turns: list[dict[str, object]],
+        memory: dict[str, object],
+        **kwargs: object,
+    ) -> dict[str, object]:
+        retry_calls.append((section_key, [int(turn["id"]) for turn in turns]))
+        return {
+            "section": updater.mock_section(section_key, turns, memory),
+            "model": settings.rp_story_memory_model,
+            "turns": turns,
+        }
+
+    async def unexpected_combined_retry(*args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("durable retry must stay section-scoped")
+
+    monkeypatch.setattr(updater, "generate_sections", unexpected_combined_retry)
+    monkeypatch.setattr(updater, "generate_section", successful_retry)
+    second = asyncio.run(updater.update(None, request_id="same-job", fail_open=False))
+
+    assert retry_calls == [("characters", list(range(1, 9)))]
+    assert second["retry_required"] is False
+    assert story_memory_safe_coverage(second["story_memory"]) == 8
+    assert all(
+        second["story_memory"]["memory"]["section_status"][key]["status"] == "fresh"
+        for key in RP_MEMORY_SECTION_KEYS
+    )
+
+
+def test_revision8_combined_structural_validation_accepts_empty_sections(
+    tmp_path: Path,
+) -> None:
+    updater = RPStoryMemoryUpdater(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        make_store(tmp_path, campaign_id="rev8-empty-sections"),
+    )
+
+    sections, errors = updater.parse_sections(
+        json.dumps(empty_combined_sections()),
+        empty_sectioned_story_memory(),
+    )
+
+    assert errors == {}
+    assert sections == empty_combined_sections()
+
+
+def test_revision8_structural_validation_rejects_changed_existing_fact_id_only(
+    tmp_path: Path,
+) -> None:
+    updater = RPStoryMemoryUpdater(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        make_store(tmp_path, campaign_id="rev8-fact-id"),
+    )
+    memory = empty_sectioned_story_memory()
+    memory["characters"] = [
+        {
+            "fact_id": "fact:character-original",
+            "text": "Мира хранит серебряный ключ.",
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [7],
+        }
+    ]
+    response = empty_combined_sections()
+    response["characters"]["characters"] = [
+        {
+            "fact_id": "fact:character-replaced",
+            "text": "Мира хранит серебряный ключ.",
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [7],
+        }
+    ]
+
+    sections, errors = updater.parse_sections(json.dumps(response), memory)
+
+    assert set(sections) == set(RP_MEMORY_SECTION_KEYS) - {"characters"}
+    assert errors == {"characters": "story-memory response changed an existing fact_id"}
+
+
+def test_revision8_combined_length_finish_is_failure_for_every_section(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, campaign_id="rev8-length")
+    record_turns(store, 51)
+    updater = RPStoryMemoryUpdater(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        store,
+    )
+    plan, reason = updater.build_section_plan(request_id="length-response")
+    assert reason == "ready"
+    assert plan is not None
+    recorded: dict[str, object] = {}
+
+    async def length_response(self: ServiceModelClient, **kwargs: object) -> ServiceCompletion:
+        recorded.update(kwargs)
+        return ServiceCompletion(
+            data={
+                "model": "deepseek/deepseek-v4-pro",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": json.dumps(empty_combined_sections())},
+                    }
+                ],
+            },
+            raw_response="{}",
+            status="completed",
+            status_code=200,
+        )
+
+    monkeypatch.setattr(ServiceModelClient, "complete", length_response)
+    generated = asyncio.run(
+        updater.generate_sections(
+            plan,
+            plan.section_turns,
+            empty_sectioned_story_memory(),
+            request_id="length-response",
+        )
+    )
+
+    assert completion_finish_reason({"choices": [{"finish_reason": "length"}]}) == "length"
+    assert generated["sections"] == {}
+    assert set(generated["errors"]) == set(RP_MEMORY_SECTION_KEYS)
+    assert recorded["section_key"] == "all"
+    assert recorded["payload"]["max_tokens"] == STORY_MEMORY_SECTIONS_MAX_TOKENS
+
+
+def test_story_memory_correction_replay_is_idempotent() -> None:
+    memory = empty_story_memory()
+    memory["canon"] = [
+        {
+            "fact_id": "fact:retry-target",
+            "text": "The gate is closed.",
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [1],
+        }
+    ]
+    turn = {
+        "id": 12,
+        "metadata": {
+            "story_memory_corrections": [
+                {
+                    "field": "canon",
+                    "fact_id": "fact:retry-target",
+                    "action": "replace",
+                    "replacement_text": "The gate is open.",
+                }
+            ]
+        },
+    }
+
+    first = apply_user_story_memory_corrections(
+        memory,
+        [turn],
+        24_000,
+        authority="user",
+    )
+    second = apply_user_story_memory_corrections(
+        first,
+        [turn],
+        24_000,
+        authority="user",
+    )
+
+    assert second == first
+    assert [item["authority"] for item in second["canon"]] == ["user", "user"]
+
+
+def test_revision8_sectioned_memory_normalizes_legacy_correction_authority() -> None:
+    memory = empty_sectioned_story_memory()
+    memory["canon"] = [
+        {
+            "fact_id": "fact:legacy-correction",
+            "text": "The corrected gate is open.",
+            "status": "active",
+            "authority": "user_correction",
+            "source_turn_ids": [12],
+        }
+    ]
+
+    normalized = normalize_sectioned_story_memory(memory, 24_000)
+
+    assert normalized["canon"][0]["authority"] == "user"
+    assert "absorbed_correction_ids" not in normalized
+
+
+def test_revision8_section_input_keeps_complete_turns_under_twenty_thousand_chars(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path, campaign_id="rev8-input-bound")
+    for index in range(1, 52):
+        long_suffix = ("x" * 1_800) if index <= 8 else "short"
+        store.record_turn(
+            f"turn-{index}",
+            f"request-{index}",
+            f"PLAYER-{index}-{long_suffix}",
+            f"NARRATOR-{index}-{long_suffix}",
+            {},
+            index,
+        )
+    updater = RPStoryMemoryUpdater(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        store,
+    )
+    plan, reason = updater.build_section_plan(request_id="bounded-input")
+    assert reason == "ready"
+    assert plan is not None
+
+    payload, included = updater.section_payload(
+        plan,
+        "situation",
+        plan.section_turns["situation"],
+        empty_story_memory(),
+    )
+    context = json.loads(payload["messages"][1]["content"])
+
+    assert payload["model"] == "deepseek/deepseek-v4-pro"
+    assert payload["max_tokens"] == 800
+    assert len(service_prompt_text(payload)) <= 20_000
+    assert 0 < len(included) < 8
+    assert context["new_confirmed_turns"][-1]["narrator"] == included[-1]["narrative_response"]
+
+
+def test_revision8_combined_input_keeps_complete_turns_under_twenty_thousand_chars(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path, campaign_id="rev8-combined-input-bound")
+    for index in range(1, 52):
+        long_suffix = ("x" * 1_800) if index <= 8 else "short"
+        store.record_turn(
+            f"turn-{index}",
+            f"request-{index}",
+            f"PLAYER-{index}-{long_suffix}",
+            f"NARRATOR-{index}-{long_suffix}",
+            {},
+            index,
+        )
+    updater = RPStoryMemoryUpdater(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        store,
+    )
+    plan, reason = updater.build_section_plan(request_id="bounded-combined-input")
+    assert reason == "ready"
+    assert plan is not None
+
+    payload, included = updater.sections_payload(
+        plan,
+        plan.section_turns,
+        empty_sectioned_story_memory(),
+    )
+    context = json.loads(payload["messages"][1]["content"])
+
+    assert payload["model"] == "deepseek/deepseek-v4-pro"
+    assert payload["max_tokens"] == STORY_MEMORY_SECTIONS_MAX_TOKENS
+    assert len(service_prompt_text(payload)) <= 20_000
+    assert all(0 < len(included[key]) < 8 for key in RP_MEMORY_SECTION_KEYS)
+    assert context["section_turn_ids"] == {
+        key: [int(turn["id"]) for turn in included[key]]
+        for key in RP_MEMORY_SECTION_KEYS
+    }
+    last_included_id = max(
+        int(turn["id"])
+        for turns in included.values()
+        for turn in turns
+    )
+    rendered_last = next(
+        turn for turn in context["new_confirmed_turns"] if turn["turn_id"] == last_included_id
+    )
+    source_last = store.get_turn_by_request_id(f"request-{last_included_id}")
+    assert source_last is not None
+    assert rendered_last["player"] == source_last["player_message"]
+    assert rendered_last["narrator"] == source_last["narrative_response"]
 
 
 @pytest.mark.parametrize(

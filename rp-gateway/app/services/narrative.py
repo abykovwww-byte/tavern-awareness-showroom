@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import logging
 import json
 import re
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class PromptBudgetExceeded(RuntimeError):
-    """The revision-7 required prompt cannot fit the provider input window."""
+    """The required RP prompt cannot fit the provider input window."""
 
     def __init__(self, *, estimated_tokens: int, token_budget: int):
         self.estimated_tokens = estimated_tokens
@@ -64,6 +65,10 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
     ("SCENE_STATE_CONTRACT", "scene_state_contract"),
     ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
+)
+REVISION_EIGHT_STABLE_SYSTEM_PREFIXES = (
+    "WORLD_SYSTEM_PROMPT",
+    "WORLD_ABSOLUTE_RULES",
 )
 
 
@@ -100,12 +105,13 @@ def prompt_assembly_diagnostics(
     story_memory_covered_through_turn_id: int,
     raw_tail_turn_ids: list[int],
     omitted_blocks: list[dict[str, str]] | None = None,
+    rp_contract_revision: int = PROMPT_ASSEMBLY_REVISION,
 ) -> dict[str, Any]:
-    """Build the canonical content-free revision-7 prompt assembly record."""
+    """Build the canonical content-free RP prompt assembly record."""
 
     return {
         "schema_version": PROMPT_ASSEMBLY_SCHEMA_VERSION,
-        "rp_contract_revision": PROMPT_ASSEMBLY_REVISION,
+        "rp_contract_revision": int(rp_contract_revision),
         "authority_order": list(PROMPT_AUTHORITY_ORDER),
         "story_memory_covered_through_turn_id": int(
             story_memory_covered_through_turn_id or 0
@@ -143,6 +149,122 @@ def prompt_authority_block() -> str:
         "authoritative_outcome_current_action > uncovered_raw_tail > rp_story_memory > archive\n"
         "The current action is intent, not an automatic fact."
     )
+
+
+def meaningful_rp_outcome_block(outcome: Outcome) -> str | None:
+    """Render only turn-specific authority for revision 8; omit generic no-check prose."""
+
+    generic_consequences = {
+        "Continue the roleplaying scene from the player's stated intent.",
+        "Apply active WorldPack rules, current state, character goals, relationships, and prior consequences.",
+        "Leave consequential choices and the player character's inner decisions to the player.",
+    }
+    consequence_labels = {
+        "Initial scene is introduced; no player decision has been resolved yet.": (
+            "Покажи только начальную сцену; ни одно решение игрока ещё не совершилось"
+        ),
+    }
+    consequences = []
+    for item in outcome.consequences:
+        value = str(item).strip()
+        if value and value not in generic_consequences:
+            consequences.append(consequence_labels.get(value, value))
+    blocked = [str(item).strip() for item in outcome.blocked_reasons if str(item).strip()]
+    target = str(outcome.target or "").strip()
+    if target == "opening_scene":
+        target = "начальная сцена"
+    if not target and not consequences and not blocked:
+        return None
+    lines = ["AUTHORITATIVE_OUTCOME"]
+    if target:
+        lines.append(f"Цель текущего действия: {target}.")
+    lines.extend(f"Обязательное ограничение: {item}." for item in blocked)
+    lines.extend(f"Обязательное последствие: {item}." for item in consequences)
+    return "\n".join(lines)
+
+
+def revision_eight_stable_prefix_hash(
+    messages: list[dict[str, str]],
+    *,
+    history_units: int = 50,
+) -> str:
+    """Hash the provider prefix that stays byte-stable inside one history anchor."""
+
+    stable: list[dict[str, str]] = []
+    index = 0
+    if messages and messages[0].get("role") == "system":
+        stable.append(dict(messages[0]))
+        index = 1
+    while index < len(messages) - 1:
+        message = messages[index]
+        content = str(message.get("content") or "")
+        if message.get("role") != "system" or not content.startswith(
+            REVISION_EIGHT_STABLE_SYSTEM_PREFIXES
+        ):
+            break
+        stable.append(dict(message))
+        index += 1
+
+    raw_limit = max(len(messages) - 1, index)
+    units = 0
+    unit_limit = max(int(history_units), 0)
+    while index < raw_limit and units < unit_limit:
+        message = messages[index]
+        role = message.get("role")
+        if role == "assistant":
+            stable.append(dict(message))
+            index += 1
+            units += 1
+            continue
+        if (
+            role == "user"
+            and index + 1 < raw_limit
+            and messages[index + 1].get("role") == "assistant"
+        ):
+            stable.extend((dict(message), dict(messages[index + 1])))
+            index += 2
+            units += 1
+            continue
+        break
+
+    encoded = json.dumps(
+        stable,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def prompt_cache_observability(
+    response: dict[str, Any],
+    messages: list[dict[str, str]],
+    *,
+    history_units: int = 50,
+) -> dict[str, Any]:
+    """Copy provider cache counters beside the hash of the reusable RP prefix."""
+
+    usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+    details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage.get("prompt_tokens_details"), dict)
+        else {}
+    )
+
+    def nonnegative_int(value: Any) -> int:
+        try:
+            return max(int(value or 0), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "cached_prompt_tokens": nonnegative_int(details.get("cached_tokens")),
+        "prompt_tokens": nonnegative_int(usage.get("prompt_tokens")),
+        "stable_prompt_prefix_hash": revision_eight_stable_prefix_hash(
+            messages,
+            history_units=history_units,
+        ),
+    }
 
 
 def scene_state_prompt_block(state: dict[str, Any]) -> str:
@@ -666,12 +788,20 @@ class NarrativeClient:
             self.settings.scenario_type == "rp"
             and self.settings.rp_contract_revision >= PROMPT_ASSEMBLY_REVISION
         )
+        revision_eight = (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 8
+        )
         if revision_seven and diagnostics is not None:
             diagnostics.clear()
-        relevant_characters = retrieve_relevant_characters(
-            state,
-            latest_player_action(request.messages),
-            outcome_target=outcome.target,
+        relevant_characters = (
+            []
+            if revision_eight
+            else retrieve_relevant_characters(
+                state,
+                latest_player_action(request.messages),
+                outcome_target=outcome.target,
+            )
         )
         player_state = state.get("player", {})
         if training_turn_contract and isinstance(player_state, dict):
@@ -679,45 +809,59 @@ class NarrativeClient:
                 "name": player_state.get("name"),
                 "description": player_state.get("description"),
             }
-        state_summary = {
-            "campaign_id": state.get("meta", {}).get("campaign_id"),
-            "worldpack_id": self.settings.campaign_id,
-            "turn": state.get("meta", {}).get("turn"),
-            "player": player_state,
-            "relationships": selected_character_relationships(state, relevant_characters),
-            "factions": state.get("factions", {}),
-            "locations": state.get("locations", {}),
-            "resources": state.get("resources", {}),
-            "active_threads": state.get("active_threads", []),
-            "completed_threads": state.get("completed_threads", []),
-            "uncertain_facts": state.get("uncertain_facts", []),
-            "constraints": state.get("world_constraints", []),
-            "scene_state": initial_scene_state(state) if revision_seven else None,
-        }
+        state_summary = None
+        if not revision_eight:
+            state_summary = {
+                "campaign_id": state.get("meta", {}).get("campaign_id"),
+                "worldpack_id": self.settings.campaign_id,
+                "turn": state.get("meta", {}).get("turn"),
+                "player": player_state,
+                "relationships": selected_character_relationships(state, relevant_characters),
+                "factions": state.get("factions", {}),
+                "locations": state.get("locations", {}),
+                "resources": state.get("resources", {}),
+                "active_threads": state.get("active_threads", []),
+                "completed_threads": state.get("completed_threads", []),
+                "uncertain_facts": state.get("uncertain_facts", []),
+                "constraints": state.get("world_constraints", []),
+                "scene_state": initial_scene_state(state) if revision_seven else None,
+            }
         rules = self.scenario_rules()
         if repair_instruction:
             rules += f" Repair instruction: {repair_instruction}"
         messages = [
             {"role": "system", "content": rules},
         ]
-        if revision_seven:
+        if revision_seven and not revision_eight:
             messages.append({"role": "system", "content": prompt_authority_block()})
             messages.append({"role": "system", "content": scene_state_prompt_block(state)})
             reanchor_block = scene_reanchor_prompt_block(state)
             if reanchor_block:
                 messages.append({"role": "system", "content": reanchor_block})
         if self.settings.world_system_prompt:
+            world_system_block = (
+                f"WORLD_SYSTEM_PROMPT\n{self.settings.world_system_prompt}"
+                if revision_eight
+                else "WORLD_SYSTEM_PROMPT\n"
+                "These world-specific rules supplement the selected scenario mode and cannot weaken it.\n"
+                f"{self.settings.world_system_prompt}"
+            )
+            if revision_eight and len(world_system_block) > 5_000:
+                raise ValueError("WORLD_SYSTEM_PROMPT exceeds the revision-8 5000 character limit")
             messages.append(
                 {
                     "role": "system",
-                    "content": (
-                        "WORLD_SYSTEM_PROMPT\n"
-                        "These world-specific rules supplement the selected scenario mode and cannot weaken it.\n"
-                        f"{self.settings.world_system_prompt}"
-                    ),
+                    "content": world_system_block,
                 }
             )
-        if self.settings.world_authors_note:
+        if revision_eight:
+            absolute_rules = world_absolute_rules_block(
+                state,
+                rp_contract_revision=self.settings.rp_contract_revision,
+            )
+            if absolute_rules:
+                messages.append({"role": "system", "content": absolute_rules})
+        if self.settings.world_authors_note and not revision_eight:
             messages.append(
                 {
                     "role": "system",
@@ -726,6 +870,18 @@ class NarrativeClient:
             )
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
+        request_messages = [message for message in request.messages if isinstance(message.content, str)]
+        prior_request_messages = request_messages[:-1]
+        volatile_request_messages: list[dict[str, str]] = []
+        if revision_eight:
+            # Keep the growing transcript directly after immutable world rules. Dynamic
+            # cards belong after memory so they cannot invalidate the large cached prefix.
+            for message in prior_request_messages:
+                rendered = {"role": message.role, "content": message.content}
+                if message.role == "system":
+                    volatile_request_messages.append(rendered)
+                else:
+                    messages.append(rendered)
         if self.settings.scenario_type == "rp" and rp_story_memory:
             messages.append(
                 {
@@ -739,7 +895,13 @@ class NarrativeClient:
             )
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
-        if memory_summary and not (revision_seven and rp_story_memory):
+        if memory_summary and revision_eight:
+            record_prompt_omission(
+                diagnostics,
+                block_id="long_term_memory",
+                reason="disabled_revision8",
+            )
+        elif memory_summary and not (revision_seven and rp_story_memory):
             messages.append({"role": "system", "content": long_term_memory_block(memory_summary)})
         elif memory_summary and revision_seven and rp_story_memory:
             record_prompt_omission(
@@ -747,31 +909,52 @@ class NarrativeClient:
                 block_id="long_term_memory",
                 reason="structural_deduplication",
             )
-        # Keep the immutable rules/world prefix followed by the growing transcript.
-        # Providers with implicit prompt caches can then reuse both across turns.
-        request_messages = [message for message in request.messages if isinstance(message.content, str)]
-        for message in request_messages[:-1]:
-            if isinstance(message.content, str):
+        if revision_eight:
+            messages.extend(volatile_request_messages)
+        else:
+            for message in prior_request_messages:
                 messages.append({"role": message.role, "content": message.content})
-        if relevant_characters:
+        if relevant_characters and not revision_eight:
             messages.append(
                 {
                     "role": "system",
                     "content": relevant_characters_block(relevant_characters),
                 }
             )
-        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 3:
-            absolute_rules = world_absolute_rules_block(state)
+        if (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 3
+            and not revision_eight
+        ):
+            absolute_rules = world_absolute_rules_block(
+                state,
+                rp_contract_revision=self.settings.rp_contract_revision,
+            )
             if absolute_rules:
                 messages.append({"role": "system", "content": absolute_rules})
-        messages.extend(
-            [
-                {"role": "system", "content": f"Relevant state summary: {state_summary}"},
-                {"role": "system", "content": outcome.authoritative_block},
-            ]
-        )
+        if revision_eight:
+            outcome_block = meaningful_rp_outcome_block(outcome)
+            if outcome_block:
+                messages.append({"role": "system", "content": outcome_block})
+        else:
+            messages.extend(
+                [
+                    {"role": "system", "content": f"Relevant state summary: {state_summary}"},
+                    {"role": "system", "content": outcome.authoritative_block},
+                ]
+            )
         if self.settings.scenario_type == "rp" and relationship_pressure:
             messages.append({"role": "system", "content": relationship_pressure})
+        if self.settings.world_authors_note and revision_eight:
+            authors_note_block = f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}"
+            if len(authors_note_block) > 1_500:
+                raise ValueError("WORLD_AUTHORS_NOTE exceeds the revision-8 1500 character limit")
+            messages.append(
+                {
+                    "role": "system",
+                    "content": authors_note_block,
+                }
+            )
         # The current player action must remain the final message after dynamic runtime context.
         if request_messages:
             current_action = request_messages[-1]
@@ -781,6 +964,7 @@ class NarrativeClient:
         if (
             self.settings.scenario_type == "rp"
             and self.settings.rp_contract_revision >= 6
+            and self.settings.rp_contract_revision < 8
             and raw_transcript_chars
         ):
             max_prompt_chars = raw_transcript_chars // 2
@@ -795,6 +979,12 @@ class NarrativeClient:
                 self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
             ),
             diagnostics=diagnostics if revision_seven else None,
+            history_removable_units=(
+                request._rp_raw_history_removable_units if revision_eight else None
+            ),
+            raw_history_turn_ids=(
+                request._rp_raw_history_turn_ids if revision_eight else None
+            ),
         )
 
     def apply_prompt_cache_policy(self, payload: dict[str, Any]) -> None:
@@ -854,7 +1044,7 @@ class NarrativeClient:
                 ),
             }
         ]
-        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision == 7:
             messages.append({"role": "system", "content": prompt_authority_block()})
             messages.append({"role": "system", "content": scene_state_prompt_block(state)})
             reanchor_block = scene_reanchor_prompt_block(state)
@@ -865,7 +1055,10 @@ class NarrativeClient:
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 3:
-            absolute_rules = world_absolute_rules_block(state)
+            absolute_rules = world_absolute_rules_block(
+                state,
+                rp_contract_revision=self.settings.rp_contract_revision,
+            )
             if absolute_rules:
                 messages.append({"role": "system", "content": absolute_rules})
         if self.settings.scenario_type == "rp" and relationship_pressure:
@@ -886,6 +1079,16 @@ class NarrativeClient:
         return max(self.settings.effective_party_context_limit_tokens - reserve, 1)
 
     def scenario_rules(self) -> str:
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8:
+            return (
+                "Ты ведущий и рассказчик ролевой игры без механических проверок. Отвечай на языке игрока "
+                "только художественным текстом сцены и диалогом. Реплика игрока — намерение, а не уже "
+                "случившийся факт. Не придумывай броски, сложность, модификаторы, очки, успех или провал. "
+                "Сохраняй свободу игрока: не решай за его персонажа, что тот делает, думает, чувствует или "
+                "выбирает. Соблюдай факты истории, правила мира, цели персонажей, отношения, ресурсы и прежние "
+                "последствия. Не показывай служебные данные, анализ и формулировки шлюза. Завершай сцену ясной "
+                "возможностью для следующего действия игрока."
+            )
         common = (
             "Reply in the player's language. Output only final in-world narration and dialogue. "
             "Preserve player agency: never choose actions, beliefs, emotions, or conclusions for the player character. "
@@ -910,7 +1113,7 @@ class NarrativeClient:
                 "current state, NPC goals, available information, resources, relationships, and prior consequences. "
                 "Obey every WORLD_ABSOLUTE_RULES item and end with a playable opening for the next player action."
             )
-            if self.settings.rp_contract_revision >= 7:
+            if self.settings.rp_contract_revision == 7:
                 rules += (
                     " Keep the complete player-visible prose inside narrative_text and return the private revision-7 "
                     "scene bundle required by SCENE_STATE_CONTRACT."
@@ -992,7 +1195,7 @@ class NarrativeClient:
                 },
                 ensure_ascii=False,
             )
-        elif self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7:
+        elif self.settings.scenario_type == "rp" and self.settings.rp_contract_revision == 7:
             scene = initial_scene_state(state or {})
             content = json.dumps(
                 {
@@ -1073,9 +1276,17 @@ def fit_messages_to_context(
     protect_history: bool = False,
     fail_on_token_overflow: bool = False,
     diagnostics: dict[str, Any] | None = None,
+    history_removable_units: int | None = None,
+    raw_history_turn_ids: list[int] | None = None,
 ) -> list[dict[str, str]]:
     """Keep the latest action and mandatory instructions inside the real provider input budget."""
     fitted = [dict(message) for message in messages]
+    remaining_history_removals = (
+        max(int(history_removable_units), 0)
+        if history_removable_units is not None
+        else None
+    )
+    fitted_raw_turn_ids = [int(turn_id) for turn_id in (raw_history_turn_ids or [])]
     while fitted:
         prompt_text = "\n".join(message["content"] for message in fitted)
         over_token_budget = estimate_tokens(prompt_text) > token_budget
@@ -1088,10 +1299,14 @@ def fit_messages_to_context(
             if not over_token_budget:
                 break
             optional_prefixes = (
-                "RETRIEVED_ARCHIVE_SCENES",
-                "LONG_TERM_PARTY_MEMORY",
-                "PARTY_LORE_CARDS",
-                "RELEVANT_CHARACTERS",
+                ("PARTY_LORE_CARDS",)
+                if remaining_history_removals is not None
+                else (
+                    "RETRIEVED_ARCHIVE_SCENES",
+                    "LONG_TERM_PARTY_MEMORY",
+                    "PARTY_LORE_CARDS",
+                    "RELEVANT_CHARACTERS",
+                )
             )
             trim_index = next(
                 (
@@ -1111,6 +1326,32 @@ def fit_messages_to_context(
                     reason="hard_input_budget",
                 )
                 continue
+            if remaining_history_removals is not None and remaining_history_removals > 0:
+                history_indices = [
+                    index
+                    for index, message in enumerate(fitted[:-1])
+                    if message.get("role") != "system"
+                ]
+                oldest_history = history_indices[0] if history_indices else None
+                if oldest_history is None:
+                    remaining_history_removals = 0
+                elif fitted[oldest_history].get("role") == "assistant":
+                    fitted.pop(oldest_history)
+                    remaining_history_removals -= 1
+                    if fitted_raw_turn_ids:
+                        fitted_raw_turn_ids.pop(0)
+                    continue
+                elif (
+                    fitted[oldest_history].get("role") == "user"
+                    and oldest_history + 1 < len(fitted) - 1
+                    and fitted[oldest_history + 1].get("role") == "assistant"
+                ):
+                    fitted.pop(oldest_history + 1)
+                    fitted.pop(oldest_history)
+                    remaining_history_removals -= 1
+                    if fitted_raw_turn_ids:
+                        fitted_raw_turn_ids.pop(0)
+                    continue
             if fail_on_token_overflow:
                 raise PromptBudgetExceeded(
                     estimated_tokens=estimate_tokens(prompt_text),
@@ -1175,6 +1416,8 @@ def fit_messages_to_context(
             fitted.pop(trim_index)
         else:
             fitted[trim_index]["content"] = content[:retained]
+    if diagnostics is not None and raw_history_turn_ids is not None:
+        diagnostics["raw_history_turn_ids"] = fitted_raw_turn_ids
     return fitted
 
 
@@ -1221,6 +1464,22 @@ def rp_story_memory_block(
     max_chars: int,
     rp_contract_revision: int = 0,
 ) -> str:
+    if rp_contract_revision >= 8:
+        prefix = (
+            "RP_STORY_MEMORY\n"
+            "Сжатая долговременная память партии. Сохраняй по ней дальнюю связность, но при конфликте "
+            "доверяй более новой дословной истории ниже. Не превращай неопределённость в факт и не считай "
+            "пропущенную деталь стёртой.\n"
+        )
+        body = story_memory_prompt_text(
+            snapshot,
+            max(max_chars - len(prefix), 1),
+            rp_contract_revision,
+        )
+        rendered = prefix + body
+        if len(rendered) > max_chars:
+            raise ValueError("RP_STORY_MEMORY exceeds the revision-8 prompt limit")
+        return rendered
     coverage_rule = ""
     if rp_contract_revision >= 7:
         covered_through = int(snapshot.get("to_turn_id") or 0)
@@ -1228,18 +1487,22 @@ def rp_story_memory_block(
             f"covered_through_turn_id={covered_through}\n"
             f"Raw turn pairs after {covered_through} are newer and override this snapshot on conflict.\n"
         )
-    return (
+    prefix = (
         "RP_STORY_MEMORY\n"
         "This is the bounded living continuity ledger for this RP party. It may summarize confirmed facts, character "
         "arcs, possessions, projects, active and resolved threads, unresolved hooks, and chronology. Use it to preserve "
         "long-range continuity, but treat current canonical state and AUTHORITATIVE_OUTCOME as higher authority. Do not "
         "turn uncertainty into fact and do not assume omitted detail was erased.\n"
         f"{coverage_rule}"
-        f"{story_memory_prompt_text(snapshot, max_chars, rp_contract_revision)}"
     )
+    return prefix + story_memory_prompt_text(snapshot, max_chars, rp_contract_revision)
 
 
-def world_absolute_rules_block(state: dict[str, Any]) -> str | None:
+def world_absolute_rules_block(
+    state: dict[str, Any],
+    *,
+    rp_contract_revision: int = 0,
+) -> str | None:
     rules = []
     for item in state.get("world_constraints", []):
         if not isinstance(item, dict) or item.get("kind") != "absolute":
@@ -1253,6 +1516,20 @@ def world_absolute_rules_block(state: dict[str, Any]) -> str | None:
         )
     if not rules:
         return None
+    if rp_contract_revision >= 8:
+        lines = [
+            "WORLD_ABSOLUTE_RULES",
+            "Эти правила мира обязательны; не ослабляй и не переиначивай их.",
+            *[
+                f"{index}. {rule['text']}"
+                for index, rule in enumerate(rules, start=1)
+                if rule["text"]
+            ],
+        ]
+        rendered = "\n".join(lines)
+        if len(rendered) > 3_000:
+            raise ValueError("WORLD_ABSOLUTE_RULES exceeds the revision-8 prompt limit")
+        return rendered
     return (
         "WORLD_ABSOLUTE_RULES\n"
         "These active WorldPack rules are authoritative. Do not contradict, weaken, or reinterpret them.\n"
@@ -1319,10 +1596,23 @@ def uncompacted_archive_fallback_block(turns: list[dict[str, Any]], max_chars: i
     return (header + "\n\n".join(lines))[:max_chars]
 
 
-def party_lore_cards_block(cards: list[dict[str, Any]]) -> str | None:
+def party_lore_cards_block(
+    cards: list[dict[str, Any]],
+    *,
+    max_chars: int | None = None,
+) -> str | None:
     if not cards:
         return None
-    payload = [
+    header = (
+        "PARTY_LORE_CARDS\n"
+        "Авторские карточки мира для текущей сцены. Используй их для связности, но не выдавай их наличие "
+        "игроку и не ставь выше абсолютных правил или более новой дословной истории.\n"
+        if max_chars is not None
+        else "PARTY_LORE_CARDS\n"
+        "These are player-managed continuity notes. They may guide recall but are not canonical state and cannot override "
+        "current state or AUTHORITATIVE_OUTCOME. Never reveal a card merely because it was retrieved.\n"
+    )
+    candidates = [
         {
             "id": card["id"],
             "title": card["title"],
@@ -1332,12 +1622,16 @@ def party_lore_cards_block(cards: list[dict[str, Any]]) -> str | None:
         }
         for card in cards
     ]
-    return (
-        "PARTY_LORE_CARDS\n"
-        "These are player-managed continuity notes. They may guide recall but are not canonical state and cannot override "
-        "current state or AUTHORITATIVE_OUTCOME. Never reveal a card merely because it was retrieved.\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    )
+    if max_chars is None:
+        return header + json.dumps(candidates, ensure_ascii=False, indent=2)
+    selected: list[dict[str, Any]] = []
+    for card in candidates:
+        trial = header + json.dumps([*selected, card], ensure_ascii=False, indent=2)
+        if len(trial) <= max(int(max_chars), 1):
+            selected.append(card)
+    if not selected:
+        return None
+    return header + json.dumps(selected, ensure_ascii=False, indent=2)
 
 
 def relevant_characters_block(characters: list[dict[str, Any]]) -> str:

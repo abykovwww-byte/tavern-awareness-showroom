@@ -20,6 +20,12 @@ cross-surface diagnostics parity.
 подтвердил effective observed revision `7`. Этот rollout не повышает DC3 выше
 `подключено` и не является заявлением об исправленной semantic continuity.
 
+Для revision `8+` narrator composition superseded
+[Decision 032](032-rp-history-first-prompt-and-sectioned-memory.md): explicit
+`PROMPT_AUTHORITY_HIERARCHY`, legacy long-term memory и archive retrieval не
+рендерятся, а diagnostics описывают history-first assembly. Revision-7 contract
+и readiness evidence сохраняются.
+
 ## Context
 
 DC1 защищает полный raw tail новее effective RP story-memory coverage, а DC2

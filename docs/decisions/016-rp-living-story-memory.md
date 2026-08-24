@@ -8,6 +8,11 @@ Accepted; authority and projection semantics are superseded by Decisions 024
 and 026. Decision 036 retires active Novel execution; any mention below is now
 an archived storage/read boundary.
 
+For `rp_contract_revision >= 8`, scheduling, section coverage, provider routing
+and prompt projection are superseded by
+[Decision 032](032-rp-history-first-prompt-and-sectioned-memory.md). This
+Decision remains the compatibility contract for revisions `0..7`.
+
 ## Context
 
 Raw turns preserve full evidence and immutable episodic chapters preserve old

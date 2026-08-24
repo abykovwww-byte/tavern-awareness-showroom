@@ -10,6 +10,7 @@ from typing import Any
 from app.core.config import Settings
 from app.models.schemas import ModelProfileSummary
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.rp_history import story_memory_safe_coverage
 from app.services.state_store import StateStore
 
 
@@ -125,7 +126,13 @@ def estimate_party_context(
         estimate["rp_story_memory_covered_turns"] = (
             [story_memory.get("from_turn_id"), story_memory.get("to_turn_id")] if story_memory else None
         )
-        effective_story_coverage = int(story_memory.get("to_turn_id") or 0) if story_memory else 0
+        effective_story_coverage = (
+            story_memory_safe_coverage(story_memory)
+            if settings.rp_contract_revision >= 8
+            else int(story_memory.get("to_turn_id") or 0)
+            if story_memory
+            else 0
+        )
         pending_threshold = int(
             story_stats.get("pending_turn_threshold")
             or settings.rp_story_memory_update_turns

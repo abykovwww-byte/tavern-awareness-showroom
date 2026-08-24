@@ -16,6 +16,12 @@ activation merge применён и ordinary-party stamp proof подтверд
 observed revision `7`. Это не повышает evidence DC2 выше `подключено` и не
 доказывает полную semantic continuity.
 
+Для revision `8+` этот pre-scene scope superseded
+[Decision 032](032-rp-history-first-prompt-and-sectioned-memory.md): единый scan
+берёт current input и три предыдущих полных RAW units; `scene_state`, seed
+location и active threads больше не создают eligibility. Revision-7 contract и
+приведённое live evidence остаются действующими только для revision `7`.
+
 ## Context
 
 Существующий relationship layer хранит durable causes и due obligations

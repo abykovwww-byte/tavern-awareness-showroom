@@ -1,0 +1,40 @@
+- requirement: "Revision 8 narrator prompt uses a 50-to-57-unit recent window whose start is quantized by eight plus every unit newer than minimum story-section coverage; RAW follows immutable narrator/world/absolute rules and precedes volatile memory, lore, relationship pressure, author note and current action; legacy state, character, scene, episodic-memory and archive-retrieval layers are absent"
+  level: каркас
+  store: "recorded turns.prompt_json, turn metadata prompt_assembly, eligible raw turns and effective story-memory snapshot"
+  assertion: prompt_presence
+  expectation: revision8_history_first_prompt_has_no_coverage_gap
+  probe_command: null
+  expected: null
+  waiver: "Focused local tests cover eligibility, exact opening suppression, legacy null turns, quantized 50-to-57 plus uncovered selection, stable-prefix versus volatile-tail order, whole-unit overflow and fail-before-provider. Revision 8 is not activated or live-verified; S0 and the required 25-turn deployed party gate remain pending."
+- requirement: "Revision 8 records cached_prompt_tokens, prompt_tokens and a SHA-256 hash of immutable rules plus the anchored first 50 RAW units; the hash stays equal within an eight-turn bucket and changes when the actual RAW anchor moves, without adding provider cache calls, headers or settings"
+  level: каркас
+  store: "turn metadata_json, recorded turns.prompt_json and response_json usage.prompt_tokens_details"
+  assertion: projection
+  expectation: revision8_prompt_cache_prefix_is_quantized_and_observable
+  probe_command: null
+  expected: null
+  waiver: "Local deterministic tests cover provider counter extraction and equal/different anchor hashes. No deployed 60-turn party proves the required five-of-eight 70-percent cache-hit rate or average cache share above 8.6 percent."
+- requirement: "Revision 8 creates no story memory through 50 eligible units, then one job processes one oldest-first batch of at most eight complete units in one five-section request, structurally validates each section, retries only invalid sections, keeps empty sections valid and uses per-section fresh, stale or failed status with safe minimum coverage"
+  level: каркас
+  store: "service_jobs, rp_story_memory_snapshots and service_call_log section rows"
+  assertion: projection
+  expectation: revision8_story_memory_sections_advance_independently
+  probe_command: null
+  expected: null
+  waiver: "Local updater and persistence tests cover the 50/51 gate, one normal call, oldest batch, strict shape and fact_id validation, valid empty sections, length truncation failure, targeted retry, partial snapshot, minimum coverage and same-coverage idempotency. No deployed 60-turn party or forced live section failure has been run."
+- requirement: "Revision 8 story-memory calls use explicit provider openrouter and model deepseek/deepseek-v4-pro, complete-turn serialized messages no longer than 20000 characters, max_tokens 4000 for the combined call and 800 for a targeted section retry, at most two durable job attempts, section_key and update_id trace fields and no local or NVIDIA fallback"
+  level: каркас
+  store: "exact redacted service_call_log requests and durable service_jobs attempts"
+  assertion: absence
+  expectation: revision8_story_memory_never_routes_to_nvidia
+  probe_command: null
+  expected: null
+  waiver: "Local payload and trace tests cover explicit provider/model, section_key=all versus exact retry keys, 20000-character complete-turn fitting, 4000/800 output limits and two-attempt scheduling. No real OpenRouter call or live absence proof exists yet."
+- requirement: "Revision 8 relationship prompt scope uses current input plus three complete previous eligible RAW units and excludes scene_state, seed location and active-thread presence signals while rendering only canonical human-readable names"
+  level: каркас
+  store: "recorded prompt_json relationship blocks, raw turns and existing relationship projections"
+  assertion: absence
+  expectation: revision8_relationship_scope_uses_recent_raw_scan_only
+  probe_command: null
+  expected: null
+  waiver: "The deterministic helper and rev-8 call path are locally tested for complete-turn scan and disabled legacy signals, but the required live narrator-introduced-character and remote seed-location negative case belongs to the later S2 gate and has not been run."

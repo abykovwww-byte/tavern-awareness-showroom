@@ -77,6 +77,8 @@ class ServiceModelClient:
         request_id: str | None = None,
         party_turn: int | None = None,
         attempt: int | None = None,
+        section_key: str | None = None,
+        update_id: str | None = None,
         **opts: Any,
     ) -> ServiceCompletion:
         payload = dict(opts.pop("payload", {}))
@@ -122,6 +124,8 @@ class ServiceModelClient:
                 provider=provider,
                 model=model,
                 attempt=attempt,
+                section_key=section_key,
+                update_id=update_id,
                 latency_ms=self._elapsed_ms(started),
                 http_status=response.status_code if response is not None else None,
                 usage=None,
@@ -141,6 +145,8 @@ class ServiceModelClient:
             provider=provider,
             model=self._model_name(data.get("model") or model),
             attempt=attempt,
+            section_key=section_key,
+            update_id=update_id,
             latency_ms=self._elapsed_ms(started),
             http_status=response.status_code,
             usage=data.get("usage"),
@@ -176,7 +182,9 @@ class ServiceModelClient:
                     http_status INTEGER,
                     usage_json TEXT,
                     error_json TEXT,
-                    trace_schema_version TEXT
+                    trace_schema_version TEXT,
+                    section_key TEXT,
+                    update_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_service_call_log_party_turn
                     ON service_call_log (party_id, turn_id, id);
@@ -196,6 +204,8 @@ class ServiceModelClient:
                 ("usage_json", "TEXT"),
                 ("error_json", "TEXT"),
                 ("trace_schema_version", "TEXT"),
+                ("section_key", "TEXT"),
+                ("update_id", "TEXT"),
             ):
                 if name not in columns:
                     connection.execute(f"ALTER TABLE service_call_log ADD COLUMN {name} {column_type}")
@@ -222,6 +232,8 @@ class ServiceModelClient:
         provider: str | None,
         model: str | None,
         attempt: int | None,
+        section_key: str | None,
+        update_id: str | None,
         latency_ms: float,
         http_status: int | None,
         usage: Any,
@@ -234,8 +246,9 @@ class ServiceModelClient:
                 INSERT INTO service_call_log (
                     party_id, turn_id, role, prompt_text, raw_response, created_at, status,
                     request_id, party_turn, provider, model, attempt, latency_ms,
-                    http_status, usage_json, error_json, trace_schema_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    http_status, usage_json, error_json, trace_schema_version,
+                    section_key, update_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     party_id,
@@ -255,6 +268,8 @@ class ServiceModelClient:
                     self._redacted_json(usage),
                     self._redacted_json(error),
                     TRACE_SCHEMA_VERSION,
+                    section_key,
+                    update_id,
                 ),
             )
             if self.retention_days > 0:

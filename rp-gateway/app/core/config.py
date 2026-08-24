@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 
-RP_CONTRACT_MAX_REVISION = 7
+RP_CONTRACT_MAX_REVISION = 8
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -117,6 +117,12 @@ class Settings:
     rp_story_memory_max_chars: int = env_int("RP_STORY_MEMORY_MAX_CHARS", 24_000)
     rp_story_memory_prompt_max_chars: int = env_int("RP_STORY_MEMORY_PROMPT_MAX_CHARS", 24_000)
     rp_story_memory_reserve_tokens: int = env_int("RP_STORY_MEMORY_RESERVE_TOKENS", 10_000)
+    rp_raw_history_window_turns: int = env_int("RP_RAW_HISTORY_WINDOW_TURNS", 50)
+    rp_story_memory_provider: str = os.getenv("RP_STORY_MEMORY_PROVIDER", "openrouter")
+    rp_story_memory_model: str = os.getenv(
+        "RP_STORY_MEMORY_MODEL",
+        "deepseek/deepseek-v4-pro",
+    )
     party_lore_card_prompt_limit: int = env_int("PARTY_LORE_CARD_PROMPT_LIMIT", 8)
     party_lore_card_prompt_max_chars: int = env_int("PARTY_LORE_CARD_PROMPT_MAX_CHARS", 12_000)
     service_job_max_attempts: int = env_int("SERVICE_JOB_MAX_ATTEMPTS", 5)
@@ -158,6 +164,10 @@ class Settings:
             - story_memory_reserve
         )
         return max(available, self.party_context_min_history_tokens)
+
+    @property
+    def effective_rp_raw_history_window_turns(self) -> int:
+        return max(int(self.rp_raw_history_window_turns), 20)
 
 
 def get_settings() -> Settings:

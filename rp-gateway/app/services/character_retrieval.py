@@ -78,13 +78,15 @@ def relationship_scene_character_ids(
     *,
     outcome_target: str | None = None,
     character_aliases: dict[str, list[str]] | None = None,
+    use_scene_state: bool = True,
+    use_seed_signals: bool = True,
 ) -> set[str]:
     """Return reliable committed presence, or the deterministic legacy fallback scope."""
 
     characters = state.get("characters")
     if not isinstance(characters, dict):
         return set()
-    scene_state = state.get("scene_state")
+    scene_state = state.get("scene_state") if use_scene_state else None
     if (
         isinstance(scene_state, dict)
         and scene_state.get("stale") is False
@@ -96,12 +98,16 @@ def relationship_scene_character_ids(
             if str(character_id) in characters
         }
 
-    player = state.get("player")
+    player = state.get("player") if use_seed_signals else None
     player_location = normalized_text(player.get("location")) if isinstance(player, dict) else ""
     action = normalized_text(latest_player_message)
     target = normalized_text(outcome_target)
     declared_aliases = character_aliases or {}
-    active_thread_ids = character_ids_in_threads(state.get("active_threads"))
+    active_thread_ids = (
+        character_ids_in_threads(state.get("active_threads"))
+        if use_seed_signals
+        else set()
+    )
     ranked: list[tuple[int, str]] = []
 
     for raw_id, raw_character in characters.items():
@@ -124,7 +130,8 @@ def relationship_scene_character_ids(
         mentioned = any(f" {alias} " in f" {action} " for alias in aliases)
         targeted = any(f" {alias} " in f" {target} " for alias in aliases)
         same_location = bool(
-            player_location
+            use_seed_signals
+            and player_location
             and normalized_text(raw_character.get("location")) == player_location
         )
         if not (mentioned or targeted or same_location):
@@ -135,7 +142,7 @@ def relationship_scene_character_ids(
             score += 100
         if same_location:
             score += 30
-        if character_id in active_thread_ids:
+        if use_seed_signals and character_id in active_thread_ids:
             score += 20
         ranked.append((score, character_id))
 

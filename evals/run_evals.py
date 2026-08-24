@@ -367,7 +367,7 @@ def parse_args() -> argparse.Namespace:
     canary.add_argument("--player-model-profile-id", required=True)
     canary.add_argument("--player-prompt", required=True)
     canary.add_argument("--turn-count", type=int, default=1)
-    canary.add_argument("--rp-contract-revision", type=int, choices=range(0, 8))
+    canary.add_argument("--rp-contract-revision", type=int, choices=range(0, 9))
     canary.add_argument("--timeout-seconds", type=int, choices=range(30, 901), default=300)
     canary.add_argument("--poll-seconds", type=float, default=2.0)
     canary.add_argument("--confirm-provider-run", action="store_true")

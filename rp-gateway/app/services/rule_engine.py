@@ -149,7 +149,7 @@ class RuleEngine:
                 "Apply active WorldPack rules, current state, character goals, relationships, and prior consequences.",
                 "Leave consequential choices and the player character's inner decisions to the player.",
             ]
-            if rp_contract_revision >= 7:
+            if rp_contract_revision == 7:
                 scene_allowance = SceneAllowance.model_validate(
                     build_scene_transition_allowance(
                         state,

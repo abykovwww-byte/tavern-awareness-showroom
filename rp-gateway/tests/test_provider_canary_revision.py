@@ -79,6 +79,7 @@ def canary_args(response_path: Path, revision: int | None) -> argparse.Namespace
         "field_present",
     ),
     [
+        (8, 8, 0, True, True),
         (7, 7, 0, True, True),
         (7, 6, 0, False, True),
         (7, 7, 1, False, True),
@@ -123,7 +124,7 @@ def test_provider_canary_passes_and_verifies_candidate_revision(
         assert fake_client.create_payload["rp_contract_revision"] == requested_revision
 
 
-def test_provider_canary_cli_accepts_revision_seven_and_rejects_eight(
+def test_provider_canary_cli_accepts_revision_eight_and_rejects_nine(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -143,13 +144,13 @@ def test_provider_canary_cli_accepts_revision_seven_and_rejects_eight(
             "--player-prompt",
             "continue",
             "--rp-contract-revision",
-            "7",
+            "8",
             "--semantic-responses",
             "response.json",
         ],
     )
 
-    assert runner.parse_args().rp_contract_revision == 7
-    sys.argv[11] = "8"
+    assert runner.parse_args().rp_contract_revision == 8
+    sys.argv[11] = "9"
     with pytest.raises(SystemExit):
         runner.parse_args()

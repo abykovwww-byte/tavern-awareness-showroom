@@ -60,6 +60,8 @@ class ChatCompletionRequest(BaseModel):
     _latest_player_action: str | None = PrivateAttr(default=None)
     _rp_story_memory_snapshot_id: int | None = PrivateAttr(default=None)
     _rp_story_memory_covered_through_turn_id: int | None = PrivateAttr(default=None)
+    _rp_raw_history_turn_ids: list[int] = PrivateAttr(default_factory=list)
+    _rp_raw_history_removable_units: int = PrivateAttr(default=0)
     _narrator_settings_model: str | None = PrivateAttr(default=None)
 
     model: str | None = None

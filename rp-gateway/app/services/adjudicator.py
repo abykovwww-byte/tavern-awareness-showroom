@@ -14,6 +14,7 @@ import httpx
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome, PatchOperation, StatePatch
 from app.services.character_retrieval import relationship_scene_character_ids
+from app.services.context_budget import estimate_tokens
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import (
@@ -21,6 +22,7 @@ from app.services.narrative import (
     PromptBudgetExceeded,
     ProviderRateLimitError,
     archived_memory_retrieval_block,
+    prompt_cache_observability,
     prompt_assembly_diagnostics,
     response_text,
     with_text,
@@ -30,6 +32,14 @@ from app.services.relationship_attribution import normalized_aliases
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
 from app.services.rule_engine import RuleEngine
+from app.services.rp_history import (
+    eligible_rp_turns,
+    raw_history_window,
+    recent_rp_scan_text,
+    removable_covered_history_units,
+    rp_turn_messages,
+    story_memory_safe_coverage,
+)
 from app.services.scene_state import (
     SceneMaterialization,
     fallback_scene_state,
@@ -242,7 +252,8 @@ class Adjudicator:
                     ),
                 )
                 self.store.complete_turn_request(idempotency_key, response)
-                await self.after_turn_recorded(authorization, request_id)
+                if self.settings.rp_contract_revision < 8:
+                    await self.after_turn_recorded(authorization, request_id)
                 return response
 
             state = self.store.get_state()
@@ -300,17 +311,26 @@ class Adjudicator:
                 self.settings.scenario_type == "rp"
                 and self.settings.rp_contract_revision >= 7
             )
+            revision_eight = (
+                self.settings.scenario_type == "rp"
+                and self.settings.rp_contract_revision >= 8
+            )
+            scene_bundle_revision = (
+                self.settings.scenario_type == "rp"
+                and self.settings.rp_contract_revision == 7
+            )
             provider_fallback_reason: str | None = None
             gateway_fallback_reason: str | None = None
             transport_status = "ok"
             prompt_messages: list[dict[str, str]] | None = None
             prompt_assembly: dict[str, Any] | None = None
+            prompt_cache_response: dict[str, Any] | None = None
             artifact_result: ArtifactMaterialization | None = None
             workspace_result: WorkspaceMaterialization | None = None
             scene_result: SceneMaterialization | None = None
             scene_before = (
                 initial_scene_state(state, self.authored_stable_affiliations())
-                if revision_seven
+                if scene_bundle_revision
                 else None
             )
             bundle_received = False
@@ -329,7 +349,13 @@ class Adjudicator:
                     reason="prepare_relationship_pressure",
                     lane="main",
                 )
-                memory_summary = self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
+                memory_summary = (
+                    None
+                    if self.settings.rp_contract_revision >= 8
+                    else self.store.memory_for_prompt(
+                        self.settings.party_memory_prompt_max_chars
+                    )
+                )
                 rp_story_memory: dict[str, Any] | None = None
                 story_snapshot_id: int | None = None
                 story_coverage = 0
@@ -386,7 +412,9 @@ class Adjudicator:
                                 else None
                             )
                             final_coverage = (
-                                int(final_story_memory.get("to_turn_id") or 0)
+                                story_memory_safe_coverage(final_story_memory)
+                                if self.settings.rp_contract_revision >= 8
+                                else int(final_story_memory.get("to_turn_id") or 0)
                                 if final_story_memory is not None
                                 else 0
                             )
@@ -402,7 +430,11 @@ class Adjudicator:
                                 "RP story-memory snapshot did not stabilize before narrator call"
                             )
                     except PromptBudgetExceeded as overflow:
-                        if not revision_seven or self.rp_story_memory is None:
+                        if (
+                            not revision_seven
+                            or self.settings.rp_contract_revision >= 8
+                            or self.rp_story_memory is None
+                        ):
                             raise
                         if refresh_attempted:
                             refresh_result = refresh or {}
@@ -508,8 +540,12 @@ class Adjudicator:
                     prompt_assembly = prompt_assembly_diagnostics(
                         prompt_messages,
                         story_memory_covered_through_turn_id=story_coverage,
-                        raw_tail_turn_ids=raw_tail_turn_ids,
+                        raw_tail_turn_ids=prompt_diagnostics.get(
+                            "raw_history_turn_ids",
+                            raw_tail_turn_ids,
+                        ),
                         omitted_blocks=prompt_diagnostics.get("omitted_blocks"),
+                        rp_contract_revision=self.settings.rp_contract_revision,
                     )
                 assembly_details: dict[str, Any] = {
                     "message_count": len(prompt_messages),
@@ -563,8 +599,9 @@ class Adjudicator:
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
                 )
+                prompt_cache_response = raw
                 bundle_received = True
-                if revision_seven:
+                if scene_bundle_revision:
                     scene_result = materialize_scene_bundle(
                         raw,
                         state,
@@ -599,7 +636,7 @@ class Adjudicator:
                 if (
                     self.settings.scenario_type == "rp"
                     and not text.strip()
-                    and not (revision_seven and scene_result is not None and not scene_result.valid)
+                    and not (scene_bundle_revision and scene_result is not None and not scene_result.valid)
                 ):
                     self.store.audit(
                         "llm_invalid_response",
@@ -736,7 +773,7 @@ class Adjudicator:
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
                     )
-                    if revision_seven:
+                    if scene_bundle_revision:
                         scene_result = materialize_scene_bundle(
                             raw,
                             state,
@@ -830,7 +867,11 @@ class Adjudicator:
                         request_id,
                     )
                     if revision_seven:
-                        raise RuntimeError("LLM response failed narrative validation after bundle parsing")
+                        raise RuntimeError(
+                            "LLM response failed narrative validation after bundle parsing"
+                            if scene_bundle_revision
+                            else "LLM response failed narrative validation"
+                        )
                     if not allow_gateway_fallback:
                         raise RuntimeError("LLM response failed narrative validation")
                     text = self.safe_text(outcome, narrative_state, latest, interaction_contract)
@@ -952,7 +993,14 @@ class Adjudicator:
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
             text = response_text(response)
             scene_after: dict[str, Any] | None = None
-            if revision_seven:
+            if revision_seven and fallback_noncanonical:
+                patch = StatePatch(
+                    turn=patch.turn,
+                    check_id=patch.check_id,
+                    source=patch.source,
+                    patch=[],
+                )
+            if scene_bundle_revision:
                 if fallback_noncanonical:
                     scene_after = fallback_scene_state(
                         state,
@@ -962,13 +1010,6 @@ class Adjudicator:
                     scene_after = scene_result.scene_state
                 else:
                     raise SceneContinuityError("revision-7 turn has no valid scene projection")
-                if fallback_noncanonical:
-                    patch = StatePatch(
-                        turn=patch.turn,
-                        check_id=patch.check_id,
-                        source=patch.source,
-                        patch=[],
-                    )
                 if not fallback_noncanonical:
                     patch.patch.extend(
                         self.scene_legacy_operations(state, scene_result, patch.turn)
@@ -1036,24 +1077,37 @@ class Adjudicator:
             )
             if prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = prompt_assembly
-            if revision_seven:
+            if revision_eight and prompt_messages is not None:
                 turn_metadata.update(
-                    {
-                        "scene_claims": scene_result.claims if scene_result is not None else None,
-                        "applied_scene_delta": (
-                            scene_result.applied_operations if scene_result is not None else []
-                        ),
-                        "dropped_scene_delta": (
-                            scene_result.dropped_operations if scene_result is not None else []
-                        ),
-                        "scene_state_before": scene_before,
-                        "scene_state_after": scene_after,
-                        "scene_state_stale": bool(scene_after and scene_after.get("stale")),
-                        "story_memory_canonical": not fallback_noncanonical,
-                    }
+                    prompt_cache_observability(
+                        prompt_cache_response or response,
+                        prompt_messages,
+                        history_units=self.settings.effective_rp_raw_history_window_turns,
+                    )
                 )
+            if revision_seven:
+                turn_metadata["story_memory_canonical"] = not fallback_noncanonical
+                if scene_bundle_revision:
+                    turn_metadata.update(
+                        {
+                            "scene_claims": scene_result.claims if scene_result is not None else None,
+                            "applied_scene_delta": (
+                                scene_result.applied_operations if scene_result is not None else []
+                            ),
+                            "dropped_scene_delta": (
+                                scene_result.dropped_operations if scene_result is not None else []
+                            ),
+                            "scene_state_before": scene_before,
+                            "scene_state_after": scene_after,
+                            "scene_state_stale": bool(scene_after and scene_after.get("stale")),
+                        }
+                    )
                 atomic_audit_events: list[tuple[str, dict[str, Any]]] = []
-                if scene_result is not None and scene_result.dropped_operations:
+                if (
+                    scene_bundle_revision
+                    and scene_result is not None
+                    and scene_result.dropped_operations
+                ):
                     atomic_audit_events.append(
                         (
                             "scene_delta_operations_dropped",
@@ -1357,13 +1411,25 @@ class Adjudicator:
         return response
 
     async def after_turn_recorded(self, authorization: str | None, request_id: str) -> None:
-        job_types = ["memory"]
+        jobs: list[tuple[str, int]] = []
+        revision_eight = (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 8
+        )
+        if not revision_eight:
+            jobs.append(("memory", self.settings.service_job_max_attempts))
         if self.settings.scenario_type == "rp":
-            job_types.append("rp_story_memory")
+            if self.rp_story_memory is not None and self.rp_story_memory.should_enqueue():
+                jobs.append(
+                    (
+                        "rp_story_memory",
+                        2 if revision_eight else self.settings.service_job_max_attempts,
+                    )
+                )
             if self.relationship_extraction is not None:
-                job_types.append("relationship_extraction")
-        for job_type in job_types:
-            self.store.enqueue_service_job(job_type, request_id, self.settings.service_job_max_attempts)
+                jobs.append(("relationship_extraction", self.settings.service_job_max_attempts))
+        for job_type, max_attempts in jobs:
+            self.store.enqueue_service_job(job_type, request_id, max_attempts)
         if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
             await self.drain_service_jobs(authorization, wait_for_retries=False)
             return
@@ -1413,6 +1479,22 @@ class Adjudicator:
     async def run_service_job(self, job: dict[str, Any], authorization: str | None) -> None:
         request_id = str(job.get("request_id") or "")
         projection_before = self.trace_projection_snapshot()
+        if (
+            self.settings.scenario_type == "rp"
+            and self.settings.rp_contract_revision >= 8
+        ):
+            if job["job_type"] == "memory":
+                # Retire legacy jobs that were queued before this party contract was activated.
+                return
+            if job["job_type"] == "rp_story_memory" and self.rp_story_memory is not None:
+                result = await self.rp_story_memory.update(
+                    authorization,
+                    fail_open=True,
+                    request_id=job.get("request_id"),
+                )
+                if result.get("retry_required") or result.get("error"):
+                    raise RuntimeError(str(result.get("error") or "story-memory section failed"))
+                return
         for _ in range(64):
             if job["job_type"] == "memory":
                 result = await self.memory.summarize(
@@ -1512,23 +1594,40 @@ class Adjudicator:
         party_turn = int(state.get("meta", {}).get("turn", 0))
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
         declared_aliases = normalized_aliases(self.relationship_model or {})
-        names = {
-            str(character_id): self.relationship_character_name(
-                str(character_id),
-                value,
-                declared_aliases.get(str(character_id))
-                if self.settings.rp_contract_revision >= 7
-                else None,
-            )
-            for character_id, value in characters.items()
-        }
+        if self.settings.rp_contract_revision >= 8:
+            names = {
+                str(character_id): str(value["name"]).strip()
+                for character_id, value in characters.items()
+                if isinstance(value, dict)
+                and isinstance(value.get("name"), str)
+                and str(value["name"]).strip()
+            }
+        else:
+            names = {
+                str(character_id): self.relationship_character_name(
+                    str(character_id),
+                    value,
+                    declared_aliases.get(str(character_id))
+                    if self.settings.rp_contract_revision >= 7
+                    else None,
+                )
+                for character_id, value in characters.items()
+            }
         scene_character_ids = None
         if self.settings.rp_contract_revision >= 7:
+            scan_text = latest_player_message
+            if self.settings.rp_contract_revision >= 8:
+                scan_text = recent_rp_scan_text(
+                    self.store.turns_for_memory(include_noncanonical_fallback=False),
+                    latest_player_message,
+                )
             scene_character_ids = relationship_scene_character_ids(
                 state,
-                latest_player_message,
+                scan_text,
                 outcome_target=outcome_target,
                 character_aliases=declared_aliases,
+                use_scene_state=self.settings.rp_contract_revision == 7,
+                use_seed_signals=self.settings.rp_contract_revision == 7,
             )
         if self.settings.rp_contract_revision >= 4:
             pressure = (
@@ -1554,6 +1653,30 @@ class Adjudicator:
             changes = self.relationship_mechanics.advance_turn(party_turn)
             pressure = self.relationship_mechanics.pressure_block(party_turn, names)
             resolution = self.relationship_mechanics.resolved_event_block(changes, names)
+        if self.settings.rp_contract_revision >= 8:
+            pressure_lines = pressure.splitlines() if pressure else []
+            if pressure_lines and pressure_lines[0] == "RELATIONSHIP_PRESSURE":
+                pressure_lines = pressure_lines[1:]
+            mandatory_lines = ["RELATIONSHIP_PRESSURE"]
+            if resolution:
+                mandatory_lines.extend(["", *resolution.splitlines()])
+            mandatory = "\n".join(mandatory_lines).rstrip()
+            if len(mandatory) > 1_500:
+                raise PromptBudgetExceeded(
+                    estimated_tokens=estimate_tokens(mandatory),
+                    token_budget=estimate_tokens("x" * 1_500),
+                )
+            ordered_lines = list(mandatory_lines)
+            if pressure_lines:
+                ordered_lines.extend(["", *pressure_lines])
+            bounded_lines = list(mandatory_lines)
+            for line in ordered_lines[len(mandatory_lines) :]:
+                candidate = "\n".join([*bounded_lines, line])
+                if len(candidate) > 1_500:
+                    break
+                bounded_lines.append(line)
+            bounded = "\n".join(bounded_lines).rstrip()
+            return bounded if bounded != "RELATIONSHIP_PRESSURE" else None
         return "\n\n".join(block for block in (pressure, resolution) if block) or None
 
     @staticmethod
@@ -1641,38 +1764,62 @@ class Adjudicator:
     ) -> tuple[int | None, int, list[int]]:
         """Align the protected raw tail with one effective story-memory snapshot."""
 
-        covered_through = int(story_memory.get("to_turn_id") or 0) if story_memory else 0
+        revision_eight = self.settings.rp_contract_revision >= 8
+        covered_through = (
+            story_memory_safe_coverage(story_memory)
+            if revision_eight
+            else int(story_memory.get("to_turn_id") or 0)
+            if story_memory
+            else 0
+        )
         messages = [
-            ChatMessage(role="system", content=scene_state_boundary_block(self.store.get_state())),
-            *[
             message
             for message in request.messages
             if message.role == "system"
             and isinstance(message.content, str)
             and message.content.startswith("PARTY_LORE_CARDS")
-            ],
         ]
-        all_turns = unresolved_noncanonical_fallback_turns(
-            self.store.get_state(),
-            self.store.turns_for_memory(include_noncanonical_fallback=True),
-        )
-        raw_tail_turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
-        unresolved_fallbacks = [
-            turn for turn in all_turns if turn.get("noncanonical_safe_fallback")
-        ]
-        raw_tail_turns = list(
-            {
-                int(turn["id"]): turn
-                for turn in [*unresolved_fallbacks, *raw_tail_turns]
-            }.values()
-        )
-        raw_tail_turns.sort(key=lambda turn: int(turn["id"]))
-        for turn in raw_tail_turns:
-            messages.append(ChatMessage(role="user", content=str(turn.get("player_message") or "")))
-            messages.append(
-                ChatMessage(role="assistant", content=str(turn.get("narrative_response") or ""))
+        if not revision_eight:
+            messages.insert(
+                0,
+                ChatMessage(role="system", content=scene_state_boundary_block(self.store.get_state())),
             )
-        if self.settings.party_memory_retrieval_enabled:
+        all_turns = self.store.turns_for_memory(include_noncanonical_fallback=True)
+        if not revision_eight:
+            all_turns = unresolved_noncanonical_fallback_turns(
+                self.store.get_state(),
+                all_turns,
+            )
+        if revision_eight:
+            all_turns = eligible_rp_turns(all_turns)
+            raw_tail_turns = raw_history_window(
+                all_turns,
+                safe_coverage=covered_through,
+                window_turns=self.settings.effective_rp_raw_history_window_turns,
+            )
+        else:
+            raw_tail_turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
+            unresolved_fallbacks = [
+                turn for turn in all_turns if turn.get("noncanonical_safe_fallback")
+            ]
+            raw_tail_turns = list(
+                {
+                    int(turn["id"]): turn
+                    for turn in [*unresolved_fallbacks, *raw_tail_turns]
+                }.values()
+            )
+            raw_tail_turns.sort(key=lambda turn: int(turn["id"]))
+        for turn in raw_tail_turns:
+            rendered = (
+                rp_turn_messages(turn)
+                if revision_eight
+                else [
+                    ("user", str(turn.get("player_message") or "")),
+                    ("assistant", str(turn.get("narrative_response") or "")),
+                ]
+            )
+            messages.extend(ChatMessage(role=role, content=content) for role, content in rendered)
+        if self.settings.party_memory_retrieval_enabled and not revision_eight:
             retrieved = self.store.search_archived_turns(
                 current_action,
                 through_turn_id=covered_through,
@@ -1694,6 +1841,12 @@ class Adjudicator:
         request._latest_player_action = current_action
         request._rp_story_memory_snapshot_id = snapshot_id
         request._rp_story_memory_covered_through_turn_id = covered_through
+        if revision_eight:
+            request._rp_raw_history_turn_ids = [int(turn["id"]) for turn in raw_tail_turns]
+            request._rp_raw_history_removable_units = removable_covered_history_units(
+                raw_tail_turns,
+                safe_coverage=covered_through,
+            )
         return snapshot_id, covered_through, [int(turn["id"]) for turn in raw_tail_turns]
 
     def latest_user_message(self, request: ChatCompletionRequest) -> str:

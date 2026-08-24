@@ -78,6 +78,7 @@ from app.services.narrative import (
     NarrativeClient,
     archived_memory_retrieval_block,
     party_lore_cards_block,
+    prompt_cache_observability,
     prompt_assembly_diagnostics,
     response_text,
     uncompacted_archive_fallback_block,
@@ -97,6 +98,13 @@ from app.services.service_models import (
 )
 from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
+from app.services.rp_history import (
+    AUTO_START_HISTORY_MESSAGE,
+    raw_history_window,
+    removable_covered_history_units,
+    rp_turn_messages,
+    story_memory_safe_coverage,
+)
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.relationship_attribution import normalized_aliases
 from app.services.scene_state import (
@@ -118,7 +126,6 @@ from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
 
 
-AUTO_START_HISTORY_MESSAGE = "[AUTO_START] Старт партии"
 logger = logging.getLogger(__name__)
 
 
@@ -1365,7 +1372,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             scene_state_enabled = (
-                party.scenario_type == "rp" and party_settings.rp_contract_revision >= 7
+                party.scenario_type == "rp" and party_settings.rp_contract_revision == 7
             )
             patch = character_state_patch(party_state_store.get_state(), request)
             party_state_store.create_patch_proposal(patch)
@@ -1408,7 +1415,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 patch,
                 reason=f"party_character_generate:{request_id}",
                 scene_state_enabled=(
-                    party.scenario_type == "rp" and party_settings.rp_contract_revision >= 7
+                    party.scenario_type == "rp" and party_settings.rp_contract_revision == 7
                 ),
             )
             character_id = stable_character_id(generated.character_id or generated.name or "")
@@ -1598,6 +1605,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 party.scenario_type == "rp"
                 and party_settings.rp_contract_revision >= 7
             )
+            revision_eight = (
+                party.scenario_type == "rp"
+                and party_settings.rp_contract_revision >= 8
+            )
+            scene_bundle_revision = (
+                party.scenario_type == "rp"
+                and party_settings.rp_contract_revision == 7
+            )
             expected_state_version = int(state.get("meta", {}).get("state_version") or 0)
             runtime_service, artifact_service, workspace_service = training_services_for_party(party, party_state_store)
             start_patch = (
@@ -1625,7 +1640,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 party.scenario_type,
                 party_settings.rp_contract_revision,
             )
-            if revision_seven:
+            if scene_bundle_revision:
                 start_outcome.scene_allowance = SceneAllowance.model_validate(
                     build_scene_transition_allowance(
                         state,
@@ -1645,7 +1660,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                     + "\n</SCENE_TRANSITION_ALLOWANCE>"
                 )
-            memory_summary = party_state_store.memory_for_prompt(party_settings.party_memory_prompt_max_chars)
+            memory_summary = (
+                None
+                if party_settings.rp_contract_revision >= 8
+                else party_state_store.memory_for_prompt(
+                    party_settings.party_memory_prompt_max_chars
+                )
+            )
             rp_story_memory = (
                 adjudicator.rp_story_memory.prompt_snapshot()
                 if adjudicator.rp_story_memory is not None
@@ -1677,11 +1698,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 prompt_assembly_diagnostics(
                     prompt_messages,
                     story_memory_covered_through_turn_id=(
-                        int(rp_story_memory.get("to_turn_id") or 0)
+                        story_memory_safe_coverage(rp_story_memory)
+                        if party_settings.rp_contract_revision >= 8
+                        else int(rp_story_memory.get("to_turn_id") or 0)
                         if rp_story_memory
                         else 0
                     ),
                     raw_tail_turn_ids=[],
+                    rp_contract_revision=party_settings.rp_contract_revision,
                 )
                 if revision_seven
                 else None
@@ -1709,10 +1733,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fallback_reason: str | None = None
             transport_status = "ok"
             fallback_noncanonical = False
+            opening_prompt_cache_response: dict[str, Any] | None = None
             scene_result: SceneMaterialization | None = None
             scene_before = (
                 initial_scene_state(state, adjudicator.authored_stable_affiliations())
-                if revision_seven
+                if scene_bundle_revision
                 else None
             )
             if revision_seven:
@@ -1744,6 +1769,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                 )
+                opening_prompt_cache_response = raw
             except (
                 httpx.HTTPStatusError,
                 httpx.TimeoutException,
@@ -1799,7 +1825,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     audit=not revision_seven_transport,
                 )
                 fallback_noncanonical = revision_seven_transport
-            if revision_seven and not fallback_noncanonical:
+            if scene_bundle_revision and not fallback_noncanonical:
                 scene_result = materialize_scene_bundle(
                     raw,
                     state,
@@ -1971,7 +1997,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                 )
-                if revision_seven:
+                if scene_bundle_revision:
                     scene_result = materialize_scene_bundle(
                         raw,
                         state,
@@ -2138,19 +2164,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             if opening_prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = opening_prompt_assembly
-            if revision_seven:
-                scene_after = (
-                    fallback_scene_state(
-                        state,
-                        adjudicator.authored_stable_affiliations(),
+            if revision_eight:
+                turn_metadata.update(
+                    prompt_cache_observability(
+                        opening_prompt_cache_response or response,
+                        prompt_messages,
+                        history_units=party_settings.effective_rp_raw_history_window_turns,
                     )
-                    if fallback_noncanonical
-                    else scene_result.scene_state
-                    if scene_result is not None
-                    else None
                 )
-                if scene_after is None:
-                    raise SceneContinuityError("opening has no scene projection")
+            if revision_seven:
                 commit_patch = (
                     StatePatch(
                         turn=expected_party_turn,
@@ -2167,40 +2189,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         patch=[],
                     )
                 )
-                if not fallback_noncanonical:
-                    commit_patch.patch.extend(
-                        adjudicator.scene_legacy_operations(
+                turn_metadata["story_memory_canonical"] = not fallback_noncanonical
+                if scene_bundle_revision:
+                    scene_after = (
+                        fallback_scene_state(
                             state,
-                            scene_result,
-                            expected_party_turn,
+                            adjudicator.authored_stable_affiliations(),
+                        )
+                        if fallback_noncanonical
+                        else scene_result.scene_state
+                        if scene_result is not None
+                        else None
+                    )
+                    if scene_after is None:
+                        raise SceneContinuityError("opening has no scene projection")
+                    if not fallback_noncanonical:
+                        commit_patch.patch.extend(
+                            adjudicator.scene_legacy_operations(
+                                state,
+                                scene_result,
+                                expected_party_turn,
+                            )
+                        )
+                    commit_patch.patch.append(
+                        PatchOperation(
+                            op="replace" if "scene_state" in state else "add",
+                            path="/scene_state",
+                            value=scene_after,
+                            reason="Commits the deterministic opening scene projection.",
+                            turn=expected_party_turn,
                         )
                     )
-                commit_patch.patch.append(
-                    PatchOperation(
-                        op="replace" if "scene_state" in state else "add",
-                        path="/scene_state",
-                        value=scene_after,
-                        reason="Commits the deterministic opening scene projection.",
-                        turn=expected_party_turn,
+                    turn_metadata.update(
+                        {
+                            "scene_claims": scene_result.claims if scene_result is not None else None,
+                            "applied_scene_delta": (
+                                scene_result.applied_operations if scene_result is not None else []
+                            ),
+                            "dropped_scene_delta": (
+                                scene_result.dropped_operations if scene_result is not None else []
+                            ),
+                            "scene_state_before": scene_before,
+                            "scene_state_after": scene_after,
+                            "scene_state_stale": bool(scene_after.get("stale")),
+                        }
                     )
-                )
-                turn_metadata.update(
-                    {
-                        "scene_claims": scene_result.claims if scene_result is not None else None,
-                        "applied_scene_delta": (
-                            scene_result.applied_operations if scene_result is not None else []
-                        ),
-                        "dropped_scene_delta": (
-                            scene_result.dropped_operations if scene_result is not None else []
-                        ),
-                        "scene_state_before": scene_before,
-                        "scene_state_after": scene_after,
-                        "scene_state_stale": bool(scene_after.get("stale")),
-                        "story_memory_canonical": not fallback_noncanonical,
-                    }
-                )
                 atomic_audits: list[tuple[str, dict[str, Any]]] = []
-                if scene_result is not None and scene_result.dropped_operations:
+                if (
+                    scene_bundle_revision
+                    and scene_result is not None
+                    and scene_result.dropped_operations
+                ):
                     atomic_audits.append(
                         (
                             "scene_delta_operations_dropped",
@@ -2807,7 +2846,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             draft = await world.draft_instruction(request.instruction, authorization, use_llm=request.use_llm)
             party_state_store.create_patch_proposal(draft.patch)
             scene_state_enabled = (
-                party.scenario_type == "rp" and party_settings.rp_contract_revision >= 7
+                party.scenario_type == "rp" and party_settings.rp_contract_revision == 7
             )
             candidate = party_state_store.preview_patch(
                 draft.patch,
@@ -2857,7 +2896,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request.proposal_id,
                 reason="party_world_instruction_apply",
                 scene_state_enabled=(
-                    party.scenario_type == "rp" and party_settings.rp_contract_revision >= 7
+                    party.scenario_type == "rp" and party_settings.rp_contract_revision == 7
                 ),
             )
         except (PatchError, ValueError) as exc:
@@ -2889,7 +2928,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             state = party_state_store.rollback(
                 int(target_version) if target_version is not None else None,
                 scene_state_enabled=(
-                    party.scenario_type == "rp" and party_settings.rp_contract_revision >= 7
+                    party.scenario_type == "rp" and party_settings.rp_contract_revision == 7
                 ),
             )
         except ValueError as exc:
@@ -2903,7 +2942,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             candidate = store.preview_patch(
                 envelope.patch,
                 scene_state_enabled=(
-                    settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+                    settings.scenario_type == "rp" and settings.rp_contract_revision == 7
                 ),
             )
         except (PatchError, ValueError) as exc:
@@ -2920,7 +2959,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 envelope.patch,
                 reason="api_patch_apply",
                 scene_state_enabled=(
-                    settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+                    settings.scenario_type == "rp" and settings.rp_contract_revision == 7
                 ),
             )
         except (PatchError, ValueError) as exc:
@@ -2947,7 +2986,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             store.create_patch_proposal(draft.patch)
             scene_state_enabled = (
-                settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+                settings.scenario_type == "rp" and settings.rp_contract_revision == 7
             )
             candidate = store.preview_patch(
                 draft.patch,
@@ -2985,7 +3024,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request.proposal_id,
                 reason="world_instruction_api_apply",
                 scene_state_enabled=(
-                    settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+                    settings.scenario_type == "rp" and settings.rp_contract_revision == 7
                 ),
             )
         except (PatchError, ValueError) as exc:
@@ -3003,7 +3042,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             state = store.rollback(
                 int(target_version) if target_version is not None else None,
                 scene_state_enabled=(
-                    settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+                    settings.scenario_type == "rp" and settings.rp_contract_revision == 7
                 ),
             )
         except ValueError as exc:
@@ -3280,16 +3319,31 @@ def party_chat_request(
     narrator_settings: dict[str, Any] | None = None,
 ) -> ChatCompletionRequest:
     revision_seven_rp = settings.scenario_type == "rp" and settings.rp_contract_revision >= 7
+    revision_eight_rp = settings.scenario_type == "rp" and settings.rp_contract_revision >= 8
     story_memory = store.effective_rp_story_memory() if revision_seven_rp else None
     memory = story_memory if revision_seven_rp else store.latest_memory_coverage()
-    covered_through = int(memory["to_turn_id"]) if memory else 0
+    covered_through = (
+        story_memory_safe_coverage(story_memory)
+        if revision_eight_rp
+        else int(memory["to_turn_id"])
+        if memory
+        else 0
+    )
     all_turns = store.turns_for_memory(
         include_noncanonical_fallback=revision_seven_rp
     )
-    if revision_seven_rp:
+    if revision_seven_rp and not revision_eight_rp:
         all_turns = unresolved_noncanonical_fallback_turns(store.get_state(), all_turns)
-    turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
-    if revision_seven_rp:
+    if revision_eight_rp:
+        raw_turns = raw_history_window(
+            all_turns,
+            safe_coverage=covered_through,
+            window_turns=settings.effective_rp_raw_history_window_turns,
+        )
+        overflow_turns: list[dict[str, Any]] = []
+    else:
+        turns = [turn for turn in all_turns if int(turn["id"]) > covered_through]
+    if revision_seven_rp and not revision_eight_rp:
         turns = list(
             {
                 int(turn["id"]): turn
@@ -3301,12 +3355,12 @@ def party_chat_request(
         )
         turns.sort(key=lambda item: int(item["id"]))
         overflow_turns, raw_turns = [], turns
-    else:
+    elif not revision_eight_rp:
         current_message_tokens = estimate_tokens(request.content)
         history_budget = max(settings.effective_party_history_token_budget - current_message_tokens, 0)
         overflow_turns, raw_turns = split_turns_by_token_budget(turns, history_budget)
     messages: list[ChatMessage] = []
-    if revision_seven_rp:
+    if revision_seven_rp and not revision_eight_rp:
         messages.append(
             ChatMessage(
                 role="system",
@@ -3317,8 +3371,13 @@ def party_chat_request(
         store.lore_cards_for_prompt(
             request.content,
             limit=settings.party_lore_card_prompt_limit,
-            max_chars=settings.party_lore_card_prompt_max_chars,
-        )
+            max_chars=(
+                min(settings.party_lore_card_prompt_max_chars, 4_000)
+                if revision_eight_rp
+                else settings.party_lore_card_prompt_max_chars
+            ),
+        ),
+        max_chars=4_000 if revision_eight_rp else None,
     )
     if lore_block:
         messages.append(ChatMessage(role="system", content=lore_block))
@@ -3329,9 +3388,16 @@ def party_chat_request(
     if fallback_block:
         messages.append(ChatMessage(role="system", content=fallback_block))
     for turn in raw_turns:
-        messages.append(ChatMessage(role="user", content=turn["player_message"]))
-        messages.append(ChatMessage(role="assistant", content=turn["narrative_response"]))
-    if settings.party_memory_retrieval_enabled:
+        rendered = (
+            rp_turn_messages(turn)
+            if revision_eight_rp
+            else [
+                ("user", str(turn["player_message"])),
+                ("assistant", str(turn["narrative_response"])),
+            ]
+        )
+        messages.extend(ChatMessage(role=role, content=content) for role, content in rendered)
+    if settings.party_memory_retrieval_enabled and not revision_eight_rp:
         retrieved = store.search_archived_turns(
             request.content,
             through_turn_id=covered_through,
@@ -3356,6 +3422,12 @@ def party_chat_request(
     if revision_seven_rp:
         chat_request._rp_story_memory_snapshot_id = int(story_memory["id"]) if story_memory else None
         chat_request._rp_story_memory_covered_through_turn_id = covered_through
+    if revision_eight_rp:
+        chat_request._rp_raw_history_turn_ids = [int(turn["id"]) for turn in raw_turns]
+        chat_request._rp_raw_history_removable_units = removable_covered_history_units(
+            raw_turns,
+            safe_coverage=covered_through,
+        )
     if provider and narrator_settings:
         apply_party_narrator_settings(chat_request, provider, model, narrator_settings)
     return chat_request

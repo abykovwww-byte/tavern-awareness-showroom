@@ -7,13 +7,19 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 import httpx
 
 from app.core.config import Settings
 from app.services.context_budget import oldest_turns_within_token_budget, turns_token_count
+from app.services.rp_history import (
+    RP_MEMORY_SECTION_KEYS,
+    eligible_rp_turns,
+    rp_turn_messages,
+    story_memory_safe_coverage,
+)
 from app.services.scene_state import unresolved_noncanonical_fallback_turns
 from app.services.service_model_client import ServiceModelClient, service_prompt_text
 from app.services.service_models import service_model_settings
@@ -23,6 +29,36 @@ from app.services.state_store import StateStore
 logger = logging.getLogger(__name__)
 
 STORY_MEMORY_SCHEMA = "rp-gateway.rp-story-memory.v2"
+SECTIONED_STORY_MEMORY_SCHEMA = "rp-gateway.rp-story-memory.v3"
+STORY_MEMORY_SECTION_FIELDS = {
+    "situation": ("current_situation", "canon"),
+    "threads": ("active_threads", "resolved_threads"),
+    "characters": ("characters",),
+    "assets_and_rules": ("inventory_and_assets", "rules_and_abilities"),
+    "chronology_and_hooks": ("chronology", "unresolved_hooks"),
+}
+STORY_MEMORY_SECTION_BATCH_TURNS = 8
+STORY_MEMORY_SECTION_INPUT_CHARS = 20_000
+STORY_MEMORY_SECTION_MAX_TOKENS = 800
+STORY_MEMORY_SECTIONS_MAX_TOKENS = STORY_MEMORY_SECTION_MAX_TOKENS * len(
+    RP_MEMORY_SECTION_KEYS
+)
+STORY_MEMORY_ITEM_KEYS = {
+    "fact_id",
+    "text",
+    "status",
+    "authority",
+    "source_turn_ids",
+}
+STORY_MEMORY_ITEM_STATUSES = {"active", "superseded", "retracted"}
+STORY_MEMORY_ITEM_AUTHORITIES = {
+    "worldpack",
+    "user",
+    "state",
+    "narrator",
+    "inference",
+    "legacy_projection",
+}
 STORY_LIST_FIELDS = (
     "canon",
     "rules_and_abilities",
@@ -55,6 +91,16 @@ class RPStoryMemoryPlan:
     model: str
 
 
+@dataclass(frozen=True)
+class RPStoryMemorySectionPlan:
+    previous_memory: dict[str, Any] | None
+    section_turns: dict[str, list[dict[str, Any]]]
+    section_coverage: dict[str, int]
+    state_version: int
+    model: str
+    update_id: str
+
+
 class RPStoryMemoryUpdater:
     """Maintains a bounded, cumulative RP continuity ledger without mutating state."""
 
@@ -64,12 +110,41 @@ class RPStoryMemoryUpdater:
         self.update_turns = max(settings.rp_story_memory_update_turns, 1)
         self.batch_token_budget = max(settings.rp_story_memory_batch_tokens, 1)
 
+    @property
+    def revision_eight(self) -> bool:
+        return self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8
+
     def stats(self) -> dict[str, Any]:
         latest = self.store.effective_rp_story_memory()
-        covered_through = int(latest["to_turn_id"]) if latest else 0
+        covered_through = (
+            story_memory_safe_coverage(latest)
+            if self.revision_eight
+            else int(latest["to_turn_id"])
+            if latest
+            else 0
+        )
         pending = self.story_memory_turns(after_turn_id=covered_through)
         enabled = self.settings.scenario_type == "rp"
-        pending_turn_threshold_exceeded = enabled and len(pending) >= self.update_turns
+        all_memory_turns = self.story_memory_turns(after_turn_id=0) if enabled else []
+        raw_turn_count = len(all_memory_turns)
+        memory = latest.get("memory") if latest else {}
+        observed_through = (
+            int(memory.get("observed_through_turn_id") or 0)
+            if isinstance(memory, dict)
+            else 0
+        )
+        newly_observed = sum(
+            1 for turn in all_memory_turns if int(turn["id"]) > observed_through
+        )
+        pending_turn_threshold_exceeded = (
+            enabled
+            and (
+                len(pending) >= self.update_turns
+                if not self.revision_eight
+                else raw_turn_count > self.settings.effective_rp_raw_history_window_turns
+                and (latest is None or newly_observed >= self.update_turns)
+            )
+        )
         hard_overflow = self.latest_request_hard_overflow() if enabled else False
         force_refresh = self.latest_force_refresh_diagnostics() if enabled else None
         return {
@@ -82,7 +157,14 @@ class RPStoryMemoryUpdater:
             "reserved_prompt_tokens": self.settings.rp_story_memory_reserve_tokens if enabled else 0,
             "latest_revision": latest["revision"] if latest else None,
             "covered_through_turn_id": covered_through or None,
+            "section_status": (
+                normalize_section_status(latest.get("memory") if latest else None)
+                if self.revision_eight
+                else None
+            ),
             "pending_turns": len(pending),
+            "observed_through_turn_id": observed_through or None,
+            "newly_observed_turns": newly_observed,
             "pending_tokens": turns_token_count(pending),
             "pending_turn_threshold_exceeded": pending_turn_threshold_exceeded,
             "update_pending": pending_turn_threshold_exceeded,
@@ -175,6 +257,8 @@ class RPStoryMemoryUpdater:
         }
 
     def build_plan(self, force: bool = False) -> tuple[RPStoryMemoryPlan | None, str]:
+        if self.revision_eight:
+            raise RuntimeError("revision 8 uses build_section_plan()")
         if self.settings.scenario_type != "rp":
             return None, "not_rp"
         previous = self.store.effective_rp_story_memory()
@@ -200,6 +284,90 @@ class RPStoryMemoryUpdater:
             ),
             "ready",
         )
+
+    def build_section_plan(
+        self,
+        force: bool = False,
+        request_id: str | None = None,
+    ) -> tuple[RPStoryMemorySectionPlan | None, str]:
+        """Build one independent oldest-first batch for each rev-8 memory section."""
+
+        if self.settings.scenario_type != "rp":
+            return None, "not_rp"
+        if not self.revision_eight:
+            return None, "legacy_revision"
+        all_turns = self.story_memory_turns(after_turn_id=0)
+        if len(all_turns) <= self.settings.effective_rp_raw_history_window_turns:
+            return None, "waiting_for_raw_window"
+
+        previous = self.store.effective_rp_story_memory()
+        previous_memory = normalize_sectioned_story_memory(
+            previous.get("memory") if previous else None,
+            self.settings.rp_story_memory_max_chars,
+        )
+        statuses = normalize_section_status(previous_memory)
+        observed_through = int(previous_memory.get("observed_through_turn_id") or 0)
+        newly_observed = [turn for turn in all_turns if int(turn["id"]) > observed_through]
+        cadence_ready = force or previous is None or len(newly_observed) >= self.update_turns
+        retry_same_run = bool(
+            request_id
+            and str(previous_memory.get("last_update_request_id") or "") == request_id
+        )
+        section_turns: dict[str, list[dict[str, Any]]] = {}
+        section_coverage: dict[str, int] = {}
+        for section_key in RP_MEMORY_SECTION_KEYS:
+            coverage = int(statuses[section_key]["coverage"])
+            pending = [turn for turn in all_turns if int(turn["id"]) > coverage]
+            section_coverage[section_key] = coverage
+            retry_section = retry_same_run and statuses[section_key]["status"] in {"stale", "failed"}
+            if (
+                not pending
+                or (retry_same_run and not retry_section)
+                or (not retry_same_run and not cadence_ready)
+            ):
+                section_turns[section_key] = []
+                continue
+            section_turns[section_key] = pending[:STORY_MEMORY_SECTION_BATCH_TURNS]
+
+        if not any(section_turns.values()):
+            return None, "up_to_date" if not any(
+                int(turn["id"]) > int(statuses[key]["coverage"])
+                for key in RP_MEMORY_SECTION_KEYS
+                for turn in all_turns
+            ) else "waiting_for_batch"
+
+        state_version = self.store.current_version() or 1
+        plan_fingerprint = {
+            "campaign_id": self.store.campaign_id,
+            "base_snapshot_id": int(previous["id"]) if previous else None,
+            "state_version": state_version,
+            "sections": {
+                key: [int(turn["id"]) for turn in section_turns[key]]
+                for key in RP_MEMORY_SECTION_KEYS
+            },
+        }
+        update_id = "smu:" + hashlib.sha256(
+            json.dumps(plan_fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:24]
+        return (
+            RPStoryMemorySectionPlan(
+                previous_memory=previous,
+                section_turns=section_turns,
+                section_coverage=section_coverage,
+                state_version=state_version,
+                model=self.settings.rp_story_memory_model,
+                update_id=update_id,
+            ),
+            "ready",
+        )
+
+    def should_enqueue(self) -> bool:
+        """Avoid legacy and heavy story-memory jobs before the rev-8 RAW window is full."""
+
+        if not self.revision_eight:
+            return self.settings.scenario_type == "rp"
+        plan, _reason = self.build_section_plan(force=False, request_id=None)
+        return plan is not None
 
     async def catch_up(
         self,
@@ -274,11 +442,16 @@ class RPStoryMemoryUpdater:
         latest = self.store.effective_rp_story_memory()
         if latest is None:
             return None
-        covered_through = int(latest["to_turn_id"])
+        covered_through = (
+            story_memory_safe_coverage(latest)
+            if self.revision_eight
+            else int(latest["to_turn_id"])
+        )
         pending = self.story_memory_turns(after_turn_id=covered_through)
         has_pending_corrections = any(turn_story_memory_corrections(turn) for turn in pending)
         if not has_pending_corrections and not corrections:
             return latest
+        correction_authority = "user" if self.revision_eight else "user_correction"
         projected = dict(latest)
         memory = latest.get("memory")
         if has_pending_corrections:
@@ -286,6 +459,7 @@ class RPStoryMemoryUpdater:
                 memory,
                 pending,
                 self.settings.rp_story_memory_max_chars,
+                authority=correction_authority,
             )
         if corrections:
             validated = validate_story_memory_corrections(
@@ -298,6 +472,7 @@ class RPStoryMemoryUpdater:
                 validated,
                 None,
                 self.settings.rp_story_memory_max_chars,
+                authority=correction_authority,
             )
         projected["memory"] = memory
         return projected
@@ -311,6 +486,12 @@ class RPStoryMemoryUpdater:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         _ = authorization  # Service jobs always use stack-managed credentials.
+        if self.revision_eight:
+            return await self.update_sections(
+                force=force,
+                fail_open=fail_open,
+                request_id=request_id,
+            )
         plan, reason = self.build_plan(force=force)
         if plan is None:
             return {
@@ -417,6 +598,676 @@ class RPStoryMemoryUpdater:
             if isinstance(exc, PermissionError):
                 raise
             raise RuntimeError("RP story-memory provider failed") from exc
+
+    async def update_sections(
+        self,
+        *,
+        force: bool,
+        fail_open: bool,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        """Persist a combined rev-8 update plus structural section retries."""
+
+        plan, reason = self.build_section_plan(force=force, request_id=request_id)
+        if plan is None:
+            return {
+                "generated": False,
+                "reason": reason,
+                "story_memory": self.store.effective_rp_story_memory(),
+                "stats": self.stats(),
+            }
+
+        previous_value = plan.previous_memory.get("memory") if plan.previous_memory else None
+        memory = normalize_sectioned_story_memory(
+            previous_value,
+            self.settings.rp_story_memory_max_chars,
+        )
+        correction_turns = {
+            int(turn["id"]): turn
+            for turns in plan.section_turns.values()
+            for turn in turns
+            if turn_story_memory_corrections(turn)
+        }
+        if correction_turns:
+            memory = normalize_sectioned_story_memory(
+                apply_user_story_memory_corrections(
+                    memory,
+                    list(correction_turns.values()),
+                    self.settings.rp_story_memory_max_chars,
+                    authority="user",
+                ),
+                self.settings.rp_story_memory_max_chars,
+            )
+        statuses = normalize_section_status(memory)
+        succeeded_turn_ids: set[int] = set()
+        failures: dict[str, str] = {}
+        used_models: list[str] = []
+
+        scheduled_sections = [
+            section_key
+            for section_key in RP_MEMORY_SECTION_KEYS
+            if plan.section_turns[section_key]
+        ]
+        generated_sections: dict[str, dict[str, Any]] = {}
+        retry_same_update = bool(
+            request_id
+            and str(memory.get("last_update_request_id") or "") == request_id
+        )
+
+        if retry_same_update:
+            for section_key in scheduled_sections:
+                try:
+                    generated_sections[section_key] = await self.generate_section(
+                        plan,
+                        section_key,
+                        plan.section_turns[section_key],
+                        memory,
+                        request_id=request_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - durable retry remains section-scoped
+                    failures[section_key] = f"{type(exc).__name__}: {exc}"
+        else:
+            try:
+                combined = await self.generate_sections(
+                    plan,
+                    plan.section_turns,
+                    memory,
+                    request_id=request_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - transport/input failure affects the main call
+                error = f"{type(exc).__name__}: {exc}"
+                failures.update({section_key: error for section_key in scheduled_sections})
+            else:
+                combined_sections = combined.get("sections") or {}
+                combined_turns = combined.get("turns") or {}
+                combined_errors = combined.get("errors") or {}
+                for section_key in scheduled_sections:
+                    if section_key in combined_sections and combined_turns.get(section_key):
+                        generated_sections[section_key] = {
+                            "section": combined_sections[section_key],
+                            "model": combined.get("model") or plan.model,
+                            "turns": combined_turns[section_key],
+                        }
+                        continue
+                    validation_error = str(
+                        combined_errors.get(section_key)
+                        or "combined response omitted the section"
+                    )
+                    try:
+                        generated_sections[section_key] = await self.generate_section(
+                            plan,
+                            section_key,
+                            plan.section_turns[section_key],
+                            memory,
+                            request_id=request_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - one retry cannot cancel valid sections
+                        failures[section_key] = (
+                            f"combined validation: {validation_error}; "
+                            f"section retry: {type(exc).__name__}: {exc}"
+                        )
+
+        for section_key in scheduled_sections:
+            generated = generated_sections.get(section_key)
+            if generated is not None:
+                memory = merge_story_memory_section(
+                    memory,
+                    generated["section"],
+                    section_key,
+                    [
+                        int(turn["id"])
+                        for turn in generated["turns"]
+                        if not turn.get("noncanonical_safe_fallback")
+                    ],
+                    self.settings.rp_story_memory_max_chars,
+                )
+                statuses[section_key] = {
+                    "coverage": int(generated["turns"][-1]["id"]),
+                    "status": "fresh",
+                }
+                succeeded_turn_ids.update(
+                    int(turn["id"])
+                    for turn in generated["turns"]
+                    if not turn.get("noncanonical_safe_fallback")
+                )
+                used_models.append(str(generated.get("model") or plan.model))
+            else:
+                failures.setdefault(section_key, "section was not generated")
+                statuses[section_key] = {
+                    "coverage": int(plan.section_coverage[section_key]),
+                    "status": "stale" if int(plan.section_coverage[section_key]) > 0 else "failed",
+                }
+                logger.warning(
+                    "rp_story_memory_section_failed campaign_id=%s section=%s update_id=%s error=%s",
+                    self.store.campaign_id,
+                    section_key,
+                    plan.update_id,
+                    failures[section_key],
+                )
+
+        memory["schema_version"] = SECTIONED_STORY_MEMORY_SCHEMA
+        memory["section_status"] = statuses
+        all_turns = self.story_memory_turns(after_turn_id=0)
+        memory["observed_through_turn_id"] = max(
+            (int(turn["id"]) for turn in all_turns),
+            default=int(memory.get("observed_through_turn_id") or 0),
+        )
+        memory["last_update_request_id"] = request_id
+        memory = normalize_sectioned_story_memory(
+            memory,
+            self.settings.rp_story_memory_max_chars,
+        )
+        coverage_values = [int(statuses[key]["coverage"]) for key in RP_MEMORY_SECTION_KEYS]
+        outer_coverage = max(coverage_values, default=0)
+        safe_coverage = min(coverage_values, default=0)
+        previous_from = int(plan.previous_memory.get("from_turn_id") or 0) if plan.previous_memory else 0
+        from_turn_id = previous_from or min(succeeded_turn_ids, default=0)
+
+        try:
+            snapshot = self.store.record_rp_story_memory(
+                from_turn_id=from_turn_id,
+                to_turn_id=outer_coverage,
+                state_version=plan.state_version,
+                memory=memory,
+                model=used_models[-1] if used_models else plan.model,
+                contributing_turn_ids=sorted(succeeded_turn_ids),
+                base_snapshot_id=(int(plan.previous_memory["id"]) if plan.previous_memory else None),
+                update_id=plan.update_id,
+                allow_same_coverage=True,
+            )
+        except TypeError:
+            # Kept only so source remains importable while an older store is upgraded
+            # in the same revision; the repository migration supplies these arguments.
+            raise RuntimeError("rev-8 story-memory persistence migration is missing")
+        if snapshot is None:
+            return {
+                "generated": False,
+                "reason": "stale_plan",
+                "story_memory": self.store.effective_rp_story_memory(),
+                "stats": self.stats(),
+                "error": "stale_plan",
+            }
+
+        event = {
+            "snapshot_id": snapshot["id"],
+            "revision": snapshot["revision"],
+            "update_id": plan.update_id,
+            "safe_coverage": safe_coverage,
+            "section_status": statuses,
+            "failed_sections": sorted(failures),
+            "model": snapshot["model"],
+        }
+        self.store.audit(
+            "rp_story_memory_partial" if failures else "rp_story_memory_updated",
+            event,
+            request_id,
+        )
+        return {
+            "generated": True,
+            "reason": "partial" if failures else "generated",
+            "story_memory": snapshot,
+            "stats": self.stats(),
+            "failed_sections": sorted(failures),
+            "error": "section_failure" if failures else None,
+            "retry_required": bool(failures),
+        }
+
+    async def generate_sections(
+        self,
+        plan: RPStoryMemorySectionPlan,
+        section_turns: dict[str, list[dict[str, Any]]],
+        memory: dict[str, Any],
+        *,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        """Generate all five sections in one normal OpenRouter completion."""
+
+        runtime = self.service_settings()
+        if runtime.openrouter_api_base.startswith("mock://"):
+            return {
+                "sections": {
+                    section_key: self.mock_section(
+                        section_key,
+                        section_turns.get(section_key, []),
+                        memory,
+                    )
+                    for section_key in RP_MEMORY_SECTION_KEYS
+                },
+                "errors": {},
+                "model": plan.model,
+                "turns": {
+                    section_key: list(section_turns.get(section_key, []))
+                    for section_key in RP_MEMORY_SECTION_KEYS
+                },
+            }
+        payload, included_turns = self.sections_payload(
+            plan,
+            section_turns,
+            memory,
+        )
+        prompt = service_prompt_text(payload)
+        if len(prompt) > STORY_MEMORY_SECTION_INPUT_CHARS:
+            raise ValueError("RP story-memory combined prompt exceeds 20000 characters")
+        last_turn = max(
+            (
+                turn
+                for turns in included_turns.values()
+                for turn in turns
+            ),
+            key=lambda turn: int(turn["id"]),
+        )
+        completion = await ServiceModelClient(runtime).complete(
+            role="rp_story_memory_sections",
+            provider=self.settings.rp_story_memory_provider,
+            model=plan.model,
+            party_id=self.store.campaign_id,
+            turn_id=int(last_turn["id"]),
+            request_id=request_id,
+            party_turn=last_turn.get("party_turn"),
+            section_key="all",
+            update_id=plan.update_id,
+            prompt=prompt,
+            payload=payload,
+        )
+        if completion_finish_reason(completion.data) == "length":
+            error = "combined response finish_reason=length"
+            return {
+                "sections": {},
+                "errors": {section_key: error for section_key in RP_MEMORY_SECTION_KEYS},
+                "model": completion.data.get("model") or plan.model,
+                "turns": included_turns,
+            }
+        sections, errors = self.parse_sections(
+            completion_text(completion.data),
+            memory,
+        )
+        return {
+            "sections": sections,
+            "errors": errors,
+            "model": completion.data.get("model") or plan.model,
+            "turns": included_turns,
+        }
+
+    async def generate_section(
+        self,
+        plan: RPStoryMemorySectionPlan,
+        section_key: str,
+        turns: list[dict[str, Any]],
+        memory: dict[str, Any],
+        *,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        runtime = self.service_settings()
+        if runtime.openrouter_api_base.startswith("mock://"):
+            return {
+                "section": self.mock_section(section_key, turns, memory),
+                "model": plan.model,
+                "turns": turns,
+            }
+        payload, included_turns = self.section_payload(plan, section_key, turns, memory)
+        prompt = service_prompt_text(payload)
+        if len(prompt) > STORY_MEMORY_SECTION_INPUT_CHARS:
+            raise ValueError("RP story-memory section prompt exceeds 20000 characters")
+        completion = await ServiceModelClient(runtime).complete(
+            role="rp_story_memory_section",
+            provider=self.settings.rp_story_memory_provider,
+            model=plan.model,
+            party_id=self.store.campaign_id,
+            turn_id=int(included_turns[-1]["id"]),
+            request_id=request_id,
+            party_turn=included_turns[-1].get("party_turn"),
+            section_key=section_key,
+            update_id=plan.update_id,
+            prompt=prompt,
+            payload=payload,
+        )
+        if completion_finish_reason(completion.data) == "length":
+            raise ValueError("RP story-memory section response finish_reason=length")
+        return {
+            "section": self.parse_section(
+                completion_text(completion.data),
+                section_key,
+                memory,
+            ),
+            "model": completion.data.get("model") or plan.model,
+            "turns": included_turns,
+        }
+
+    def sections_payload(
+        self,
+        plan: RPStoryMemorySectionPlan,
+        section_turns: dict[str, list[dict[str, Any]]],
+        memory: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+        included = {
+            section_key: list(section_turns.get(section_key, []))
+            for section_key in RP_MEMORY_SECTION_KEYS
+        }
+        if not any(included.values()):
+            raise ValueError("combined story-memory update has no turns")
+        schema_text = "; ".join(
+            f"{section_key}: {', '.join(STORY_MEMORY_SECTION_FIELDS[section_key])}"
+            for section_key in RP_MEMORY_SECTION_KEYS
+        )
+        system_message = {
+            "role": "system",
+            "content": (
+                "Обнови пять секций памяти ролевой партии одним JSON-объектом. "
+                "Верхний уровень содержит ровно ключи situation, threads, characters, "
+                "assets_and_rules, chronology_and_hooks. Поля секций: "
+                f"{schema_text}. current_situation — объект факта или null; остальные поля — "
+                "массивы фактов. Каждый факт содержит ровно fact_id, text, status, authority, "
+                "source_turn_ids. Сохраняй прежний fact_id того же факта. Пустые массивы и null "
+                "валидны и означают, что в секции нечего менять; не выдумывай содержимое ради "
+                "непустого ответа. Учитывай только подтверждённое ответом нарратора, не раскрывай "
+                "неизвестные игроку секреты. Новый факт имеет authority inference; модель не "
+                "назначает authority user, state или worldpack. Пиши на языке партии."
+            ),
+        }
+
+        while True:
+            for previous_limit in (1_600, 800, 0):
+                unique_turns = {
+                    int(turn["id"]): turn
+                    for turns in included.values()
+                    for turn in turns
+                }
+                ordered_turns = [unique_turns[key] for key in sorted(unique_turns)]
+                context = {
+                    "previous_sections": {
+                        section_key: bounded_story_memory_section(
+                            memory,
+                            STORY_MEMORY_SECTION_FIELDS[section_key],
+                            previous_limit,
+                        )
+                        for section_key in RP_MEMORY_SECTION_KEYS
+                    },
+                    "section_turn_ids": {
+                        section_key: [int(turn["id"]) for turn in included[section_key]]
+                        for section_key in RP_MEMORY_SECTION_KEYS
+                    },
+                    "new_confirmed_turns": self.compact_section_turns(ordered_turns),
+                    "requested_coverage": {
+                        section_key: {
+                            "from_turn_id": (
+                                int(included[section_key][0]["id"])
+                                if included[section_key]
+                                else int(plan.section_coverage[section_key])
+                            ),
+                            "to_turn_id": (
+                                int(included[section_key][-1]["id"])
+                                if included[section_key]
+                                else int(plan.section_coverage[section_key])
+                            ),
+                            "state_version": plan.state_version,
+                        }
+                        for section_key in RP_MEMORY_SECTION_KEYS
+                    },
+                }
+                payload = {
+                    "model": plan.model,
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": STORY_MEMORY_SECTIONS_MAX_TOKENS,
+                    "messages": [
+                        system_message,
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                context,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        },
+                    ],
+                }
+                if len(service_prompt_text(payload)) <= STORY_MEMORY_SECTION_INPUT_CHARS:
+                    return payload, included
+
+            shrinkable = [
+                section_key
+                for section_key in RP_MEMORY_SECTION_KEYS
+                if len(included[section_key]) > 1
+            ]
+            if not shrinkable:
+                break
+            section_to_shrink = max(
+                shrinkable,
+                key=lambda section_key: int(included[section_key][-1]["id"]),
+            )
+            included[section_to_shrink].pop()
+        raise ValueError("one complete RP turn per section cannot fit the combined input contract")
+
+    def section_payload(
+        self,
+        plan: RPStoryMemorySectionPlan,
+        section_key: str,
+        turns: list[dict[str, Any]],
+        memory: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        fields = STORY_MEMORY_SECTION_FIELDS[section_key]
+        system_message = {
+            "role": "system",
+            "content": (
+                "Обнови только одну секцию памяти ролевой партии. Верни только JSON-объект "
+                f"ровно с полями: {', '.join(fields)}. Сохраняй важные прежние факты, "
+                "учитывай только подтверждённое ответом нарратора, не раскрывай неизвестные "
+                "игроку секреты. Каждый новый факт является inference; модель не назначает "
+                "authority user, state или worldpack. Для элементов сохраняй прежний fact_id, "
+                "если обновляешь тот же факт. Пустые массивы и null валидны: не добавляй факты "
+                "ради непустого ответа. Каждый факт содержит ровно fact_id, text, status, "
+                "authority, source_turn_ids. Пиши на языке партии."
+            ),
+        }
+        for previous_limit in (4_000, 2_000, 0):
+            included_turns = list(turns)
+            while included_turns:
+                context = {
+                    "section_key": section_key,
+                    "previous_section": bounded_story_memory_section(
+                        memory,
+                        fields,
+                        previous_limit,
+                    ),
+                    "new_confirmed_turns": self.compact_section_turns(included_turns),
+                    "requested_coverage": {
+                        "from_turn_id": int(included_turns[0]["id"]),
+                        "to_turn_id": int(included_turns[-1]["id"]),
+                        "state_version": plan.state_version,
+                    },
+                }
+                payload = {
+                    "model": plan.model,
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": STORY_MEMORY_SECTION_MAX_TOKENS,
+                    "messages": [
+                        system_message,
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                context,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        },
+                    ],
+                }
+                if len(service_prompt_text(payload)) <= STORY_MEMORY_SECTION_INPUT_CHARS:
+                    return payload, included_turns
+                included_turns.pop()
+        raise ValueError("one complete RP turn cannot fit the 20000 character section input contract")
+
+    def compact_section_turns(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        compacted: list[dict[str, Any]] = []
+        for turn in turns:
+            rendered = rp_turn_messages(turn)
+            compacted.append(
+                {
+                    "turn_id": int(turn["id"]),
+                    "player": next(
+                        (content for role, content in rendered if role == "user"),
+                        "",
+                    ),
+                    "narrator": next(
+                        (content for role, content in rendered if role == "assistant"),
+                        "",
+                    ),
+                    "story_memory_canonical": not bool(turn.get("noncanonical_safe_fallback")),
+                }
+            )
+        return compacted
+
+    def parse_sections(
+        self,
+        content: str,
+        memory: dict[str, Any],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+        try:
+            decoded = json.loads(strip_code_fence(content.strip()))
+        except json.JSONDecodeError as exc:
+            error = f"invalid combined JSON: {exc.msg}"
+            return {}, {section_key: error for section_key in RP_MEMORY_SECTION_KEYS}
+        if not isinstance(decoded, dict):
+            error = "combined story-memory response is not an object"
+            return {}, {section_key: error for section_key in RP_MEMORY_SECTION_KEYS}
+        sections: dict[str, dict[str, Any]] = {}
+        errors: dict[str, str] = {}
+        for section_key in RP_MEMORY_SECTION_KEYS:
+            if section_key not in decoded:
+                errors[section_key] = "combined response omitted the section"
+                continue
+            try:
+                sections[section_key] = self.parse_section_value(
+                    decoded[section_key],
+                    section_key,
+                    memory,
+                )
+            except ValueError as exc:
+                errors[section_key] = str(exc)
+        return sections, errors
+
+    def parse_section(
+        self,
+        content: str,
+        section_key: str,
+        memory: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            decoded = json.loads(strip_code_fence(content.strip()))
+        except json.JSONDecodeError as exc:
+            raise ValueError("service model returned invalid RP story-memory section JSON") from exc
+        return self.parse_section_value(decoded, section_key, memory or empty_story_memory())
+
+    def parse_section_value(
+        self,
+        decoded: Any,
+        section_key: str,
+        memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(decoded, dict):
+            raise ValueError("service model returned non-object RP story-memory section")
+        fields = STORY_MEMORY_SECTION_FIELDS[section_key]
+        missing = [field for field in fields if field not in decoded]
+        if missing:
+            raise ValueError("service model omitted RP story-memory section fields: " + ", ".join(missing))
+        unexpected = [field for field in decoded if field not in fields]
+        if unexpected:
+            raise ValueError(
+                "service model added unknown RP story-memory section fields: "
+                + ", ".join(unexpected)
+            )
+        previous = normalize_sectioned_story_memory(
+            memory,
+            self.settings.rp_story_memory_max_chars,
+        )
+        previous_ids_by_text: dict[str, str] = {}
+        for field in fields:
+            previous_value = previous.get(field)
+            previous_items = (
+                [previous_value]
+                if field == "current_situation" and isinstance(previous_value, dict)
+                else previous_value
+                if isinstance(previous_value, list)
+                else []
+            )
+            for item in previous_items:
+                previous_ids_by_text[story_fact_fingerprint(str(item.get("text") or ""))] = str(
+                    item.get("fact_id") or ""
+                )
+
+        candidate = empty_story_memory()
+        seen_fact_ids: set[str] = set()
+        for field in fields:
+            raw_value = decoded[field]
+            if field == "current_situation":
+                if raw_value is None:
+                    candidate[field] = None
+                    continue
+                raw_items = [raw_value]
+                text_limit = 2_000
+            else:
+                if not isinstance(raw_value, list):
+                    raise ValueError(f"service model field {field} must be an array")
+                if len(raw_value) > STORY_FIELD_LIMITS[field]:
+                    raise ValueError(f"service model field {field} exceeds its item limit")
+                raw_items = raw_value
+                text_limit = 600
+            validated_items = []
+            for raw_item in raw_items:
+                validated_items.append(
+                    validate_story_memory_item_structure(
+                        raw_item,
+                        text_limit=text_limit,
+                        previous_ids_by_text=previous_ids_by_text,
+                        seen_fact_ids=seen_fact_ids,
+                    )
+                )
+            candidate[field] = (
+                validated_items[0]
+                if field == "current_situation" and validated_items
+                else None
+                if field == "current_situation"
+                else validated_items
+            )
+        normalized = normalize_story_memory(candidate, self.settings.rp_story_memory_max_chars)
+        return {field: normalized[field] for field in fields}
+
+    def mock_section(
+        self,
+        section_key: str,
+        turns: list[dict[str, Any]],
+        memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        fields = STORY_MEMORY_SECTION_FIELDS[section_key]
+        result = {field: json.loads(json.dumps(memory.get(field), ensure_ascii=False)) for field in fields}
+        if section_key == "situation":
+            canonical = [turn for turn in turns if not turn.get("noncanonical_safe_fallback")]
+            if canonical:
+                result["current_situation"] = {
+                    "text": clip(canonical[-1]["narrative_response"], 1200),
+                    "status": "active",
+                    "authority": "narrator",
+                    "source_turn_ids": [int(canonical[-1]["id"])],
+                }
+        elif section_key == "chronology_and_hooks":
+            chronology = list(result.get("chronology") or [])
+            for turn in turns:
+                if turn.get("noncanonical_safe_fallback"):
+                    continue
+                chronology.append(
+                    {
+                        "text": f"Ход {turn['id']}: {clip(turn['narrative_response'], 500)}",
+                        "status": "active",
+                        "authority": "narrator",
+                        "source_turn_ids": [int(turn["id"])],
+                    }
+                )
+            result["chronology"] = chronology
+        return result
 
     async def generate(
         self,
@@ -629,9 +1480,25 @@ class RPStoryMemoryUpdater:
         )
         if self.settings.rp_contract_revision < 7:
             return turns
+        if self.revision_eight:
+            return eligible_rp_turns(turns)
         return unresolved_noncanonical_fallback_turns(self.store.get_state(), turns)
 
     def service_settings(self) -> Settings:
+        if self.revision_eight:
+            if self.settings.rp_story_memory_provider != "openrouter":
+                raise ValueError("revision-8 story memory requires the explicit openrouter provider")
+            return replace(
+                self.settings,
+                llm_provider="openrouter",
+                llm_api_base=self.settings.openrouter_api_base,
+                llm_api_key=self.settings.service_openrouter_api_key,
+                narrative_model=self.settings.rp_story_memory_model,
+                intent_model=self.settings.rp_story_memory_model,
+                validator_model=self.settings.rp_story_memory_model,
+                llm_fallback_models=(),
+                llm_disabled_models=(),
+            )
         return service_model_settings(self.settings)
 
     @staticmethod
@@ -660,6 +1527,128 @@ def empty_story_memory() -> dict[str, Any]:
     }
 
 
+def empty_sectioned_story_memory() -> dict[str, Any]:
+    memory = empty_story_memory()
+    memory["schema_version"] = SECTIONED_STORY_MEMORY_SCHEMA
+    memory["section_status"] = {
+        section_key: {"coverage": 0, "status": "failed"}
+        for section_key in RP_MEMORY_SECTION_KEYS
+    }
+    memory["observed_through_turn_id"] = 0
+    memory["last_update_request_id"] = None
+    return memory
+
+
+def normalize_section_status(value: Any) -> dict[str, dict[str, Any]]:
+    source = value if isinstance(value, dict) else {}
+    raw_status = source.get("section_status")
+    raw_status = raw_status if isinstance(raw_status, dict) else {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for section_key in RP_MEMORY_SECTION_KEYS:
+        item = raw_status.get(section_key)
+        item = item if isinstance(item, dict) else {}
+        try:
+            coverage = max(int(item.get("coverage") or 0), 0)
+        except (TypeError, ValueError):
+            coverage = 0
+        status = str(item.get("status") or "failed")
+        if status not in {"fresh", "stale", "failed"}:
+            status = "failed"
+        normalized[section_key] = {"coverage": coverage, "status": status}
+    return normalized
+
+
+def normalize_sectioned_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    normalized = normalize_story_memory(source, max_chars)
+    normalized["schema_version"] = SECTIONED_STORY_MEMORY_SCHEMA
+    normalized["section_status"] = normalize_section_status(source)
+    try:
+        normalized["observed_through_turn_id"] = max(
+            int(source.get("observed_through_turn_id") or 0),
+            0,
+        )
+    except (TypeError, ValueError):
+        normalized["observed_through_turn_id"] = 0
+    normalized["last_update_request_id"] = (
+        str(source.get("last_update_request_id"))
+        if source.get("last_update_request_id")
+        else None
+    )
+    for field in STORY_LIST_FIELDS:
+        for item in normalized[field]:
+            if item.get("authority") == "user_correction":
+                item["authority"] = "user"
+    current = normalized.get("current_situation")
+    if isinstance(current, dict) and current.get("authority") == "user_correction":
+        current["authority"] = "user"
+    return fit_story_memory(normalized, max(max_chars, 1))
+
+
+def bounded_story_memory_section(
+    memory: dict[str, Any],
+    fields: tuple[str, ...],
+    max_chars: int,
+) -> dict[str, Any]:
+    """Select whole prior facts; reconciliation keeps facts omitted for input budget."""
+
+    if max_chars <= 0:
+        return {field: None if field == "current_situation" else [] for field in fields}
+    result: dict[str, Any] = {}
+    for field in fields:
+        value = memory.get(field)
+        if field == "current_situation":
+            candidate = dict(value) if isinstance(value, dict) else None
+            trial = {**result, field: candidate}
+            result[field] = candidate if len(json.dumps(trial, ensure_ascii=False)) <= max_chars else None
+            continue
+        items = value if isinstance(value, list) else []
+        selected: list[Any] = []
+        candidates = list(reversed(items)) if field in {"chronology", "resolved_threads"} else items
+        for item in candidates:
+            trial_items = [*selected, item]
+            trial = {**result, field: trial_items}
+            if len(json.dumps(trial, ensure_ascii=False)) > max_chars:
+                continue
+            selected = trial_items
+        if field in {"chronology", "resolved_threads"}:
+            selected.reverse()
+        result[field] = selected
+    for field in fields:
+        result.setdefault(field, None if field == "current_situation" else [])
+    return result
+
+
+def merge_story_memory_section(
+    previous_value: Any,
+    proposed_section: dict[str, Any],
+    section_key: str,
+    source_turn_ids: list[int],
+    max_chars: int,
+) -> dict[str, Any]:
+    previous = normalize_sectioned_story_memory(previous_value, max_chars)
+    proposed = empty_story_memory()
+    for field in STORY_MEMORY_SECTION_FIELDS[section_key]:
+        proposed[field] = proposed_section.get(field)
+    candidate = service_story_memory_candidate(
+        previous,
+        proposed,
+        source_turn_ids,
+        max_chars,
+    )
+    merged = json.loads(json.dumps(previous, ensure_ascii=False))
+    for field in STORY_MEMORY_SECTION_FIELDS[section_key]:
+        if field == "current_situation":
+            previous_items = [previous[field]] if previous.get(field) else []
+            candidate_items = [candidate[field]] if candidate.get(field) else []
+            items = reconcile_story_items(previous_items, candidate_items)
+            active = [item for item in items if item.get("status") == "active"]
+            merged[field] = (active or items or [None])[-1]
+        else:
+            merged[field] = reconcile_story_items(previous[field], candidate[field])
+    return normalize_sectioned_story_memory(merged, max_chars)
+
+
 def normalize_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     normalized = empty_story_memory()
@@ -671,6 +1660,14 @@ def normalize_story_memory(value: Any, max_chars: int) -> dict[str, Any]:
             limit=STORY_FIELD_LIMITS[field],
             item_chars=600,
         )
+    if source.get("schema_version") == SECTIONED_STORY_MEMORY_SCHEMA or isinstance(
+        source.get("section_status"),
+        dict,
+    ):
+        normalized["schema_version"] = SECTIONED_STORY_MEMORY_SCHEMA
+        normalized["section_status"] = normalize_section_status(source)
+        normalized["observed_through_turn_id"] = source.get("observed_through_turn_id", 0)
+        normalized["last_update_request_id"] = source.get("last_update_request_id")
     return fit_story_memory(normalized, max(max_chars, 1))
 
 
@@ -819,10 +1816,25 @@ def apply_user_story_memory_corrections(
     memory_value: Any,
     turns: list[dict[str, Any]],
     max_chars: int,
+    *,
+    authority: str = "user_correction",
 ) -> dict[str, Any]:
     memory = normalize_story_memory(memory_value, max_chars)
     for turn in turns:
         corrections = turn_story_memory_corrections(turn)
+        if not corrections:
+            continue
+        source_turn_id = int(turn["id"])
+        corrections = [
+            correction
+            for correction in corrections
+            if not story_memory_correction_already_applied(
+                memory,
+                correction,
+                source_turn_id,
+                authority,
+            )
+        ]
         if not corrections:
             continue
         validated = validate_story_memory_corrections(
@@ -833,10 +1845,53 @@ def apply_user_story_memory_corrections(
         memory = apply_validated_story_memory_corrections(
             memory,
             validated,
-            int(turn["id"]),
+            source_turn_id,
             max_chars,
+            authority=authority,
         )
     return memory
+
+
+def story_memory_correction_already_applied(
+    memory: dict[str, Any],
+    correction: dict[str, Any],
+    source_turn_id: int,
+    authority: str,
+) -> bool:
+    """Recognize the exact persisted result so a durable job retry is idempotent."""
+
+    field = str(correction.get("field") or "")
+    fact_id = str(correction.get("fact_id") or "")
+    action = str(correction.get("action") or "")
+    if field not in STORY_LIST_FIELDS or action not in {"retract", "replace"}:
+        return False
+    target = next(
+        (
+            item
+            for item in memory[field]
+            if str(item.get("fact_id") or "") == fact_id
+        ),
+        None,
+    )
+    expected_status = "retracted" if action == "retract" else "superseded"
+    if not (
+        isinstance(target, dict)
+        and target.get("status") == expected_status
+        and target.get("authority") == authority
+        and target.get("source_turn_ids") == [source_turn_id]
+    ):
+        return False
+    if action == "retract":
+        return True
+    replacement_text = str(correction.get("replacement_text") or "").strip()
+    replacement_id = story_fact_id(None, replacement_text) if replacement_text else ""
+    return any(
+        str(item.get("fact_id") or "") == replacement_id
+        and item.get("status") == "active"
+        and item.get("authority") == authority
+        and item.get("source_turn_ids") == [source_turn_id]
+        for item in memory[field]
+    )
 
 
 def apply_validated_story_memory_corrections(
@@ -844,6 +1899,8 @@ def apply_validated_story_memory_corrections(
     corrections: list[dict[str, str]],
     source_turn_id: int | None,
     max_chars: int,
+    *,
+    authority: str = "user_correction",
 ) -> dict[str, Any]:
     """Apply already validated Gateway corrections; None provenance is prompt-only."""
 
@@ -880,7 +1937,7 @@ def apply_validated_story_memory_corrections(
         memory[field][target_index] = {
             **target,
             "status": "retracted" if correction["action"] == "retract" else "superseded",
-            "authority": "user_correction",
+            "authority": authority,
             "source_turn_ids": source_turn_ids,
         }
         if correction["action"] == "replace":
@@ -890,7 +1947,7 @@ def apply_validated_story_memory_corrections(
                     "fact_id": story_fact_id(None, replacement_text),
                     "text": replacement_text,
                     "status": "active",
-                    "authority": "user_correction",
+                    "authority": authority,
                     "source_turn_ids": source_turn_ids,
                 }
             )
@@ -959,7 +2016,7 @@ def reconcile_story_items(
     previous: list[dict[str, Any]],
     proposed: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    stronger = {"worldpack", "state", "user_correction"}
+    stronger = {"worldpack", "state", "user", "user_correction"}
     merged = [dict(item) for item in previous]
     index = {str(item["fact_id"]): position for position, item in enumerate(merged)}
     tombstoned_text = {
@@ -1093,6 +2150,8 @@ def story_memory_prompt_text(
     max_chars: int,
     rp_contract_revision: int = 0,
 ) -> str:
+    if rp_contract_revision >= 8:
+        return sectioned_story_memory_prompt_text(snapshot, max_chars)
     memory = normalize_story_memory(snapshot.get("memory"), max_chars)
     include_legacy_projection = rp_contract_revision < 2
     sections: list[tuple[str, list[str]]] = [
@@ -1132,6 +2191,55 @@ def story_memory_prompt_text(
     return "\n".join(lines)
 
 
+def sectioned_story_memory_prompt_text(snapshot: dict[str, Any], max_chars: int) -> str:
+    memory = normalize_sectioned_story_memory(snapshot.get("memory"), max_chars)
+    statuses = normalize_section_status(memory)
+    safe_coverage = min(
+        int(statuses[key]["coverage"])
+        for key in RP_MEMORY_SECTION_KEYS
+    )
+    status_labels = {"fresh": "актуальна", "stale": "устарела", "failed": "не создана"}
+    section_titles = {
+        "situation": "СИТУАЦИЯ И КАНОН",
+        "threads": "СЮЖЕТНЫЕ ЛИНИИ",
+        "characters": "ПЕРСОНАЖИ",
+        "assets_and_rules": "АКТИВЫ, ПРАВИЛА И СПОСОБНОСТИ",
+        "chronology_and_hooks": "ХРОНОЛОГИЯ И ЗАЦЕПКИ",
+    }
+    lines = [f"безопасно покрыто до хода {safe_coverage}"]
+    for section_key in RP_MEMORY_SECTION_KEYS:
+        item = statuses[section_key]
+        title = section_titles[section_key]
+        mandatory = (
+            f"## {title} — {status_labels[item['status']]}, "
+            f"покрытие до хода {item['coverage']}"
+        )
+        candidate = [*lines, "", mandatory]
+        if len("\n".join(candidate)) <= max_chars:
+            lines = candidate
+        values: list[str] = []
+        for field in STORY_MEMORY_SECTION_FIELDS[section_key]:
+            value = memory.get(field)
+            if field == "current_situation":
+                field_items = [value] if isinstance(value, dict) else []
+            else:
+                field_items = value if isinstance(value, list) else []
+            texts = active_story_texts(field_items, include_legacy_projection=False)
+            if field == "chronology":
+                texts = texts[-24:]
+            elif field == "resolved_threads":
+                texts = texts[-16:]
+            values.extend(texts)
+        if not values and item["status"] in {"stale", "failed"}:
+            values = ["Секция недоступна; опирайся на дословную историю ниже."]
+        for value in values:
+            candidate = [*lines, f"- {value}"]
+            if len("\n".join(candidate)) > max_chars:
+                break
+            lines = candidate
+    return "\n".join(lines)
+
+
 def story_item_list(value: Any, *, limit: int, item_chars: int) -> list[dict[str, Any]]:
     if isinstance(value, str):
         values = [value]
@@ -1153,6 +2261,7 @@ def story_item_list(value: Any, *, limit: int, item_chars: int) -> list[dict[str
         authority = str(source.get("authority") or "legacy_projection")
         if authority not in {
             "worldpack",
+            "user",
             "user_correction",
             "state",
             "narrator",
@@ -1212,8 +2321,85 @@ def story_fact_fingerprint(text: str) -> str:
     return " ".join(re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE))
 
 
+def validate_story_memory_item_structure(
+    value: Any,
+    *,
+    text_limit: int,
+    previous_ids_by_text: dict[str, str],
+    seen_fact_ids: set[str],
+) -> dict[str, Any]:
+    """Validate shape only; empty sections remain valid and semantic judging stays out."""
+
+    if not isinstance(value, dict):
+        raise ValueError("story-memory fact must be an object")
+    missing = sorted(STORY_MEMORY_ITEM_KEYS - set(value))
+    unexpected = sorted(set(value) - STORY_MEMORY_ITEM_KEYS)
+    if missing:
+        raise ValueError("story-memory fact omitted fields: " + ", ".join(missing))
+    if unexpected:
+        raise ValueError("story-memory fact added fields: " + ", ".join(unexpected))
+
+    fact_id = value["fact_id"]
+    if not isinstance(fact_id, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9_.:-]{7,79}",
+        fact_id,
+    ):
+        raise ValueError("story-memory fact_id does not match the stable ID schema")
+    if fact_id in seen_fact_ids:
+        raise ValueError("story-memory response repeated fact_id " + fact_id)
+
+    text = value["text"]
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("story-memory fact text must be a non-empty string")
+    if len(text) > text_limit:
+        raise ValueError("story-memory fact text exceeds the field limit")
+    prior_id = previous_ids_by_text.get(story_fact_fingerprint(text))
+    if prior_id and prior_id != fact_id:
+        raise ValueError("story-memory response changed an existing fact_id")
+
+    status = value["status"]
+    if status not in STORY_MEMORY_ITEM_STATUSES:
+        raise ValueError("story-memory fact status is outside the schema")
+    authority = value["authority"]
+    if authority not in STORY_MEMORY_ITEM_AUTHORITIES:
+        raise ValueError("story-memory fact authority is outside the schema")
+
+    source_turn_ids = value["source_turn_ids"]
+    if not isinstance(source_turn_ids, list) or len(source_turn_ids) > 20:
+        raise ValueError("story-memory source_turn_ids must be an array of at most 20 IDs")
+    normalized_turn_ids: list[int] = []
+    for turn_id in source_turn_ids:
+        if isinstance(turn_id, bool) or not isinstance(turn_id, int) or turn_id < 0:
+            raise ValueError("story-memory source_turn_ids must contain non-negative integers")
+        if turn_id in normalized_turn_ids:
+            raise ValueError("story-memory source_turn_ids must not contain duplicates")
+        normalized_turn_ids.append(turn_id)
+
+    seen_fact_ids.add(fact_id)
+    return {
+        "fact_id": fact_id,
+        "text": text,
+        "status": status,
+        "authority": authority,
+        "source_turn_ids": normalized_turn_ids,
+    }
+
+
+def completion_finish_reason(response: dict[str, Any]) -> str:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    return str(choices[0].get("finish_reason") or "").strip().casefold()
+
+
 def completion_text(response: dict[str, Any]) -> str:
-    return str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return ""
+    return str(message.get("content") or "")
 
 
 def strip_code_fence(content: str) -> str:

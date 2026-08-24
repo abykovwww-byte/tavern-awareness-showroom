@@ -19,6 +19,11 @@ proof подтвердил effective observed revision `7`. Ни deterministic c
 activation stamp не являются заявлением об исправленной semantic continuity или
 уровне `наблюдается`.
 
+Для revision `8+` scene projection, private narrator bundle и continuity gate
+не читаются и не пишутся; их заменяет дословная history-first boundary из
+[Decision 032](032-rp-history-first-prompt-and-sectioned-memory.md). Весь путь
+этого ADR остаётся compatibility-контрактом только для revision `7`.
+
 ## Context
 
 DC1 сохраняет полный uncovered raw tail, DC2 ограничивает pre-scene relationship

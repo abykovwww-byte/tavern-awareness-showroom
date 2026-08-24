@@ -1,3 +1,4 @@
+# Revision 8+ supersedes these revision-7 rows with the recent complete-RAW scan in Decision 032.
 - requirement: "Revision 7 relationship pressure contains only characters eligible by deterministic same-location, current-action alias or Outcome.target signals; active-thread membership may only rank an already eligible character"
   level: подключено
   store: "canonical party state, WorldPack aliases, Outcome, relationship projections and recorded provider prompt"

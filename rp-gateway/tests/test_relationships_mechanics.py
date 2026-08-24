@@ -10,6 +10,7 @@ import pytest
 from app.core.config import Settings
 from app.models.schemas import ChatCompletionRequest, ChatMessage
 from app.services.adjudicator import Adjudicator
+from app.services.narrative import PromptBudgetExceeded
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
 from app.services.state_store import StateStore
@@ -701,6 +702,154 @@ def test_revision_seven_adjudicator_filters_pressure_and_due_without_mutation(
         "20",
     )
     assert all(marker not in explicitly_addressed.casefold() for marker in private_markers)
+
+
+def test_revision_eight_relationship_pressure_requires_canonical_character_name(
+    tmp_path: Path,
+) -> None:
+    unnamed_store = make_scene_store(tmp_path, "rev8-unnamed-pressure")
+    unnamed = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        unnamed_store,
+        relationship_model=relationship_model(),
+    )
+    assert unnamed.relationship_mechanics is not None
+    add_favourable_pressure(unnamed.relationship_mechanics, "ivan")
+
+    assert unnamed.relationship_pressure(
+        unnamed_store.get_state(),
+        latest_player_message="Иван, ответь мне.",
+    ) is None
+
+    named_store = make_store(tmp_path, "rev8-named-pressure")
+    named = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        named_store,
+        relationship_model=relationship_model(),
+    )
+    assert named.relationship_mechanics is not None
+    add_favourable_pressure(named.relationship_mechanics, "ivan")
+
+    pressure = named.relationship_pressure(
+        named_store.get_state(),
+        latest_player_message="Иван, ответь мне.",
+    )
+    assert pressure is not None
+    assert "Иван" in pressure
+    assert "ivan" not in pressure.casefold()
+
+
+def test_revision_eight_relationship_prompt_is_bounded_by_whole_priority_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, "rev8-bounded-pressure")
+    adjudicator = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        store,
+        relationship_model=relationship_model(),
+    )
+    assert adjudicator.relationship_mechanics is not None
+    pressure_lines = [
+        f"- Иван — давление {index}: " + ("наблюдаемое последствие " * 8).strip()
+        for index in range(20)
+    ]
+    resolution_lines = [
+        "RELATIONSHIP_EVENT_RESOLUTION",
+        "Реализуй уже наступившее последствие в этой сцене.",
+        "- Иван: сначала покажи обещанную помощь.",
+    ]
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "pressure_block",
+        lambda *args, **kwargs: "RELATIONSHIP_PRESSURE\n" + "\n".join(pressure_lines),
+    )
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "due_event_block",
+        lambda *args, **kwargs: "\n".join(resolution_lines),
+    )
+
+    block = adjudicator.relationship_pressure(
+        store.get_state(),
+        latest_player_message="Иван, ответь мне.",
+    )
+
+    assert block is not None
+    assert len(block) <= 1_500
+    assert block.startswith("RELATIONSHIP_PRESSURE\n")
+    assert resolution_lines[-1] in block
+    assert pressure_lines[-1] not in block
+    assert set(block.splitlines()) <= {
+        "RELATIONSHIP_PRESSURE",
+        "",
+        *resolution_lines,
+        *pressure_lines,
+    }
+
+
+def test_revision_seven_relationship_prompt_keeps_legacy_unbounded_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, "rev7-unbounded-pressure")
+    adjudicator = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=7),
+        store,
+        relationship_model=relationship_model(),
+    )
+    assert adjudicator.relationship_mechanics is not None
+    pressure = "RELATIONSHIP_PRESSURE\n" + "x" * 1_600
+    resolution = "RELATIONSHIP_EVENT_RESOLUTION\nlegacy resolution"
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "pressure_block",
+        lambda *args, **kwargs: pressure,
+    )
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "due_event_block",
+        lambda *args, **kwargs: resolution,
+    )
+
+    block = adjudicator.relationship_pressure(
+        store.get_state(),
+        latest_player_message="Иван, ответь мне.",
+    )
+
+    assert block == f"{pressure}\n\n{resolution}"
+
+
+def test_revision_eight_oversized_due_relationship_resolution_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, "rev8-oversized-resolution")
+    adjudicator = Adjudicator(
+        Settings(scenario_type="rp", rp_contract_revision=8),
+        store,
+        relationship_model=relationship_model(),
+    )
+    assert adjudicator.relationship_mechanics is not None
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "pressure_block",
+        lambda *args, **kwargs: "RELATIONSHIP_PRESSURE\n- Иван — расположение.",
+    )
+    monkeypatch.setattr(
+        adjudicator.relationship_mechanics,
+        "due_event_block",
+        lambda *args, **kwargs: (
+            "RELATIONSHIP_EVENT_RESOLUTION\n"
+            "- " + "Очень-длинное-каноническое-имя" * 60 + ": обязательная помощь."
+        ),
+    )
+
+    with pytest.raises(PromptBudgetExceeded):
+        adjudicator.relationship_pressure(
+            store.get_state(),
+            latest_player_message="Иван, ответь мне.",
+        )
 
 
 def test_revision_seven_handle_chat_passes_current_action_into_relationship_scope(
