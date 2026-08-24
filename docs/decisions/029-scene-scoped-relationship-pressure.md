@@ -81,7 +81,8 @@ Narrator-visible block сохраняет текущую sanitization: допу�
 словесная полоса и качественное guidance. Character/event IDs, weights, clocks,
 target/accomplice IDs и raw payload остаются внутри Gateway.
 
-Revisions `0..6`, `novel` и `training` сохраняют текущий путь. Existing source
+Revisions `0..6` и `training` сохраняют текущий путь. Historical Novel rows
+теперь архивируются по Decision 036. Existing source
 parties не мигрируют. До activation contract проверялся только на
 checkpoint/autotest branch; после activation он применяется к новым ordinary
 RP-parties с persisted revision `7`. Source raw history, canonical state и

@@ -8,9 +8,9 @@ from test_gateway import client, create_demo_party, write_worldpack
 
 
 def test_dataset_export_requires_party_and_turn_approval(tmp_path):
-    write_worldpack(tmp_path, supported_modes=["novel", "rp"])
+    write_worldpack(tmp_path, supported_modes=["rp"])
     c = client(tmp_path)
-    party = create_demo_party(c, scenario_type="novel")
+    party = create_demo_party(c, scenario_type="rp")
 
     response = c.post(
         f"/api/parties/{party['id']}/messages",
@@ -18,6 +18,11 @@ def test_dataset_export_requires_party_and_turn_approval(tmp_path):
         headers={"Authorization": "Bearer test"},
     )
     assert response.status_code == 200, response.text
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        connection.execute(
+            "UPDATE parties SET scenario_type = 'novel', status = 'archived' WHERE id = ?",
+            (party["id"],),
+        )
 
     candidates = c.get(f"/api/admin/datasets/parties/{party['id']}/turns").json()["turns"]
     assert len(candidates) == 1
@@ -26,7 +31,7 @@ def test_dataset_export_requires_party_and_turn_approval(tmp_path):
     assert candidate["review_status"] == "review"
     assert {"novel", "main"}.issubset(candidate["auto_tags"])
     assert candidate["metadata"]["schema_version"] == "rp-gateway.turn.v1"
-    assert candidate["metadata"]["validator_valid"] is True
+    assert candidate["metadata"]["validator_valid"] is None
     assert candidate["prompt_messages"]
 
     assert c.get("/api/admin/datasets/export.jsonl").text == ""

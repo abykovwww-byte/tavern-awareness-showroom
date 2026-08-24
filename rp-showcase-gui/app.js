@@ -98,7 +98,7 @@ const els = {
   busyText: document.querySelector("#busyText"),
 };
 
-const scenarioTypeLabels = { rp: "RP", novel: "Совместный роман", training: "Обучение" };
+const scenarioTypeLabels = { rp: "RP", novel: "Архивный Novel", training: "Обучение" };
 const statusLabels = { draft: "Черновик", published: "Опубликован", archived: "Архив" };
 
 function bindEvents() {
@@ -1245,7 +1245,7 @@ function button(text, className) {
 }
 
 function providerLabel(provider) {
-  return { openrouter: "OpenRouter", nvidia: "NVIDIA", gemini: "Gemini", local: "Local LLM" }[provider] || provider;
+  return { openrouter: "OpenRouter", nvidia: "NVIDIA (архив)", gemini: "Gemini", local: "Local LLM" }[provider] || provider;
 }
 
 function formatDate(value) {

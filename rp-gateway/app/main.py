@@ -82,7 +82,7 @@ from app.services.narrative import (
     response_text,
     uncompacted_archive_fallback_block,
 )
-from app.services.nvidia_catalog import (
+from app.services.provider_catalog import (
     normalize_provider,
     provider_api_key,
     provider_base_url,
@@ -133,13 +133,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         for party in party_store.list_parties():
+            if party.status != "active":
+                continue
             party_state_store = party_store.store_for_party(party.id)
             recovered = party_state_store.recover_interrupted_work()
             if any(recovered.values()):
                 logger.warning("recovered_interrupted_work party_id=%s %s", party.id, recovered)
             if any(job["status"] in {"pending", "running"} for job in party_state_store.service_jobs(limit=20)):
+                try:
+                    party_runtime = runtime_settings_for_party(party)
+                except ValueError as exc:
+                    logger.warning("party_runtime_disabled party_id=%s error=%s", party.id, exc)
+                    continue
                 Adjudicator(
-                    runtime_settings_for_party(party),
+                    party_runtime,
                     party_state_store,
                     relationship_model=relationship_model_for_party(party),
                     scene_contract=scene_contract_for_party(party),
@@ -171,7 +178,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return settings_with_global_service_model(base)
         updates: dict[str, Any] = {}
         key_fields = {
-            "nvidia": "nvidia_api_key",
             "gemini": "gemini_api_key",
             "openrouter": "openrouter_api_key",
         }
@@ -186,12 +192,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 updates[field_name] = secret
         hydrated = replace(base, **updates) if updates else base
         selected_key = provider_api_key(hydrated, hydrated.llm_provider)
-        if selected_key != hydrated.nvidia_api_key:
-            hydrated = replace(hydrated, nvidia_api_key=selected_key)
+        if selected_key != hydrated.llm_api_key:
+            hydrated = replace(hydrated, llm_api_key=selected_key)
         return settings_with_global_service_model(hydrated)
 
     def runtime_settings_for_party(party: Any) -> Settings:
         return settings_with_provider_key(settings_for_party(settings, party), party)
+
+    def ensure_party_playable(party: Any) -> None:
+        if party.status == "archived":
+            raise HTTPException(status_code=409, detail="archived party is terminal")
+        try:
+            party_store.require_active_model_profile(party.model_profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def training_services_for_party(
         party: Any,
@@ -815,6 +829,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/parties/{party_id}/activate")
     def activate_party(request: Request, party_id: str) -> dict[str, Any]:
         try:
+            existing = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            ensure_party_playable(existing)
             party = party_store.activate_party(party_id, owner_user_id=owner_user_id(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -983,6 +999,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             _, service, _ = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
@@ -996,6 +1013,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_party_workspace(http_request: Request, party_id: str) -> dict[str, Any]:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
@@ -1012,6 +1030,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
@@ -1025,6 +1044,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_party_workspace_file_content(http_request: Request, party_id: str, file_id: str) -> FileResponse:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             _, _, service = training_services_for_party(party, party_state_store)
             if not service.enabled or party.scenario_type != "training":
@@ -1470,6 +1490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             party_settings = replace(
@@ -2342,6 +2363,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         try:
             party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
@@ -2477,7 +2499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_showroom_run_history(request: Request, run_id: str, limit: int = 100) -> dict[str, Any]:
         visitor_id = require_showroom_visitor(request)
         try:
-            party_id = showroom_store.party_id_for_run(run_id, visitor_id)
+            party_id = showroom_store.party_id_for_run(run_id, visitor_id, require_published=False)
             request.state.showroom_party_access = True
             history = get_party_history(request, party_id, limit=max(1, min(limit, 500)))
         except ValueError as exc:
@@ -3050,18 +3072,18 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
 
 def settings_for_model_profile(settings: Settings, model_profile: Any, cache_session_id: str) -> Settings:
     provider = normalize_provider(model_profile.provider)
-    fallback_models = settings.nvidia_fallback_models if provider == "nvidia" else ()
-    if provider == "openrouter":
-        fallback_models = settings.openrouter_fallback_models
+    if provider not in {"local", "gemini", "openrouter"}:
+        raise ValueError(f"model profile provider is retired or unsupported: {provider}")
+    fallback_models = settings.openrouter_fallback_models if provider == "openrouter" else ()
     return replace(
         settings,
         llm_provider=provider,
-        nvidia_api_base=model_profile.base_url,
+        llm_api_base=model_profile.base_url,
         narrative_model=model_profile.model,
         intent_model=model_profile.model,
         validator_model=model_profile.model,
-        nvidia_fallback_models=fallback_models,
-        nvidia_disabled_models=settings.nvidia_disabled_models if provider == "nvidia" else (),
+        llm_fallback_models=fallback_models,
+        llm_disabled_models=(),
         model_attempt_timeout_seconds=(
             settings.local_llm_timeout_seconds if provider == "local" else settings.model_attempt_timeout_seconds
         ),
@@ -3161,11 +3183,6 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
         "world premise, and player character. End with a concrete player-facing choice."
     )
     mode_instruction = {
-        "novel": (
-            "Write the opening passage of a collaborative novel in Russian. Do not use dice, checks, skills, "
-            "game-system labels, or a menu of actions. Establish character voice, relationships, atmosphere, and an "
-            "immediate dramatic opening while leaving the player character's decisions to the player."
-        ),
         "training": (
             "Write the first turn of a deterministic training scenario in Russian. Follow the world opening template, "
             "schedule, and formatting literally. Do not reveal lessons, hints, safety judgments, scoring, or hidden "
@@ -3199,7 +3216,6 @@ def party_start_outcome(
     rp_contract_revision: int = 0,
 ) -> Outcome:
     result = {
-        "novel": "narrative_continuation",
         "training": "deterministic_resolution",
     }.get(
         scenario_type,
@@ -3378,7 +3394,7 @@ async def generate_character_edit(
 ) -> PartyCharacterStateEditRequest:
     state = store.get_state()
     runtime = service_model_settings(settings)
-    if runtime.nvidia_api_base.startswith("mock://"):
+    if runtime.llm_api_base.startswith("mock://"):
         return mock_generated_character_edit(settings, state, request)
 
     world = WorldInstructor(settings, store)
@@ -3420,6 +3436,8 @@ async def generate_character_edit(
         try:
             completion = await service_client.complete(
                 role="character_generation",
+                provider=runtime.llm_provider,
+                model=model,
                 party_id=store.campaign_id,
                 turn_id=int(state.get("meta", {}).get("turn", 0)) + 1,
                 prompt=service_prompt_text(payload),
@@ -3584,11 +3602,11 @@ def mock_generated_character_edit(
     state: dict[str, Any],
     source: PartyCharacterStateEditRequest,
 ) -> PartyCharacterStateEditRequest:
-    mode = settings.nvidia_api_base.removeprefix("mock://")
+    mode = settings.llm_api_base.removeprefix("mock://")
     if mode == "timeout":
         raise httpx.TimeoutException("mock timeout")
     if mode == "http-503":
-        request = httpx.Request("POST", "https://mock.nvidia.local/chat/completions")
+        request = httpx.Request("POST", "https://mock.provider.local/chat/completions")
         response = httpx.Response(503, request=request)
         raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
     if mode == "rate-limit":

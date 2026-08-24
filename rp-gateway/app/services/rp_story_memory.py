@@ -425,7 +425,7 @@ class RPStoryMemoryUpdater:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         runtime = self.service_settings()
-        if runtime.nvidia_api_base.startswith("mock://"):
+        if runtime.llm_api_base.startswith("mock://"):
             return {"memory": self.mock_memory(plan), "model": plan.model}
         payload = self.update_payload(plan)
         attempts = self.model_attempts(plan.model, runtime)
@@ -436,6 +436,8 @@ class RPStoryMemoryUpdater:
             try:
                 completion = await client.complete(
                     role="rp_story_memory",
+                    provider=runtime.llm_provider,
+                    model=model,
                     party_id=self.store.campaign_id,
                     turn_id=plan.to_turn_id,
                     request_id=request_id,
@@ -634,8 +636,8 @@ class RPStoryMemoryUpdater:
 
     @staticmethod
     def model_attempts(primary_model: str, runtime: Settings) -> list[str]:
-        disabled = set(runtime.nvidia_disabled_models)
-        candidates = [primary_model, *runtime.nvidia_fallback_models]
+        disabled = set(runtime.llm_disabled_models)
+        candidates = [primary_model, *runtime.llm_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if model and model not in disabled and model not in attempts:

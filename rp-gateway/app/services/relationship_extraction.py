@@ -205,7 +205,7 @@ class RelationshipExtractionService:
         # forwarded, but the public method keeps the common service-job signature.
         _ = authorization
         settings = service_model_settings(self.settings)
-        if settings.nvidia_api_base.startswith("mock://"):
+        if settings.llm_api_base.startswith("mock://"):
             return self._mock_response(settings.narrative_model)
 
         payload = self._completion_payload(
@@ -228,6 +228,8 @@ class RelationshipExtractionService:
             try:
                 completion = await service_client.complete(
                     role="relationship_extraction",
+                    provider=settings.llm_provider,
+                    model=model_name,
                     party_id=self.store.campaign_id,
                     turn_id=int(turn["id"]),
                     request_id=str(turn.get("request_id") or "") or None,

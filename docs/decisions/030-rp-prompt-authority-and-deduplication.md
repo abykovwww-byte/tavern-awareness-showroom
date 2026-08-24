@@ -38,7 +38,8 @@ DC1 защищает полный raw tail новее effective RP story-memory 
 
 Решение применяется только к normal party-chat и admin-autotest narrator turns
 с `scenario_type=rp` на effective revision `7`. Opening-scene path не входит в
-DC3. Revisions `0..6`, `novel` и `training` сохраняют прежнее поведение.
+DC3. Revisions `0..6` и `training` сохраняют прежнее поведение. Historical
+Novel rows теперь архивируются по Decision 036.
 
 ### Authority hierarchy
 

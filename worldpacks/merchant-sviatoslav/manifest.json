@@ -16,7 +16,7 @@
   "created_for": "rp-gateway-light-gui",
   "scenario_types": {
     "recommended": "rp",
-    "supported": ["rp", "novel"]
+    "supported": ["rp"]
   },
   "rp_contract": {"schema_version": "rp-core.v2", "revision": 7},
   "relationships": {

@@ -6,6 +6,9 @@
 
 **Decision status: Accepted.** Решение пользователя.
 
+Decision 036 retains Novel here only because Turn Trace must render historical
+stored requests; it is not an executable scenario contract.
+
 Ступени реализации отдельных требований ведутся в
 [`registry/027.yml`](registry/027.yml) по словарю
 `каркас | подключено | наблюдается | держится`. Принятое архитектурное решение,
@@ -68,7 +71,7 @@ API всегда начинается с `party_id`. Опциональный `b
 
 1. для нового RP-пути — `rp_contract_revision`, если поле присутствует;
 2. для legacy-записи — `rp_contract_version`;
-3. для `novel` и `training` — фактический `scenario_type` без выдуманной
+3. для archived legacy `novel` и active `training` — фактический `scenario_type` без выдуманной
    RP-ревизии.
 
 Набор фаз data-driven: endpoint возвращает только реально сработавшие узлы.
@@ -291,7 +294,7 @@ privacy impact Gateway backup. Асинхронная трасса может б
 - event sourcing или замена `StateStore`;
 - новая система телеметрии, OpenTelemetry, Sentry или PostHog;
 - автоматическое доказательство `наблюдается`/`держится` по красивому графу;
-- изменение RP/training/novel mechanics;
+- изменение active RP/training mechanics или legacy trace semantics;
 - доступ Showroom к внутренним prompt, response, state diff или annotations;
 - backfill отсутствующих raw provider attempts для старых ходов;
 - отдельный сервис, контейнер или новая зависимость для Workbench.

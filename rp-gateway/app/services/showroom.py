@@ -200,6 +200,11 @@ class ShowroomStore:
                     )
                     """
                 )
+            connection.execute(
+                "UPDATE showroom_scenarios SET status = 'archived', updated_at = ? "
+                "WHERE scenario_type = 'novel' AND status != 'archived'",
+                (now_iso(),),
+            )
 
     def unique_slug(self, title: str, scenario_id: str | None = None) -> str:
         base = slug(title)[:80]
@@ -218,7 +223,7 @@ class ShowroomStore:
                 suffix += 1
 
     def create_scenario(self, request: ShowroomScenarioCreate, created_by: str | None) -> dict[str, Any]:
-        model = self.party_store.get_model_profile(request.model_profile_id)
+        model = self.party_store.require_active_model_profile(request.model_profile_id)
         worldpack_id, world_prompt = self.resolve_world(
             title=request.title,
             world_source=request.world_source,
@@ -282,8 +287,10 @@ class ShowroomStore:
     def update_scenario(self, scenario_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         current = self.get_scenario(scenario_id, public_only=False, include_internal=True)
         merged = {**current, **changes}
+        if current["status"] == "archived" and merged["status"] != "archived":
+            raise ValueError("archived showroom scenario is terminal")
         title = str(merged["title"]).strip()
-        model = self.party_store.get_model_profile(str(merged["model_profile_id"]))
+        model = self.party_store.require_active_model_profile(str(merged["model_profile_id"]))
 
         requested_source = str(merged["world_source"])
         world_changed = requested_source != current["world_source"]
@@ -643,7 +650,7 @@ class ShowroomStore:
                 SELECT sr.* FROM showroom_runs sr
                 JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
-                WHERE sr.visitor_id = ? AND ss.status = 'published' AND wp.visibility = 'public'
+                WHERE sr.visitor_id = ? AND wp.visibility = 'public'
                 ORDER BY sr.updated_at DESC
                 """,
                 (visitor_id,),
@@ -658,7 +665,7 @@ class ShowroomStore:
                 JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE sr.id = ? AND sr.visitor_id = ?
-                  AND ss.status = 'published' AND wp.visibility = 'public'
+                  AND wp.visibility = 'public'
                 """,
                 (run_id, visitor_id),
             ).fetchone()
@@ -815,15 +822,16 @@ class ShowroomStore:
             return None
         return portal
 
-    def party_id_for_run(self, run_id: str, visitor_id: str) -> str:
+    def party_id_for_run(self, run_id: str, visitor_id: str, *, require_published: bool = True) -> str:
+        status_filter = " AND ss.status = 'published'" if require_published else ""
         with self.connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT sr.party_id FROM showroom_runs sr
                 JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE sr.id = ? AND sr.visitor_id = ?
-                  AND ss.status = 'published' AND wp.visibility = 'public'
+                  AND wp.visibility = 'public'{status_filter}
                 """,
                 (run_id, visitor_id),
             ).fetchone()

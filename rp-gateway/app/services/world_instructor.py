@@ -130,7 +130,7 @@ class WorldInstructor:
             raise ValueError("world instruction is empty")
         state = self.store.get_state()
         proposal_id = f"world-{uuid.uuid4().hex[:12]}"
-        if not use_llm or service_model_settings(self.settings).nvidia_api_base.startswith("mock://"):
+        if not use_llm or service_model_settings(self.settings).llm_api_base.startswith("mock://"):
             draft = self.mock_draft(state, instruction, proposal_id)
         else:
             try:
@@ -202,6 +202,8 @@ class WorldInstructor:
             try:
                 completion = await client.complete(
                     role="world_instructor",
+                    provider=runtime.llm_provider,
+                    model=model,
                     party_id=self.store.campaign_id,
                     turn_id=None,
                     request_id=request_id,
@@ -280,8 +282,8 @@ class WorldInstructor:
 
     def model_attempts(self, primary_model: str, runtime: Settings | None = None) -> list[str]:
         runtime = runtime or self.settings
-        disabled = set(runtime.nvidia_disabled_models)
-        candidates = [primary_model, *runtime.nvidia_fallback_models]
+        disabled = set(runtime.llm_disabled_models)
+        candidates = [primary_model, *runtime.llm_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if not model or model in disabled or model in attempts:

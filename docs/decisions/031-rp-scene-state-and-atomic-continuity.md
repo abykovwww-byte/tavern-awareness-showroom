@@ -41,7 +41,8 @@ rules, но не может детерминированно доказать lo
 - revision-7 state/turn commit, transport fallback и explicit world-command
   boundary.
 
-Revisions `0..6`, `novel` и `training` сохраняют текущий путь. Existing parties
+Revisions `0..6` и `training` сохраняют текущий путь. Historical Novel rows
+теперь архивируются по Decision 036. Existing parties
 не мигрируют автоматически. Decision 028–030 и их readiness evidence не
 переписываются.
 
@@ -319,7 +320,7 @@ Focused offline regressions обязаны доказать:
   fallback prose в всех canonical memory/retrieval/relationship consumers;
 - normal/opening parity, включая recorded `prompt_assembly`;
 - world-command stale policy, rollback и legacy bootstrap;
-- revisions `0..6`, `novel` и `training` без изменений.
+- revisions `0..6` и `training` без изменений; archived Novel history остаётся вне RP runtime.
 
 Failure-injection tests обязательны на boundaries initial parse/gate, repaired
 parse/gate, state-version write, turn/private-metadata write, audit/event write,

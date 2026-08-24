@@ -77,11 +77,9 @@ def outcome() -> Outcome:
 def test_story_memory_reserve_applies_only_to_rp() -> None:
     rp = Settings(scenario_type="rp")
     training = Settings(scenario_type="training")
-    novel = Settings(scenario_type="novel")
 
     assert rp.effective_party_history_token_budget == 71_920
     assert training.effective_party_history_token_budget == 81_920
-    assert novel.effective_party_history_token_budget == 81_920
 
 
 def test_story_memory_updater_is_rp_only_and_cumulative(tmp_path: Path) -> None:
@@ -89,7 +87,9 @@ def test_story_memory_updater_is_rp_only_and_cumulative(tmp_path: Path) -> None:
     record_turns(store, 4)
     rp_settings = Settings(
         scenario_type="rp",
-        service_nvidia_api_base="mock://success",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-service-key",
         local_llm_enabled=False,
         rp_story_memory_update_turns=4,
     )
@@ -147,7 +147,7 @@ def test_story_memory_prompt_block_and_order_are_rp_only(tmp_path: Path) -> None
             scenario_type="rp",
             world_system_prompt="WORLD RULE",
             world_authors_note="AUTHOR NOTE",
-            nvidia_api_base="mock://success",
+            llm_api_base="mock://success",
         )
     ).narrative_messages(
         request,
@@ -166,7 +166,7 @@ def test_story_memory_prompt_block_and_order_are_rp_only(tmp_path: Path) -> None
     assert contents[-1] == "Открываю ворота."
 
     training_messages = NarrativeClient(
-        Settings(scenario_type="training", nvidia_api_base="mock://success")
+        Settings(scenario_type="training", llm_api_base="mock://success")
     ).narrative_messages(
         request,
         store.get_state(),
@@ -378,7 +378,9 @@ def test_service_memory_cannot_forge_authority_or_source_turn_ids(
         Settings(
             scenario_type="rp",
             rp_contract_revision=2,
-            service_nvidia_api_base="mock://success",
+            service_model_choice="or-qwen-3.5-flash",
+            openrouter_api_base="mock://success",
+            service_openrouter_api_key="test-service-key",
             local_llm_enabled=False,
         ),
         store,
@@ -1213,7 +1215,6 @@ def test_story_memory_user_correction_retracts_existing_fact_by_stable_id() -> N
     [
         ("rp", {"memory", "rp_story_memory"}),
         ("training", {"memory"}),
-        ("novel", {"memory"}),
     ],
 )
 def test_post_turn_story_job_is_enqueued_only_for_rp(

@@ -5,7 +5,8 @@ Date: 2026-08-03
 ## Status
 
 Accepted; authority and projection semantics are superseded by Decisions 024
-and 026.
+and 026. Decision 036 retires active Novel execution; any mention below is now
+an archived storage/read boundary.
 
 ## Context
 
@@ -45,8 +46,9 @@ Add a cumulative `rp_story_memory_snapshots` ledger and update it only when
   WorldPack absolute rules, and explicit user corrections remain higher authority.
 - Background failures are fail-open and use durable service-job retry.
 
-Training and novel parties do not enqueue the job, load the snapshot, inject
-the prompt block, expose the RP UI/API fields, or reserve context for it.
+Training parties do not enqueue the job, load the snapshot, inject the prompt
+block, expose the RP UI/API fields, or reserve context for it. Archived legacy
+Novel rows cannot execute new turns or enqueue the job.
 
 ## Context budgets
 

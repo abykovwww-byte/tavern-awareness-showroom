@@ -346,7 +346,7 @@ class AuthStore:
         self,
         label: str,
         secret_value: str,
-        provider: str = "nvidia",
+        provider: str = "openrouter",
         base_url: str | None = None,
         is_default: bool = True,
         owner_user_id: str | None = None,
@@ -358,6 +358,9 @@ class AuthStore:
             raise ValueError("api key is required")
         if not party_id:
             raise ValueError("party_id is required for BYOK")
+        provider = provider.strip().lower()
+        if provider not in {"gemini", "openrouter"}:
+            raise ValueError(f"provider is retired or unsupported: {provider}")
         key_id = f"key_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         with self.connect() as connection:
@@ -394,7 +397,7 @@ class AuthStore:
             return self.settings.gemini_api_base
         if provider == "openrouter":
             return self.settings.openrouter_api_base
-        return self.settings.nvidia_api_base
+        raise ValueError(f"provider is retired or unsupported: {provider}")
 
     def update_provider_api_key(
         self,
@@ -406,6 +409,8 @@ class AuthStore:
         party_id: str | None = None,
     ) -> ProviderApiKey:
         current = self.get_provider_api_key(key_id, owner_user_id=owner_user_id, party_id=party_id)
+        if current.provider not in {"gemini", "openrouter"}:
+            raise ValueError(f"provider is retired or unsupported: {current.provider}")
         timestamp = now_iso()
         next_label = " ".join((label if label is not None else current.label).split())[:120] or current.label
         next_secret = secret_value.strip() if secret_value is not None else current.secret_value
@@ -457,7 +462,7 @@ class AuthStore:
     def default_provider_secret(
         self,
         base_url: str | None = None,
-        provider: str = "nvidia",
+        provider: str = "openrouter",
         *,
         owner_user_id: str | None,
         party_id: str,

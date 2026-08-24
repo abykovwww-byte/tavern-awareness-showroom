@@ -52,9 +52,7 @@ class RuleEngine:
         character_aliases: dict[str, list[str]] | None = None,
         authored_stable_affiliations: dict[str, str] | None = None,
     ) -> tuple[Outcome, StatePatch]:
-        if scenario_type == "novel" or (
-            scenario_type == "rp" and rp_contract_revision >= 1
-        ):
+        if scenario_type == "rp" and rp_contract_revision >= 1:
             return self.resolve_nonmechanical(
                 state,
                 intent,
@@ -143,19 +141,6 @@ class RuleEngine:
                 "Mode: deterministic training\n"
                 "No die was rolled and no skill check exists. Resolve only the player's explicit actions, "
                 "apply their observable consequences, and advance exactly one authored scenario turn.\n"
-                "</AUTHORITATIVE_OUTCOME>"
-            )
-        elif scenario_type == "novel":
-            consequences = [
-                "Continue the shared fiction from the player's contribution.",
-                "Prioritize character, relationship, pacing, and scene continuity over game mechanics.",
-                "Leave consequential choices and the player character's inner decisions to the player.",
-            ]
-            authoritative = (
-                "<AUTHORITATIVE_OUTCOME>\n"
-                "Mode: collaborative novel\n"
-                "No die was rolled and no skill check exists. Continue the fiction coherently without inventing "
-                "a mechanical success or failure.\n"
                 "</AUTHORITATIVE_OUTCOME>"
             )
         else:

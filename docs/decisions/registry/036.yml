@@ -1,0 +1,32 @@
+- requirement: "Party and Showroom create/update accept only rp or training, legacy stored novel aggregates are archived idempotently without conversion or history deletion, archived is terminal, and legacy list/read/Turn Trace/dataset projections remain readable"
+  level: каркас
+  store: "Pydantic request schemas, parties/showroom_scenarios status migration, endpoint guards, legacy read projections and SQLite history"
+  assertion: absence
+  expectation: retired_novel_is_readable_but_never_new_or_executable
+  probe_command: null
+  expected: null
+  waiver: "Source implementation and offline regressions only. Merge, Ansible apply, live migration and runtime proof are separate and not claimed."
+- requirement: "Active Gateway runtime, both GUIs and current WorldPack manifests/prompts/setup/rules expose no novel execution path while historical decision evidence may retain an explicitly retired reference"
+  level: каркас
+  store: "Gateway runtime source, Light GUI, Showroom GUI, active WorldPack files and current documentation"
+  assertion: absence
+  expectation: active_surfaces_do_not_offer_or_execute_novel
+  probe_command: null
+  expected: null
+  waiver: "Source search and offline tests do not prove deployed UI behavior."
+- requirement: "NVIDIA is absent from active provider catalog, auth, endpoint routing, UI, configuration, Compose/Ansible and all fallback/retry targets, while stored NVIDIA profiles, party references and diagnostic rows remain readable and are never silently migrated"
+  level: каркас
+  store: "provider catalog/auth/runtime settings, model selectors, IaC templates and historical SQLite projections"
+  assertion: absence
+  expectation: nvidia_is_legacy_read_only_and_never_an_active_route
+  probe_command: null
+  expected: null
+  waiver: "No deployment or live provider call is part of this source slice."
+- requirement: "Service roles route explicitly to local or OpenRouter without inheriting LLM_PROVIDER; an unavailable local service model degrades without provider switching and creates no new service_call_log row whose provider is nvidia"
+  level: каркас
+  store: "service-model selection/runtime, outbound request attempt and service_call_log"
+  assertion: absence
+  expectation: local_service_outage_never_routes_or_logs_nvidia
+  probe_command: null
+  expected: null
+  waiver: "Offline forced-outage regression is required; deployed failure-path evidence remains pending."

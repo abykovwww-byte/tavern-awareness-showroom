@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Accepted. Decision 036 retains the retired scenario value only on the legacy
+dataset read/export boundary.
 
 ## Goal
 
@@ -16,7 +17,7 @@ Gateway remains the only authority that records turns. Every new turn keeps:
 
 - the exact prompt messages sent to the narrator and the final assistant text;
 - provider response, state version, request and idempotency identifiers;
-- scenario type (`rp`, `novel`, or `training`) and world pack;
+- stored scenario type (`rp`, `training`, or legacy `novel`) and world pack;
 - narrator provider/model, authoritative outcome, validator result, repair count,
   fallback reason, and whether the turn came from a human line or an auto-test
   branch.

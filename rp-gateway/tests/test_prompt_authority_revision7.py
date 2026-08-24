@@ -123,8 +123,8 @@ def revision_seven_settings(campaign_id: str) -> Settings:
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=7,
-        nvidia_api_base="mock://success",
-        nvidia_api_key="PRIVATE_PROVIDER_SECRET",
+        llm_api_base="mock://success",
+        llm_api_key="PRIVATE_PROVIDER_SECRET",
         local_llm_enabled=False,
         post_turn_helpers_inline=False,
         party_context_max_tokens=40_000,
@@ -729,8 +729,8 @@ def test_rp_revisions_zero_through_six_keep_legacy_prompt_layers(revision: int) 
         assert sum(content.startswith("RP_STORY_MEMORY") for content in contents) == 1
 
 
-@pytest.mark.parametrize("scenario_type", ["novel", "training"])
-def test_non_rp_modes_do_not_receive_revision_seven_prompt_authority(
+@pytest.mark.parametrize("scenario_type", ["training"])
+def test_training_mode_does_not_receive_revision_seven_prompt_authority(
     scenario_type: str,
 ) -> None:
     settings = Settings(

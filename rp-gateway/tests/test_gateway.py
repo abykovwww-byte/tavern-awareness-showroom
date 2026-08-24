@@ -31,12 +31,11 @@ from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
 from app.services.narrative import NarrativeClient, provider_rate_limit_error
-from app.services.nvidia_catalog import (
+from app.services.provider_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
     fetch_provider_api_profiles,
     narrator_control_capabilities,
-    parse_build_catalog,
     prices_are_free,
     provider_model_is_suitable,
 )
@@ -45,6 +44,7 @@ from app.services.relationship_store import RelationshipStore
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
+from app.services.service_model_client import ServiceModelClient
 from app.services.state_store import StateStore
 from app.services.validator import OutputValidator, safe_fallback
 
@@ -135,10 +135,13 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "party_state_root": str(tmp_path / "state" / "parties"),
         "showroom_cover_dir": str(tmp_path / "showroom-covers"),
         "worldpacks_path": str(tmp_path / "worldpacks"),
-        "nvidia_api_base": f"mock://{mode}",
-        "nvidia_api_key": api_key,
-        "service_nvidia_api_base": f"mock://{mode}",
-        "service_nvidia_api_key": api_key,
+        "llm_api_base": f"mock://{mode}",
+        "llm_api_key": api_key,
+        "gemini_api_base": f"mock://{mode}",
+        "gemini_api_key": api_key,
+        "service_model_choice": "or-qwen-3.5-flash",
+        "openrouter_api_base": f"mock://{mode}",
+        "service_openrouter_api_key": api_key,
         # Never inherit the production container's local-runner switch. Tests
         # that exercise local Gemma enable it explicitly in settings_overrides.
         "local_llm_enabled": False,
@@ -336,7 +339,7 @@ def test_bootstrap_admin_is_added_when_configured_user_is_missing(tmp_path: Path
 
 
 def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path: Path):
-    write_worldpack(tmp_path, supported_modes=["rp", "novel"])
+    write_worldpack(tmp_path, supported_modes=["rp", "training"])
     admin = client(
         tmp_path,
         auth_enabled=True,
@@ -370,7 +373,7 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
             "title": "Quiet character drama",
             "description": "A different scenario in the same world.",
             "status": "published",
-            "scenario_type": "novel",
+            "scenario_type": "training",
             "model_profile_id": model_id,
             "world_source": "preset",
             "worldpack_id": "demo-world",
@@ -465,6 +468,118 @@ def test_public_showroom_keeps_scenarios_separate_from_worlds_and_users(tmp_path
 
     intruder = TestClient(admin.app)
     assert intruder.get(f"/api/showroom/runs/{run['id']}").status_code == 404
+
+
+def test_showroom_rejects_novel_create_and_update_with_422(tmp_path: Path):
+    write_worldpack(tmp_path, supported_modes=["rp", "training"])
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    payload = {
+        "title": "Active scenario contract",
+        "description": "Only active modes are accepted.",
+        "status": "draft",
+        "scenario_type": "novel",
+        "model_profile_id": model_id,
+        "world_source": "preset",
+        "worldpack_id": "demo-world",
+    }
+
+    rejected_create = admin.post("/api/admin/showroom/scenarios", json=payload)
+    assert rejected_create.status_code == 422, rejected_create.text
+
+    created = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={**payload, "scenario_type": "rp"},
+    )
+    assert created.status_code == 200, created.text
+    rejected_update = admin.patch(
+        f"/api/admin/showroom/scenarios/{created.json()['scenario']['id']}",
+        json={"scenario_type": "novel"},
+    )
+    assert rejected_update.status_code == 422, rejected_update.text
+
+
+def test_legacy_novel_showroom_is_archived_terminal_and_run_history_stays_readable(tmp_path: Path):
+    write_worldpack(tmp_path, supported_modes=["rp"])
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    scenario = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Legacy Showroom",
+            "description": "Stored legacy scenario.",
+            "status": "published",
+            "scenario_type": "rp",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "demo-world",
+        },
+    ).json()["scenario"]
+    visitor = TestClient(admin.app)
+    run_response = visitor.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={"character_name": "Legacy Hero", "character_prompt": "Historical run."},
+    )
+    assert run_response.status_code == 200, run_response.text
+    run = run_response.json()["run"]
+
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?",
+            (run["id"],),
+        ).fetchone()[0]
+        connection.execute(
+            "UPDATE showroom_scenarios SET scenario_type = 'novel', status = 'published' WHERE id = ?",
+            (scenario["id"],),
+        )
+        connection.execute(
+            "UPDATE parties SET scenario_type = 'novel', status = 'active' WHERE id = ?",
+            (party_id,),
+        )
+
+    for _ in range(2):
+        admin.app.state.party_store.init_db()
+        admin.app.state.showroom_store.init_db()
+
+    stored = next(
+        item
+        for item in admin.get("/api/admin/showroom/scenarios").json()["scenarios"]
+        if item["id"] == scenario["id"]
+    )
+    assert stored["scenario_type"] == "novel"
+    assert stored["status"] == "archived"
+    assert all(item["id"] != scenario["id"] for item in visitor.get("/api/showroom/scenarios").json()["scenarios"])
+    assert visitor.get(f"/api/showroom/runs/{run['id']}").status_code == 200
+    assert visitor.get(f"/api/showroom/runs/{run['id']}/history").status_code == 200
+
+    republish = admin.patch(
+        f"/api/admin/showroom/scenarios/{scenario['id']}",
+        json={"status": "published"},
+    )
+    assert republish.status_code == 400
+    assert republish.json()["detail"] == "archived showroom scenario is terminal"
+    new_run = visitor.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={"character_name": "Blocked", "character_prompt": "Must not run."},
+    )
+    assert new_run.status_code == 400
+    assert visitor.post(f"/api/showroom/runs/{run['id']}/start").status_code == 404
+    assert visitor.post(
+        f"/api/showroom/runs/{run['id']}/messages",
+        json={"content": "Must not run."},
+    ).status_code == 404
 
 
 def test_showroom_training_capabilities_are_validated_and_snapshotted(tmp_path: Path):
@@ -644,7 +759,7 @@ def test_showroom_prompt_world_and_cover_are_scenario_owned_runtime_content(tmp_
             "title": "Station at the edge",
             "description": "A public card title independent of the generated world.",
             "status": "published",
-            "scenario_type": "novel",
+            "scenario_type": "training",
             "model_profile_id": model_id,
             "world_source": "prompt",
             "world_prompt": "A remote scientific station loses contact during a polar night.",
@@ -1040,9 +1155,9 @@ def test_provider_payload_contains_relationship_pressure_on_first_attempt(
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=4,
-        nvidia_api_base="https://provider.invalid/v1",
-        nvidia_api_key="test",
-        nvidia_fallback_models=(),
+        llm_api_base="https://provider.invalid/v1",
+        llm_api_key="test",
+        llm_fallback_models=(),
     )
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Я смотрю на Бажену.")])
     neutral = RuleEngine().resolve(
@@ -1537,7 +1652,7 @@ def test_training_party_ignores_relationship_declaration_and_writes_no_relations
 
 
 def test_party_requires_manual_scenario_type_and_rejects_unsupported_mode(tmp_path: Path):
-    write_worldpack(tmp_path, supported_modes=["novel"])
+    write_worldpack(tmp_path, supported_modes=["rp"])
     c = client(tmp_path)
     model_id = c.get("/api/model-profiles").json()["model_profiles"][0]["id"]
     character = c.post(
@@ -1552,10 +1667,11 @@ def test_party_requires_manual_scenario_type_and_rejects_unsupported_mode(tmp_pa
     }
 
     assert c.post("/api/parties", json=base_payload).status_code == 422
-    assert c.post("/api/parties", json={**base_payload, "scenario_type": "rp"}).status_code == 400
-    created = c.post("/api/parties", json={**base_payload, "scenario_type": "novel"})
+    assert c.post("/api/parties", json={**base_payload, "scenario_type": "novel"}).status_code == 422
+    assert c.post("/api/parties", json={**base_payload, "scenario_type": "training"}).status_code == 400
+    created = c.post("/api/parties", json={**base_payload, "scenario_type": "rp"})
     assert created.status_code == 200
-    assert created.json()["party"]["scenario_type"] == "novel"
+    assert created.json()["party"]["scenario_type"] == "rp"
 
 
 def test_existing_parties_migrate_without_campaign_specific_scenario_inference(tmp_path: Path):
@@ -1718,49 +1834,45 @@ def test_rp_party_after_turn_10_keeps_narrator_response(tmp_path: Path):
     assert turn["narrative_response"] == expected
 
 
-def test_novel_party_has_no_checks_and_loads_world_prompts(tmp_path: Path):
+def test_legacy_novel_party_is_archived_readable_and_terminal(tmp_path: Path):
     write_worldpack(tmp_path)
     c = client(tmp_path)
-    party = create_demo_party(c, title="Shared Novel", scenario_type="novel")
+    party = create_demo_party(c, title="Legacy Novel", scenario_type="rp")
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        connection.execute(
+            "UPDATE parties SET scenario_type = 'novel', status = 'active' WHERE id = ?",
+            (party["id"],),
+        )
 
-    check = c.post(
-        f"/api/parties/{party['id']}/checks",
-        json={"check_type": "persuasion", "goal": "convince", "difficulty": 10},
-        headers={"Authorization": "Bearer test"},
+    for _ in range(2):
+        c.app.state.party_store.init_db()
+    migrated = c
+    stored = migrated.get(f"/api/parties/{party['id']}")
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["party"]["scenario_type"] == "novel"
+    assert stored.json()["party"]["status"] == "archived"
+    listed = migrated.get("/api/parties").json()["parties"]
+    assert any(item["id"] == party["id"] and item["scenario_type"] == "novel" for item in listed)
+
+    activated = migrated.post(f"/api/parties/{party['id']}/activate")
+    started = migrated.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "legacy-novel-start"},
     )
-    assert check.status_code == 400
-
-    turn = c.post(
+    messaged = migrated.post(
         f"/api/parties/{party['id']}/messages",
-        json={"content": "Я задерживаюсь у двери и отвечаю ей тихо."},
-        headers={"Authorization": "Bearer test"},
+        json={"content": "This must not run."},
     )
-    assert turn.status_code == 200
-    state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
-    assert state["timeline"][-1]["event"].startswith("novel turn")
-    metadata = latest_turn_metadata(c.app.state.party_store.store_for_party(party["id"]))
-    assert metadata["transport_status"] == "ok"
-
-    preview = c.post(
-        f"/api/parties/{party['id']}/prompt/preview",
-        json={"content": "Продолжить сцену", "source": "current"},
-    )
-    assert preview.status_code == 200
-    payload = preview.json()["preview"]
-    assert payload["outcome"]["result"] == "narrative_continuation"
-    assert payload["outcome"]["roll"] == 0
-    block_ids = {block["id"] for block in payload["blocks"]}
-    assert {"world_system_prompt", "world_authors_note"}.issubset(block_ids)
+    for response in (activated, started, messaged):
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "archived party is terminal"
 
 
 def test_scenario_system_prompts_have_distinct_contracts():
     rp_rules = NarrativeClient(Settings(scenario_type="rp")).scenario_rules()
-    novel_rules = NarrativeClient(Settings(scenario_type="novel")).scenario_rules()
     training_rules = NarrativeClient(Settings(scenario_type="training")).scenario_rules()
 
     assert "D20" in rp_rules
-    assert "collaborative novel" in novel_rules
-    assert "There are no dice" in novel_rules
     assert "deterministic training" in training_rules
     assert "Do not coach, hint, assess" in training_rules
 
@@ -1851,7 +1963,7 @@ def test_admin_selects_one_service_model_for_entire_stack(tmp_path: Path):
 
     runtime = service_model_settings(replace(admin.app.state.settings, service_model_choice="or-qwen-3.5-flash"))
     assert runtime.llm_provider == "openrouter"
-    assert runtime.nvidia_api_key == "stack-openrouter-key"
+    assert runtime.llm_api_key == "stack-openrouter-key"
     assert runtime.narrative_model == "qwen/qwen3.5-flash-02-23"
 
     alice = TestClient(admin.app)
@@ -2151,9 +2263,14 @@ def test_party_byok_is_scoped_to_current_party(tmp_path: Path):
     login(c)
     first = create_demo_party(c, title="BYOK A", character_name="A")
     second = create_demo_party(c, title="BYOK B", character_name="B")
+    retired = c.post(
+        f"/api/parties/{first['id']}/byok",
+        json={"label": "Retired provider", "api_key": "must-not-store", "provider": "nvidia"},
+    )
+    assert retired.status_code == 422
     response = c.post(
         f"/api/parties/{first['id']}/byok",
-        json={"label": "Test NVIDIA", "api_key": "managed-provider-key", "provider": "nvidia", "is_default": True},
+        json={"label": "Test OpenRouter", "api_key": "managed-provider-key", "provider": "openrouter", "is_default": True},
     )
     assert response.status_code == 200, response.text
     key = response.json()["api_key"]
@@ -2165,10 +2282,10 @@ def test_party_byok_is_scoped_to_current_party(tmp_path: Path):
     first_party = c.app.state.party_store.get_party(first["id"])
     second_party = c.app.state.party_store.get_party(second["id"])
     assert c.app.state.auth_store.default_provider_secret(
-        provider="nvidia", owner_user_id=first_party.owner_user_id, party_id=first["id"]
+        provider="openrouter", owner_user_id=first_party.owner_user_id, party_id=first["id"]
     ) == "managed-provider-key"
     assert c.app.state.auth_store.default_provider_secret(
-        provider="nvidia", owner_user_id=second_party.owner_user_id, party_id=second["id"]
+        provider="openrouter", owner_user_id=second_party.owner_user_id, party_id=second["id"]
     ) is None
 
 
@@ -2232,7 +2349,7 @@ def test_model_profiles_include_rp_descriptions(tmp_path: Path):
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
     assert len(models) >= 3
-    assert models[0]["model"] == "z-ai/glm-5.2"
+    assert models[0]["model"] == "gemini-3.6-flash"
     assert models[0]["rp_fit"]
     assert models[0]["context_window"]
     assert "reasoning" in models[0]["tags"]
@@ -2242,9 +2359,95 @@ def test_model_profiles_are_grouped_by_supported_providers_and_filter_small_mode
     c = client(tmp_path)
     models = c.get("/api/model-profiles").json()["model_profiles"]
 
-    assert {model["provider"] for model in models} == {"nvidia"}
-    assert all("1M" in model["context_window"] for model in models)
+    assert {model["provider"] for model in models} == {"gemini", "openrouter"}
+    assert all(model["context_window"] for model in models)
     assert not any(model["model"] == "openai/gpt-oss-20b" for model in models)
+
+
+def test_historical_nvidia_profile_party_and_log_are_readable_but_runtime_is_disabled(tmp_path: Path):
+    write_worldpack(tmp_path)
+    c = client(tmp_path)
+    party = create_demo_party(c, title="Historical provider row")
+    ServiceModelClient(c.app.state.settings)
+    timestamp = "2026-08-01T00:00:00Z"
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        connection.execute(
+            """
+            INSERT INTO model_profiles(
+                id, title, provider, base_url, model, params_json,
+                api_key_source, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-nvidia-profile",
+                "Historical NVIDIA profile",
+                "nvidia",
+                "https://retired-provider.invalid/v1",
+                "historical/model",
+                json.dumps({"context_tokens": 131072, "source": "historical"}),
+                "historical",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            "UPDATE parties SET model_profile_id = ? WHERE id = ?",
+            ("legacy-nvidia-profile", party["id"]),
+        )
+        connection.execute(
+            """
+            INSERT INTO service_call_log(
+                party_id, turn_id, role, prompt_text, raw_response, created_at,
+                status, provider, model, trace_schema_version
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                party["id"],
+                1,
+                "memory_summary",
+                "historical prompt",
+                "historical response",
+                timestamp,
+                "completed",
+                "nvidia",
+                "historical/model",
+                "rp-gateway.service-call.v1",
+            ),
+        )
+
+    stored = c.get(f"/api/parties/{party['id']}")
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["party"]["model_profile"]["provider"] == "nvidia"
+    assert all(
+        profile["provider"] != "nvidia"
+        for profile in c.get("/api/model-profiles").json()["model_profiles"]
+    )
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        historical_log = connection.execute(
+            "SELECT provider, model, raw_response FROM service_call_log WHERE party_id = ?",
+            (party["id"],),
+        ).fetchone()
+    assert historical_log == ("nvidia", "historical/model", "historical response")
+
+    rejected_create = c.post(
+        "/api/parties",
+        json={
+            "title": "Must stay disabled",
+            "scenario_type": "rp",
+            "worldpack_id": party["worldpack_id"],
+            "player_character_id": party["player_character_id"],
+            "model_profile_id": "legacy-nvidia-profile",
+        },
+    )
+    assert rejected_create.status_code == 400
+    assert "provider is retired" in rejected_create.json()["detail"]
+    for response in (
+        c.post(f"/api/parties/{party['id']}/activate"),
+        c.post(f"/api/parties/{party['id']}/start"),
+        c.post(f"/api/parties/{party['id']}/messages", json={"content": "Must not route."}),
+    ):
+        assert response.status_code == 409, response.text
+        assert "provider is retired" in response.json()["detail"]
 
 
 def test_small_context_local_vulkan_profile_is_not_selectable(tmp_path: Path):
@@ -2355,7 +2558,7 @@ def test_openrouter_catalog_preserves_prompt_cache_prices(monkeypatch):
             assert url == "https://openrouter.test/api/v1/models"
             return FakeResponse()
 
-    monkeypatch.setattr("app.services.nvidia_catalog.httpx.Client", FakeClient)
+    monkeypatch.setattr("app.services.provider_catalog.httpx.Client", FakeClient)
 
     profiles = fetch_provider_api_profiles(
         Settings(openrouter_api_base="https://openrouter.test/api/v1"),
@@ -2370,10 +2573,10 @@ def test_openrouter_catalog_preserves_prompt_cache_prices(monkeypatch):
     assert profiles[0]["params"]["pricing_input_cache_write_1h"] == "0.000001"
 
 
-def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks():
+def test_gemini_party_does_not_inherit_openrouter_fallbacks():
     settings = Settings(
-        nvidia_fallback_models=("deepseek-ai/deepseek-v4-pro",),
-        nvidia_disabled_models=("openai/gpt-oss-20b",),
+        openrouter_fallback_models=("openrouter/auto",),
+        llm_disabled_models=("gemini-3.6-flash",),
         model_attempt_timeout_seconds=150,
     )
     party = SimpleNamespace(
@@ -2391,8 +2594,8 @@ def test_non_nvidia_party_uses_selected_provider_without_nvidia_model_fallbacks(
 
     assert selected.llm_provider == "gemini"
     assert selected.narrative_model == "gemini-3.6-flash"
-    assert selected.nvidia_fallback_models == ()
-    assert selected.nvidia_disabled_models == ()
+    assert selected.llm_fallback_models == ()
+    assert selected.llm_disabled_models == ()
     assert selected.model_attempt_timeout_seconds == 150
 
 
@@ -2412,8 +2615,8 @@ def test_openrouter_party_uses_same_provider_fallbacks():
     selected = settings_for_party(settings, party)
 
     assert selected.llm_provider == "openrouter"
-    assert selected.nvidia_fallback_models == ("openrouter/auto",)
-    assert selected.nvidia_disabled_models == ()
+    assert selected.llm_fallback_models == ("openrouter/auto",)
+    assert selected.llm_disabled_models == ()
 
 
 def test_party_narrator_deadline_overrides_local_service_deadline():
@@ -2704,8 +2907,8 @@ def test_reconstructed_last_prompt_does_not_apply_later_pending_correction(tmp_p
     assert "The gate is open." not in prompt
 
 
-@pytest.mark.parametrize("scenario_type", ["training", "novel"])
-def test_typed_story_memory_correction_rejects_non_rp_without_turn(
+@pytest.mark.parametrize("scenario_type", ["training"])
+def test_typed_story_memory_correction_rejects_training_without_turn(
     tmp_path: Path,
     scenario_type: str,
 ):
@@ -2969,7 +3172,7 @@ def test_post_turn_helpers_can_run_without_blocking_response(tmp_path: Path, mon
             app_env="test",
             database_url=f"sqlite:///{tmp_path / 'helpers.db'}",
             world_state_path=str(tmp_path / "state.json"),
-            nvidia_api_base="mock://success",
+            llm_api_base="mock://success",
             post_turn_helpers_inline=False,
         )
         store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
@@ -3680,7 +3883,7 @@ def test_narrative_prompt_includes_long_term_party_memory():
         messages=[ChatMessage(role="user", content="I inspect the ashes.")],
     )
 
-    messages = NarrativeClient(Settings(nvidia_api_base="mock://success")).narrative_messages(
+    messages = NarrativeClient(Settings(llm_api_base="mock://success")).narrative_messages(
         request,
         base_state(),
         outcome,
@@ -3726,7 +3929,7 @@ def test_narrative_prompt_retrieves_only_relevant_character_state():
         messages=[ChatMessage(role="user", content="I ask the king about the missing envoy.")],
     )
 
-    messages = NarrativeClient(Settings(nvidia_api_base="mock://success")).narrative_messages(
+    messages = NarrativeClient(Settings(llm_api_base="mock://success")).narrative_messages(
         request,
         state,
         outcome,
@@ -3744,15 +3947,6 @@ def test_narrative_prompt_retrieves_only_relevant_character_state():
     assert "player_king" in state_summary
     assert "player_advisor" in state_summary
     assert "player_archivist" not in state_summary
-
-
-def test_build_catalog_parser_discards_non_rp_models():
-    html = """
-    <a href="/meta/llama-3_3-70b-instruct">Llama</a>
-    <a href="/nvidia/llama-3_1-nemoguard-8b-content-safety">Guard</a>
-    <a href="/qwen/qwen3.5-122b-a10b">Qwen</a>
-    """
-    assert parse_build_catalog(html) == ["meta/llama-3.3-70b-instruct", "qwen/qwen3.5-122b-a10b"]
 
 
 def test_prompt_world_party_and_delete(tmp_path: Path):
@@ -4052,10 +4246,10 @@ def test_openrouter_deepseek_flash_uses_supported_throughput_routing(
     monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
     settings = Settings(
         llm_provider="openrouter",
-        nvidia_api_base="https://openrouter.ai/api/v1",
-        nvidia_api_key="test-key",
+        llm_api_base="https://openrouter.ai/api/v1",
+        llm_api_key="test-key",
         narrative_model="deepseek/deepseek-v4-flash",
-        nvidia_fallback_models=(),
+        llm_fallback_models=(),
     )
     request = ChatCompletionRequest(
         model=settings.narrative_model,
@@ -4111,10 +4305,10 @@ def test_narrator_settings_require_supported_primary_and_do_not_leak_to_fallback
     monkeypatch.setattr(httpx, "AsyncClient", FallbackAsyncClient)
     settings = Settings(
         llm_provider="openrouter",
-        nvidia_api_base="https://openrouter.ai/api/v1",
-        nvidia_api_key="test-key",
+        llm_api_base="https://openrouter.ai/api/v1",
+        llm_api_key="test-key",
         narrative_model="deepseek/deepseek-v4-flash",
-        nvidia_fallback_models=("openai/gpt-5.6-luna",),
+        llm_fallback_models=("openai/gpt-5.6-luna",),
     )
     request = ChatCompletionRequest(
         model=settings.narrative_model,
@@ -4186,10 +4380,10 @@ def test_narrative_retries_provider_rejection_with_configured_fallback(
 
     monkeypatch.setattr(httpx, "AsyncClient", FallbackAsyncClient)
     settings = Settings(
-        nvidia_api_base="https://provider.example/v1",
-        nvidia_api_key="test-key",
+        llm_api_base="https://provider.example/v1",
+        llm_api_key="test-key",
         narrative_model="primary/model",
-        nvidia_fallback_models=("fallback/model",),
+        llm_fallback_models=("fallback/model",),
     )
     request = ChatCompletionRequest(
         model=settings.narrative_model,
@@ -4250,10 +4444,10 @@ def test_narrative_retries_network_error_with_configured_fallback(
 
     monkeypatch.setattr(httpx, "AsyncClient", NetworkFallbackAsyncClient)
     settings = Settings(
-        nvidia_api_base="https://provider.example/v1",
-        nvidia_api_key="test-key",
+        llm_api_base="https://provider.example/v1",
+        llm_api_key="test-key",
         narrative_model="primary/model",
-        nvidia_fallback_models=("fallback/model",),
+        llm_fallback_models=("fallback/model",),
     )
     request = ChatCompletionRequest(
         model=settings.narrative_model,
@@ -4389,10 +4583,10 @@ def test_narrative_wall_clock_deadline_covers_the_complete_response(
 
     monkeypatch.setattr(httpx, "AsyncClient", SlowAsyncClient)
     settings = Settings(
-        nvidia_api_base="https://provider.example/v1",
-        nvidia_api_key="test-key",
+        llm_api_base="https://provider.example/v1",
+        llm_api_key="test-key",
         narrative_model="test/model",
-        nvidia_fallback_models=(),
+        llm_fallback_models=(),
         model_attempt_timeout_seconds=0.01,
     )
     request = ChatCompletionRequest(
@@ -4490,8 +4684,8 @@ def test_party_rate_limit_is_saved_and_reported_to_gui(tmp_path: Path):
     assert response.json()["detail"] == {
         "code": "provider_rate_limited",
         "message": "The selected model is temporarily rate limited.",
-        "provider": "nvidia",
-        "model": "z-ai/glm-5.2",
+        "provider": "gemini",
+        "model": "gemini-3.6-flash",
         "retry_after_seconds": 3,
         "error_type": "rate_limit_exceeded",
     }
@@ -4811,16 +5005,18 @@ def test_training_runtime_repairs_only_soft_validation_failures(
         assert "Investigator" in response.json()["choices"][0]["message"]["content"]
 
 
-def test_default_nvidia_attempt_order_keeps_user_models():
+def test_configured_attempt_order_keeps_explicit_models():
     from app.core.config import Settings
     from app.services.narrative import NarrativeClient
 
-    settings = Settings(nvidia_api_base="mock://success")
+    settings = Settings(
+        llm_api_base="mock://success",
+        narrative_model="openrouter/auto",
+        llm_fallback_models=("openrouter/free",),
+    )
     assert NarrativeClient(settings).model_attempts(settings.narrative_model) == [
-        "z-ai/glm-5.2",
-        "deepseek-ai/deepseek-v4-pro",
-        "deepseek-ai/deepseek-v4-flash",
-        "qwen/qwen3.5-397b-a17b",
+        "openrouter/auto",
+        "openrouter/free",
     ]
 
 
@@ -4831,8 +5027,8 @@ def test_disabled_primary_model_uses_fallback(tmp_path: Path):
     from app.services.world_instructor import WorldInstructor
 
     settings = Settings(
-        nvidia_fallback_models=("fallback/model", "other/model"),
-        nvidia_disabled_models=("primary/model",),
+        llm_fallback_models=("fallback/model", "other/model"),
+        llm_disabled_models=("primary/model",),
     )
     state_store = StateStore(str(tmp_path / "state.db"), settings.campaign_id, str(tmp_path / "state.json"))
     assert NarrativeClient(settings).model_attempts("primary/model") == ["fallback/model", "other/model"]

@@ -31,7 +31,8 @@ Raw transcript остаётся durable source history. Мягкая 50% charact
 ## Decision
 
 Решение применяется только к `scenario_type=rp` с effective revision `7`.
-Revisions `0..6`, `novel` и `training` не меняются.
+Revisions `0..6` и `training` не меняются. Novel proof ниже — историческое
+evidence до retirement по Decision 036.
 
 ### Полный uncovered tail
 

@@ -195,17 +195,17 @@ const metaHints = {
 
 const scenarioTypeLabels = {
   rp: "RP",
-  novel: "Роман",
+  novel: "Архивный Novel",
   training: "Обучение",
 };
 
 const providerLabels = {
   local: "Локальная Vulkan",
-  nvidia: "NVIDIA",
+  nvidia: "NVIDIA (архив)",
   gemini: "Gemini",
   openrouter: "OpenRouter",
 };
-const providerOrder = ["local", "nvidia", "gemini", "openrouter"];
+const providerOrder = ["local", "gemini", "openrouter"];
 const narratorReasoningLabels = {
   none: "Выкл.",
   low: "Низкая",
@@ -960,7 +960,7 @@ function renderContext() {
       : (Number(cache.cache_write_tokens || 0) ? `запись: ${formatTokens(cache.cache_write_tokens)}` : "провайдер не вернул cache hit"))
     : "провайдер не передал метрики";
   els.contextSummary.innerHTML = `
-    <div class="context-meter ${escapeHtml(estimate.severity || "unknown")}" title="Оценка приблизительная: tokenizer NVIDIA недоступен, считаем по размеру prompt.">
+    <div class="context-meter ${escapeHtml(estimate.severity || "unknown")}" title="Оценка приблизительная: считаем по размеру prompt.">
       <div class="context-meter-head">
         <strong>~${formatTokens(estimate.estimated_total_tokens)} токенов</strong>
         <span>${escapeHtml(source)} · ${escapeHtml(percentLabel)}</span>
@@ -971,7 +971,7 @@ function renderContext() {
     ${stateItem("Лимит модели", `${escapeHtml(limitLabel)} · ${escapeHtml(estimate.context_window || "уточняется")}`, "Контекстное окно активной модели из model profile.")}
     ${stateItem("История", `${escapeHtml(historyText)}${omitted ? `<br><span class="warning-text">вне прямого окна ~${omitted} ходов</span>` : ""}`, historyHint)}
     ${stateItem("Разбивка", `state ~${escapeHtml(stateTokens)} · главы ~${escapeHtml(memoryTokens)}${escapeHtml(storyMemoryBreakdown)} · история ~${escapeHtml(historyTokens)}${escapeHtml(memoryCoverage)} · ответ до ${escapeHtml(formatTokens(estimate.completion_reserved_tokens || 0))}`, "Оценка входного prompt плюс зарезервированный max_tokens ответа.")}
-    ${stateItem("Prompt cache", escapeHtml(cacheValue), "Фактическая метрика последнего ответа: hit — токены, прочитанные из кэша; запись — создание нового кэш-префикса. Для NVIDIA и локальной модели метрика может отсутствовать.")}
+    ${stateItem("Prompt cache", escapeHtml(cacheValue), "Фактическая метрика последнего ответа: hit — токены, прочитанные из кэша; запись — создание нового кэш-префикса. Для локальной модели метрика может отсутствовать.")}
     ${stateItem("NPC", `~${escapeHtml(characterTokens)}`, "Выбранные карточки персонажей в фактическом prompt.")}
     ${notes.length ? `<div class="context-notes">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>` : ""}
   `;
@@ -2063,7 +2063,7 @@ function renderDialogOptions() {
     input.checked = false;
   });
   renderWorldOptions();
-  renderProviderOptions(els.modelProviderSelect, "nvidia");
+  renderProviderOptions(els.modelProviderSelect, "openrouter");
   renderDialogModelOptions();
   const pack = selectedWorldpack();
   els.partyTitleInput.value = pack ? `${pack.title}: партия` : "Новая партия";
@@ -3571,9 +3571,6 @@ function selectedRadioValue(name, fallback = "ready") {
 
 function sourceLabel(source) {
   const labels = {
-    static_build_nvidia_fallback: "статичный fallback build.nvidia.com",
-    build_nvidia_live: "live build.nvidia.com",
-    nvidia_api_live: "live NVIDIA /v1/models",
     gemini_server_config: "настроено на сервере",
     gemini_api_live: "live Gemini /models",
     openrouter_server_config: "настроено на сервере",

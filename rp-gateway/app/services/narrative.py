@@ -20,7 +20,7 @@ from app.services.character_retrieval import (
     selected_character_relationships,
 )
 from app.services.context_budget import estimate_tokens
-from app.services.nvidia_catalog import normalize_provider
+from app.services.provider_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
 from app.services.scene_state import initial_scene_state, scene_claim_baseline
 from app.services.trace_redaction import redact_trace_value
@@ -282,7 +282,11 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
     ) -> dict[str, Any]:
-        headers = outbound_headers(self.settings, inbound_authorization)
+        headers = outbound_headers(
+            self.settings.llm_provider,
+            self.settings.llm_api_key,
+            inbound_authorization,
+        )
         payload = request.model_dump(exclude_none=True)
         if repair_instruction:
             payload["messages"] = self.repair_messages(
@@ -310,7 +314,7 @@ class NarrativeClient:
         payload["stream"] = False
         narrator_settings_model = (request._narrator_settings_model or "").strip().lower()
 
-        if self.settings.nvidia_api_base.startswith("mock://"):
+        if self.settings.llm_api_base.startswith("mock://"):
             attempt_payload = copy.deepcopy(payload)
             attempt_payload["model"] = self.settings.narrative_model
             uses_narrator_settings = narrator_settings_model == self.settings.narrative_model.strip().lower()
@@ -387,7 +391,7 @@ class NarrativeClient:
                     try:
                         async with asyncio.timeout(self.settings.model_attempt_timeout_seconds):
                             response = await client.post(
-                                f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                                f"{self.settings.llm_api_base.rstrip('/')}/chat/completions",
                                 json=attempt_payload,
                                 headers=headers,
                             )
@@ -398,7 +402,7 @@ class NarrativeClient:
                                 "Narrative provider exceeded the wall-clock deadline",
                                 request=httpx.Request(
                                     "POST",
-                                    f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                                    f"{self.settings.llm_api_base.rstrip('/')}/chat/completions",
                                 ),
                             )
                         last_timeout = timeout_error
@@ -631,14 +635,13 @@ class NarrativeClient:
 
     def trace_secrets(self) -> tuple[str | None, ...]:
         return (
-            self.settings.nvidia_api_key,
-            self.settings.service_nvidia_api_key,
+            self.settings.llm_api_key,
             self.settings.service_openrouter_api_key,
         )
 
     def model_attempts(self, primary_model: str) -> list[str]:
-        disabled = set(self.settings.nvidia_disabled_models)
-        candidates = [primary_model, *self.settings.nvidia_fallback_models]
+        disabled = set(self.settings.llm_disabled_models)
+        candidates = [primary_model, *self.settings.llm_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if not model or model in disabled or model in attempts:
@@ -889,14 +892,6 @@ class NarrativeClient:
             "Treat current state as authoritative, do not invent missing resources, and never expose service JSON, "
             "analysis, recommendations, diagnostics, critique, outcome tags, or Gateway wording. "
         )
-        if self.settings.scenario_type == "novel":
-            return common + (
-                "You are the co-author and narrator of a collaborative novel. There are no dice, skills, difficulty "
-                "classes, checks, or mechanical success labels. Continue the player's prose and dialogue as fiction, "
-                "with emphasis on character voice, relationships, atmosphere, pacing, and continuity. The player may "
-                "write character actions or directorial wishes; honor them when consistent with established facts. "
-                "Advance the scene without turning it into a game menu or asking for a roll."
-            )
         if self.settings.scenario_type == "training":
             return common + (
                 "You are the runtime narrator for a deterministic training scenario. There are no random rolls or "
@@ -935,11 +930,11 @@ class NarrativeClient:
         artifact_contract: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        mode = self.settings.nvidia_api_base.removeprefix("mock://")
+        mode = self.settings.llm_api_base.removeprefix("mock://")
         if mode == "timeout":
             raise httpx.TimeoutException("mock timeout")
         if mode == "http-503":
-            request = httpx.Request("POST", "https://mock.nvidia.local/chat/completions")
+            request = httpx.Request("POST", "https://mock.provider.local/chat/completions")
             response = httpx.Response(503, request=request)
             raise httpx.HTTPStatusError("mock provider unavailable", request=request, response=response)
         if mode == "rate-limit":

@@ -55,11 +55,10 @@ The client uses only party-scoped API routes:
 
 Model dropdown behavior:
 
-- the UI first selects `NVIDIA`, `Gemini`, or `OpenRouter`, then shows only
+- the UI first selects `Local`, `Gemini`, or `OpenRouter`, then shows only
   models from that provider;
 - gateway seeds a curated static catalog and refreshes each provider through
   its OpenAI-compatible `/models` endpoint;
-- when enabled, gateway tries to refresh from `build.nvidia.com/models?q=llm`;
 - OpenRouter models are filtered for text output, useful context, and RP quality;
   specialized storytelling models are ranked first and free models are marked;
 - provider keys can come from server environment variables or the admin key
@@ -70,6 +69,6 @@ Party creation supports installed worldpacks or prompt-generated worlds. Prompt
 worlds are saved by gateway as generated worldpacks under the party state volume,
 then referenced by the normal party registry.
 
-Party creation also requires an explicit scenario type: `rp`, `novel`, or
-`training`. The type is persisted on the party and controls Gateway mechanics;
+Party creation also requires an explicit scenario type: `rp` or `training`.
+The type is persisted on the party and controls Gateway mechanics;
 worldpacks can advertise supported types but cannot select one automatically.

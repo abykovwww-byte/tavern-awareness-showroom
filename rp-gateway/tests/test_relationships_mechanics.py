@@ -714,10 +714,11 @@ def test_revision_seven_handle_chat_passes_current_action_into_relationship_scop
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=7,
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-service-key",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-service-key",
         local_llm_enabled=False,
         post_turn_helpers_inline=False,
         party_memory_retrieval_enabled=False,
@@ -821,8 +822,8 @@ def test_revisions_zero_through_six_ignore_scene_allowlist(
         assert due is not None and "Мария" in due
 
 
-@pytest.mark.parametrize("scenario_type", ["novel", "training"])
-def test_non_rp_modes_keep_relationship_pressure_disabled(
+@pytest.mark.parametrize("scenario_type", ["training"])
+def test_training_mode_keeps_relationship_pressure_disabled(
     tmp_path: Path,
     scenario_type: str,
 ) -> None:

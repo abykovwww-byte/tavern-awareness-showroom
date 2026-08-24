@@ -87,8 +87,8 @@ def test_narrative_trace_captures_exact_policy_payload_and_raw_response(tmp_path
         party_state_root=str(tmp_path / "parties"),
         worldpacks_path=str(tmp_path / "worldpacks"),
         showroom_cover_dir=str(tmp_path / "covers"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key="trace-secret",
+        llm_api_base="mock://success",
+        llm_api_key="trace-secret",
         narrative_model="deepseek/deepseek-v4-flash",
         llm_provider="openrouter",
         scenario_type="rp",
@@ -157,16 +157,17 @@ def test_trace_recorder_failure_does_not_change_turn_result(tmp_path: Path) -> N
     settings = Settings(
         app_env="test",
         campaign_id="party-trace",
-        scenario_type="novel",
+        scenario_type="training",
         database_url=f"sqlite:///{tmp_path / 'rp_gateway.db'}",
         world_state_path=str(tmp_path / "state" / "party-trace" / "current.json"),
         party_state_root=str(tmp_path / "state"),
         worldpacks_path=str(tmp_path / "worldpacks"),
         showroom_cover_dir=str(tmp_path / "covers"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-key",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-key",
         post_turn_helpers_inline=False,
     )
 
@@ -203,10 +204,11 @@ def test_adr026_post_commit_relationship_mutation_is_captured(tmp_path: Path) ->
         party_state_root=str(tmp_path / "state"),
         worldpacks_path=str(tmp_path / "worldpacks"),
         showroom_cover_dir=str(tmp_path / "covers"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-key",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-key",
         post_turn_helpers_inline=False,
     )
 
@@ -305,16 +307,17 @@ def test_adjudicator_redacts_bare_runtime_secret_from_input_and_assembly(tmp_pat
     settings = Settings(
         app_env="test",
         campaign_id="party-trace",
-        scenario_type="novel",
+        scenario_type="training",
         database_url=f"sqlite:///{tmp_path / 'rp_gateway.db'}",
         world_state_path=str(tmp_path / "state" / "party-trace" / "current.json"),
         party_state_root=str(tmp_path / "state"),
         worldpacks_path=str(tmp_path / "worldpacks"),
         showroom_cover_dir=str(tmp_path / "covers"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key=secret,
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key=secret,
+        llm_api_base="mock://success",
+        llm_api_key=secret,
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key=secret,
         post_turn_helpers_inline=False,
     )
 
@@ -809,8 +812,8 @@ def test_migrated_legacy_service_call_remains_visible_by_turn_id(tmp_path: Path)
     ServiceModelClient(
         Settings(
             database_url=f"sqlite:///{tmp_path / 'rp_gateway.db'}",
-            nvidia_api_base="mock://success",
-            nvidia_api_key="test-key",
+            llm_api_base="mock://success",
+            llm_api_key="test-key",
         )
     )
     with store.connect() as connection:
@@ -990,15 +993,19 @@ def test_party_trace_api_round_trip_and_no_store(tmp_path: Path) -> None:
         party_state_root=str(tmp_path / "state" / "parties"),
         showroom_cover_dir=str(tmp_path / "covers"),
         worldpacks_path=str(tmp_path / "worldpacks"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-key",
+        llm_provider="openrouter",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        openrouter_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-key",
         post_turn_helpers_inline=True,
         auth_enabled=False,
     )
     client = TestClient(create_app(settings))
-    model_id = client.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    model_profiles = client.get("/api/model-profiles").json()["model_profiles"]
+    model_id = next(item["id"] for item in model_profiles if item["provider"] == "openrouter")
     character = client.post(
         "/api/player-characters",
         json={"worldpack_id": "demo", "name": "Mira", "description": "Tester", "profile": {}},
@@ -1062,10 +1069,13 @@ def test_trace_api_is_admin_only_when_auth_is_enabled(tmp_path: Path) -> None:
         party_state_root=str(tmp_path / "state" / "parties"),
         showroom_cover_dir=str(tmp_path / "covers"),
         worldpacks_path=str(tmp_path / "worldpacks"),
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-key",
+        llm_provider="openrouter",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        openrouter_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-key",
         post_turn_helpers_inline=True,
         auth_enabled=True,
         bootstrap_admin_username="admin",
@@ -1094,7 +1104,8 @@ def test_trace_api_is_admin_only_when_auth_is_enabled(tmp_path: Path) -> None:
     assert bob.post(
         "/api/auth/login", json={"username": "bob", "password": "bob-secret"}
     ).status_code == 200
-    model_id = alice.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    model_profiles = alice.get("/api/model-profiles").json()["model_profiles"]
+    model_id = next(item["id"] for item in model_profiles if item["provider"] == "openrouter")
     character = alice.post(
         "/api/player-characters",
         json={"worldpack_id": "demo", "name": "Alice", "description": "Tester", "profile": {}},

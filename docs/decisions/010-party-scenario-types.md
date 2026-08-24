@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted; RP resolution details are superseded by Decision 024 for parties on
-`rp-core.v2`. Scenario separation and legacy `rp-core.v1` compatibility remain.
+Accepted; active scenario creation is superseded by Decision 036 and now allows
+only `rp` and `training`. Stored `novel` remains a legacy read/migration value.
+RP resolution details are superseded by Decision 024 for parties on `rp-core.v2`.
 
 ## Problem
 
@@ -30,6 +31,11 @@ silently choose or change it.
   versioned migration.
 
 ### `novel`
+
+Retired from active creation and execution by
+[Decision 036](036-retire-novel-and-nvidia.md). The following bullets describe
+the historical contract only; stored rows remain readable and are archived
+without conversion to RP.
 
 - Do not roll dice or create skill-check records.
 - Treat player prose, dialogue, and directorial input as collaborative fiction.
@@ -63,7 +69,7 @@ re-enable mechanics forbidden by it.
 
 ## Compatibility
 
-Worldpack manifests may declare:
+Historical WorldPack manifests could declare:
 
 ```json
 "scenario_types": {
@@ -72,13 +78,17 @@ Worldpack manifests may declare:
 }
 ```
 
-The UI filters unsupported combinations after the user chooses a type. The API
-also rejects an unsupported combination. Generated prompt-worlds without this
-metadata support all three types.
+This manifest is historical evidence only. The active UI does not offer the
+retired value, and active request validation rejects it before WorldPack
+compatibility is evaluated. Generated prompt-worlds without this metadata may
+be used only with the two active request types.
 
-Existing SQLite databases add `parties.scenario_type` through an additive
+Active manifests declare only `rp` and/or `training`. Existing SQLite databases add `parties.scenario_type` through an additive
 migration. Existing Awareness parties migrate to `training`; other existing
 parties migrate to `rp`. New parties always provide the field explicitly.
+
+Decision 036 adds a second idempotent boundary migration that archives stored
+`novel` parties without rewriting their scenario type or history.
 
 The executable training contract and compatibility policy are defined by
 [Decision 017](017-worldpack-owned-training-runtime.md).

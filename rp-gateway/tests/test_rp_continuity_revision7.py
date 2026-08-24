@@ -38,7 +38,7 @@ def set_worldpack_revision(pack_dir: Path, revision: int) -> None:
         (6, 7, "rp", 6),
         (7, 7, "rp", 7),
         (7, 6, "rp", 6),
-        (7, 7, "novel", 0),
+        (7, 7, "training", 0),
     ],
 )
 def test_revision_stamp_matches_api_sqlite_and_party_runtime(
@@ -48,7 +48,7 @@ def test_revision_stamp_matches_api_sqlite_and_party_runtime(
     scenario_type: str,
     expected_revision: int,
 ) -> None:
-    pack_dir = write_worldpack(tmp_path, supported_modes=["rp", "novel"])
+    pack_dir = write_worldpack(tmp_path, supported_modes=["rp", "training"])
     set_worldpack_revision(pack_dir, declared_revision)
     api = client(tmp_path, rp_contract_observed_revision=observed_revision)
 
@@ -212,10 +212,11 @@ def revision_seven_overflow_adjudicator(
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=7,
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-service-key",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-service-key",
         local_llm_enabled=False,
         post_turn_helpers_inline=False,
         party_context_max_tokens=context_tokens,
@@ -360,7 +361,9 @@ def test_story_memory_catch_up_drains_multiple_batches_and_reports_threshold(tmp
         Settings(
             scenario_type="rp",
             rp_contract_revision=7,
-            service_nvidia_api_base="mock://success",
+            service_model_choice="or-qwen-3.5-flash",
+            openrouter_api_base="mock://success",
+            service_openrouter_api_key="test-service-key",
             local_llm_enabled=False,
             rp_story_memory_update_turns=2,
             rp_story_memory_batch_tokens=1,
@@ -392,7 +395,9 @@ def test_story_memory_catch_up_stops_at_the_safety_ceiling(tmp_path: Path) -> No
         Settings(
             scenario_type="rp",
             rp_contract_revision=7,
-            service_nvidia_api_base="mock://success",
+            service_model_choice="or-qwen-3.5-flash",
+            openrouter_api_base="mock://success",
+            service_openrouter_api_key="test-service-key",
             local_llm_enabled=False,
             rp_story_memory_batch_tokens=1,
         ),
@@ -868,10 +873,11 @@ def test_adjudicator_fails_before_provider_when_state_changes_during_assembly(
         scenario_type="rp",
         rp_contract_version="rp-core.v2",
         rp_contract_revision=7,
-        nvidia_api_base="mock://success",
-        nvidia_api_key="test-key",
-        service_nvidia_api_base="mock://success",
-        service_nvidia_api_key="test-service-key",
+        llm_api_base="mock://success",
+        llm_api_key="test-key",
+        service_model_choice="or-qwen-3.5-flash",
+        openrouter_api_base="mock://success",
+        service_openrouter_api_key="test-service-key",
         local_llm_enabled=False,
         post_turn_helpers_inline=False,
         party_context_max_tokens=5_000,

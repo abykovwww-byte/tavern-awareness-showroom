@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import httpx
 
@@ -69,6 +69,8 @@ class ServiceModelClient:
         self,
         *,
         role: str,
+        provider: Literal["local", "openrouter"],
+        model: str,
         party_id: str | None,
         turn_id: int | None,
         prompt: str,
@@ -81,13 +83,13 @@ class ServiceModelClient:
         payload.update(opts)
         if "messages" not in payload:
             payload["messages"] = [{"role": "user", "content": prompt}]
-        if "model" not in payload:
-            payload["model"] = self.settings.narrative_model
+        payload["model"] = model
 
         response: httpx.Response | None = None
         data: dict[str, Any] | None = None
         started = time.perf_counter()
         try:
+            base_url, api_key = self._route(provider)
             client_options: dict[str, Any] = {
                 "timeout": httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0),
             }
@@ -95,13 +97,13 @@ class ServiceModelClient:
                 client_options["transport"] = self.transport
             async with httpx.AsyncClient(**client_options) as client:
                 response = await client.post(
-                    f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                    f"{base_url.rstrip('/')}/chat/completions",
                     json=payload,
-                    headers=outbound_headers(self.settings, None),
+                    headers=outbound_headers(provider, api_key, None),
                 )
             raw_response = response.text
             if response.status_code == 429:
-                raise RuntimeError(f"{self.settings.llm_provider} API returned 429 rate limit")
+                raise RuntimeError(f"{provider} API returned 429 rate limit")
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
@@ -117,8 +119,8 @@ class ServiceModelClient:
                 prompt=prompt,
                 raw_response=raw_response,
                 status="error",
-                provider=self.settings.llm_provider,
-                model=self._model_name(payload.get("model")),
+                provider=provider,
+                model=model,
                 attempt=attempt,
                 latency_ms=self._elapsed_ms(started),
                 http_status=response.status_code if response is not None else None,
@@ -136,8 +138,8 @@ class ServiceModelClient:
             prompt=prompt,
             raw_response=raw_response,
             status="completed",
-            provider=self.settings.llm_provider,
-            model=self._model_name(data.get("model") or payload.get("model")),
+            provider=provider,
+            model=self._model_name(data.get("model") or model),
             attempt=attempt,
             latency_ms=self._elapsed_ms(started),
             http_status=response.status_code,
@@ -286,10 +288,20 @@ class ServiceModelClient:
 
     def _known_secrets(self) -> tuple[str | None, ...]:
         return (
-            self.settings.nvidia_api_key,
-            self.settings.service_nvidia_api_key,
+            self.settings.llm_api_key,
+            self.settings.gemini_api_key,
+            self.settings.openrouter_api_key,
             self.settings.service_openrouter_api_key,
         )
+
+    def _route(self, provider: str) -> tuple[str, str]:
+        if provider == "local":
+            if not self.settings.local_llm_enabled:
+                raise RuntimeError("selected local service model is unavailable")
+            return self.settings.local_llm_base_url, ""
+        if provider == "openrouter":
+            return self.settings.openrouter_api_base, self.settings.service_openrouter_api_key
+        raise ValueError(f"service provider is retired or unsupported: {provider}")
 
     def _retention_days(self, explicit: int | None) -> int:
         if explicit is not None:

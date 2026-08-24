@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from app.services.nvidia_catalog import normalize_provider
+from app.services.provider_catalog import normalize_provider
 
 
-def outbound_headers(settings: Any, inbound_authorization: str | None) -> dict[str, str]:
+def outbound_headers(
+    provider: str,
+    api_key: str | None,
+    inbound_authorization: str | None,
+) -> dict[str, str]:
     """Return OpenAI-compatible request headers without forwarding browser auth to local LLM."""
-    provider = normalize_provider(str(settings.llm_provider))
+    provider = normalize_provider(provider)
+    if provider not in {"local", "gemini", "openrouter"}:
+        raise ValueError(f"provider is retired or unsupported: {provider}")
     headers = {"Content-Type": "application/json"}
     if provider == "local":
         return headers
-    authorization = f"Bearer {settings.nvidia_api_key}" if settings.nvidia_api_key else inbound_authorization
+    authorization = f"Bearer {api_key}" if api_key else inbound_authorization
     if not authorization:
-        raise PermissionError(f"API key is required for provider {settings.llm_provider}")
+        raise PermissionError(f"API key is required for provider {provider}")
     headers["Authorization"] = authorization
     return headers

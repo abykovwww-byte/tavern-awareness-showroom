@@ -6,6 +6,9 @@
 
 **Decision status: Accepted.** Решение пользователя.
 
+Decision 036 later retired active Novel execution; references below retain the
+historical delivery scope and do not promise a current runtime path.
+
 **Delivery status:** candidate revision `6` `подключена` на `abykovserv` и
 прошла live-canary на развёрнутом Gateway. PR #35 доставил кумулятивные
 S1–S6, PR #36 открыл candidate revision в admin autotest, PR #38 исправил
@@ -47,7 +50,7 @@ Decision 024 сохраняет продуктовые инварианты RP-�
 1. Изменяется только `scenario_type=rp`.
 2. `training` сохраняет WorldPack-owned deterministic runtime без D20; scoring,
    evidence, progression и debrief не меняются.
-3. `novel` сохраняет немеханический контракт.
+3. На момент поставки `novel` сохранял немеханический контракт; теперь это только историческая запись.
 4. Gateway остаётся authority для версии RP-контракта, state, memory, prompt,
    validation и commit хода.
 5. Публичные интерфейсы сохраняются; `rp_contract_revision` добавляется совместимо.
@@ -203,6 +206,6 @@ party. После S6 один изолированный live-run должен �
 - универсальный physics/semantic engine;
 - event-sourcing или общая feature-flag платформа;
 - удаление исторических raw turns/checks/projections;
-- переработка `training` или `novel`;
+- переработка `training` или исторических Novel-данных;
 - автоматическая миграция существующих source parties;
 - соседний рефакторинг.

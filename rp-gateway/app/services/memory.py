@@ -183,7 +183,7 @@ class MemorySummarizer:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         service_settings = self.memory_service_settings()
-        if service_settings.nvidia_api_base.startswith("mock://"):
+        if service_settings.llm_api_base.startswith("mock://"):
             return self.mock_summary(plan)
         payload = self.summary_payload(plan)
         attempts = self.model_attempts(plan.model, service_settings)
@@ -194,6 +194,8 @@ class MemorySummarizer:
             try:
                 completion = await client.complete(
                     role="memory_summary",
+                    provider=service_settings.llm_provider,
+                    model=model,
                     party_id=self.store.campaign_id,
                     turn_id=plan.to_turn_id,
                     request_id=request_id,
@@ -265,8 +267,8 @@ class MemorySummarizer:
         return service_model_settings(self.settings)
 
     def model_attempts(self, primary_model: str, service_settings: Settings) -> list[str]:
-        disabled = set(service_settings.nvidia_disabled_models)
-        candidates = [primary_model, *service_settings.nvidia_fallback_models]
+        disabled = set(service_settings.llm_disabled_models)
+        candidates = [primary_model, *service_settings.llm_fallback_models]
         attempts: list[str] = []
         for model in candidates:
             if not model or model in disabled or model in attempts:

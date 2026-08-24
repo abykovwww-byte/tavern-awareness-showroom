@@ -61,7 +61,7 @@ def settings(tmp_path: Path, *, scenario_type: str, rp_contract_revision: int = 
         rp_contract_revision=rp_contract_revision,
         database_url=f"sqlite:///{tmp_path / 'state.db'}",
         world_state_path=str(tmp_path / "state.json"),
-        nvidia_api_base="mock://relationship-extraction",
+        llm_api_base="mock://relationship-extraction",
     )
 
 

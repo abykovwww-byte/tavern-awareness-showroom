@@ -11,13 +11,14 @@ import pytest
 
 from app.core.config import Settings
 from app.services.service_model_client import TRACE_SCHEMA_VERSION, ServiceModelClient
+from app.services.service_models import service_model_choice, service_model_settings
 
 
 def settings_for(tmp_path: Path, *, api_key: str = "provider-key") -> Settings:
     return Settings(
         database_url=f"sqlite:///{tmp_path / 'service-log.db'}",
-        nvidia_api_base="https://service.example/v1",
-        nvidia_api_key=api_key,
+        openrouter_api_base="https://service.example/v1",
+        service_openrouter_api_key=api_key,
         narrative_model="service/model",
     )
 
@@ -63,6 +64,8 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
     completion = asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
+            model="service/model",
             party_id="party_test",
             turn_id=7,
             request_id="req_trace_7",
@@ -82,7 +85,7 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
     assert trace["party_turn"] == 5
     assert trace["role"] == "memory_summary"
     assert trace["status"] == "completed"
-    assert trace["provider"] == settings.llm_provider
+    assert trace["provider"] == "openrouter"
     assert trace["model"] == "service/model"
     assert trace["attempt"] == 2
     assert trace["latency_ms"] >= 0
@@ -112,6 +115,7 @@ def test_complete_logs_error_status_and_raw_provider_response(tmp_path: Path) ->
         asyncio.run(
             client.complete(
                 role="world_instructor",
+                provider="openrouter",
                 party_id="party_test",
                 turn_id=3,
                 request_id="req_world_3",
@@ -161,6 +165,7 @@ def test_complete_redacts_secrets_only_when_writing_trace(tmp_path: Path) -> Non
     completion = asyncio.run(
         client.complete(
             role="rp_story_memory",
+            provider="openrouter",
             party_id="party_test",
             turn_id=9,
             prompt=prompt,
@@ -199,6 +204,8 @@ def test_trace_write_failure_does_not_change_successful_service_result(tmp_path:
     completion = asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
+            model="service/model",
             party_id="party_test",
             turn_id=1,
             request_id="req_fail_open",
@@ -226,6 +233,8 @@ def test_trace_migration_failure_does_not_block_service_result(
     completion = asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
+            model="service/model",
             party_id="party_test",
             turn_id=1,
             request_id="req_migration_fail_open",
@@ -245,6 +254,8 @@ def test_extended_credential_shapes_are_redacted(tmp_path: Path) -> None:
     asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
+            model="service/model",
             party_id="party_test",
             turn_id=1,
             prompt="access_token=one refresh_token=two client_secret=three x-api-key=four",
@@ -282,6 +293,7 @@ def test_retention_uses_environment_default_and_removes_expired_rows(
     asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
             party_id="party_new",
             turn_id=2,
             prompt="new",
@@ -320,6 +332,7 @@ def test_default_and_negative_retention_are_unlimited(
     asyncio.run(
         client.complete(
             role="memory_summary",
+            provider="openrouter",
             party_id="party_new",
             turn_id=2,
             prompt="new",
@@ -332,6 +345,49 @@ def test_default_and_negative_retention_are_unlimited(
     assert ServiceModelClient(settings, retention_days=-5).retention_days == 0
     monkeypatch.setenv("SERVICE_CALL_LOG_RETENTION_DAYS", "-5")
     assert ServiceModelClient(settings).retention_days == 0
+
+
+def test_disabled_local_service_model_never_switches_provider(tmp_path: Path) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'service-log.db'}",
+        llm_provider="nvidia",
+        local_llm_enabled=False,
+        local_llm_base_url="https://local-service.invalid/v1",
+    )
+    client = ServiceModelClient(settings)
+
+    with pytest.raises(RuntimeError, match="selected local service model is unavailable"):
+        asyncio.run(
+            client.complete(
+                role="memory_summary",
+                provider="local",
+                model="local-model",
+                party_id="party_local_unavailable",
+                turn_id=1,
+                prompt="Summarize.",
+            )
+        )
+
+    traces = rows(settings)
+    assert [trace["provider"] for trace in traces] == ["local"]
+    assert all(trace["provider"] != "nvidia" for trace in traces)
+
+
+def test_retired_service_model_choice_is_disabled_without_provider_switch(tmp_path: Path) -> None:
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'service-log.db'}",
+        service_model_choice="or-retired-nvidia-choice",
+        local_llm_enabled=True,
+        service_openrouter_api_key="configured-but-unused",
+    )
+    ServiceModelClient(settings)
+
+    selected = service_model_choice(settings)
+    assert selected["provider"] == "retired"
+    assert selected["available"] is False
+    with pytest.raises(ValueError, match="service model choice is retired or unsupported"):
+        service_model_settings(settings)
+    assert rows(settings) == []
 
 
 def test_migration_adds_trace_columns_to_legacy_table_idempotently(tmp_path: Path) -> None:

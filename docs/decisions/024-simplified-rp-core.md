@@ -6,6 +6,9 @@
 
 **Decision status: Accepted.**
 
+Decision 036 later retired active Novel execution; statements below about that
+mode describe the historical scope of this RP-only decision.
+
 Порядок поставки, кумулятивные `rp_contract_revision`, миграционные границы и
 проверка S1–S6 заменены [Decision 026](026-rp-core-delivery.md). Продуктовые
 инварианты этого решения сохраняются; общий P0 и обязательный acceptance-контур
@@ -13,8 +16,7 @@
 
 Решение применяется только к `scenario_type=rp` и включается версионированным
 WorldPack-контрактом `rp-core.v2`. Существующие партии остаются на
-`rp-core.v1`, пока не пройдут отдельную явную миграцию. `training` и `novel` не
-меняются.
+`rp-core.v1`, пока не пройдут отдельную явную миграцию. `training` не меняется.
 
 ## Context
 
@@ -143,7 +145,7 @@ score не может скрыть провал одного инвариант�
 - Light GUI больше не показывает механическую RP-форму.
 - Активные RP WorldPacks удаляют `/check`/D20-инструкции и объявляют v2.
 - Публичный `POST /checks` сохраняется как совместимый нейтральный вход.
-- `training` deterministic scoring и `novel` prose contract не меняются.
+- `training` deterministic scoring не меняется; прежний Novel prose contract теперь является историческим.
 - Story-memory v1 snapshots остаются читаемыми и нормализуются как
   `legacy_projection`; их автоматическая активация в v2-партии не выполняется.
 
@@ -161,6 +163,6 @@ score не может скрыть провал одного инвариант�
 - удаление raw turns или исторических checks;
 - универсальный physics/event-sourcing engine;
 - новый character dashboard;
-- изменение `training`/`novel`;
+- изменение `training` или архивной Novel-истории;
 - автоматическая миграция существующих партий;
 - численные acceptance-пороги и production endurance horizon.

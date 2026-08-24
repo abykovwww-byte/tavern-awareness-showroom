@@ -24,6 +24,11 @@ and character generation for every current and future party. Party narrator
 models remain independent. User BYOK credentials are scoped to exactly one
 party and are never used by the service model.
 
+Active cloud narrator routes are Gemini and OpenRouter. The service model uses
+only an explicitly selected local or OpenRouter route and never changes provider
+when the local runner is unavailable. Retired provider/profile/log rows remain
+readable for history, but cannot be selected for new or continuing runtime work.
+
 ## Runtime paths
 
 ```text

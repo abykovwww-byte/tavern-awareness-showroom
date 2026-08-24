@@ -26,14 +26,11 @@ from app.models.schemas import (
     WorldPromptCreate,
     WorldPackSummary,
 )
-from app.services.nvidia_catalog import (
+from app.services.provider_catalog import (
     MIN_RP_CONTEXT_TOKENS,
-    fetch_build_nvidia_profiles,
-    fetch_integrate_api_profiles,
     fetch_provider_api_profiles,
     enrich_openrouter_profile_params,
     is_quality_rp_model,
-    is_rp_candidate,
     narrator_control_capabilities,
     normalize_provider,
     static_model_profiles,
@@ -203,6 +200,7 @@ class PartyStore:
             self.migrate_owner_columns(connection)
             self.migrate_worldpack_visibility(connection)
             self.migrate_scenario_type(connection)
+            self.archive_legacy_novel_parties(connection)
             self.migrate_rp_contract_version(connection)
             self.migrate_autotest_branches(connection)
             self.migrate_dataset_columns(connection)
@@ -236,6 +234,14 @@ class PartyStore:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
         if "scenario_type" not in columns:
             connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
+
+    @staticmethod
+    def archive_legacy_novel_parties(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "UPDATE parties SET status = 'archived', updated_at = ? "
+            "WHERE scenario_type = 'novel' AND status != 'archived'",
+            (now_iso(),),
+        )
 
     def migrate_rp_contract_version(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
@@ -323,9 +329,7 @@ class PartyStore:
                 WHERE id NOT IN (SELECT model_profile_id FROM parties)
                   {showroom_reference}
                   AND (
-                    params_json LIKE '%"source": "nvidia_api_live"%'
-                    OR params_json LIKE '%"source": "build_nvidia_live"%'
-                    OR params_json LIKE '%"source": "gemini_api_live"%'
+                    params_json LIKE '%"source": "gemini_api_live"%'
                     OR params_json LIKE '%"source": "openrouter_api_live"%'
                   )
                 """
@@ -365,31 +369,12 @@ class PartyStore:
             )
 
     def refresh_live_model_profiles_if_due(self) -> None:
-        if self.settings.app_env == "test" or self.settings.nvidia_api_base.startswith("mock://"):
+        if self.settings.app_env == "test" or self.settings.llm_api_base.startswith("mock://"):
             return
-        if self.settings.nvidia_model_catalog_live:
-            self.refresh_nvidia_catalog_if_due()
         if self.settings.gemini_model_catalog_live and self.settings.gemini_api_key:
             self.refresh_provider_catalog_if_due("gemini")
         if self.settings.openrouter_model_catalog_live:
             self.refresh_provider_catalog_if_due("openrouter")
-
-    def refresh_nvidia_catalog_if_due(self) -> None:
-        cache_key = "nvidia_model_catalog_refresh_v3"
-        if not self.cache_due(cache_key, self.settings.nvidia_model_catalog_ttl_seconds):
-            return
-        profiles: list[dict[str, Any]] = []
-        errors: list[str] = []
-        try:
-            profiles.extend(fetch_build_nvidia_profiles(self.settings))
-        except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
-            errors.append(f"build:{type(exc).__name__}")
-        if self.settings.nvidia_api_key:
-            try:
-                profiles.extend(fetch_integrate_api_profiles(self.settings))
-            except Exception as exc:  # noqa: BLE001 - live catalog is best-effort only
-                errors.append(f"api:{type(exc).__name__}")
-        self.store_catalog_refresh(cache_key, profiles, errors)
 
     def refresh_provider_catalog_if_due(self, provider: str) -> None:
         cache_key = f"{provider}_model_catalog_refresh_v1"
@@ -864,13 +849,15 @@ class PartyStore:
 
     def model_profile_is_visible(self, profile: ModelProfileSummary) -> bool:
         provider = normalize_provider(profile.provider)
+        if provider not in {"local", "gemini", "openrouter"}:
+            return False
         if provider == "openrouter" and profile.model.lower().endswith(":batch"):
             return False
         if (model_context_limit_tokens(profile) or 0) < MIN_RP_CONTEXT_TOKENS:
             return False
         configured = {
             self.settings.narrative_model,
-            *self.settings.nvidia_fallback_models,
+            *self.settings.llm_fallback_models,
             *self.settings.gemini_models,
             *self.settings.openrouter_models,
         }
@@ -878,8 +865,6 @@ class PartyStore:
             return True
         if provider == "local":
             return bool(self.settings.local_llm_enabled) and profile.model == self.settings.local_llm_model_alias
-        if provider == "nvidia":
-            return is_rp_candidate(profile.model)
         if provider == "gemini":
             return profile.model.startswith("gemini-") and is_quality_rp_model(profile.model)
         if provider == "openrouter":
@@ -892,6 +877,15 @@ class PartyStore:
         if row is None:
             raise ValueError(f"model profile not found: {model_profile_id}")
         return self.model_profile_from_row(row)
+
+    def require_active_model_profile(self, model_profile_id: str) -> ModelProfileSummary:
+        profile = self.get_model_profile(model_profile_id)
+        provider = normalize_provider(profile.provider)
+        if provider not in {"local", "gemini", "openrouter"}:
+            raise ValueError(f"model profile provider is retired or unsupported: {provider}")
+        if provider == "local" and not self.settings.local_llm_enabled:
+            raise ValueError("local model profile is unavailable")
+        return profile
 
     def model_profile_from_row(self, row: sqlite3.Row) -> ModelProfileSummary:
         params = json.loads(row["params_json"])
@@ -966,7 +960,7 @@ class PartyStore:
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
-        self.get_model_profile(request.model_profile_id)
+        self.require_active_model_profile(request.model_profile_id)
 
         party_id = f"party_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
@@ -1012,6 +1006,10 @@ class PartyStore:
         return self.party_from_row(row, include_related=True)
 
     def activate_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
+        party = self.get_party(party_id, owner_user_id=owner_user_id)
+        if party.status == "archived":
+            raise ValueError("archived party is terminal")
+        self.require_active_model_profile(party.model_profile_id)
         timestamp = now_iso()
         sql = "UPDATE parties SET status = 'active', updated_at = ? WHERE id = ?"
         params: list[Any] = [timestamp, party_id]
@@ -1026,6 +1024,8 @@ class PartyStore:
 
     def complete_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
+        if party.status == "archived":
+            raise ValueError("archived party is terminal")
         if party.status == "completed":
             return party
         timestamp = now_iso()
@@ -1047,7 +1047,7 @@ class PartyStore:
         owner_user_id: str | None = None,
         narrator_settings: dict[str, Any] | None = None,
     ) -> PartySummary:
-        profile = self.get_model_profile(model_profile_id)
+        profile = self.require_active_model_profile(model_profile_id)
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         if narrator_settings is None:
             normalized_settings = party.narrator_settings if party.model_profile_id == model_profile_id else {}

@@ -193,7 +193,7 @@ def revision_seven_adjudicator(tmp_path: Path, campaign_id: str) -> tuple[Adjudi
             scenario_type="rp",
             rp_contract_version="rp-core.v2",
             rp_contract_revision=7,
-            nvidia_api_base="mock://success",
+            llm_api_base="mock://success",
             local_llm_enabled=False,
             post_turn_helpers_inline=False,
         ),

@@ -39,7 +39,8 @@ OutcomeLabel = Literal[
     "deterministic_resolution",
 ]
 
-ScenarioType = Literal["rp", "novel", "training"]
+ActiveScenarioType = Literal["rp", "training"]
+StoredScenarioType = Literal["rp", "novel", "training"]
 ShowroomScenarioStatus = Literal["draft", "published", "archived"]
 ShowroomWorldSource = Literal["preset", "prompt"]
 ShowroomLeaderboardMetric = Literal["state_path", "turn_count"]
@@ -309,7 +310,7 @@ class ModelProfileSummary(BaseModel):
 
 class PartyCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
-    scenario_type: ScenarioType
+    scenario_type: ActiveScenarioType
     worldpack_id: str
     player_character_id: str
     model_profile_id: str
@@ -410,7 +411,7 @@ class PartySummary(BaseModel):
     id: str
     owner_user_id: str | None = None
     title: str
-    scenario_type: ScenarioType
+    scenario_type: StoredScenarioType
     rp_contract_version: Literal["rp-core.v1", "rp-core.v2"] = "rp-core.v1"
     rp_contract_revision: int = Field(default=0, ge=0, le=RP_CONTRACT_MAX_REVISION)
     worldpack_id: str
@@ -599,7 +600,7 @@ class ShowroomScenarioCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     description: str = Field(default="", max_length=1200)
     status: ShowroomScenarioStatus = "draft"
-    scenario_type: ScenarioType
+    scenario_type: ActiveScenarioType
     model_profile_id: str = Field(min_length=1, max_length=240)
     world_source: ShowroomWorldSource = "preset"
     worldpack_id: str | None = Field(default=None, max_length=240)
@@ -617,7 +618,7 @@ class ShowroomScenarioUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=1200)
     status: ShowroomScenarioStatus | None = None
-    scenario_type: ScenarioType | None = None
+    scenario_type: ActiveScenarioType | None = None
     model_profile_id: str | None = Field(default=None, min_length=1, max_length=240)
     world_source: ShowroomWorldSource | None = None
     worldpack_id: str | None = Field(default=None, max_length=240)
@@ -717,7 +718,7 @@ class UserDeleteRequest(BaseModel):
 class ProviderApiKeyCreate(BaseModel):
     label: str = Field(default="Provider key", min_length=1, max_length=120)
     api_key: str = Field(min_length=1, max_length=400)
-    provider: Literal["nvidia", "gemini", "openrouter"] = "nvidia"
+    provider: Literal["gemini", "openrouter"] = "openrouter"
     base_url: str | None = Field(default=None, max_length=300)
     is_default: bool = True
 

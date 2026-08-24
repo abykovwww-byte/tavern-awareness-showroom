@@ -33,7 +33,7 @@ class AutoPlayerClient:
         history: list[dict[str, Any]],
         request_id: str,
     ) -> str:
-        if self.settings.nvidia_api_base.startswith("mock://"):
+        if self.settings.llm_api_base.startswith("mock://"):
             return "I examine the situation carefully and take the next action consistent with my role."
 
         messages = self.visible_messages(player_prompt, player_character, scenario_type, history)
@@ -45,7 +45,7 @@ class AutoPlayerClient:
             "stream": False,
         }
         NarrativeClient(self.settings).apply_prompt_cache_policy(payload)
-        headers = outbound_headers(self.settings, None)
+        headers = outbound_headers(self.settings.llm_provider, self.settings.llm_api_key, None)
         timeout = httpx.Timeout(self.settings.model_attempt_timeout_seconds, connect=15.0)
         started = time.perf_counter()
         logger.info(
@@ -57,7 +57,7 @@ class AutoPlayerClient:
         )
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                f"{self.settings.nvidia_api_base.rstrip('/')}/chat/completions",
+                f"{self.settings.llm_api_base.rstrip('/')}/chat/completions",
                 json=payload,
                 headers=headers,
             )

@@ -1,7 +1,7 @@
 # Decision 012: Public showroom scenarios
 
 Date: 2026-07-28
-Status: accepted and implemented
+Status: accepted and implemented; active scenario set superseded by Decision 036
 
 ## Context
 
@@ -16,10 +16,14 @@ The Gateway owns a separate `ShowroomScenario` aggregate:
 
 `PublicTitle + PublicDescription + ScenarioType + ModelProfile + WorldPackReference + OptionalCover + LeaderboardPolicy`.
 
-An admin explicitly selects `rp`, `novel`, or `training`, an existing provider/model
+An admin explicitly selects `rp` or `training`, an existing active provider/model
 profile, and either an installed WorldPack or a free-form world prompt. A prompt
 source creates a private internal WorldPack; the public scenario remains the stable
 storefront entity.
+
+Legacy stored `novel` scenarios remain readable but are archived idempotently.
+Archived scenarios cannot be republished or used to create runs. See
+[Decision 036](036-retire-novel-and-nvidia.md).
 
 Visitors do not register. The Gateway issues a random HttpOnly cookie and maps:
 

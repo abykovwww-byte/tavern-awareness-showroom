@@ -28,6 +28,11 @@ def env_list(name: str, default: str = "") -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def env_provider(name: str, default: str = "openrouter") -> str:
+    value = os.getenv(name, default).strip().lower()
+    return value if value in {"local", "gemini", "openrouter"} else default
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = os.getenv("APP_ENV", "production")
@@ -45,11 +50,9 @@ class Settings:
     party_state_root: str = os.getenv("PARTY_STATE_ROOT", "/state/parties")
     state_schema_path: str = os.getenv("STATE_SCHEMA_PATH", "/state/schema.json")
     worldpacks_path: str = os.getenv("WORLD_PACKS_PATH", "/worldpacks")
-    nvidia_api_base: str = os.getenv("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1")
-    service_nvidia_api_base: str = os.getenv("SERVICE_NVIDIA_API_BASE", os.getenv("NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1"))
-    nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
-    service_nvidia_api_key: str = os.getenv("SERVICE_NVIDIA_API_KEY", os.getenv("NVIDIA_API_KEY", ""))
-    llm_provider: str = os.getenv("LLM_PROVIDER", "nvidia")
+    llm_api_base: str = os.getenv("LLM_API_BASE", "https://openrouter.ai/api/v1")
+    llm_api_key: str = os.getenv("LLM_API_KEY", "")
+    llm_provider: str = env_provider("LLM_PROVIDER")
     gemini_api_base: str = os.getenv(
         "GEMINI_API_BASE",
         "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -76,19 +79,12 @@ class Settings:
     # "Service model" (служебная модель) is the global LLM used by background
     # memory, world-edit drafting, and character generation. It never narrates turns.
     service_model_choice: str = os.getenv("SERVICE_MODEL_CHOICE", "local-gemma")
-    service_fallback_model: str = os.getenv("SERVICE_FALLBACK_MODEL", os.getenv("NARRATIVE_MODEL", "z-ai/glm-5.2"))
     provider_model_catalog_ttl_seconds: int = env_int("PROVIDER_MODEL_CATALOG_TTL_SECONDS", 86400)
-    nvidia_model_catalog_live: bool = env_bool("NVIDIA_MODEL_CATALOG_LIVE", True)
-    nvidia_model_catalog_url: str = os.getenv("NVIDIA_MODEL_CATALOG_URL", "https://build.nvidia.com/models?q=llm")
-    nvidia_model_catalog_ttl_seconds: int = env_int("NVIDIA_MODEL_CATALOG_TTL_SECONDS", 86400)
-    narrative_model: str = os.getenv("NARRATIVE_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
-    intent_model: str = os.getenv("INTENT_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
-    validator_model: str = os.getenv("VALIDATOR_MODEL", os.getenv("NVIDIA_MODEL", "z-ai/glm-5.2"))
-    nvidia_fallback_models: tuple[str, ...] = env_list(
-        "NVIDIA_FALLBACK_MODELS",
-        "deepseek-ai/deepseek-v4-pro,deepseek-ai/deepseek-v4-flash,qwen/qwen3.5-397b-a17b",
-    )
-    nvidia_disabled_models: tuple[str, ...] = env_list("NVIDIA_DISABLED_MODELS", "")
+    narrative_model: str = os.getenv("NARRATIVE_MODEL", "openrouter/auto")
+    intent_model: str = os.getenv("INTENT_MODEL", "openrouter/auto")
+    validator_model: str = os.getenv("VALIDATOR_MODEL", "openrouter/auto")
+    llm_fallback_models: tuple[str, ...] = env_list("LLM_FALLBACK_MODELS", "")
+    llm_disabled_models: tuple[str, ...] = env_list("LLM_DISABLED_MODELS", "")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     log_prompts: bool = env_bool("LOG_PROMPTS", False)
     max_repair_attempts: int = env_int("MAX_REPAIR_ATTEMPTS", 1)

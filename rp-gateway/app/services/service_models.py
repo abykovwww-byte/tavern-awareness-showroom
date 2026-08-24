@@ -25,9 +25,9 @@ OPENROUTER_SERVICE_MODELS: tuple[dict[str, Any], ...] = (
     {"id": "or-gpt-oss-20b", "model": "openai/gpt-oss-20b", "title": "GPT OSS 20B", "input_price": 0.03, "output_price": 0.13, "context_tokens": 131_072},
     {"id": "or-gpt-oss-120b", "model": "openai/gpt-oss-120b", "title": "GPT OSS 120B", "input_price": 0.037, "output_price": 0.17, "context_tokens": 131_072},
     {"id": "or-qwen3-30b-a3b", "model": "qwen/qwen3-30b-a3b-instruct-2507", "title": "Qwen3 30B A3B Instruct", "input_price": 0.04815, "output_price": 0.19305, "context_tokens": 262_144},
+    {"id": "or-openrouter-free", "model": "openrouter/free", "title": "OpenRouter Free Router", "input_price": 0.0, "output_price": 0.0, "context_tokens": 131_072},
     {"id": "or-deepseek-v3.2-exp", "model": "deepseek/deepseek-v3.2-exp", "title": "DeepSeek V3.2 Exp", "input_price": 0.27, "output_price": 0.41, "context_tokens": 163_840},
     {"id": "or-mistral-small-3.2", "model": "mistralai/mistral-small-3.2-24b-instruct", "title": "Mistral Small 3.2 24B", "input_price": 0.10, "output_price": 0.30, "context_tokens": 256_000},
-    {"id": "or-nemotron-3-nano", "model": "nvidia/nemotron-3-nano-30b-a3b", "title": "Nemotron 3 Nano 30B A3B", "input_price": 0.05, "output_price": 0.20, "context_tokens": 262_144},
     {"id": "or-gemma-3-12b", "model": "google/gemma-3-12b-it", "title": "Gemma 3 12B", "input_price": 0.05, "output_price": 0.15, "context_tokens": 131_072},
 )
 
@@ -53,45 +53,47 @@ def service_model_choices(settings: Settings) -> list[dict[str, Any]]:
 def service_model_choice(settings: Settings, choice_id: str | None = None) -> dict[str, Any]:
     requested = (choice_id or settings.service_model_choice).strip()
     choices = service_model_choices(settings)
-    return next((choice for choice in choices if choice["id"] == requested), choices[0])
+    selected = next((choice for choice in choices if choice["id"] == requested), None)
+    if selected is not None:
+        return selected
+    return {
+        "id": requested,
+        "provider": "retired",
+        "model": "",
+        "title": "Недоступная архивная настройка",
+        "input_price": 0.0,
+        "output_price": 0.0,
+        "context_tokens": 0,
+        "available": False,
+    }
 
 
 def service_model_settings(settings: Settings) -> Settings:
     """Return provider settings for the globally selected service model."""
     choice = service_model_choice(settings)
+    if choice["provider"] not in {"local", "openrouter"}:
+        raise ValueError(f"service model choice is retired or unsupported: {choice['id']}")
     if choice["provider"] == "local":
-        if not settings.local_llm_enabled:
-            # Preserve operability without ever falling back to party BYOK or
-            # to the party narrator model.
-            return replace(
-                settings,
-                llm_provider="nvidia",
-                nvidia_api_base=settings.service_nvidia_api_base,
-                nvidia_api_key=settings.service_nvidia_api_key,
-                narrative_model=settings.service_fallback_model,
-                intent_model=settings.service_fallback_model,
-                validator_model=settings.service_fallback_model,
-            )
         return replace(
             settings,
             llm_provider="local",
-            nvidia_api_base=settings.local_llm_base_url,
-            nvidia_api_key="",
+            llm_api_base=settings.local_llm_base_url,
+            llm_api_key="",
             narrative_model=str(choice["model"]),
             intent_model=str(choice["model"]),
             validator_model=str(choice["model"]),
-            nvidia_fallback_models=(),
-            nvidia_disabled_models=(),
+            llm_fallback_models=(),
+            llm_disabled_models=(),
             model_attempt_timeout_seconds=settings.local_llm_timeout_seconds,
         )
     return replace(
         settings,
         llm_provider="openrouter",
-        nvidia_api_base=settings.openrouter_api_base,
-        nvidia_api_key=settings.service_openrouter_api_key,
+        llm_api_base=settings.openrouter_api_base,
+        llm_api_key=settings.service_openrouter_api_key,
         narrative_model=str(choice["model"]),
         intent_model=str(choice["model"]),
         validator_model=str(choice["model"]),
-        nvidia_fallback_models=(),
-        nvidia_disabled_models=(),
+        llm_fallback_models=(),
+        llm_disabled_models=(),
     )
