@@ -30,7 +30,7 @@ from app.models.schemas import (
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, provider_rate_limit_error
+from app.services.narrative import NarrativeClient, provider_rate_limit_error, response_text
 from app.services.provider_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
@@ -1204,6 +1204,46 @@ def test_rp_core_v2_validator_rejects_declared_absolute_rule_violation() -> None
     assert result.valid is False
     assert result.violations == [
         "Narrative contradicts absolute WorldPack rule absolute-power: power fails on living matter"
+    ]
+
+
+@pytest.mark.parametrize("world_slug", ["merchant-sviatoslav", "starosta"])
+def test_authored_player_agency_rule_allows_sensory_feedback_but_rejects_player_choice(
+    world_slug: str,
+) -> None:
+    worldpacks = Path(__file__).resolve().parents[2] / "worldpacks"
+    state = json.loads((worldpacks / world_slug / "state-seed.json").read_text(encoding="utf-8"))
+    outcome = Outcome(
+        check_id="player-agency-sensory-regression",
+        action_type="narrative",
+        actor="player",
+        result="narrative_continuation",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="neutral",
+    )
+    validator = OutputValidator()
+
+    sensory = validator.validate(
+        "Ты чувствуешь её вес — добрых три пуда.",
+        outcome,
+        state,
+        scenario_type="rp",
+    )
+    player_choice = validator.validate(
+        "Ты решаешь принять товар без торга.",
+        outcome,
+        state,
+        scenario_type="rp",
+    )
+
+    assert sensory.valid is True
+    assert player_choice.valid is False
+    assert player_choice.violations == [
+        "Narrative contradicts absolute WorldPack rule player-agency: ты решаешь"
     ]
 
 
@@ -4877,6 +4917,101 @@ def test_openrouter_deepseek_flash_uses_supported_throughput_routing(
     assert "reasoning" not in captured
     assert captured["provider"] == {"sort": "throughput"}
     assert "max_tokens" not in captured
+
+
+def test_narrative_retries_empty_success_once_on_the_same_deepseek_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempted_models: list[str] = []
+    trace_events: list[dict[str, object]] = []
+
+    class EmptyThenNarrativeAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "EmptyThenNarrativeAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            payload = kwargs["json"]
+            assert isinstance(payload, dict)
+            attempted_models.append(str(payload["model"]))
+            provider_request = httpx.Request("POST", url)
+            if len(attempted_models) == 1:
+                return httpx.Response(
+                    200,
+                    request=provider_request,
+                    json={
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "reasoning": "Internal reasoning without a final answer.",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(
+                200,
+                request=provider_request,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Сцена продолжается."},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", EmptyThenNarrativeAsyncClient)
+    settings = Settings(
+        llm_provider="openrouter",
+        llm_api_base="https://openrouter.ai/api/v1",
+        llm_api_key="test-key",
+        narrative_model="deepseek/deepseek-v4-flash",
+        llm_fallback_models=("openrouter/auto",),
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the scene.")],
+    )
+    outcome = Outcome(
+        check_id="deepseek-empty-final-retry",
+        action_type="narrative",
+        actor="player",
+        result="narrative_continuation",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="neutral",
+    )
+
+    result = asyncio.run(
+        NarrativeClient(settings, trace_recorder=trace_events.append).complete(
+            request,
+            base_state(),
+            outcome,
+            None,
+            request_id="req-deepseek-empty-final-retry",
+        )
+    )
+
+    assert response_text(result) == "Сцена продолжается."
+    assert attempted_models == [settings.narrative_model, settings.narrative_model]
+    assert [event["status"] for event in trace_events] == ["failed", "completed"]
+    assert trace_events[0]["error"] == {
+        "type": "RuntimeError",
+        "message": "Narrative provider returned an empty final response",
+    }
 
 
 def test_narrator_settings_require_supported_primary_and_do_not_leak_to_fallback(

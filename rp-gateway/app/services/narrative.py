@@ -532,6 +532,7 @@ class NarrativeClient:
                     model,
                     require_parameters=uses_narrator_settings,
                 )
+                empty_response_retry_used = False
                 while True:
                     trace_attempt_index += 1
                     started = time.perf_counter()
@@ -714,6 +715,39 @@ class NarrativeClient:
                         raise
                     data.setdefault("model", model)
                     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+                    if not response_text(data).strip():
+                        error = RuntimeError("Narrative provider returned an empty final response")
+                        retry_same_model = not empty_response_retry_used
+                        logger.warning(
+                            "llm_attempt_empty_response request_id=%s check_id=%s model=%s "
+                            "elapsed_ms=%s retry_same_model=%s fallback_after_retry=%s",
+                            request_id,
+                            outcome.check_id,
+                            model,
+                            elapsed_ms,
+                            retry_same_model,
+                            index < len(attempts) - 1,
+                        )
+                        self.record_trace_attempt(
+                            request_id=request_id,
+                            payload=attempt_payload,
+                            model=model,
+                            attempt_index=trace_attempt_index,
+                            repair_instruction=repair_instruction,
+                            status="failed",
+                            elapsed_ms=elapsed_ms,
+                            raw_response=(response.text if self.trace_recorder is not None and request_id else None),
+                            error=error,
+                            http_status=response.status_code,
+                        )
+                        if retry_same_model:
+                            empty_response_retry_used = True
+                            continue
+                        if index < len(attempts) - 1:
+                            break
+                        # Preserve the existing terminal empty-response audit and
+                        # no-commit handling in the caller after the bounded retry.
+                        return data
                     logger.info(
                         "llm_attempt_success request_id=%s check_id=%s model=%s status=%s elapsed_ms=%s fallback_used=%s",
                         request_id,

@@ -588,7 +588,7 @@
       "turn": 0,
       "kind": "absolute",
       "source": "worldpack:merchant-sviatoslav/state-seed.json",
-      "forbidden_claims": ["ты решаешь", "ты решаешься", "ты чувствуешь", "ты соглашаешься", "you decide to", "you feel", "you agree"]
+      "forbidden_claims": ["ты решаешь", "ты решаешься", "ты соглашаешься", "you decide to", "you agree"]
     },
     {
       "id": "attempts-not-facts",
