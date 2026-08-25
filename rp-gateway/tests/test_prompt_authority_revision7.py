@@ -39,6 +39,7 @@ from app.services.rp_gm import RPGMService
 from app.services.rp_story_memory import empty_story_memory
 from app.services.scene_state import initial_scene_state
 from app.services.state_store import StateStore
+from app.services.world_clock import world_clock_prompt_projection
 from test_gateway import base_state
 
 
@@ -383,6 +384,28 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
         "player_corrections": gm_service.overlay_block(),
         "relationship_pressure": relationship_pressure,
         "relationship_event_resolution": relationship_resolution,
+        "world_events": world_clock_prompt_projection(
+            {
+                "world_clock": {
+                    "date": "2026-01-01T00:00:00Z",
+                    "pending_announcements": [],
+                    "event_statuses": {},
+                    "world_facts": [],
+                }
+            },
+            {
+                "events": [
+                    {
+                        "id": "deadline",
+                        "summary": "The deadline approaches.",
+                        "condition": {
+                            "type": "date_gte",
+                            "date": "2026-01-02T00:00:00Z",
+                        },
+                    }
+                ]
+            },
+        )["block"],
         "scene_state_contract": scene_state_prompt_block(state),
         "scene_reanchor_baseline": reanchor,
     }

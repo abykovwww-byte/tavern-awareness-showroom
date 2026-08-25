@@ -66,6 +66,7 @@ from app.models.schemas import (
     WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
+    WorldClockMarkerConfirm,
     WorldPackVisibilityUpdate,
     StatePatch,
 )
@@ -130,6 +131,11 @@ from app.services.training_workspace import TrainingWorkspaceService
 from app.services.turn_trace import TurnTraceAssembler
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
+from app.services.world_clock import (
+    WorldClockBusy,
+    WorldClockService,
+    load_world_clock_contract,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -167,6 +173,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_state_store,
                     relationship_model=relationship_model_for_party(party),
                     scene_contract=scene_contract_for_party(party),
+                    world_clock_contract=world_clock_contract_for_party(
+                        party,
+                        effective_revision=party_runtime.rp_contract_revision,
+                    ),
                 ).schedule_service_jobs()
         for branch in party_store.list_all_party_branches():
             branch_store = party_store.store_for_branch(branch["party_id"], branch["id"])
@@ -330,6 +340,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     training_runtime=runtime_service,
                     relationship_model=relationship_model_for_party(party),
                     scene_contract=scene_contract_for_party(party),
+                    world_clock_contract=world_clock_contract_for_party(
+                        party,
+                        effective_revision=party_settings.rp_contract_revision,
+                    ),
                 ).handle_chat(
                     chat_request,
                     authorization=None,
@@ -913,6 +927,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "turns": party_state_store.turn_history(limit=limit),
             "state_versions": party_state_store.history(limit=limit),
         }
+
+    @app.post("/api/parties/{party_id}/world-clock/markers/{marker_id}/confirm")
+    def confirm_party_world_clock_marker(
+        request: Request,
+        party_id: str,
+        marker_id: str,
+        confirmation: WorldClockMarkerConfirm,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            ensure_party_playable(party)
+            if party.scenario_type != "rp" or int(party.rp_contract_revision) < 10:
+                raise ValueError("world clock markers require an RP revision-10 party")
+            contract = world_clock_contract_for_party(party)
+            if contract is None:
+                raise ValueError("world clock is not declared by this WorldPack")
+            party_state_store = party_store.store_for_party(
+                party_id,
+                owner_user_id=owner_user_id(request),
+            )
+            result = party_state_store.confirm_world_clock_marker(
+                contract,
+                marker_id=marker_id,
+                request_id=(
+                    confirmation.idempotency_key
+                    or x_request_id
+                    or f"world_clock_marker_{uuid.uuid4().hex}"
+                ),
+            )
+        except WorldClockBusy as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "world_clock_busy", "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"party_id": party_id, **result}
 
     @app.get("/api/parties/{party_id}/turn-traces")
     def get_party_turn_traces(
@@ -1580,6 +1632,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             inspector = PromptInspector(party_settings, party_state_store)
             inspector.relationship_model = relationship_model_for_party(party)
             inspector.scene_contract = scene_contract_for_party(party)
+            world_clock_contract = world_clock_contract_for_party(
+                party,
+                effective_revision=party_settings.rp_contract_revision,
+            )
+            if world_clock_contract is not None:
+                inspector.world_clock = WorldClockService(
+                    party_settings,
+                    party_state_store,
+                    world_clock_contract,
+                )
             preview = inspector.preview(request.content, source=request.source)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1669,6 +1731,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             party_state_store,
             relationship_model=relationship_model_for_party(party),
             scene_contract=scene_contract_for_party(party),
+            world_clock_contract=world_clock_contract_for_party(
+                party,
+                effective_revision=party_settings.rp_contract_revision,
+            ),
         )
         narrative = adjudicator.narrative
         expected_party_turn = int(party_state_store.get_state().get("meta", {}).get("turn", 0)) + 1
@@ -2560,6 +2626,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 training_runtime=runtime_service,
                 relationship_model=relationship_model_for_party(party),
                 scene_contract=scene_contract_for_party(party),
+                world_clock_contract=world_clock_contract_for_party(
+                    party,
+                    effective_revision=party_settings.rp_contract_revision,
+                ),
             ).handle_chat(
                 chat_request,
                 authorization,
@@ -2643,6 +2713,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_state_store,
                     relationship_model=relationship_model_for_party(party),
                     scene_contract=scene_contract_for_party(party),
+                    world_clock_contract=world_clock_contract_for_party(
+                        party,
+                        effective_revision=party_settings.rp_contract_revision,
+                    ),
                 )
                 if party_settings.post_turn_helpers_inline and party_settings.app_env == "test":
                     await adjudicator.drain_service_jobs(
@@ -3534,6 +3608,29 @@ def scene_contract_for_party(party: Any) -> dict[str, Any] | None:
     if len(normalized) != len(stable):
         raise ValueError("invalid WorldPack rp_contract.stable_affiliations")
     return {"stable_affiliations": normalized}
+
+
+def world_clock_contract_for_party(
+    party: Any,
+    *,
+    effective_revision: int | None = None,
+) -> dict[str, Any] | None:
+    revision = (
+        int(effective_revision)
+        if effective_revision is not None
+        else int(getattr(party, "rp_contract_revision", 0) or 0)
+    )
+    if (
+        getattr(party, "scenario_type", None) != "rp"
+        or revision < 10
+    ):
+        return None
+    world = getattr(party, "worldpack", None)
+    manifest = getattr(world, "manifest", None)
+    manifest_path = getattr(world, "manifest_path", None)
+    if not isinstance(manifest, dict) or not manifest_path:
+        return None
+    return load_world_clock_contract(manifest_path, manifest)
 
 
 def party_start_prompt(party_store: PartyStore, party: Any) -> str:

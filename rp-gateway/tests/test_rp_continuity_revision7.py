@@ -127,45 +127,45 @@ def test_migration_keeps_persisted_revisions_zero_through_seven(
     assert migrated == persisted_revision
 
 
-def test_revision_schema_bounds_accept_nine_and_reject_ten() -> None:
-    assert RP_CONTRACT_MAX_REVISION == 9
+def test_revision_schema_bounds_accept_ten_and_reject_eleven() -> None:
+    assert RP_CONTRACT_MAX_REVISION == 10
     assert PartyBranchCreate(
         checkpoint_id=1,
         label="candidate",
-        rp_contract_revision=9,
-    ).rp_contract_revision == 9
+        rp_contract_revision=10,
+    ).rp_contract_revision == 10
     assert AutoTestCreate(
         source_party_id="party-source",
         player_prompt="continue",
         turn_count=1,
         player_model_profile_id="model",
-        rp_contract_revision=9,
-    ).rp_contract_revision == 9
+        rp_contract_revision=10,
+    ).rp_contract_revision == 10
 
     with pytest.raises(ValidationError):
-        PartyBranchCreate(checkpoint_id=1, label="unsupported", rp_contract_revision=10)
+        PartyBranchCreate(checkpoint_id=1, label="unsupported", rp_contract_revision=11)
     with pytest.raises(ValidationError):
         AutoTestCreate(
             source_party_id="party-source",
             player_prompt="continue",
             turn_count=1,
             player_model_profile_id="model",
-            rp_contract_revision=10,
+            rp_contract_revision=11,
         )
 
 
-def test_only_merchant_declares_revision_eight_activation_canary() -> None:
+def test_only_merchant_declares_revision_ten_candidate() -> None:
     worldpacks = Path(__file__).resolve().parents[2] / "worldpacks"
-    revision_eight_packs: set[str] = set()
+    revision_ten_packs: set[str] = set()
     for manifest_path in worldpacks.glob("*/manifest.json"):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if "rp" not in manifest.get("scenario_types", {}).get("supported", []):
             continue
         contract = manifest.get("rp_contract") or {}
-        if contract.get("revision") == 8:
-            revision_eight_packs.add(manifest["id"])
+        if contract.get("revision") == 10:
+            revision_ten_packs.add(manifest["id"])
 
-    assert revision_eight_packs == {"merchant-sviatoslav"}
+    assert revision_ten_packs == {"merchant-sviatoslav"}
     starosta = json.loads((worldpacks / "starosta" / "manifest.json").read_text(encoding="utf-8"))
     assert starosta["rp_contract"] == {"schema_version": "rp-core.v2", "revision": 7}
 

@@ -41,6 +41,13 @@ Gateway alone commits it without advancing the scene and keeps a typed overlay
 until the affected OpenRouter memory section absorbs authority `user`. This
 source capability is not an activation or live-runtime claim.
 
+Candidate revision-10 RP may declare an authored `world-clock.json`. Exact local
+Gemma estimates only elapsed time from the last committed turn; Gateway applies
+cancelable authored events atomically as durable world facts or existing Lore
+Card toggles. The narrator and Light GUI receive a bounded one-shot event plus
+nearest horizon. Observed revision remains 8 until a separate activation and
+live verification slice.
+
 ## Runtime paths
 
 ```text

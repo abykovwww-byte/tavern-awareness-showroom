@@ -64,6 +64,7 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("WORLD_ABSOLUTE_RULES", "world_absolute_rules"),
     ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
+    ("СОБЫТИЯ МИРА", "world_events"),
     ("SCENE_STATE_CONTRACT", "scene_state_contract"),
     ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
 )
@@ -434,6 +435,7 @@ class NarrativeClient:
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
+        world_events: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(
             self.settings.llm_provider,
@@ -450,6 +452,7 @@ class NarrativeClient:
                 artifact_contract=artifact_contract,
                 training_turn_contract=training_turn_contract,
                 relationship_pressure=relationship_pressure,
+                world_events=world_events,
             )
         else:
             payload["messages"] = self.narrative_messages(
@@ -462,6 +465,7 @@ class NarrativeClient:
                 artifact_contract=artifact_contract,
                 training_turn_contract=training_turn_contract,
                 relationship_pressure=relationship_pressure,
+                world_events=world_events,
             )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
@@ -813,6 +817,7 @@ class NarrativeClient:
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
+        world_events: str | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         revision_seven = (
@@ -976,6 +981,10 @@ class NarrativeClient:
             )
         if self.settings.scenario_type == "rp" and relationship_pressure:
             messages.append({"role": "system", "content": relationship_pressure})
+        if revision_eight and world_events:
+            if len(world_events) > 800 or not world_events.startswith("СОБЫТИЯ МИРА"):
+                raise ValueError("invalid revision-10 world events prompt block")
+            messages.append({"role": "system", "content": world_events})
         if self.settings.world_authors_note and revision_eight:
             authors_note_block = f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}"
             if len(authors_note_block) > 1_500:
@@ -1054,6 +1063,7 @@ class NarrativeClient:
         artifact_contract: dict[str, Any] | None = None,
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
+        world_events: str | None = None,
     ) -> list[dict[str, str]]:
         """Build a compact correction request instead of replaying the full party prompt."""
         player_resources = state.get("player", {}).get("resources", {})
@@ -1094,6 +1104,8 @@ class NarrativeClient:
                 messages.append({"role": "system", "content": absolute_rules})
         if self.settings.scenario_type == "rp" and relationship_pressure:
             messages.append({"role": "system", "content": relationship_pressure})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 10 and world_events:
+            messages.append({"role": "system", "content": world_events})
         messages.append(
             {
                 "role": "user",

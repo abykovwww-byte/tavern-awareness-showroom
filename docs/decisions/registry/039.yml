@@ -1,0 +1,40 @@
+- requirement: "Revision-10 RP WorldPacks may declare a closed rp-gateway.world-clock.v1 contract whose events use only date_gte, after_event or after_confirmed, require authored supersession markers, and allow only durable world facts or existing authored Lore Card toggles"
+  level: каркас
+  store: "WorldPack manifest, world-clock.json, state world_clock projection and lore_cards authored_key"
+  assertion: projection
+  expectation: authored_clock_events_are_closed_cancelable_and_gateway_applied
+  probe_command: null
+  expected: null
+  waiver: "Repository and focused Gateway tests cover closed keys, references, cycles, cancellation, consequence whitelist and atomic fact or Lore Card application. Candidate source is not activated or deployed."
+- requirement: "Every committed revision-10 narrative turn atomically enqueues one idempotent world-clock job, jobs apply strictly by party turn without blocking a later gameplay request, and fired IDs and statuses remain durable"
+  level: каркас
+  store: "service_jobs, turns, state_versions world_clock and audit_events"
+  assertion: projection
+  expectation: clock_jobs_are_post_commit_ordered_idempotent_and_nonblocking
+  probe_command: null
+  expected: null
+  waiver: "Local tests cover unique party-turn jobs, out-of-insert-order selection, duplicate tick no-op and deferred main-turn ownership. Concurrent deployed traffic and a long party are deferred."
+- requirement: "World-clock elapsed is estimated from only the last recorded turn by exact local Gemma using at most 4000 serialized prompt characters and 50 output tokens, never inherits NVIDIA or another provider, and terminal outage applies visible PT0S service_unavailable without catch-up"
+  level: каркас
+  store: "service_call_log, service_jobs, state_versions world_clock.last_elapsed and audit_events"
+  assertion: absence
+  expectation: world_clock_elapsed_is_bounded_local_only_and_fails_to_visible_noop
+  probe_command: null
+  expected: null
+  waiver: "Focused tests cover request bounds and five forced local failures yielding PT0S with provider local and no NVIDIA row. No production runner outage has been exercised."
+- requirement: "New world events reach the first successful available narrator prompt once in a bounded СОБЫТИЯ МИРА block after relationship pressure and before author note or current action, and Light GUI shows occurred events plus nearest horizon below that response"
+  level: каркас
+  store: "recorded prompt_json, turns.metadata_json.world_clock_events, state pending_announcements and Light GUI chat DOM"
+  assertion: projection
+  expectation: world_events_are_commit_consumed_once_and_visible_with_horizon
+  probe_command: null
+  expected: null
+  waiver: "Python and dependency-free JavaScript tests cover prompt ordering, 800-character bound, commit-only consumption, history metadata and both UI labels. Browser and deployed-party evidence remain pending."
+- requirement: "merchant-sviatoslav is the only revision-10 candidate and authors at least four cancelable events including the Vyatichi campaign, with NPC absence expressed as a durable fact instead of a presence registry"
+  level: каркас
+  store: "merchant-sviatoslav manifest, world-clock.json and authored Lore Cards"
+  assertion: projection
+  expectation: merchant_candidate_has_four_events_and_vyatichi_absence_fact
+  probe_command: null
+  expected: null
+  waiver: "Repository validation checks candidate isolation, event count and Vyatichi content. No revision-10 party has been created in the deployed runtime."

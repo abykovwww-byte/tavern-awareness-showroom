@@ -1483,6 +1483,26 @@ function raisedLoreCardsForTurn(turn) {
     .map((id) => ({ id, title: summaries.get(id)?.title || `Lore Card #${id}` }));
 }
 
+function worldClockEventsForTurn(turn) {
+  const value = turn?.metadata?.world_clock_events;
+  if (!value || typeof value !== "object") return null;
+  const normalize = (items) => (Array.isArray(items) ? items : [])
+    .filter((item) => item && typeof item === "object" && String(item.text || "").trim())
+    .map((item) => ({
+      id: String(item.id || ""),
+      text: String(item.text || "").trim(),
+      date: item.date ? String(item.date) : null,
+    }));
+  const occurred = normalize(value.occurred);
+  const horizon = normalize(value.horizon);
+  if (!occurred.length && !horizon.length) return null;
+  return {
+    date: value.date ? String(value.date) : null,
+    occurred,
+    horizon,
+  };
+}
+
 function gmCorrectionMessageHtml(turn) {
   const correction = turn?.player_correction || turn?.metadata?.player_correction || {};
   const before = String(correction.before || "").trim();
@@ -1541,6 +1561,7 @@ function renderChat({ scrollMode = "bottom" } = {}) {
       turn.id,
       raisedLoreCardsForTurn(turn),
       allowLoreDraft,
+      worldClockEventsForTurn(turn),
     ));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
@@ -3970,6 +3991,21 @@ function loreCardToolsHtml(cards, turnId, allowDraft) {
   return raised || draft ? `<div class="message-lore-tools">${raised}${draft}</div>` : "";
 }
 
+function worldClockToolsHtml(worldClockEvents) {
+  if (!worldClockEvents) return "";
+  const occurred = worldClockEvents.occurred || [];
+  const horizon = worldClockEvents.horizon || [];
+  const occurredHtml = occurred.length
+    ? `<div><strong>В мире произошло:</strong> ${occurred.map((item) => escapeHtml(item.text)).join("; ")}</div>`
+    : "";
+  const horizonHtml = horizon.length
+    ? `<div><strong>Ближайший горизонт:</strong> ${horizon.map((item) => escapeHtml(item.text)).join("; ")}</div>`
+    : "";
+  return occurredHtml || horizonHtml
+    ? `<section class="world-clock-update" aria-label="События мира">${occurredHtml}${horizonHtml}</section>`
+    : "";
+}
+
 function messageHtml(
   kind,
   role,
@@ -3980,6 +4016,7 @@ function messageHtml(
   turnId = null,
   loreCards = [],
   allowLoreDraft = false,
+  worldClockEvents = null,
 ) {
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
@@ -3993,6 +4030,7 @@ function messageHtml(
   const html = `<article class="message ${kind}${rendered.hasArtifacts ? " message-rich" : ""}">
     <div class="role">${escapeHtml(role)}</div>
     <div class="message-content">${rendered.html}</div>
+    ${kind === "assistant" ? worldClockToolsHtml(worldClockEvents) : ""}
     ${artifactHost}
     ${kind === "assistant" ? loreCardToolsHtml(loreCards, turnId, allowLoreDraft) : ""}
     ${messageTimeHtml(timestamp)}

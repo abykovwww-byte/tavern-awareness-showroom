@@ -124,7 +124,7 @@ def test_provider_canary_passes_and_verifies_candidate_revision(
         assert fake_client.create_payload["rp_contract_revision"] == requested_revision
 
 
-def test_provider_canary_cli_accepts_revision_eight_and_rejects_nine(
+def test_provider_canary_cli_accepts_revision_ten_and_rejects_eleven(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,13 +144,13 @@ def test_provider_canary_cli_accepts_revision_eight_and_rejects_nine(
             "--player-prompt",
             "continue",
             "--rp-contract-revision",
-            "8",
+            "10",
             "--semantic-responses",
             "response.json",
         ],
     )
 
-    assert runner.parse_args().rp_contract_revision == 8
-    sys.argv[11] = "9"
+    assert runner.parse_args().rp_contract_revision == 10
+    sys.argv[11] = "11"
     with pytest.raises(SystemExit):
         runner.parse_args()

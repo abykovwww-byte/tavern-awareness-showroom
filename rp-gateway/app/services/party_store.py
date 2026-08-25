@@ -38,6 +38,7 @@ from app.services.provider_catalog import (
 )
 from app.services.context_budget import model_context_limit_tokens
 from app.services.state_store import StateStore
+from app.services.world_clock import initial_world_clock_state, load_world_clock_contract
 
 
 def now_iso() -> str:
@@ -781,6 +782,7 @@ class PartyStore:
                     raise ValueError(f"invalid lore card flags for key: {key}")
                 cards.append(
                     {
+                        "authored_key": key,
                         "title": title,
                         "content": content,
                         "keywords": keywords,
@@ -790,6 +792,22 @@ class PartyStore:
                     }
                 )
         return cards
+
+    def worldpack_world_clock(
+        self,
+        pack: WorldPackSummary,
+        authored_lore_cards: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        lore_card_keys = {
+            str(card["authored_key"])
+            for card in (authored_lore_cards or self.worldpack_lore_cards(pack))
+            if card.get("authored_key")
+        }
+        return load_world_clock_contract(
+            pack.manifest_path,
+            pack.manifest,
+            lore_card_keys=lore_card_keys,
+        )
 
     def list_player_characters(
         self,
@@ -1026,6 +1044,11 @@ class PartyStore:
             if request.scenario_type == "rp" and rp_contract_revision >= 8
             else []
         )
+        world_clock_contract = (
+            self.worldpack_world_clock(pack, authored_lore_cards)
+            if request.scenario_type == "rp" and rp_contract_revision >= 10
+            else None
+        )
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
@@ -1033,7 +1056,12 @@ class PartyStore:
 
         party_id = f"party_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
-        self.initialize_party_state(party_id, pack, character)
+        self.initialize_party_state(
+            party_id,
+            pack,
+            character,
+            world_clock_contract=world_clock_contract,
+        )
         if authored_lore_cards:
             party_state_store = StateStore(
                 self.settings.sqlite_path,
@@ -1631,6 +1659,24 @@ class PartyStore:
                 target_campaign_id=state_campaign_id,
                 target_state_path=str(self.state_path_for_branch(party.id, branch_id)),
             )
+            if party.scenario_type == "rp" and target_revision >= 10 and party.worldpack is not None:
+                authored_lore_cards = self.worldpack_lore_cards(party.worldpack)
+                contract = self.worldpack_world_clock(party.worldpack, authored_lore_cards)
+                if contract is not None:
+                    branch_store = self.store_for_branch(
+                        party.id,
+                        branch_id,
+                        owner_user_id=owner_user_id,
+                    )
+                    existing_authored_keys = {
+                        str(card["authored_key"])
+                        for card in branch_store.lore_cards(include_archived=True)
+                        if card.get("authored_key")
+                    }
+                    for card in authored_lore_cards:
+                        if str(card["authored_key"]) not in existing_authored_keys:
+                            branch_store.create_lore_card(**card)
+                    branch_store.initialize_world_clock(contract)
         except Exception:
             with self.connect() as connection:
                 connection.execute("DELETE FROM party_branches WHERE id = ?", (branch_id,))
@@ -1878,7 +1924,14 @@ class PartyStore:
     def state_path_for(self, state_campaign_id: str) -> Path:
         return Path(self.settings.party_state_root) / state_campaign_id / "current.json"
 
-    def initialize_party_state(self, party_id: str, pack: WorldPackSummary, character: PlayerCharacterSummary) -> None:
+    def initialize_party_state(
+        self,
+        party_id: str,
+        pack: WorldPackSummary,
+        character: PlayerCharacterSummary,
+        *,
+        world_clock_contract: dict[str, Any] | None = None,
+    ) -> None:
         state_path = self.state_path_for(party_id)
         if state_path.exists():
             return
@@ -1918,6 +1971,8 @@ class PartyStore:
         state.setdefault("meta", {})
         state["meta"]["campaign_id"] = party_id
         state["meta"]["state_version"] = 1
+        if world_clock_contract is not None:
+            state["world_clock"] = initial_world_clock_state(world_clock_contract)
         state.setdefault("player", {})
         state["player"]["character_id"] = character.id
         state["player"]["name"] = character.name

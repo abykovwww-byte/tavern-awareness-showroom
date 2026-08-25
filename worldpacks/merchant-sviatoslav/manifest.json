@@ -18,7 +18,7 @@
     "recommended": "rp",
     "supported": ["rp"]
   },
-  "rp_contract": {"schema_version": "rp-core.v2", "revision": 8},
+  "rp_contract": {"schema_version": "rp-core.v2", "revision": 10},
   "relationships": {
     "schema_version": "rp-relationships.v2",
     "model": "relationships/model.json"
@@ -42,6 +42,7 @@
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
     "lore_cards": "lore-cards",
+    "world_clock": "world-clock.json",
     "sillytavern_lorebook": "sillytavern/merchant-sviatoslav.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",

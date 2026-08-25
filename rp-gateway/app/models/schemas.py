@@ -437,6 +437,12 @@ class PartyStartRequest(BaseModel):
     max_tokens: int | None = None
 
 
+class WorldClockMarkerConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
 class PartySummary(BaseModel):
     id: str
     owner_user_id: str | None = None

@@ -210,6 +210,7 @@ def write_worldpack(
     *,
     rp_revision: int | None = None,
     lore_cards: list[dict[str, object]] | None = None,
+    world_clock: dict[str, object] | None = None,
 ) -> Path:
     pack_dir = root / "worldpacks" / pack_id
     pack_dir.mkdir(parents=True)
@@ -234,6 +235,8 @@ def write_worldpack(
         manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": rp_revision}
     if lore_cards is not None:
         manifest["files"]["lore_cards"] = "lore-cards"
+    if world_clock is not None:
+        manifest["files"]["world_clock"] = "world-clock.json"
     seed = base_state()
     seed["meta"]["campaign_id"] = pack_id
     (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -254,6 +257,11 @@ def write_worldpack(
                 },
                 ensure_ascii=False,
             ),
+            encoding="utf-8",
+        )
+    if world_clock is not None:
+        (pack_dir / "world-clock.json").write_text(
+            json.dumps(world_clock, ensure_ascii=False),
             encoding="utf-8",
         )
     return pack_dir
@@ -3879,6 +3887,160 @@ def test_revision8_party_imports_authored_lore_cards_without_runtime_model_call(
             else 0
         )
     assert service_calls == 0
+
+
+def test_revision10_party_initializes_clock_and_confirms_authored_marker(tmp_path: Path):
+    write_worldpack(
+        tmp_path,
+        rp_revision=10,
+        world_clock={
+            "schema_version": "rp-gateway.world-clock.v1",
+            "initial_date": "0964-04-18T09:00:00Z",
+            "step_unit": "iso8601_duration",
+            "max_step": "P2D",
+            "markers": [
+                {
+                    "id": "demo.deadline-resolved",
+                    "label": "Игрок явно решил вопрос срока",
+                }
+            ],
+            "events": [
+                {
+                    "id": "demo.deadline-closes",
+                    "condition": {
+                        "type": "date_gte",
+                        "date": "0964-04-20T09:00:00Z",
+                    },
+                    "summary": "Срок истёк.",
+                    "superseded_by": ["demo.deadline-resolved"],
+                    "consequences": [
+                        {
+                            "type": "world_fact",
+                            "id": "demo.fact.deadline-closed",
+                            "text": "Прежний срок истёк.",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    c = client(tmp_path, rp_contract_observed_revision=10)
+
+    party = create_demo_party(c, title="World Clock")
+    state = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    assert party["rp_contract_revision"] == 10
+    assert state["world_clock"]["date"] == "0964-04-18T09:00:00Z"
+    assert state["world_clock"]["processed_party_turn"] == 0
+
+    confirmed = c.post(
+        f"/api/parties/{party['id']}/world-clock/markers/demo.deadline-resolved/confirm",
+        json={"idempotency_key": "confirm-deadline"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["duplicate"] is False
+    after = c.get(f"/api/parties/{party['id']}/state").json()["state"]
+    assert after["world_clock"]["confirmed_marker_ids"] == ["demo.deadline-resolved"]
+    assert after["world_clock"]["event_statuses"]["demo.deadline-closes"]["status"] == "superseded"
+
+    duplicate = c.post(
+        f"/api/parties/{party['id']}/world-clock/markers/demo.deadline-resolved/confirm",
+        json={"idempotency_key": "confirm-deadline"},
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate"] is True
+
+
+def test_revision10_candidate_branch_keeps_disabled_authored_event_cards(tmp_path: Path):
+    clock = {
+        "schema_version": "rp-gateway.world-clock.v1",
+        "initial_date": "0964-04-18T09:00:00Z",
+        "step_unit": "iso8601_duration",
+        "max_step": "P2D",
+        "markers": [
+            {
+                "id": "demo.event-diverted",
+                "label": "Игрок явно изменил событие",
+            }
+        ],
+        "events": [
+            {
+                "id": "demo.event-fires",
+                "condition": {
+                    "type": "date_gte",
+                    "date": "0964-04-19T09:00:00Z",
+                },
+                "summary": "Событие произошло.",
+                "superseded_by": ["demo.event-diverted"],
+                "consequences": [
+                    {
+                        "type": "lore_card",
+                        "key": "event:demo-risk",
+                        "enabled": True,
+                    }
+                ],
+            }
+        ],
+    }
+    write_worldpack(
+        tmp_path,
+        rp_revision=10,
+        lore_cards=[
+            {
+                "key": "event:demo-risk",
+                "title": "Риск события",
+                "content": "Карточка включается только после события.",
+                "keywords": ["риск"],
+                "always_on": False,
+                "enabled": False,
+            }
+        ],
+        world_clock=clock,
+    )
+    c = client(tmp_path, rp_contract_observed_revision=8)
+    party = create_demo_party(c, title="World Clock Candidate")
+    assert party["rp_contract_revision"] == 8
+
+    checkpoint_response = c.post(
+        f"/api/parties/{party['id']}/checkpoints",
+        json={"label": "Clock candidate base"},
+    )
+    assert checkpoint_response.status_code == 200, checkpoint_response.text
+    checkpoint = checkpoint_response.json()["checkpoint"]
+    assert len(checkpoint["lore_card_ids"]) == 1
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        connection.execute(
+            "UPDATE memory_checkpoints SET lore_card_ids_json = '[]' WHERE id = ?",
+            (checkpoint["id"],),
+        )
+    branch_response = c.post(
+        f"/api/parties/{party['id']}/branches",
+        json={
+            "checkpoint_id": checkpoint["id"],
+            "label": "Revision 10 clock candidate",
+            "rp_contract_revision": 10,
+        },
+    )
+    assert branch_response.status_code == 200, branch_response.text
+    branch = branch_response.json()["branch"]
+    branch_store = c.app.state.party_store.store_for_branch(
+        party["id"],
+        branch["id"],
+    )
+    cards = branch_store.lore_cards(include_archived=True)
+    assert [(card["authored_key"], card["enabled"]) for card in cards] == [
+        ("event:demo-risk", False)
+    ]
+    assert branch_store.get_state()["world_clock"]["date"] == "0964-04-18T09:00:00Z"
+
+    result = branch_store.apply_world_clock_tick(
+        clock,
+        party_turn=1,
+        elapsed="P2D",
+        reason="service_model",
+        request_id="candidate-clock-turn-1",
+    )
+    assert [event["id"] for event in result["events"]] == ["demo.event-fires"]
+    assert branch_store.lore_cards(include_archived=True)[0]["enabled"] is True
 
 
 def test_revision8_lore_activation_uses_title_keywords_and_is_exposed_with_turn_metadata(tmp_path: Path):

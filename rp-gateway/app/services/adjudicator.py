@@ -56,6 +56,7 @@ from app.services.training_workspace import TrainingWorkspaceService, WorkspaceM
 from app.services.trace_redaction import redact_trace_value
 from app.services.validator import OutputValidator, safe_fallback
 from app.services.world_instructor import WorldInstructor
+from app.services.world_clock import WorldClockBusy, WorldClockService
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ class Adjudicator:
         training_runtime: TrainingRuntimeService | None = None,
         relationship_model: dict[str, Any] | None = None,
         scene_contract: dict[str, Any] | None = None,
+        world_clock_contract: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -100,6 +102,13 @@ class Adjudicator:
         self.training_runtime = training_runtime
         self.relationship_model = relationship_model if settings.scenario_type == "rp" else None
         self.scene_contract = scene_contract if settings.scenario_type == "rp" else None
+        self.world_clock = (
+            WorldClockService(settings, store, world_clock_contract)
+            if settings.scenario_type == "rp"
+            and settings.rp_contract_revision >= 10
+            and world_clock_contract is not None
+            else None
+        )
         self.relationship_mechanics = (
             RelationshipMechanics(
                 store,
@@ -368,6 +377,16 @@ class Adjudicator:
                 story_coverage = 0
                 raw_tail_turn_ids: list[int] = []
                 prompt_diagnostics: dict[str, Any] = {}
+                world_clock_projection = (
+                    self.world_clock.prompt_projection(narrative_state)
+                    if self.world_clock is not None
+                    else None
+                )
+                world_events = (
+                    str(world_clock_projection["block"])
+                    if world_clock_projection is not None
+                    else None
+                )
 
                 def assemble_prompt() -> list[dict[str, str]]:
                     return self.narrative.narrative_messages(
@@ -380,6 +399,7 @@ class Adjudicator:
                         artifact_contract=interaction_contract,
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
+                        world_events=world_events,
                         diagnostics=prompt_diagnostics if revision_seven else None,
                     )
 
@@ -557,6 +577,7 @@ class Adjudicator:
                 assembly_details: dict[str, Any] = {
                     "message_count": len(prompt_messages),
                     "relationship_pressure_included": bool(relationship_pressure),
+                    "world_events_included": bool(world_events),
                     "training_turn_contract_included": bool(training_turn_contract),
                     "interaction_contract_included": bool(interaction_contract),
                     "assembly_trace": self.prompt_assembly_trace(prompt_messages, latest),
@@ -605,6 +626,7 @@ class Adjudicator:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
+                    world_events=world_events,
                 )
                 prompt_cache_response = raw
                 bundle_received = True
@@ -779,6 +801,7 @@ class Adjudicator:
                         artifact_contract=interaction_contract,
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
+                        world_events=world_events,
                     )
                     if scene_bundle_revision:
                         scene_result = materialize_scene_bundle(
@@ -1084,6 +1107,10 @@ class Adjudicator:
             )
             if prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = prompt_assembly
+            if world_clock_projection is not None:
+                turn_metadata["world_clock_events"] = dict(
+                    world_clock_projection["metadata"]
+                )
             if revision_eight and prompt_messages is not None:
                 turn_metadata.update(
                     prompt_cache_observability(
@@ -1177,6 +1204,16 @@ class Adjudicator:
                     consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
                     workspace_files=workspace_result.persistence_records if workspace_result else [],
                     consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
+                    consumed_world_clock_event_ids=(
+                        list(world_clock_projection["event_ids"])
+                        if world_clock_projection is not None
+                        else []
+                    ),
+                    post_commit_service_jobs=(
+                        [("world_clock", self.settings.service_job_max_attempts)]
+                        if self.world_clock is not None and self.world_clock.enabled(state)
+                        else []
+                    ),
                     party_turn=int(projected_state["meta"]["turn"]),
                     audit_events=atomic_audit_events,
                     excluded_from_memory=fallback_noncanonical,
@@ -1464,12 +1501,61 @@ class Adjudicator:
             try:
                 await self.run_service_job(running, authorization)
                 self.store.complete_service_job(int(running["id"]))
+            except WorldClockBusy as exc:
+                self.store.defer_service_job(
+                    int(running["id"]),
+                    self.settings.service_job_retry_base_seconds,
+                    f"{type(exc).__name__}: {exc}",
+                )
+                self.store.audit(
+                    "world_clock_deferred",
+                    {
+                        "job_id": running["id"],
+                        "party_turn": running.get("party_turn"),
+                        "reason": "main_turn_running",
+                    },
+                    running.get("request_id"),
+                )
             except Exception as exc:  # noqa: BLE001 - service work must never affect gameplay
                 attempts = max(int(running["attempts"]), 1)
                 delay = min(
                     self.settings.service_job_retry_base_seconds * (3 ** (attempts - 1)),
                     self.settings.service_job_retry_max_seconds,
                 )
+                if (
+                    running["job_type"] == "world_clock"
+                    and attempts >= int(running["max_attempts"])
+                    and self.world_clock is not None
+                ):
+                    try:
+                        self.world_clock.apply_noop(running, reason="service_unavailable")
+                    except WorldClockBusy as busy:
+                        self.store.defer_service_job(
+                            int(running["id"]),
+                            self.settings.service_job_retry_base_seconds,
+                            f"{type(busy).__name__}: {busy}",
+                        )
+                        continue
+                    except Exception as noop_error:  # noqa: BLE001 - persist the terminal data error
+                        self.store.retry_service_job(
+                            int(running["id"]),
+                            f"{type(noop_error).__name__}: {noop_error}",
+                            delay,
+                        )
+                    else:
+                        self.store.complete_service_job(int(running["id"]))
+                        self.store.audit(
+                            "world_clock_service_unavailable_noop",
+                            {
+                                "job_id": running["id"],
+                                "party_turn": running.get("party_turn"),
+                                "elapsed": "PT0S",
+                                "reason": "service_unavailable",
+                                "error": f"{type(exc).__name__}: {exc}",
+                            },
+                            running.get("request_id"),
+                        )
+                    continue
                 self.store.retry_service_job(
                     int(running["id"]),
                     f"{type(exc).__name__}: {exc}",
@@ -1495,6 +1581,19 @@ class Adjudicator:
     async def run_service_job(self, job: dict[str, Any], authorization: str | None) -> None:
         request_id = str(job.get("request_id") or "")
         projection_before = self.trace_projection_snapshot()
+        if job["job_type"] == "world_clock":
+            if self.world_clock is None:
+                # A party pinned below revision 10 must not inherit candidate clock work.
+                return
+            await self.world_clock.process_turn(job)
+            if request_id:
+                self.capture_projection_changes(
+                    request_id,
+                    projection_before,
+                    source="world_clock",
+                    reason=f"service_job:{job['id']}",
+                )
+            return
         if (
             self.settings.scenario_type == "rp"
             and self.settings.rp_contract_revision >= 8
@@ -1744,6 +1843,7 @@ class Adjudicator:
             "PARTY_LORE_CARDS": "party_lore_cards",
             "ИСПРАВЛЕНИЯ ИГРОКА": "player_corrections",
             "RELATIONSHIP_PRESSURE": "relationship_pressure",
+            "СОБЫТИЯ МИРА": "world_events",
             "ACTIVE_TRAINING_TURN_CONTRACT": "training_turn_contract",
             "TRAINING_INTERACTION_CONTRACT": "training_interaction_contract",
             "WORLD_ABSOLUTE_RULES": "world_absolute_rules",

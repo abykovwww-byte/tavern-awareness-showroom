@@ -35,6 +35,7 @@ from app.services.scene_state import (
     unresolved_noncanonical_fallback_turns,
 )
 from app.services.state_store import StateStore
+from app.services.world_clock import WorldClockService
 
 
 class PromptInspector:
@@ -44,11 +45,19 @@ class PromptInspector:
         store: StateStore,
         relationship_model: dict[str, Any] | None = None,
         scene_contract: dict[str, Any] | None = None,
+        world_clock_contract: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
         self.relationship_model = relationship_model
         self.scene_contract = scene_contract
+        self.world_clock = (
+            WorldClockService(settings, store, world_clock_contract)
+            if settings.scenario_type == "rp"
+            and settings.rp_contract_revision >= 10
+            and world_clock_contract is not None
+            else None
+        )
         self.intent_parser = IntentParser()
         self.rule_engine = RuleEngine()
         self.rp_story_memory = RPStoryMemoryUpdater(settings, store) if settings.scenario_type == "rp" else None
@@ -124,6 +133,11 @@ class PromptInspector:
         token_budget = narrative.input_token_budget(request)
         revision_seven = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
         prompt_diagnostics: dict[str, Any] = {}
+        world_clock_projection = (
+            self.world_clock.prompt_projection(candidate_state)
+            if self.world_clock is not None
+            else None
+        )
         try:
             messages = narrative.narrative_messages(
                 request,
@@ -132,6 +146,11 @@ class PromptInspector:
                 repair_instruction=None,
                 memory_summary=memory_summary,
                 rp_story_memory=rp_story_memory,
+                world_events=(
+                    str(world_clock_projection["block"])
+                    if world_clock_projection is not None
+                    else None
+                ),
                 diagnostics=prompt_diagnostics if revision_seven else None,
             )
         except PromptBudgetExceeded as exc:
@@ -250,6 +269,11 @@ class PromptInspector:
             else self.store.memory_for_prompt(self.settings.party_memory_prompt_max_chars)
         )
         rp_story_memory = self.store.latest_rp_story_memory() if self.settings.scenario_type == "rp" else None
+        world_clock_projection = (
+            self.world_clock.prompt_projection(state)
+            if self.world_clock is not None
+            else None
+        )
         messages = NarrativeClient(self.settings).narrative_messages(
             request,
             state,
@@ -257,6 +281,11 @@ class PromptInspector:
             repair_instruction=None,
             memory_summary=memory_summary,
             rp_story_memory=rp_story_memory,
+            world_events=(
+                str(world_clock_projection["block"])
+                if world_clock_projection is not None
+                else None
+            ),
         )
         blocks = self.blocks(messages)
         payload = self.payload(latest, messages, blocks, source="reconstructed_last_turn", dry_run=True, turn=latest_turn)
@@ -503,6 +532,8 @@ class PromptInspector:
             return "party_lore_cards", "Party lore cards"
         if content.startswith("ИСПРАВЛЕНИЯ ИГРОКА"):
             return "player_corrections", "Исправления игрока"
+        if content.startswith("СОБЫТИЯ МИРА"):
+            return "world_events", "События мира"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:

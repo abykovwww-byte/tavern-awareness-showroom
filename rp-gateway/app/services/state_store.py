@@ -16,6 +16,13 @@ from app.core.json_patch import apply_patch
 from app.models.schemas import PatchOperation, StatePatch
 from app.services.scene_state import initial_scene_state, mark_scene_stale
 from app.services.trace_redaction import redact_trace_value
+from app.services.world_clock import (
+    WorldClockBusy,
+    advance_world_clock_state,
+    confirm_world_clock_marker_state,
+    initial_world_clock_state,
+    mark_world_clock_events_announced,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -443,6 +450,7 @@ class StateStore:
                 CREATE TABLE IF NOT EXISTS lore_cards (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     campaign_id TEXT NOT NULL,
+                    authored_key TEXT,
                     title TEXT NOT NULL,
                     content TEXT NOT NULL,
                     keywords_json TEXT NOT NULL,
@@ -479,6 +487,7 @@ class StateStore:
                     max_attempts INTEGER NOT NULL,
                     next_attempt_at INTEGER NOT NULL,
                     request_id TEXT,
+                    party_turn INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -494,10 +503,37 @@ class StateStore:
             self.migrate_narrative_event_resolution_columns(connection)
             self.migrate_turn_feedback_columns(connection)
             self.migrate_turn_trace_tables(connection)
+            self.migrate_lore_card_columns(connection)
+            self.migrate_service_job_columns(connection)
             connection.execute(
                 "INSERT OR IGNORE INTO campaigns(id, created_at) VALUES(?, ?)",
                 (self.campaign_id, now_ts()),
             )
+
+    @staticmethod
+    def migrate_lore_card_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(lore_cards)").fetchall()
+        }
+        if "authored_key" not in columns:
+            connection.execute("ALTER TABLE lore_cards ADD COLUMN authored_key TEXT")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_lore_cards_campaign_authored_key "
+            "ON lore_cards(campaign_id, authored_key) WHERE authored_key IS NOT NULL"
+        )
+
+    @staticmethod
+    def migrate_service_job_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(service_jobs)").fetchall()
+        }
+        if "party_turn" not in columns:
+            connection.execute("ALTER TABLE service_jobs ADD COLUMN party_turn INTEGER")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_service_jobs_world_clock_turn "
+            "ON service_jobs(campaign_id, party_turn) "
+            "WHERE job_type = 'world_clock' AND party_turn IS NOT NULL"
+        )
 
     def migrate_turn_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(turns)").fetchall()}
@@ -838,12 +874,15 @@ class StateStore:
         max_attempts: int = 5,
         *,
         request_scoped: bool = False,
+        party_turn: int | None = None,
     ) -> dict[str, Any]:
-        if job_type not in {"memory", "rp_story_memory", "relationship_extraction", "journal"}:
+        if job_type not in {"memory", "rp_story_memory", "relationship_extraction", "journal", "world_clock"}:
             raise ValueError(f"unsupported service job type: {job_type}")
+        if job_type == "world_clock" and (party_turn is None or int(party_turn) < 1):
+            raise ValueError("world_clock service job requires a positive party_turn")
         timestamp = now_ts()
         with self.connect() as connection:
-            if job_type == "relationship_extraction" or request_scoped:
+            if job_type in {"relationship_extraction", "world_clock"} or request_scoped:
                 row = connection.execute(
                     """
                     SELECT * FROM service_jobs
@@ -866,10 +905,19 @@ class StateStore:
                     """
                     INSERT INTO service_jobs(
                         campaign_id, job_type, status, attempts, max_attempts,
-                        next_attempt_at, request_id, last_error, created_at, updated_at
-                    ) VALUES(?, ?, 'pending', 0, ?, ?, ?, NULL, ?, ?)
+                        next_attempt_at, request_id, party_turn, last_error, created_at, updated_at
+                    ) VALUES(?, ?, 'pending', 0, ?, ?, ?, ?, NULL, ?, ?)
                     """,
-                    (self.campaign_id, job_type, max(max_attempts, 1), timestamp, request_id, timestamp, timestamp),
+                    (
+                        self.campaign_id,
+                        job_type,
+                        max(max_attempts, 1),
+                        timestamp,
+                        request_id,
+                        int(party_turn) if party_turn is not None else None,
+                        timestamp,
+                        timestamp,
+                    ),
                 )
                 row = connection.execute("SELECT * FROM service_jobs WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
         return self.service_job_from_row(row)
@@ -878,9 +926,22 @@ class StateStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT * FROM service_jobs
-                WHERE campaign_id = ? AND status = 'pending' AND next_attempt_at <= ?
-                ORDER BY next_attempt_at ASC, id ASC LIMIT 1
+                SELECT job.* FROM service_jobs AS job
+                WHERE job.campaign_id = ?
+                  AND job.status = 'pending'
+                  AND job.next_attempt_at <= ?
+                  AND (
+                    job.job_type <> 'world_clock'
+                    OR NOT EXISTS (
+                      SELECT 1 FROM service_jobs AS earlier
+                      WHERE earlier.campaign_id = job.campaign_id
+                        AND earlier.job_type = 'world_clock'
+                        AND earlier.status IN ('pending', 'running')
+                        AND COALESCE(earlier.party_turn, earlier.id)
+                            < COALESCE(job.party_turn, job.id)
+                    )
+                  )
+                ORDER BY job.next_attempt_at ASC, job.id ASC LIMIT 1
                 """,
                 (self.campaign_id, now_ts()),
             ).fetchone()
@@ -890,8 +951,21 @@ class StateStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT MIN(next_attempt_at) AS next_attempt_at FROM service_jobs
-                WHERE campaign_id = ? AND status = 'pending'
+                SELECT MIN(job.next_attempt_at) AS next_attempt_at
+                FROM service_jobs AS job
+                WHERE job.campaign_id = ?
+                  AND job.status = 'pending'
+                  AND (
+                    job.job_type <> 'world_clock'
+                    OR NOT EXISTS (
+                      SELECT 1 FROM service_jobs AS earlier
+                      WHERE earlier.campaign_id = job.campaign_id
+                        AND earlier.job_type = 'world_clock'
+                        AND earlier.status IN ('pending', 'running')
+                        AND COALESCE(earlier.party_turn, earlier.id)
+                            < COALESCE(job.party_turn, job.id)
+                    )
+                  )
                 """,
                 (self.campaign_id,),
             ).fetchone()
@@ -919,6 +993,27 @@ class StateStore:
                 WHERE id = ? AND campaign_id = ?
                 """,
                 (now_ts(), job_id, self.campaign_id),
+            )
+
+    def defer_service_job(self, job_id: int, retry_delay: int, error: str) -> None:
+        """Return a clock job to pending without consuming a service attempt."""
+
+        timestamp = now_ts()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE service_jobs
+                SET status = 'pending', attempts = MAX(attempts - 1, 0),
+                    next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE id = ? AND campaign_id = ? AND status = 'running'
+                """,
+                (
+                    timestamp + max(int(retry_delay), 1),
+                    str(error)[:500],
+                    timestamp,
+                    int(job_id),
+                    self.campaign_id,
+                ),
             )
 
     def retry_service_job(
@@ -977,6 +1072,7 @@ class StateStore:
             "max_attempts": row["max_attempts"],
             "next_attempt_at": row["next_attempt_at"],
             "request_id": row["request_id"],
+            "party_turn": row["party_turn"],
             "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -990,6 +1086,7 @@ class StateStore:
         always_on: bool,
         enabled: bool,
         source_turn_ids: list[int],
+        authored_key: str | None = None,
     ) -> dict[str, Any]:
         timestamp = now_ts()
         clean_keywords = list(dict.fromkeys(keyword.strip() for keyword in keywords if keyword.strip()))[:40]
@@ -998,12 +1095,13 @@ class StateStore:
             cursor = connection.execute(
                 """
                 INSERT INTO lore_cards(
-                    campaign_id, title, content, keywords_json, always_on, enabled,
+                    campaign_id, authored_key, title, content, keywords_json, always_on, enabled,
                     archived, source_turn_ids_json, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
                 """,
                 (
                     self.campaign_id,
+                    str(authored_key).strip() if authored_key else None,
                     title.strip(),
                     content.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
@@ -1108,6 +1206,7 @@ class StateStore:
         return {
             "id": row["id"],
             "campaign_id": row["campaign_id"],
+            "authored_key": row["authored_key"],
             "title": row["title"],
             "content": row["content"],
             "keywords": self.json_list(row["keywords_json"]),
@@ -1123,7 +1222,11 @@ class StateStore:
         latest_turn = self.latest_turn()
         coverage = self.latest_memory_coverage()
         state = self.get_state()
-        lore_card_ids = [card["id"] for card in self.lore_cards() if card["enabled"]]
+        lore_card_ids = [
+            card["id"]
+            for card in self.lore_cards(include_archived=True)
+            if card["enabled"] or card.get("authored_key")
+        ]
         with self.connect() as connection:
             cursor = connection.execute(
                 """
@@ -1414,12 +1517,13 @@ class StateStore:
                     connection.execute(
                         """
                         INSERT INTO lore_cards(
-                            campaign_id, title, content, keywords_json, always_on, enabled,
+                            campaign_id, authored_key, title, content, keywords_json, always_on, enabled,
                             archived, source_turn_ids_json, created_at, updated_at
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             target_campaign_id,
+                            row["authored_key"],
                             row["title"],
                             row["content"],
                             row["keywords_json"],
@@ -1674,6 +1778,9 @@ class StateStore:
                     }
                     for card_id in normalized_lore_card_ids
                 ]
+            world_clock_events = metadata.get("world_clock_events")
+            if isinstance(world_clock_events, dict):
+                turn.setdefault("metadata", {})["world_clock_events"] = world_clock_events
             turn_kind = str(metadata.get("turn_kind") or "narrative")
             turn["turn_kind"] = turn_kind
             if turn_kind == "gm_correction":
@@ -3045,6 +3152,291 @@ class StateStore:
             logger.exception("gm_correction_diagnostic_link_failed request_id=%s", request_id)
         return candidate, turn_id
 
+    def initialize_world_clock(self, contract: dict[str, Any]) -> dict[str, Any]:
+        """Enable an authored clock when a candidate branch starts at a checkpoint."""
+
+        candidate: dict[str, Any]
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """
+                SELECT state_json, version FROM state_versions
+                WHERE campaign_id = ? ORDER BY version DESC LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("cannot initialize world clock without canonical state")
+            candidate = json.loads(current["state_json"])
+            if isinstance(candidate.get("world_clock"), dict):
+                return candidate
+            version = int(current["version"])
+            clock = initial_world_clock_state(contract)
+            clock["processed_party_turn"] = int(candidate.get("meta", {}).get("turn") or 0)
+            candidate["world_clock"] = clock
+            candidate.setdefault("meta", {})["state_version"] = version + 1
+            candidate["meta"]["last_updated"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            timestamp = now_ts()
+            connection.execute(
+                """
+                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                VALUES(?, ?, ?, ?, 'world_clock_initialize')
+                """,
+                (self.campaign_id, version + 1, json.dumps(candidate, ensure_ascii=False), timestamp),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                VALUES(?, NULL, 'world_clock_initialized', ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    json.dumps(
+                        {
+                            "state_version": version + 1,
+                            "party_turn": clock["processed_party_turn"],
+                            "date": clock["date"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+        self.write_state_file(candidate)
+        return candidate
+
+    @staticmethod
+    def _apply_world_clock_lore_updates(
+        connection: sqlite3.Connection,
+        campaign_id: str,
+        updates: list[dict[str, Any]],
+        timestamp: int,
+    ) -> None:
+        for update in updates:
+            authored_key = str(update.get("key") or "")
+            row = connection.execute(
+                "SELECT id FROM lore_cards WHERE campaign_id = ? AND authored_key = ?",
+                (campaign_id, authored_key),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"authored lore card not found for world clock: {authored_key}")
+            connection.execute(
+                "UPDATE lore_cards SET enabled = ?, updated_at = ? WHERE id = ?",
+                (int(bool(update.get("enabled"))), timestamp, int(row["id"])),
+            )
+
+    def apply_world_clock_tick(
+        self,
+        contract: dict[str, Any],
+        *,
+        party_turn: int,
+        elapsed: str,
+        reason: str,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        """Apply elapsed time, event status, facts, and authored-card toggles atomically."""
+
+        candidate: dict[str, Any] | None = None
+        occurred: list[dict[str, Any]] = []
+        idempotent = False
+        version = 0
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            running = connection.execute(
+                """
+                SELECT 1 FROM turn_requests
+                WHERE campaign_id = ? AND status = 'running' LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if running is not None:
+                raise WorldClockBusy("main gameplay turn is running")
+            current = connection.execute(
+                """
+                SELECT state_json, version FROM state_versions
+                WHERE campaign_id = ? ORDER BY version DESC LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("cannot apply world clock without canonical state")
+            state = json.loads(current["state_json"])
+            version = int(current["version"])
+            candidate, lore_updates, occurred, idempotent = advance_world_clock_state(
+                state,
+                contract,
+                party_turn=int(party_turn),
+                elapsed=elapsed,
+                reason=reason,
+            )
+            if idempotent:
+                return {
+                    "applied": False,
+                    "idempotent": True,
+                    "state_version": version,
+                    "events": [],
+                }
+            candidate.setdefault("meta", {})["state_version"] = version + 1
+            candidate["meta"]["last_updated"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            timestamp = now_ts()
+            self._apply_world_clock_lore_updates(
+                connection,
+                self.campaign_id,
+                lore_updates,
+                timestamp,
+            )
+            connection.execute(
+                """
+                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    version + 1,
+                    json.dumps(candidate, ensure_ascii=False),
+                    timestamp,
+                    f"world_clock:{party_turn}",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                VALUES(?, ?, 'world_clock_tick', ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    request_id,
+                    json.dumps(
+                        {
+                            "party_turn": int(party_turn),
+                            "elapsed": candidate["world_clock"]["last_elapsed"]["elapsed"],
+                            "reason": reason,
+                            "date": candidate["world_clock"]["date"],
+                            "event_ids": [item["id"] for item in occurred],
+                            "lore_card_updates": lore_updates,
+                            "state_version": version + 1,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+        if candidate is None:
+            raise RuntimeError("world clock transaction did not produce state")
+        self.write_state_file(candidate)
+        return {
+            "applied": True,
+            "idempotent": False,
+            "state_version": version + 1,
+            "date": candidate["world_clock"]["date"],
+            "elapsed": candidate["world_clock"]["last_elapsed"],
+            "events": occurred,
+        }
+
+    def confirm_world_clock_marker(
+        self,
+        contract: dict[str, Any],
+        *,
+        marker_id: str,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        """Record one authored marker from an explicit player confirmation."""
+
+        candidate: dict[str, Any] | None = None
+        occurred: list[dict[str, Any]] = []
+        duplicate = False
+        version = 0
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            running = connection.execute(
+                "SELECT 1 FROM turn_requests WHERE campaign_id = ? AND status = 'running' LIMIT 1",
+                (self.campaign_id,),
+            ).fetchone()
+            if running is not None:
+                raise WorldClockBusy("main gameplay turn is running")
+            current = connection.execute(
+                """
+                SELECT state_json, version FROM state_versions
+                WHERE campaign_id = ? ORDER BY version DESC LIMIT 1
+                """,
+                (self.campaign_id,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("cannot confirm world clock marker without canonical state")
+            state = json.loads(current["state_json"])
+            version = int(current["version"])
+            candidate, lore_updates, occurred, duplicate = confirm_world_clock_marker_state(
+                state,
+                contract,
+                marker_id=marker_id,
+            )
+            if duplicate:
+                return {
+                    "confirmed": True,
+                    "duplicate": True,
+                    "marker_id": marker_id,
+                    "state_version": version,
+                    "events": [],
+                }
+            candidate.setdefault("meta", {})["state_version"] = version + 1
+            candidate["meta"]["last_updated"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            )
+            timestamp = now_ts()
+            self._apply_world_clock_lore_updates(
+                connection,
+                self.campaign_id,
+                lore_updates,
+                timestamp,
+            )
+            connection.execute(
+                """
+                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    version + 1,
+                    json.dumps(candidate, ensure_ascii=False),
+                    timestamp,
+                    f"world_clock_marker:{marker_id}",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO audit_events(campaign_id, request_id, event_type, event_json, created_at)
+                VALUES(?, ?, 'world_clock_marker_confirmed', ?, ?)
+                """,
+                (
+                    self.campaign_id,
+                    request_id,
+                    json.dumps(
+                        {
+                            "marker_id": marker_id,
+                            "event_ids": [item["id"] for item in occurred],
+                            "lore_card_updates": lore_updates,
+                            "state_version": version + 1,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    timestamp,
+                ),
+            )
+        if candidate is None:
+            raise RuntimeError("world clock marker transaction did not produce state")
+        self.write_state_file(candidate)
+        return {
+            "confirmed": True,
+            "duplicate": False,
+            "marker_id": marker_id,
+            "state_version": version + 1,
+            "events": occurred,
+        }
+
     def commit_turn(
         self,
         patch: StatePatch,
@@ -3062,6 +3454,8 @@ class StateStore:
         consumed_artifact_event_ids: list[int] | None = None,
         workspace_files: list[dict[str, Any]] | None = None,
         consumed_workspace_event_ids: list[int] | None = None,
+        consumed_world_clock_event_ids: list[str] | None = None,
+        post_commit_service_jobs: list[tuple[str, int]] | None = None,
         party_turn: int | None = None,
         audit_events: list[tuple[str, dict[str, Any]]] | None = None,
         excluded_from_memory: bool = False,
@@ -3131,6 +3525,11 @@ class StateStore:
                 if party_turn is not None
                 else int(committed_state["meta"]["turn"])
             )
+            mark_world_clock_events_announced(
+                committed_state,
+                consumed_world_clock_event_ids or [],
+                party_turn=actual_party_turn,
+            )
             timestamp = now_ts()
             connection.execute(
                 """
@@ -3176,6 +3575,28 @@ class StateStore:
                 ),
             )
             turn_id = int(cursor.lastrowid)
+
+            for job_type, max_attempts in post_commit_service_jobs or []:
+                if job_type != "world_clock":
+                    raise ValueError(f"unsupported atomic post-commit service job: {job_type}")
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO service_jobs(
+                        campaign_id, job_type, status, attempts, max_attempts,
+                        next_attempt_at, request_id, party_turn, last_error,
+                        created_at, updated_at
+                    ) VALUES(?, 'world_clock', 'pending', 0, ?, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        self.campaign_id,
+                        max(int(max_attempts), 1),
+                        timestamp,
+                        request_id,
+                        actual_party_turn,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
 
             for artifact in artifacts or []:
                 public = artifact.get("public") if isinstance(artifact, dict) else None
@@ -3426,7 +3847,7 @@ class StateStore:
             row = connection.execute(
                 """
                 SELECT id, request_id, player_message, narrative_response,
-                       state_version, party_turn, created_at
+                       state_version, party_turn, metadata_json, excluded_from_memory, created_at
                 FROM turns
                 WHERE campaign_id = ? AND request_id = ?
                 ORDER BY id DESC
@@ -3434,7 +3855,18 @@ class StateStore:
                 """,
                 (self.campaign_id, request_id),
             ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        result = dict(row)
+        raw_metadata = result.pop("metadata_json", None)
+        try:
+            metadata = json.loads(raw_metadata) if raw_metadata else {}
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        result["metadata"] = metadata if isinstance(metadata, dict) else {}
+        result["turn_kind"] = str(result["metadata"].get("turn_kind") or "narrative")
+        result["excluded_from_memory"] = bool(result["excluded_from_memory"])
+        return result
 
     def begin_turn_request(self, idempotency_key: str, request_id: str) -> dict[str, Any]:
         idempotency_key = str(idempotency_key).strip()
