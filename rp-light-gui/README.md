@@ -60,6 +60,12 @@ recorded in that turn's final prompt metadata. An explicit per-turn button asks
 Gateway for a strict draft, fills the visible Lore Card form, and does not save
 anything until the player reviews and confirms it.
 
+For candidate revision-9 RP parties the composer exposes an explicit
+`Мастеру` button. Automatic routing that cannot decide shows a read-only
+`Мастеру / В сцену` choice. The GM path renders an exact before/after draft,
+persists only after confirm, and shows the resulting out-of-scene correction as
+one history note rather than a player/narrator pair.
+
 Model dropdown behavior:
 
 - the UI first selects `Local`, `Gemini`, or `OpenRouter`, then shows only

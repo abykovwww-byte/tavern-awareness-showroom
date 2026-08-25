@@ -22,6 +22,8 @@ const appState = {
   busyText: "",
   pendingMessages: {},
   pendingStoryMemoryCorrections: [],
+  pendingGmRoute: null,
+  pendingGmDraft: null,
   pendingLoreCardSourceTurnIds: [],
   adminUsers: [],
   adminWorldpacks: [],
@@ -57,6 +59,20 @@ const els = {
   messageForm: document.querySelector("#messageForm"),
   messageInput: document.querySelector("#messageInput"),
   messageSubmit: document.querySelector("#messageSubmit"),
+  gmMessageSubmit: document.querySelector("#gmMessageSubmit"),
+  gmDecisionPanel: document.querySelector("#gmDecisionPanel"),
+  gmDecisionLabel: document.querySelector("#gmDecisionLabel"),
+  gmDecisionTitle: document.querySelector("#gmDecisionTitle"),
+  gmDecisionHint: document.querySelector("#gmDecisionHint"),
+  gmDraftDiff: document.querySelector("#gmDraftDiff"),
+  gmDraftBefore: document.querySelector("#gmDraftBefore"),
+  gmDraftAfter: document.querySelector("#gmDraftAfter"),
+  gmRouteActions: document.querySelector("#gmRouteActions"),
+  gmDraftActions: document.querySelector("#gmDraftActions"),
+  gmRouteMasterButton: document.querySelector("#gmRouteMasterButton"),
+  gmRouteSceneButton: document.querySelector("#gmRouteSceneButton"),
+  gmConfirmButton: document.querySelector("#gmConfirmButton"),
+  gmRejectButton: document.querySelector("#gmRejectButton"),
   partyMeta: document.querySelector("#partyMeta"),
   stateSummary: document.querySelector("#stateSummary"),
   contextSummary: document.querySelector("#contextSummary"),
@@ -281,6 +297,11 @@ function bindEvents() {
   els.partyModelProviderSelect.addEventListener("change", renderPartyModelOptions);
   els.partyModelSelect.addEventListener("change", renderNarratorSettings);
   els.messageForm.addEventListener("submit", sendMessage);
+  els.gmMessageSubmit.addEventListener("click", sendMessageToGM);
+  els.gmRouteMasterButton.addEventListener("click", () => routePendingGmMessage("gm"));
+  els.gmRouteSceneButton.addEventListener("click", () => routePendingGmMessage("scene"));
+  els.gmConfirmButton.addEventListener("click", () => decideGmDraft("confirm"));
+  els.gmRejectButton.addEventListener("click", () => decideGmDraft("reject"));
   els.partyForm.addEventListener("submit", createParty);
   els.adminUserForm.addEventListener("submit", createAdminUser);
   els.byokKeyForm.addEventListener("submit", createByokKey);
@@ -509,6 +530,8 @@ function clearWorkspaceState() {
   appState.proposals = [];
   appState.pendingMessages = {};
   appState.pendingStoryMemoryCorrections = [];
+  appState.pendingGmRoute = null;
+  appState.pendingGmDraft = null;
   appState.pendingLoreCardSourceTurnIds = [];
   appState.adminUsers = [];
   appState.byokKeys = [];
@@ -563,6 +586,7 @@ async function selectParty(partyId) {
   appState.activeParty = party;
   appState.activeBranch = null;
   appState.pendingStoryMemoryCorrections = [];
+  clearGmDecision();
   localStorage.setItem(ACTIVE_PARTY_STORAGE_KEY, party.id);
   await reloadActiveParty();
   if (isAdmin()) await reloadAdminAutotestRuns(party.id);
@@ -611,6 +635,7 @@ async function openPartyBranch(partyId, branchId) {
   const payload = await apiGet(`/api/parties/${partyId}/branches/${branchId}`);
   if (appState.activeParty?.id !== partyId) return;
   appState.activeBranch = payload.branch;
+  clearGmDecision();
   appState.partyState = payload.state;
   appState.history = {
     party_id: partyId,
@@ -1049,8 +1074,11 @@ function rpStoryMemoryHtml(snapshot, stats) {
   const data = snapshot.memory || {};
   const covered = `${snapshot.from_turn_id ?? "-"}-${snapshot.to_turn_id ?? "-"}`;
   const currentSituation = activeStoryText(data.current_situation);
-  const correctionsEnabled = Number(appState.activeParty?.rp_contract_revision || 0) >= 2 && !appState.activeBranch;
-  const pendingCorrections = appState.pendingStoryMemoryCorrections || [];
+  const contractRevision = Number(appState.activeParty?.rp_contract_revision || 0);
+  const correctionsEnabled = contractRevision >= 2 && !appState.activeBranch;
+  const pendingCorrections = contractRevision < 9
+    ? appState.pendingStoryMemoryCorrections || []
+    : [];
   const pendingHtml = pendingCorrections.length
     ? `<div class="state-item memory-list"><strong>Коррекции со следующим ходом</strong><ul>${pendingCorrections.map((item) => `
         <li>${escapeHtml(item.action === "replace" ? "Исправить" : "Отозвать")}: ${escapeHtml(item.fact_id)}
@@ -1087,7 +1115,7 @@ function storyMemoryList(title, field, items, correctionsEnabled = false) {
   return `<div class="state-item memory-list"><strong>${escapeHtml(title)}</strong><ul>${html}</ul></div>`;
 }
 
-function handleStoryMemoryCorrectionAction(event) {
+async function handleStoryMemoryCorrectionAction(event) {
   const button = event.target.closest("[data-story-memory-action]");
   if (
     !button
@@ -1098,6 +1126,7 @@ function handleStoryMemoryCorrectionAction(event) {
   const action = button.dataset.storyMemoryAction;
   const field = button.dataset.field;
   const factId = button.dataset.factId;
+  const revision = Number(appState.activeParty?.rp_contract_revision || 0);
   if (!field || !factId) return;
   if (action === "cancel") {
     appState.pendingStoryMemoryCorrections = appState.pendingStoryMemoryCorrections.filter(
@@ -1108,12 +1137,34 @@ function handleStoryMemoryCorrectionAction(event) {
   }
   let replacementText = null;
   if (action === "replace") {
-    replacementText = window.prompt("Введите исправленный факт. Он заменит выбранную запись со следующим ходом.");
+    replacementText = window.prompt(
+      revision >= 9
+        ? "Введите исправленный факт. Мастер покажет точный diff перед записью."
+        : "Введите исправленный факт. Он заменит выбранную запись со следующим ходом.",
+    );
     if (!replacementText?.trim()) return;
     replacementText = replacementText.trim();
   } else if (action === "retract") {
-    if (!window.confirm("Отозвать этот факт из RP story memory со следующим ходом?")) return;
+    if (!window.confirm(
+      revision >= 9
+        ? "Подготовить отзыв этого факта у мастера? Перед записью будет подтверждение."
+        : "Отозвать этот факт из RP story memory со следующим ходом?",
+    )) return;
   } else {
+    return;
+  }
+  if (revision >= 9) {
+    const content = action === "replace"
+      ? replacementText
+      : "Отозвать выбранный факт.";
+    if (content.length > 600) {
+      showToast("Исправление не должно превышать 600 символов.");
+      return;
+    }
+    await submitPartyMessage(content, {
+      channel: "gm",
+      targetSlot: `memory:${field}:${factId}:${action}`,
+    });
     return;
   }
   const correction = {
@@ -1132,7 +1183,7 @@ function handleStoryMemoryCorrectionAction(event) {
 
 function renderMemoryTools() {
   if (!els.loreCardList || !els.checkpointList) return;
-  const activeJobs = (appState.serviceJobs || []).filter((job) => ["pending", "running", "failed"].includes(job.status));
+  const activeJobs = (appState.serviceJobs || []).filter((job) => ["pending", "running", "failed", "stale"].includes(job.status));
   const jobHtml = activeJobs.length
     ? `<div class="state-item"><strong>Служебная LLM</strong>${activeJobs
         .map((job) => `${escapeHtml(job.job_type)}: ${escapeHtml(job.status)} · попытка ${escapeHtml(job.attempts)}/${escapeHtml(job.max_attempts)}${job.last_error ? ` · ${escapeHtml(job.last_error)}` : ""}`)
@@ -1432,6 +1483,17 @@ function raisedLoreCardsForTurn(turn) {
     .map((id) => ({ id, title: summaries.get(id)?.title || `Lore Card #${id}` }));
 }
 
+function gmCorrectionMessageHtml(turn) {
+  const correction = turn?.player_correction || turn?.metadata?.player_correction || {};
+  const before = String(correction.before || "").trim();
+  const after = String(correction.after || "").trim();
+  const status = correction.status === "absorbed" ? "записано в память" : "активно поверх истории";
+  const content = correction.action === "retract" || !after
+    ? `Отозвано: ${before}\nСтатус: ${status}`
+    : `Было: ${before}\nСтало: ${after}\nСтатус: ${status}`;
+  return messageHtml("gm-note", "Мастер · исправление", content, turn.created_at);
+}
+
 function renderChat({ scrollMode = "bottom" } = {}) {
   const turns = appState.history?.turns || [];
   const pending = activePendingMessage();
@@ -1456,6 +1518,10 @@ function renderChat({ scrollMode = "bottom" } = {}) {
     && appState.activeParty?.scenario_type === "rp"
     && Number(appState.activeParty?.rp_contract_revision || 0) >= 8;
   for (const turn of visibleTurns) {
+    if (turn.turn_kind === "gm_correction") {
+      messages.push(gmCorrectionMessageHtml(turn));
+      continue;
+    }
     const autoStart = isAutoStartTurn(turn);
     if (autoStart) {
       messages.push(messageHtml("system", "Старт", "Партия началась автоматически.", turn.created_at));
@@ -2400,10 +2466,19 @@ async function autoStartParty(partyId) {
 
 async function sendMessage(event) {
   event.preventDefault();
+  await submitComposerMessage("auto");
+}
+
+async function sendMessageToGM() {
+  await submitComposerMessage("gm");
+}
+
+async function submitComposerMessage(channel) {
   if (activePendingMessage()) {
     showToast("Дождись ответа GM по предыдущему ходу.");
     return;
   }
+  if (appState.busy) return;
   const text = els.messageInput.value.trim();
   if (!text || !appState.activeParty) return;
   try {
@@ -2412,20 +2487,58 @@ async function sendMessage(event) {
     showToast(error.message);
     return;
   }
+  els.messageInput.value = "";
+  await submitPartyMessage(text, { channel });
+}
+
+async function submitPartyMessage(text, { channel = "auto", targetSlot = null } = {}) {
+  if (!text || !appState.activeParty || activePendingMessage()) return;
   const partyId = appState.activeParty.id;
   const requestId = makeClientRequestId();
-  const submittedCorrections = [...appState.pendingStoryMemoryCorrections];
+  const revision = Number(appState.activeParty.rp_contract_revision || 0);
+  const submittedCorrections = revision < 9
+    ? [...appState.pendingStoryMemoryCorrections]
+    : [];
   let turnCommitted = false;
-  els.messageInput.value = "";
-  startPendingMessage(partyId, requestId, text);
-  appendPendingMessage(text, requestId);
+  const mayCommitNarrative = channel !== "gm";
+  startPendingMessage(partyId, requestId, text, {
+    status: channel === "gm" ? "Мастер готовит черновик исправления..." : "Определяю маршрут и готовлю ответ...",
+  });
+  if (mayCommitNarrative) appendPendingMessage(text, requestId);
   try {
-    setPendingStatus("GM формирует ответ...", partyId);
+    setPendingStatus(
+      channel === "gm" ? "Мастер готовит черновик исправления..." : "GM формирует ответ...",
+      partyId,
+    );
     const result = await apiPost(
       `/api/parties/${partyId}/messages`,
-      partyMessagePayload(text, requestId, submittedCorrections),
+      partyMessagePayload(text, requestId, submittedCorrections, channel, targetSlot),
       { "X-Request-ID": requestId },
     );
+    if (result.status === "route_required") {
+      appState.pendingGmDraft = null;
+      appState.pendingGmRoute = {
+        text,
+        targetSlot,
+        reason: result.routing?.reason || "uncertain",
+      };
+      clearPendingMessage(partyId);
+      renderChat();
+      renderGmDecision();
+      return;
+    }
+    if (result.status === "gm_draft" && result.gm_patch_draft) {
+      appState.pendingGmRoute = null;
+      appState.pendingGmDraft = {
+        text,
+        targetSlot,
+        proposal: result.gm_patch_draft,
+      };
+      clearPendingMessage(partyId);
+      renderChat();
+      renderGmDecision();
+      return;
+    }
     turnCommitted = true;
     appState.pendingStoryMemoryCorrections = [];
     const content = result.message?.content || "";
@@ -2439,6 +2552,10 @@ async function sendMessage(event) {
       showToast(`Ответ получен, но история не обновилась: ${syncError.message}`);
     }
   } catch (error) {
+    if (channel === "gm") {
+      showToast(error.message);
+      return;
+    }
     setPendingStatus("Запрос оборвался. Проверяю историю...", partyId);
     let recoveryError = null;
     const recovered = await waitForRecoveredMessage(partyId, requestId).catch((recoverError) => {
@@ -2460,12 +2577,109 @@ async function sendMessage(event) {
   }
 }
 
-function partyMessagePayload(text, requestId, corrections = []) {
+function partyMessagePayload(
+  text,
+  requestId,
+  corrections = [],
+  channel = "auto",
+  targetSlot = null,
+) {
   const payload = { content: text, idempotency_key: requestId };
+  if (channel !== "auto") payload.channel = channel;
+  if (targetSlot) payload.gm_target_slot = targetSlot;
   if (Array.isArray(corrections) && corrections.length) {
     payload.story_memory_corrections = corrections;
   }
   return payload;
+}
+
+async function routePendingGmMessage(channel) {
+  const pending = appState.pendingGmRoute;
+  if (!pending || appState.busy || activePendingMessage()) return;
+  appState.pendingGmRoute = null;
+  renderGmDecision();
+  await submitPartyMessage(pending.text, {
+    channel,
+    targetSlot: channel === "gm" ? pending.targetSlot : null,
+  });
+}
+
+async function decideGmDraft(decision) {
+  const pending = appState.pendingGmDraft;
+  const partyId = appState.activeParty?.id;
+  if (!pending?.proposal || !partyId || appState.busy) return;
+  const idempotencyKey = `gm-confirm:${pending.proposal.proposal_id}`;
+  try {
+    setBusy(true, decision === "confirm" ? "Записываю исправление..." : "Отклоняю черновик...");
+    const result = await apiPost(
+      `/api/parties/${partyId}/gm-corrections/decide`,
+      {
+        decision,
+        proposal: pending.proposal,
+        idempotency_key: idempotencyKey,
+      },
+      { "X-Request-ID": idempotencyKey },
+    );
+    clearGmDecision();
+    if (decision === "confirm") {
+      await reloadPartyIfActive(partyId);
+      showToast("Исправление записано вне сцены.");
+    } else {
+      showToast(result.status === "rejected" ? "Черновик отклонён." : "Решение принято.");
+    }
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function clearGmDecision() {
+  appState.pendingGmRoute = null;
+  appState.pendingGmDraft = null;
+  renderGmDecision();
+  renderMessageControls();
+}
+
+function renderGmDecision() {
+  if (!els.gmDecisionPanel) return;
+  const route = appState.pendingGmRoute;
+  const draft = appState.pendingGmDraft;
+  const visible = Boolean(route || draft);
+  els.gmDecisionPanel.classList.toggle("hidden", !visible);
+  if (!visible) return;
+
+  if (route) {
+    els.gmDecisionLabel.textContent = "Маршрут не определён";
+    els.gmDecisionTitle.textContent = "Куда отправить эту реплику?";
+    els.gmDecisionHint.textContent = "Ничего не записано. Выберите обращение к мастеру или обычное действие в сцене.";
+    els.gmDraftDiff.classList.add("hidden");
+    els.gmRouteActions.classList.remove("hidden");
+    els.gmDraftActions.classList.add("hidden");
+    return;
+  }
+
+  const proposal = draft.proposal;
+  const targetLabels = {
+    memory: "story memory",
+    raw: `ход ${proposal.target_turn_id ?? proposal.target_id}`,
+    absolute_rule: "абсолютное правило мира",
+  };
+  const forbiddenClaims = proposal.target_kind === "absolute_rule"
+    && Array.isArray(proposal.forbidden_claims)
+    && proposal.forbidden_claims.length
+    ? ` Запрещённые трактовки после правки: ${proposal.forbidden_claims.join("; ")}.`
+    : "";
+  els.gmDecisionLabel.textContent = "Черновик мастера";
+  els.gmDecisionTitle.textContent = proposal.action === "retract"
+    ? "Проверьте отзыв утверждения"
+    : "Проверьте исправление";
+  els.gmDraftBefore.textContent = proposal.before || "—";
+  els.gmDraftAfter.textContent = proposal.action === "retract" ? "Утверждение будет отозвано" : proposal.after || "—";
+  els.gmDecisionHint.textContent = `Цель: ${targetLabels[proposal.target_kind] || proposal.target_kind}. После подтверждения сцена и игровое время не сдвинутся.${forbiddenClaims}`;
+  els.gmDraftDiff.classList.remove("hidden");
+  els.gmRouteActions.classList.add("hidden");
+  els.gmDraftActions.classList.remove("hidden");
 }
 
 async function previewWorldInstruction(options = {}) {
@@ -3117,7 +3331,7 @@ function startPendingMessage(partyId, requestId, text, options = {}) {
     partyId,
     requestId,
     text,
-    status: "GM формирует ответ...",
+    status: String(options.status || "GM формирует ответ..."),
     autoStart: Boolean(options.autoStart),
     createdAt: Date.now(),
   };
@@ -3302,13 +3516,22 @@ function renderMessageControls() {
     (run) => run.test_party_id === appState.activeParty?.id && ["running", "stopping"].includes(run.status),
   );
   const branchReadOnly = Boolean(appState.activeBranch);
-  const locked = Boolean(pendingMessage || activeAutotest || branchReadOnly);
+  const gmDecisionPending = Boolean(appState.pendingGmRoute || appState.pendingGmDraft);
+  const locked = Boolean(pendingMessage || activeAutotest || branchReadOnly || gmDecisionPending);
   const hasParty = Boolean(appState.activeParty);
+  const gmAvailable = hasParty
+    && !branchReadOnly
+    && appState.activeParty?.scenario_type === "rp"
+    && Number(appState.activeParty?.rp_contract_revision || 0) >= 9;
   if (els.messageInput) {
     els.messageInput.disabled = locked || !hasParty;
   }
   if (els.messageSubmit) {
     els.messageSubmit.disabled = locked || !hasParty;
+  }
+  if (els.gmMessageSubmit) {
+    els.gmMessageSubmit.classList.toggle("hidden", !gmAvailable);
+    els.gmMessageSubmit.disabled = locked || !gmAvailable;
   }
   if (els.messageForm) {
     els.messageForm.setAttribute("aria-busy", locked ? "true" : "false");
@@ -3319,12 +3542,15 @@ function renderMessageControls() {
     const status = pendingMessage?.status
       || (branchReadOnly
         ? "Открыта изолированная ветка. Вернитесь в основную линию, выбрав партию слева."
-        : "Автотест управляет этой партией; ручной ввод временно отключён.");
+        : gmDecisionPending
+          ? "Завершите выбор в панели мастера."
+          : "Автотест управляет этой партией; ручной ввод временно отключён.");
     els.messageStatus.innerHTML = `${pendingMessage ? `<span class="spinner" aria-hidden="true"></span>` : ""}<span>${escapeHtml(status)}</span>`;
   } else {
     els.messageStatus.classList.add("hidden");
     els.messageStatus.innerHTML = "";
   }
+  renderGmDecision();
 }
 
 function pendingMessageHtml(requestId, status, timestamp = Date.now()) {

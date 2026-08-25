@@ -35,6 +35,7 @@ from app.services.narrative import (
 )
 from app.services.prompt_tools import PromptInspector
 from app.services.relationships import RelationshipMechanics
+from app.services.rp_gm import RPGMService
 from app.services.rp_story_memory import empty_story_memory
 from app.services.scene_state import initial_scene_state
 from app.services.state_store import StateStore
@@ -333,6 +334,21 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
         for message in world_messages
         if message["content"].startswith("WORLD_AUTHORS_NOTE")
     )
+    gm_service = RPGMService(world_settings, store)
+    monkeypatch.setattr(
+        gm_service,
+        "active_corrections",
+        lambda: [
+            {
+                "target_slot": "characters.advisor.notes",
+                "action": "replace",
+                "before": "Old fact",
+                "after": "Correct fact",
+                "source_turn_id": 1,
+                "status": "active",
+            }
+        ],
+    )
 
     reanchor = scene_reanchor_prompt_block(stale_state)
     emitted_blocks = {
@@ -364,6 +380,7 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
             ]
         ),
         "world_absolute_rules": world_absolute_rules_block(state),
+        "player_corrections": gm_service.overlay_block(),
         "relationship_pressure": relationship_pressure,
         "relationship_event_resolution": relationship_resolution,
         "scene_state_contract": scene_state_prompt_block(state),

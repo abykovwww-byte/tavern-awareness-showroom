@@ -97,3 +97,24 @@ def service_model_settings(settings: Settings) -> Settings:
         llm_fallback_models=(),
         llm_disabled_models=(),
     )
+
+
+def local_service_model_settings(settings: Settings) -> Settings:
+    """Pin a bounded service role to the local Gemma runtime.
+
+    Revision-specific service roles must not inherit the global service selector,
+    a party narrator, or a cloud fallback.
+    """
+
+    return replace(
+        settings,
+        llm_provider="local",
+        llm_api_base=settings.local_llm_base_url,
+        llm_api_key="",
+        narrative_model=settings.local_llm_model_alias,
+        intent_model=settings.local_llm_model_alias,
+        validator_model=settings.local_llm_model_alias,
+        llm_fallback_models=(),
+        llm_disabled_models=(),
+        model_attempt_timeout_seconds=settings.local_llm_timeout_seconds,
+    )

@@ -501,6 +501,8 @@ class PromptInspector:
             return "uncompacted_archive_fallback", "Uncompacted archive fallback"
         if content.startswith("PARTY_LORE_CARDS"):
             return "party_lore_cards", "Party lore cards"
+        if content.startswith("ИСПРАВЛЕНИЯ ИГРОКА"):
+            return "player_corrections", "Исправления игрока"
         if content.startswith("Relevant state summary:"):
             return "state_summary", "State summary"
         if "AUTHORITATIVE_OUTCOME" in content:

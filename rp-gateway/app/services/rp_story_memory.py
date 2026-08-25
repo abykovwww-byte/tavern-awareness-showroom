@@ -608,6 +608,14 @@ class RPStoryMemoryUpdater:
     ) -> dict[str, Any]:
         """Persist a combined rev-8 update plus structural section retries."""
 
+        player_correction = self.player_correction_for_request(request_id)
+        if player_correction is not None:
+            return await self.update_player_correction(
+                player_correction,
+                fail_open=fail_open,
+                request_id=request_id,
+            )
+
         plan, reason = self.build_section_plan(force=force, request_id=request_id)
         if plan is None:
             return {
@@ -810,6 +818,305 @@ class RPStoryMemoryUpdater:
             "failed_sections": sorted(failures),
             "error": "section_failure" if failures else None,
             "retry_required": bool(failures),
+        }
+
+    def player_correction_for_request(self, request_id: str | None) -> dict[str, Any] | None:
+        if not request_id or self.settings.rp_contract_revision < 9:
+            return None
+        matches = [
+            item
+            for item in self.store.player_correction_records()
+            if item.get("request_id") == request_id
+            and item.get("status") == "active"
+            and item.get("target_kind") in {"memory", "raw"}
+        ]
+        return matches[-1] if matches else None
+
+    async def update_player_correction(
+        self,
+        artifact: dict[str, Any],
+        *,
+        fail_open: bool,
+        request_id: str | None,
+    ) -> dict[str, Any]:
+        """Run exactly one affected section, then absorb only after both gates pass."""
+
+        previous = self.store.effective_rp_story_memory()
+        memory = normalize_sectioned_story_memory(
+            previous.get("memory") if previous else None,
+            self.settings.rp_story_memory_max_chars,
+        )
+        section_key = str(artifact.get("section_key") or "")
+        field = str(artifact.get("field") or "")
+        if section_key not in RP_MEMORY_SECTION_KEYS or field not in STORY_MEMORY_SECTION_FIELDS[section_key]:
+            raise ValueError("player correction targets an invalid story-memory section")
+        correction = artifact.get("story_memory_correction")
+        if not isinstance(correction, dict):
+            raise ValueError("player correction is missing its typed story-memory correction")
+        source_turn_id = int(artifact.get("source_turn_id") or 0)
+        target_turn_id = int(artifact.get("target_turn_id") or 0)
+        if source_turn_id <= 0:
+            raise ValueError("player correction is missing its GM turn provenance")
+
+        if artifact.get("target_kind") == "raw":
+            synthetic = artifact.get("synthetic_before_fact")
+            if not isinstance(synthetic, dict):
+                raise ValueError("RAW player correction is missing its synthetic target")
+            fact_id = str(synthetic.get("fact_id") or "")
+            if not any(str(item.get("fact_id") or "") == fact_id for item in memory[field]):
+                if len(memory[field]) >= STORY_FIELD_LIMITS[field]:
+                    removable = next(
+                        (
+                            index
+                            for index in range(len(memory[field]) - 1, -1, -1)
+                            if story_item_is_safely_removable(memory[field][index])
+                        ),
+                        None,
+                    )
+                    if removable is None:
+                        raise ValueError(
+                            f"story-memory field is full and has no weak slot for RAW correction: {field}"
+                        )
+                    memory[field].pop(removable)
+                memory[field].append(
+                    {
+                        "fact_id": fact_id,
+                        "text": str(synthetic.get("text") or "").strip(),
+                        "status": "active",
+                        "authority": "narrator",
+                        "source_turn_ids": [target_turn_id] if target_turn_id > 0 else [],
+                    }
+                )
+
+        validated = validate_story_memory_corrections(
+            {"memory": memory},
+            [correction],
+            self.settings.rp_story_memory_max_chars,
+        )
+        update_id = f"smc:{str(artifact.get('correction_id') or '')}"
+        try:
+            generated = await self.generate_player_correction_section(
+                section_key,
+                memory,
+                artifact,
+                request_id=request_id,
+                update_id=update_id,
+            )
+            target_turn = self.store.turn_record(target_turn_id) if target_turn_id > 0 else None
+            contributing = (
+                [target_turn_id]
+                if target_turn is not None and not target_turn.get("excluded_from_memory")
+                else []
+            )
+            merged = merge_story_memory_section(
+                memory,
+                generated["section"],
+                section_key,
+                contributing,
+                self.settings.rp_story_memory_max_chars,
+            )
+            merged = apply_validated_story_memory_corrections(
+                merged,
+                validated,
+                source_turn_id,
+                self.settings.rp_story_memory_max_chars,
+                authority="user",
+            )
+            statuses = normalize_section_status(merged)
+            statuses[section_key] = {
+                "coverage": max(int(statuses[section_key]["coverage"]), target_turn_id),
+                "status": "fresh",
+            }
+            merged["schema_version"] = SECTIONED_STORY_MEMORY_SCHEMA
+            merged["section_status"] = statuses
+            merged["observed_through_turn_id"] = max(
+                int(merged.get("observed_through_turn_id") or 0),
+                target_turn_id,
+            )
+            merged["last_update_request_id"] = request_id
+            merged = normalize_sectioned_story_memory(
+                merged,
+                self.settings.rp_story_memory_max_chars,
+            )
+            coverage_values = [int(statuses[key]["coverage"]) for key in RP_MEMORY_SECTION_KEYS]
+            outer_coverage = max(coverage_values, default=0)
+            previous_from = int(previous.get("from_turn_id") or 0) if previous else 0
+            snapshot = self.store.record_rp_story_memory(
+                from_turn_id=previous_from or target_turn_id,
+                to_turn_id=outer_coverage,
+                state_version=self.store.current_version() or 1,
+                memory=merged,
+                model=str(generated.get("model") or self.settings.rp_story_memory_model),
+                contributing_turn_ids=contributing,
+                base_snapshot_id=int(previous["id"]) if previous else None,
+                update_id=update_id,
+                allow_same_coverage=True,
+            )
+            if snapshot is None:
+                raise RuntimeError("player-correction story-memory plan became stale")
+            persisted_memory = normalize_sectioned_story_memory(
+                snapshot.get("memory"),
+                self.settings.rp_story_memory_max_chars,
+            )
+            persisted_statuses = normalize_section_status(persisted_memory)
+            applied = story_memory_correction_already_applied(
+                persisted_memory,
+                correction,
+                source_turn_id,
+                "user",
+            )
+            covered = int(persisted_statuses[section_key]["coverage"]) >= target_turn_id
+            if applied and covered:
+                self.store.mark_player_correction_absorbed(
+                    str(artifact.get("correction_id") or ""),
+                    snapshot_id=int(snapshot["id"]),
+                    section_key=section_key,
+                    coverage=int(persisted_statuses[section_key]["coverage"]),
+                    request_id=request_id,
+                )
+            self.store.audit(
+                "rp_story_memory_player_correction_updated",
+                {
+                    "snapshot_id": snapshot["id"],
+                    "correction_id": artifact.get("correction_id"),
+                    "section_key": section_key,
+                    "section_coverage": persisted_statuses[section_key]["coverage"],
+                    "authority_user_persisted": applied,
+                    "absorbed": bool(applied and covered),
+                },
+                request_id,
+            )
+            return {
+                "generated": True,
+                "reason": "player_correction",
+                "story_memory": snapshot,
+                "stats": self.stats(),
+                "failed_sections": [],
+                "retry_required": False,
+            }
+        except Exception as exc:  # noqa: BLE001 - overlay keeps the correction authoritative
+            logger.warning(
+                "rp_story_memory_player_correction_failed campaign_id=%s correction_id=%s error=%s",
+                self.store.campaign_id,
+                artifact.get("correction_id"),
+                exc,
+            )
+            self.store.audit(
+                "rp_story_memory_player_correction_failed",
+                {
+                    "correction_id": artifact.get("correction_id"),
+                    "section_key": section_key,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                request_id,
+            )
+            if fail_open:
+                return {
+                    "generated": False,
+                    "reason": "player_correction_failed",
+                    "story_memory": previous,
+                    "stats": self.stats(),
+                    "error": "player_correction_failed",
+                    "retry_required": True,
+                }
+            raise
+
+    async def generate_player_correction_section(
+        self,
+        section_key: str,
+        memory: dict[str, Any],
+        artifact: dict[str, Any],
+        *,
+        request_id: str | None,
+        update_id: str,
+    ) -> dict[str, Any]:
+        """Make one structural memory call for the affected correction section."""
+
+        runtime = self.service_settings()
+        fields = STORY_MEMORY_SECTION_FIELDS[section_key]
+        if runtime.openrouter_api_base.startswith("mock://"):
+            return {
+                "section": {
+                    field: json.loads(json.dumps(memory.get(field), ensure_ascii=False))
+                    for field in fields
+                },
+                "model": self.settings.rp_story_memory_model,
+            }
+        target_turn_id = int(artifact.get("target_turn_id") or 0)
+        target_turn = self.store.turn_record(target_turn_id) if target_turn_id > 0 else None
+        target_raw = None
+        if target_turn is not None:
+            target_raw = {
+                "turn_id": target_turn_id,
+                "player": str(target_turn.get("player_message") or "")[:1_200],
+                "narrator": str(target_turn.get("narrative_response") or "")[:1_800],
+            }
+        payload = {
+            "model": self.settings.rp_story_memory_model,
+            "stream": False,
+            "temperature": 0.1,
+            "max_tokens": STORY_MEMORY_SECTION_MAX_TOKENS,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Пересобери только указанную секцию памяти с учётом типизированного "
+                        "исправления игрока. Верни JSON ровно с полями секции. Пустые значения "
+                        "валидны. Модель назначает новым фактам только authority inference; "
+                        "authority user и terminal transitions применит Gateway."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "section_key": section_key,
+                            "previous_section": bounded_story_memory_section(memory, fields, 6_000),
+                            "player_correction": {
+                                key: artifact.get(key)
+                                for key in (
+                                    "target_kind",
+                                    "target_turn_id",
+                                    "field",
+                                    "action",
+                                    "before",
+                                    "after",
+                                )
+                            },
+                            "target_raw": target_raw,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+        }
+        prompt = service_prompt_text(payload)
+        if len(prompt) > STORY_MEMORY_SECTION_INPUT_CHARS:
+            raise ValueError("player-correction section prompt exceeds 20000 characters")
+        completion = await ServiceModelClient(runtime).complete(
+            role="rp_story_memory_section",
+            provider=self.settings.rp_story_memory_provider,
+            model=self.settings.rp_story_memory_model,
+            party_id=self.store.campaign_id,
+            turn_id=int(artifact.get("source_turn_id") or 0),
+            request_id=request_id,
+            party_turn=artifact.get("party_turn"),
+            attempt=1,
+            section_key=section_key,
+            update_id=update_id,
+            prompt=prompt,
+            payload=payload,
+        )
+        if completion_finish_reason(completion.data) == "length":
+            raise ValueError("player-correction section response finish_reason=length")
+        return {
+            "section": self.parse_section(
+                completion_text(completion.data),
+                section_key,
+                memory,
+            ),
+            "model": completion.data.get("model") or self.settings.rp_story_memory_model,
         }
 
     async def generate_sections(

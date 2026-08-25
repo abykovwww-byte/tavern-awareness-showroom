@@ -76,8 +76,29 @@
 
         <div class="message-status-bar hidden" id="messageStatus" role="status" aria-live="polite"></div>
 
+        <section class="gm-decision hidden" id="gmDecisionPanel" aria-live="polite">
+          <div>
+            <div class="section-label" id="gmDecisionLabel">Обращение к мастеру</div>
+            <strong id="gmDecisionTitle"></strong>
+          </div>
+          <div class="gm-diff hidden" id="gmDraftDiff">
+            <div><span>Было</span><p id="gmDraftBefore"></p></div>
+            <div><span>Станет</span><p id="gmDraftAfter"></p></div>
+          </div>
+          <p class="panel-hint" id="gmDecisionHint"></p>
+          <div class="inline-actions hidden" id="gmRouteActions">
+            <button class="tool-button" id="gmRouteMasterButton" type="button">Мастеру</button>
+            <button class="text-button" id="gmRouteSceneButton" type="button">В сцену</button>
+          </div>
+          <div class="inline-actions hidden" id="gmDraftActions">
+            <button class="tool-button" id="gmConfirmButton" type="button">Подтвердить исправление</button>
+            <button class="text-button danger-text" id="gmRejectButton" type="button">Отклонить</button>
+          </div>
+        </section>
+
         <form class="composer" id="messageForm">
           <textarea id="messageInput" rows="2" placeholder="Опишите намерение, действие или реплику персонажа"></textarea>
+          <button class="gm-send-button hidden" id="gmMessageSubmit" type="button" title="Сказать мастеру вне сцены">Мастеру</button>
           <button class="send-button" id="messageSubmit" type="submit" title="Отправить">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
             Отправить

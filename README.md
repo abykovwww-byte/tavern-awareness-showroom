@@ -35,6 +35,12 @@ title/keyword matches from the current-plus-three-turn scan, and records the
 exact raised IDs in turn metadata. A player-triggered Lore Card draft uses one
 bounded stack-key OpenRouter call and is persisted only after explicit confirm.
 
+Candidate revision-9 RP adds a separate confirmed GM correction path. Bounded
+local Gemma calls may classify and draft only an edit of an existing target;
+Gateway alone commits it without advancing the scene and keeps a typed overlay
+until the affected OpenRouter memory section absorbs authority `user`. This
+source capability is not an activation or live-runtime claim.
+
 ## Runtime paths
 
 ```text

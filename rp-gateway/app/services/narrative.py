@@ -60,6 +60,7 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("RETRIEVED_ARCHIVE_SCENES", "retrieved_archive_scenes"),
     ("UNCOMPACTED_ARCHIVE_FALLBACK", "uncompacted_archive_fallback"),
     ("PARTY_LORE_CARDS", "party_lore_cards"),
+    ("ИСПРАВЛЕНИЯ ИГРОКА", "player_corrections"),
     ("WORLD_ABSOLUTE_RULES", "world_absolute_rules"),
     ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),

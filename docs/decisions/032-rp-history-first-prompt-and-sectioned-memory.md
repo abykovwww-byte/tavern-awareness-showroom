@@ -255,7 +255,8 @@ explicit provider/model logging.
 
 - S2 authored lore-card import и unified card scan — отдельный
   [Decision 037](037-rp-authored-lore-cards-and-confirmed-drafts.md);
-- S3 GM channel, correction overlay и absorption;
+- S3 GM channel, correction overlay и absorption — отдельный
+  [Decision 038](038-rp-gm-corrections-and-player-overlay.md);
 - S4 world clock/events;
 - автоматическая миграция существующих parties/branches или массовое поднятие
   остальных WorldPacks до revision `8`;

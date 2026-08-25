@@ -1470,7 +1470,16 @@ class Adjudicator:
                     self.settings.service_job_retry_base_seconds * (3 ** (attempts - 1)),
                     self.settings.service_job_retry_max_seconds,
                 )
-                self.store.retry_service_job(int(running["id"]), f"{type(exc).__name__}: {exc}", delay)
+                self.store.retry_service_job(
+                    int(running["id"]),
+                    f"{type(exc).__name__}: {exc}",
+                    delay,
+                    terminal_status=(
+                        "stale"
+                        if running["job_type"] == "relationship_extraction"
+                        else "failed"
+                    ),
+                )
                 self.store.audit(
                     "service_job_retry",
                     {
@@ -1733,6 +1742,7 @@ class Adjudicator:
             "RETRIEVED_ARCHIVE_SCENES": "retrieved_archive_scenes",
             "UNCOMPACTED_ARCHIVE_FALLBACK": "uncompacted_archive_fallback",
             "PARTY_LORE_CARDS": "party_lore_cards",
+            "ИСПРАВЛЕНИЯ ИГРОКА": "player_corrections",
             "RELATIONSHIP_PRESSURE": "relationship_pressure",
             "ACTIVE_TRAINING_TURN_CONTRACT": "training_turn_contract",
             "TRAINING_INTERACTION_CONTRACT": "training_interaction_contract",
@@ -1818,7 +1828,7 @@ class Adjudicator:
             for message in request.messages
             if message.role == "system"
             and isinstance(message.content, str)
-            and message.content.startswith("PARTY_LORE_CARDS")
+            and message.content.startswith(("PARTY_LORE_CARDS", "ИСПРАВЛЕНИЯ ИГРОКА"))
         ]
         if not revision_eight:
             messages.insert(

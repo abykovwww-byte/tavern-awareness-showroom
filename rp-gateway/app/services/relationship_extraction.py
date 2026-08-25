@@ -20,7 +20,7 @@ from app.services.relationship_attribution import (
 from app.services.relationship_store import RelationshipStore
 from app.services.relationships import RelationshipMechanics
 from app.services.service_model_client import ServiceModelClient, service_prompt_text
-from app.services.service_models import service_model_settings
+from app.services.service_models import local_service_model_settings, service_model_settings
 from app.services.state_store import StateStore
 
 
@@ -204,7 +204,11 @@ class RelationshipExtractionService:
         # The global service model has its own credentials. Party BYOK is never
         # forwarded, but the public method keeps the common service-job signature.
         _ = authorization
-        settings = service_model_settings(self.settings)
+        settings = (
+            local_service_model_settings(self.settings)
+            if self.settings.rp_contract_revision >= 9
+            else service_model_settings(self.settings)
+        )
         if settings.llm_api_base.startswith("mock://"):
             return self._mock_response(settings.narrative_model)
 

@@ -16,6 +16,14 @@ turn metadata. `POST /api/parties/{party_id}/lore-cards/draft` makes one bounded
 stack-key OpenRouter draft from complete turns; the existing create endpoint is
 the explicit player-confirmation boundary.
 
+Candidate revision-9 RP parties also have a separate GM correction channel.
+Local Gemma classifies `auto` messages and drafts one bounded replacement or
+retraction of an existing memory/RAW/absolute-rule target. Only explicit confirm
+creates an excluded `gm_correction` turn and state version; party turn, scene and
+time do not advance. Active corrections stay in a protected narrator overlay
+until one affected OpenRouter story-memory section persists authority `user` and
+the target coverage. Revision 9 is source-only until a separate activation.
+
 Application startup uses FastAPI's `lifespan` context manager. Before accepting
 requests, it reconciles interrupted party and branch work, resumes pending
 service jobs, and schedules resumable autotest runs.
@@ -36,6 +44,7 @@ GET  /api/model-profiles
 GET  /api/parties
 POST /api/parties
 POST /api/parties/{party_id}/messages
+POST /api/parties/{party_id}/gm-corrections/decide
 POST /api/parties/{party_id}/checks
 ```
 

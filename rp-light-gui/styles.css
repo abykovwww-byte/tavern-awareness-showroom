@@ -505,6 +505,13 @@ h3 {
   align-self: flex-start;
 }
 
+.message.gm-note {
+  width: min(680px, 94%);
+  align-self: center;
+  border-color: rgba(195, 161, 90, 0.5);
+  background: rgba(57, 47, 30, 0.72);
+}
+
 .message-lore-tools {
   display: grid;
   gap: 7px;
@@ -757,10 +764,52 @@ h3 {
 
 .composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 150px;
+  grid-template-columns: minmax(0, 1fr) auto 150px;
   gap: 10px;
   padding: 16px 22px 20px;
   border-top: 1px solid var(--line);
+}
+
+.gm-send-button {
+  min-width: 104px;
+  border: 1px solid rgba(195, 161, 90, 0.48);
+  background: rgba(57, 47, 30, 0.72);
+  color: var(--brass);
+}
+
+.gm-decision {
+  display: grid;
+  gap: 11px;
+  margin: 0 22px 12px;
+  padding: 13px 15px;
+  border: 1px solid rgba(195, 161, 90, 0.48);
+  border-radius: var(--radius);
+  background: rgba(43, 37, 27, 0.92);
+}
+
+.gm-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.gm-diff > div {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(17, 20, 23, 0.62);
+}
+
+.gm-diff span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.gm-diff p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
 }
 
 textarea,
@@ -1754,7 +1803,7 @@ button:disabled {
     position: sticky;
     bottom: 0;
     z-index: 18;
-    grid-template-columns: minmax(0, 1fr) 48px;
+    grid-template-columns: minmax(0, 1fr) auto 48px;
     align-items: stretch;
     gap: 8px;
     padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px));
@@ -1777,6 +1826,19 @@ button:disabled {
   .send-button svg {
     width: 20px;
     height: 20px;
+  }
+
+  .gm-send-button {
+    min-width: 0;
+    padding-inline: 10px;
+  }
+
+  .gm-decision {
+    margin-inline: 14px;
+  }
+
+  .gm-diff {
+    grid-template-columns: 1fr;
   }
 
   #toolsButton {

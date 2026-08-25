@@ -39,6 +39,7 @@ from app.models.schemas import (
     PartyLoreCardDraftRequest,
     PartyLoreCardCreate,
     PartyLoreCardUpdate,
+    PartyGMCorrectionDecision,
     PartyMemorySummarizeRequest,
     PartyMessageRequest,
     PartyModelUpdate,
@@ -109,6 +110,7 @@ from app.services.rp_history import (
     rp_turn_messages,
     story_memory_safe_coverage,
 )
+from app.services.rp_gm import RPGMService
 from app.services.rp_story_memory import RPStoryMemoryUpdater
 from app.services.relationship_attribution import normalized_aliases
 from app.services.scene_state import (
@@ -1148,6 +1150,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             story_updater = RPStoryMemoryUpdater(party_settings, party_state_store)
             payload["story_memory"] = story_updater.prompt_snapshot()
             payload["story_memory_stats"] = story_updater.stats()
+            if int(party.rp_contract_revision or 0) >= 9:
+                payload["player_corrections"] = RPGMService(
+                    party_settings,
+                    party_state_store,
+                ).active_corrections()
         return payload
 
     @app.get("/api/parties/{party_id}/service-jobs")
@@ -2499,6 +2506,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ensure_party_playable(party)
             party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(http_request))
             party_settings = runtime_settings_for_party(party)
+            gm_service = RPGMService(party_settings, party_state_store)
+            request_id = x_request_id or request.idempotency_key or f"req_{uuid.uuid4().hex}"
+            if gm_service.enabled:
+                if request.story_memory_corrections:
+                    raise ValueError(
+                        "Revision-9 story-memory corrections must use the GM channel"
+                    )
+                channel = request.channel
+                intent: dict[str, Any] | None = None
+                if channel == "auto":
+                    intent = await gm_service.classify(request.content, request_id=request_id)
+                    if intent["label"] == "uncertain":
+                        return {
+                            "party_id": party_id,
+                            "status": "route_required",
+                            "state_version": party_state_store.current_version(),
+                            "routing": {
+                                "reason": intent.get("reason") or "uncertain",
+                                "options": ["gm", "scene"],
+                                "labels": {"gm": "Мастеру", "scene": "В сцену"},
+                            },
+                        }
+                    channel = "gm" if intent["label"] == "correction" else "scene"
+                if channel == "gm":
+                    draft = await gm_service.draft(
+                        request.content,
+                        request_id=request_id,
+                        target_hint=request.gm_target_slot,
+                    )
+                    return {
+                        "party_id": party_id,
+                        "status": "gm_draft",
+                        "request_id": request_id,
+                        "state_version": party_state_store.current_version(),
+                        "gm_patch_draft": draft.model_dump(mode="json"),
+                    }
             model_profile = party.model_profile or party_store.get_model_profile(party.model_profile_id)
             chat_request = party_chat_request(
                 party_state_store,
@@ -2521,7 +2564,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chat_request,
                 authorization,
                 request.idempotency_key,
-                x_request_id,
+                request_id,
                 allow_gateway_fallback=(
                     (
                         party.scenario_type == "rp"
@@ -2563,6 +2606,195 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "message": message,
             "raw": response,
         }
+
+    @app.post("/api/parties/{party_id}/gm-corrections/decide")
+    async def decide_party_gm_correction(
+        http_request: Request,
+        party_id: str,
+        decision: PartyGMCorrectionDecision,
+        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(http_request))
+            ensure_party_playable(party)
+            party_state_store = party_store.store_for_party(
+                party_id,
+                owner_user_id=owner_user_id(http_request),
+            )
+            party_settings = runtime_settings_for_party(party)
+            gm_service = RPGMService(party_settings, party_state_store)
+            if not gm_service.enabled:
+                raise ValueError("GM corrections require an RP revision-9 party")
+
+            async def ensure_absorption_job(
+                correction_artifact: dict[str, Any],
+                correction_request_id: str,
+            ) -> None:
+                if correction_artifact.get("target_kind") not in {"memory", "raw"}:
+                    return
+                party_state_store.enqueue_service_job(
+                    "rp_story_memory",
+                    correction_request_id,
+                    2,
+                    request_scoped=True,
+                )
+                adjudicator = Adjudicator(
+                    party_settings,
+                    party_state_store,
+                    relationship_model=relationship_model_for_party(party),
+                    scene_contract=scene_contract_for_party(party),
+                )
+                if party_settings.post_turn_helpers_inline and party_settings.app_env == "test":
+                    await adjudicator.drain_service_jobs(
+                        authorization=None,
+                        wait_for_retries=False,
+                    )
+                else:
+                    adjudicator.schedule_service_jobs()
+
+            if decision.decision == "reject":
+                return {
+                    "party_id": party_id,
+                    "status": "rejected",
+                    "state_version": party_state_store.current_version(),
+                    "gm_patch_draft": decision.proposal.model_dump(mode="json"),
+                }
+
+            request_id = (
+                x_request_id
+                or decision.idempotency_key
+                or f"gm-confirm:{uuid.uuid4().hex}"
+            )
+            idempotency_key = decision.idempotency_key or request_id
+            request_status = party_state_store.begin_turn_request(idempotency_key, request_id)
+            if not request_status.get("acquired"):
+                if request_status.get("status") == "completed" and request_status.get("response"):
+                    completed_response = request_status["response"]
+                    completed_artifact = completed_response.get("gm_correction")
+                    if isinstance(completed_artifact, dict):
+                        await ensure_absorption_job(
+                            completed_artifact,
+                            str(completed_response.get("request_id") or request_id),
+                        )
+                    return completed_response
+                raise RequestAlreadyRunning(
+                    str(request_status.get("request_id") or request_id),
+                    idempotency_key,
+                )
+            try:
+                gm_service.validate_confirmed_proposal(decision.proposal)
+            except Exception:
+                party_state_store.fail_turn_request(
+                    idempotency_key,
+                    "GM correction validation failed",
+                )
+                raise
+
+            party_turn = int(party_state_store.get_state().get("meta", {}).get("turn") or 0)
+            artifact = gm_service.player_correction_artifact(
+                decision.proposal,
+                party_turn=party_turn,
+            )
+            after_text = decision.proposal.after or "утверждение отозвано"
+            confirmation = (
+                "Исправление подтверждено вне сцены.\n"
+                f"Было: {decision.proposal.before}\n"
+                f"Стало: {after_text}"
+            )
+            next_state_version = int(decision.proposal.base_state_version) + 1
+            response = {
+                "id": f"gm-correction-{decision.proposal.proposal_id}",
+                "object": "rp.gm_correction",
+                "created": int(time.time()),
+                "model": "gateway-deterministic",
+                "status": "confirmed",
+                "party_id": party_id,
+                "request_id": request_id,
+                "state_version": next_state_version,
+                "message": {"role": "assistant", "content": confirmation},
+                "gm_correction": artifact,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": confirmation},
+                        "finish_reason": "gateway_confirmation",
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+            story_corrections = (
+                [artifact["story_memory_correction"]]
+                if isinstance(artifact.get("story_memory_correction"), dict)
+                else []
+            )
+            metadata = {
+                "schema_version": "rp-gateway.turn.v1",
+                "turn_kind": "gm_correction",
+                "scenario_type": party_settings.scenario_type,
+                "rp_contract_version": party_settings.rp_contract_version,
+                "rp_contract_revision": party_settings.rp_contract_revision,
+                "worldpack_id": party_settings.campaign_id,
+                "state_campaign_id": party_state_store.campaign_id,
+                "generated_by": "human",
+                "transport_status": "gateway_confirmation",
+                "llm_calls": 0,
+                "player_correction": artifact,
+            }
+            if story_corrections:
+                metadata["story_memory_corrections"] = story_corrections
+            rule_replacement = None
+            if decision.proposal.target_kind == "absolute_rule":
+                rule_replacement = {
+                    "id": decision.proposal.target_id,
+                    "before": decision.proposal.before,
+                    "after": decision.proposal.after,
+                    "forbidden_claims": decision.proposal.forbidden_claims,
+                }
+            try:
+                party_state_store.commit_gm_correction(
+                    reason=f"player_gm_correction:{decision.proposal.proposal_id}",
+                    idempotency_key=idempotency_key,
+                    request_id=request_id,
+                    player_message=(
+                        decision.proposal.after
+                        or f"Отозвать: {decision.proposal.before}"
+                    ),
+                    response_json=response,
+                    metadata=metadata,
+                    expected_state_version=decision.proposal.base_state_version,
+                    rule_replacement=rule_replacement,
+                    audit_events=[
+                        (
+                            "player_gm_correction_confirmed",
+                            {
+                                "correction_id": decision.proposal.proposal_id,
+                                "target_kind": decision.proposal.target_kind,
+                                "target_slot": decision.proposal.target_slot,
+                                "party_turn": party_turn,
+                                "narrator_called": False,
+                            },
+                        )
+                    ],
+                )
+            except Exception:
+                party_state_store.fail_turn_request(idempotency_key, "GM correction commit failed")
+                raise
+            await ensure_absorption_job(artifact, request_id)
+            return response
+        except RequestAlreadyRunning as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "status": "running",
+                    "request_id": exc.request_id,
+                    "idempotency_key": exc.idempotency_key,
+                    "message": "request is already running",
+                },
+            ) from exc
+        except StateVersionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def require_showroom_visitor(request: Request) -> str:
         visitor_id = showroom_store.visitor_id(request.cookies.get(settings.showroom_visitor_cookie_name))
@@ -3518,6 +3750,10 @@ def party_chat_request(
     )
     if lore_block:
         messages.append(ChatMessage(role="system", content=lore_block))
+    if revision_eight_rp and settings.rp_contract_revision >= 9:
+        corrections_block = RPGMService(settings, store).overlay_block()
+        if corrections_block:
+            messages.append(ChatMessage(role="system", content=corrections_block))
     fallback_block = uncompacted_archive_fallback_block(
         overflow_turns,
         settings.party_memory_fallback_max_chars,

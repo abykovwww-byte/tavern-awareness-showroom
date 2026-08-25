@@ -42,6 +42,7 @@ from app.services.provider_catalog import (
 from app.services.prompt_tools import PromptInspector
 from app.services.relationship_store import RelationshipStore
 from app.services.relationship_extraction import RelationshipExtractionService
+from app.services.rp_gm import RPGMService
 from app.services.rp_history import AUTO_START_HISTORY_MESSAGE
 from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
@@ -319,6 +320,32 @@ def seed_incorrect_story_fact(store: StateStore) -> None:
         },
         model="seeded-test-memory",
     )
+
+
+def seed_revision_nine_raw_turn(c: TestClient, party_id: str) -> tuple[StateStore, int]:
+    store = c.app.state.party_store.store_for_party(party_id)
+    state = store.get_state()
+    version = (store.current_version() or 0) + 1
+    state["meta"]["state_version"] = version
+    state["meta"]["turn"] = 1
+    state["last_turn"] = {
+        "turn": 1,
+        "player_message": "Я слушаю летописца.",
+        "narrator_response": "Варн говорит, что он придворный летописец.",
+        "state_patch_id": "test:raw-turn",
+    }
+    store.insert_state_version(state, "test_revision_nine_raw_turn")
+    turn_id = store.record_turn(
+        "seed-rev9-raw",
+        "seed-rev9-raw-request",
+        "Я слушаю летописца.",
+        "Варн говорит, что он придворный летописец.",
+        {},
+        state_version=version,
+        metadata={"turn_kind": "narrative"},
+        party_turn=1,
+    )
+    return store, turn_id
 
 
 def login(c: TestClient, username: str = "admin", password: str = "admin-secret") -> dict[str, object]:
@@ -874,6 +901,134 @@ def test_party_flow_creates_state_and_sends_message(tmp_path: Path):
 
     history = c.get(f"/api/parties/{party_id}/history").json()["turns"]
     assert len(history) == 1
+
+
+def test_revision_nine_uncertain_route_and_rejected_gm_draft_do_not_mutate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    write_worldpack(tmp_path, rp_revision=9)
+    c = client(
+        tmp_path,
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        rp_contract_observed_revision=9,
+    )
+    party = create_demo_party(c)
+    store, turn_id = seed_revision_nine_raw_turn(c, str(party["id"]))
+    before_version = store.current_version()
+    before_history = c.get(f"/api/parties/{party['id']}/history").json()["turns"]
+
+    async def uncertain_intent(
+        _service: RPGMService,
+        _content: str,
+        *,
+        request_id: str,
+    ) -> dict[str, object]:
+        assert request_id
+        return {"label": "uncertain", "target": None, "reason": "test_uncertain"}
+
+    monkeypatch.setattr(RPGMService, "classify", uncertain_intent)
+    route = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Это мастеру или в сцену?", "idempotency_key": "rev9-route"},
+    )
+
+    assert route.status_code == 200, route.text
+    assert route.json()["status"] == "route_required"
+    assert route.json()["routing"]["options"] == ["gm", "scene"]
+    assert store.current_version() == before_version
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == before_history
+
+    draft = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Варн служит Ждану, а не является летописцем.",
+            "channel": "gm",
+            "gm_target_slot": f"raw:{turn_id}",
+            "idempotency_key": "rev9-draft-reject",
+        },
+    )
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["status"] == "gm_draft"
+    assert store.current_version() == before_version
+
+    reject = c.post(
+        f"/api/parties/{party['id']}/gm-corrections/decide",
+        json={"decision": "reject", "proposal": draft.json()["gm_patch_draft"]},
+    )
+    assert reject.status_code == 200, reject.text
+    assert reject.json()["status"] == "rejected"
+    assert store.current_version() == before_version
+    assert c.get(f"/api/parties/{party['id']}/history").json()["turns"] == before_history
+
+
+def test_revision_nine_confirmed_gm_correction_is_idempotent_and_out_of_scene(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    write_worldpack(tmp_path, rp_revision=9)
+    c = client(
+        tmp_path,
+        local_llm_enabled=True,
+        local_llm_base_url="mock://success",
+        post_turn_helpers_inline=False,
+        rp_contract_observed_revision=9,
+    )
+    monkeypatch.setattr(
+        Adjudicator,
+        "schedule_service_jobs",
+        lambda _self, _authorization=None: None,
+    )
+    party = create_demo_party(c)
+    store, turn_id = seed_revision_nine_raw_turn(c, str(party["id"]))
+    before_state = store.get_state()
+    before_version = store.current_version() or 0
+
+    draft = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={
+            "content": "Варн служит Ждану, а не является летописцем.",
+            "channel": "gm",
+            "gm_target_slot": f"raw:{turn_id}",
+            "idempotency_key": "rev9-draft-confirm",
+        },
+    )
+    assert draft.status_code == 200, draft.text
+    proposal = draft.json()["gm_patch_draft"]
+    decision = {
+        "decision": "confirm",
+        "proposal": proposal,
+        "idempotency_key": "rev9-confirm",
+    }
+    first = c.post(
+        f"/api/parties/{party['id']}/gm-corrections/decide",
+        json=decision,
+        headers={"X-Request-ID": "rev9-confirm-request"},
+    )
+    second = c.post(
+        f"/api/parties/{party['id']}/gm-corrections/decide",
+        json=decision,
+        headers={"X-Request-ID": "rev9-confirm-request"},
+    )
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    state = store.get_state()
+    assert state["meta"]["state_version"] == before_version + 1
+    assert state["meta"]["turn"] == before_state["meta"]["turn"]
+    assert state.get("scene_state") == before_state.get("scene_state")
+    history = c.get(f"/api/parties/{party['id']}/history").json()["turns"]
+    assert len(history) == 2
+    correction_turn = history[-1]
+    assert correction_turn["turn_kind"] == "gm_correction"
+    assert correction_turn["party_turn"] == 1
+    assert correction_turn["player_correction"]["status"] == "active"
+    jobs = c.get(f"/api/parties/{party['id']}/service-jobs").json()["jobs"]
+    correction_jobs = [job for job in jobs if job["request_id"] == "rev9-confirm-request"]
+    assert len(correction_jobs) == 1
+    assert correction_jobs[0]["job_type"] == "rp_story_memory"
+    assert correction_jobs[0]["max_attempts"] == 2
 
 
 def test_rp_core_v2_turn_has_no_hidden_check_or_random_result(tmp_path: Path):

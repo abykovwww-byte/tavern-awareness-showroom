@@ -490,11 +490,78 @@ class RPStoryMemoryCorrection(BaseModel):
         return self
 
 
+class PartyGMPatchDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["rp-gateway.gm-patch-draft.v1"] = "rp-gateway.gm-patch-draft.v1"
+    proposal_id: str = Field(min_length=8, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
+    target_kind: Literal["memory", "raw", "absolute_rule"]
+    target_id: str = Field(min_length=1, max_length=160)
+    target_slot: str = Field(min_length=3, max_length=260)
+    target_turn_id: int | None = Field(default=None, ge=0)
+    field: RPStoryMemoryField | None = None
+    section_key: Literal[
+        "situation",
+        "threads",
+        "characters",
+        "assets_and_rules",
+        "chronology_and_hooks",
+    ] | None = None
+    action: Literal["replace", "retract"]
+    before: str = Field(min_length=1, max_length=600)
+    after: str | None = Field(default=None, max_length=600)
+    forbidden_claims: list[str] = Field(default_factory=list, max_length=20)
+    base_state_version: int = Field(ge=0)
+    base_snapshot_id: int | None = Field(default=None, ge=1)
+
+    @field_validator("before", "after")
+    @classmethod
+    def strip_gm_patch_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("GM correction text must not be blank")
+        return normalized
+
+    @field_validator("forbidden_claims")
+    @classmethod
+    def validate_forbidden_claims(cls, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+        if any(len(item) > 160 for item in normalized):
+            raise ValueError("forbidden claim exceeds 160 characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_gm_patch_shape(self) -> "PartyGMPatchDraft":
+        if self.action == "replace" and not self.after:
+            raise ValueError("after is required for replacement")
+        if self.action == "retract" and self.after is not None:
+            raise ValueError("after is not allowed for retraction")
+        if self.target_kind in {"memory", "raw"} and (not self.field or not self.section_key):
+            raise ValueError("memory and RAW corrections require field and section_key")
+        if self.target_kind == "raw" and self.target_turn_id is None:
+            raise ValueError("RAW correction requires target_turn_id")
+        if self.target_kind == "absolute_rule" and self.action != "replace":
+            raise ValueError("absolute rules can only be replaced")
+        return self
+
+
+class PartyGMCorrectionDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["confirm", "reject"]
+    proposal: PartyGMPatchDraft
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
 class PartyMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     idempotency_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    channel: Literal["auto", "scene", "gm"] = "auto"
+    gm_target_slot: str | None = Field(default=None, max_length=260)
     story_memory_corrections: list[RPStoryMemoryCorrection] = Field(default_factory=list, max_length=10)
 
 
