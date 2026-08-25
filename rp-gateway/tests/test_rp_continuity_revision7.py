@@ -39,6 +39,9 @@ def set_worldpack_revision(pack_dir: Path, revision: int) -> None:
         (7, 7, "rp", 7),
         (7, 6, "rp", 6),
         (7, 7, "training", 0),
+        (8, 8, "rp", 8),
+        (8, 7, "rp", 7),
+        (8, 8, "training", 0),
     ],
 )
 def test_revision_stamp_matches_api_sqlite_and_party_runtime(
@@ -99,8 +102,8 @@ def test_revision_seven_is_available_only_to_an_explicit_candidate_branch(tmp_pa
     assert api.get(f"/api/parties/{party['id']}").json()["party"]["rp_contract_revision"] == 6
 
 
-@pytest.mark.parametrize("persisted_revision", range(7))
-def test_migration_keeps_persisted_legacy_revisions_zero_through_six(
+@pytest.mark.parametrize("persisted_revision", range(8))
+def test_migration_keeps_persisted_revisions_zero_through_seven(
     tmp_path: Path,
     persisted_revision: int,
 ) -> None:
@@ -151,11 +154,20 @@ def test_revision_schema_bounds_accept_eight_and_reject_nine() -> None:
         )
 
 
-def test_merchant_and_starosta_declare_revision_seven_candidates() -> None:
+def test_only_merchant_declares_revision_eight_activation_canary() -> None:
     worldpacks = Path(__file__).resolve().parents[2] / "worldpacks"
-    for worldpack_id in ("merchant-sviatoslav", "starosta"):
-        manifest = json.loads((worldpacks / worldpack_id / "manifest.json").read_text(encoding="utf-8"))
-        assert manifest["rp_contract"] == {"schema_version": "rp-core.v2", "revision": 7}
+    revision_eight_packs: set[str] = set()
+    for manifest_path in worldpacks.glob("*/manifest.json"):
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if "rp" not in manifest.get("scenario_types", {}).get("supported", []):
+            continue
+        contract = manifest.get("rp_contract") or {}
+        if contract.get("revision") == 8:
+            revision_eight_packs.add(manifest["id"])
+
+    assert revision_eight_packs == {"merchant-sviatoslav"}
+    starosta = json.loads((worldpacks / "starosta" / "manifest.json").read_text(encoding="utf-8"))
+    assert starosta["rp_contract"] == {"schema_version": "rp-core.v2", "revision": 7}
 
 
 def make_story_store(tmp_path: Path) -> StateStore:
