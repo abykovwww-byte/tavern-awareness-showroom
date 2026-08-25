@@ -29,6 +29,12 @@ only an explicitly selected local or OpenRouter route and never changes provider
 when the local runner is unavailable. Retired provider/profile/log rows remain
 readable for history, but cannot be selected for new or continuing runtime work.
 
+Revision-8 RP WorldPacks may declare reviewed `lore-cards/*.json`. Gateway copies
+them into a new party without a model call, retrieves them only by whole
+title/keyword matches from the current-plus-three-turn scan, and records the
+exact raised IDs in turn metadata. A player-triggered Lore Card draft uses one
+bounded stack-key OpenRouter call and is persisted only after explicit confirm.
+
 ## Runtime paths
 
 ```text

@@ -41,6 +41,7 @@
     "authors_note": "prompts/authors-note.md",
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
+    "lore_cards": "lore-cards",
     "sillytavern_lorebook": "sillytavern/merchant-sviatoslav.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",

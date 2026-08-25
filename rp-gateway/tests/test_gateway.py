@@ -202,7 +202,14 @@ def assert_no_gateway_service_text(content: str) -> None:
         assert marker not in lowered
 
 
-def write_worldpack(root: Path, pack_id: str = "demo-world", supported_modes: list[str] | None = None) -> Path:
+def write_worldpack(
+    root: Path,
+    pack_id: str = "demo-world",
+    supported_modes: list[str] | None = None,
+    *,
+    rp_revision: int | None = None,
+    lore_cards: list[dict[str, object]] | None = None,
+) -> Path:
     pack_dir = root / "worldpacks" / pack_id
     pack_dir.mkdir(parents=True)
     manifest = {
@@ -221,6 +228,11 @@ def write_worldpack(root: Path, pack_id: str = "demo-world", supported_modes: li
         manifest["scenario_types"] = {"recommended": supported_modes[0], "supported": supported_modes}
         if supported_modes == ["training"]:
             manifest["showroom_result"] = {"metric": "state_path", "state_path": "meta.turn"}
+    if rp_revision is not None:
+        manifest["scenario_types"] = {"recommended": "rp", "supported": ["rp"]}
+        manifest["rp_contract"] = {"schema_version": "rp-core.v2", "revision": rp_revision}
+    if lore_cards is not None:
+        manifest["files"]["lore_cards"] = "lore-cards"
     seed = base_state()
     seed["meta"]["campaign_id"] = pack_id
     (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
@@ -231,6 +243,18 @@ def write_worldpack(root: Path, pack_id: str = "demo-world", supported_modes: li
     (pack_dir / "prompts" / "opening-scene.md").write_text("Rain taps the glass. What do you do?", encoding="utf-8")
     (pack_dir / "world-info").mkdir()
     (pack_dir / "world-info" / "index.md").write_text("# Demo World\n", encoding="utf-8")
+    if lore_cards is not None:
+        (pack_dir / "lore-cards").mkdir()
+        (pack_dir / "lore-cards" / "core.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "rp-gateway.worldpack-lore-cards.v1",
+                    "cards": lore_cards,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
     return pack_dir
 
 
@@ -3657,6 +3681,184 @@ def test_party_lore_cards_are_manual_retrievable_and_party_isolated(tmp_path: Pa
         json={"content": "Где астролябия?", "source": "current"},
     ).json()["preview"]
     assert "party_lore_cards" not in {block["id"] for block in hidden["blocks"]}
+
+
+def test_revision8_party_imports_authored_lore_cards_without_runtime_model_call(tmp_path: Path):
+    write_worldpack(
+        tmp_path,
+        rp_revision=8,
+        lore_cards=[
+            {
+                "key": "npc:zhdan",
+                "title": "Ждан",
+                "content": "Ждан хочет получить долю в лавке, но не признает вину без доказательств.",
+                "keywords": ["Ждан", "Ждана", "Ждану", "Жданом"],
+                "always_on": False,
+                "enabled": True,
+            },
+            {
+                "key": "clue:token",
+                "title": "Долговая метка",
+                "content": "Метка относится к партии восточного товара.",
+                "keywords": ["долговая метка", "долговую метку"],
+                "always_on": False,
+                "enabled": True,
+            },
+        ],
+    )
+    c = client(tmp_path, rp_contract_observed_revision=8)
+
+    party = create_demo_party(c, title="Authored Lore Import")
+
+    assert party["rp_contract_revision"] == 8
+    cards = c.get(f"/api/parties/{party['id']}/lore-cards").json()["cards"]
+    assert {card["title"] for card in cards} == {"Ждан", "Долговая метка"}
+    assert all(card["source_turn_ids"] == [] for card in cards)
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        has_log = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'service_call_log'"
+        ).fetchone()
+        service_calls = (
+            connection.execute("SELECT COUNT(*) FROM service_call_log").fetchone()[0]
+            if has_log
+            else 0
+        )
+    assert service_calls == 0
+
+
+def test_revision8_lore_activation_uses_title_keywords_and_is_exposed_with_turn_metadata(tmp_path: Path):
+    write_worldpack(
+        tmp_path,
+        rp_revision=8,
+        lore_cards=[
+            {
+                "key": "npc:zhdan",
+                "title": "Ждан",
+                "content": "Скрытая деталь: у Ждана есть синий футляр.",
+                "keywords": ["Ждан", "Ждана", "Ждану", "Жданом"],
+                "always_on": False,
+                "enabled": True,
+            }
+        ],
+    )
+    c = client(tmp_path, rp_contract_observed_revision=8)
+    party = create_demo_party(c, title="Raised Lore")
+
+    hidden_only = c.post(
+        f"/api/parties/{party['id']}/prompt/preview",
+        json={"content": "Где синий футляр?", "source": "current"},
+    ).json()["preview"]
+    assert hidden_only["prompt_assembly"]["lore_card_ids"] == []
+    assert "party_lore_cards" not in {block["id"] for block in hidden_only["blocks"]}
+
+    turn = c.post(
+        f"/api/parties/{party['id']}/messages",
+        json={"content": "Я спрашиваю Ждана о долге."},
+        headers={"Authorization": "Bearer narrator-key"},
+    )
+    assert turn.status_code == 200, turn.text
+    history_turn = c.get(f"/api/parties/{party['id']}/history").json()["turns"][-1]
+    lore_card_ids = history_turn["metadata"]["prompt_assembly"]["lore_card_ids"]
+
+    assert len(lore_card_ids) == 1
+    assert history_turn["metadata"] == {
+        "prompt_assembly": {"lore_card_ids": lore_card_ids}
+    }
+    assert [card["id"] for card in history_turn["activated_lore_cards"]] == lore_card_ids
+    assert history_turn["activated_lore_cards"][0]["title"] == "Ждан"
+
+
+def test_revision8_lore_card_draft_is_logged_and_persisted_only_after_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    write_worldpack(tmp_path, rp_revision=8)
+    c = client(
+        tmp_path,
+        api_key="stack-service-key",
+        rp_contract_observed_revision=8,
+    )
+    party = create_demo_party(c, title="Lore Draft")
+    store = c.app.state.party_store.store_for_party(party["id"])
+    source_turn_id = store.record_turn(
+        "lore-source-1",
+        "lore-source-1",
+        "Я показываю Милаве найденную печать.",
+        "Милава узнаёт знак перевозчика и прячет печать в счётную шкатулку.",
+        {},
+        store.current_version() or 1,
+        metadata={"turn_kind": "narrative"},
+        party_turn=1,
+    )
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "model": "deepseek/deepseek-v4-pro",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Печать перевозчика",
+                                    "content": "Милава узнала знак перевозчика и спрятала печать в счётную шкатулку.",
+                                    "keywords": ["печать", "Милава", "Милавы", "Милаве", "Милавой"],
+                                },
+                                ensure_ascii=False,
+                            )
+                        },
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.main.ServiceModelClient",
+        lambda settings: ServiceModelClient(settings, transport=httpx.MockTransport(handler)),
+    )
+
+    draft_response = c.post(
+        f"/api/parties/{party['id']}/lore-cards/draft",
+        json={"source_turn_ids": [source_turn_id]},
+    )
+
+    assert draft_response.status_code == 200, draft_response.text
+    draft = draft_response.json()["draft"]
+    assert draft["source_turn_ids"] == [source_turn_id]
+    assert c.get(f"/api/parties/{party['id']}/lore-cards").json()["cards"] == []
+    assert captured["authorization"] == "Bearer stack-service-key"
+    assert captured["payload"]["model"] == "deepseek/deepseek-v4-pro"
+    assert captured["payload"]["max_tokens"] == 400
+    with sqlite3.connect(tmp_path / "rp_gateway.db") as connection:
+        log_row = connection.execute(
+            """
+            SELECT role, provider, model, raw_response, prompt_text
+            FROM service_call_log WHERE party_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (party["id"],),
+        ).fetchone()
+    assert log_row is not None
+    assert log_row[:3] == ("lore_card_draft", "openrouter", "deepseek/deepseek-v4-pro")
+    assert log_row[3]
+    assert len(log_row[4]) <= 8_000
+
+    confirmed = c.post(
+        f"/api/parties/{party['id']}/lore-cards",
+        json={
+            **draft,
+            "always_on": False,
+            "enabled": True,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["card"]["source_turn_ids"] == [source_turn_id]
+    assert len(c.get(f"/api/parties/{party['id']}/lore-cards").json()["cards"]) == 1
 
 
 def test_memory_checkpoint_is_a_non_destructive_party_snapshot(tmp_path: Path):

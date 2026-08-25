@@ -99,6 +99,33 @@ def prompt_block_ids(messages: list[dict[str, str]]) -> list[str]:
     return block_ids
 
 
+def prompt_lore_card_ids(messages: list[dict[str, str]]) -> list[int]:
+    """Return only card IDs present in the final, post-budget prompt block."""
+
+    for message in messages:
+        content = str(message.get("content") or "")
+        if message.get("role") != "system" or not content.startswith("PARTY_LORE_CARDS"):
+            continue
+        payload_start = content.find("[")
+        if payload_start < 0:
+            return []
+        try:
+            cards = json.loads(content[payload_start:])
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(cards, list):
+            return []
+        return [
+            int(card["id"])
+            for card in cards
+            if isinstance(card, dict)
+            and isinstance(card.get("id"), int)
+            and not isinstance(card.get("id"), bool)
+            and int(card["id"]) > 0
+        ]
+    return []
+
+
 def prompt_assembly_diagnostics(
     messages: list[dict[str, str]],
     *,
@@ -109,7 +136,7 @@ def prompt_assembly_diagnostics(
 ) -> dict[str, Any]:
     """Build the canonical content-free RP prompt assembly record."""
 
-    return {
+    diagnostics = {
         "schema_version": PROMPT_ASSEMBLY_SCHEMA_VERSION,
         "rp_contract_revision": int(rp_contract_revision),
         "authority_order": list(PROMPT_AUTHORITY_ORDER),
@@ -127,6 +154,9 @@ def prompt_assembly_diagnostics(
             if item.get("block_id") and item.get("reason")
         ],
     }
+    if int(rp_contract_revision) >= 8:
+        diagnostics["lore_card_ids"] = prompt_lore_card_ids(messages)
+    return diagnostics
 
 
 def record_prompt_omission(

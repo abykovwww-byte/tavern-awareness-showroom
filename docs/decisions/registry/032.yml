@@ -5,7 +5,7 @@
   expectation: revision8_history_first_prompt_has_no_coverage_gap
   probe_command: null
   expected: null
-  waiver: "Focused local tests cover eligibility, exact opening suppression, legacy null turns, quantized 50-to-57 plus uncovered selection, stable-prefix versus volatile-tail order, whole-unit overflow and fail-before-provider. S0 is complete and the source activation targets only new merchant-sviatoslav parties, but Ansible apply and the required 25-turn deployed-party gate remain pending."
+  waiver: "Focused local tests cover eligibility, exact opening suppression, legacy null turns, quantized 50-to-57 plus uncovered selection, stable-prefix versus volatile-tail order, whole-unit overflow and fail-before-provider. The activation was Ansible-applied and a new merchant-sviatoslav stamp-party reported effective revision 8 without model calls. The 25-turn deployed-party gate is deferred until the full RP-core implementation."
 - requirement: "Revision 8 records cached_prompt_tokens, prompt_tokens and a SHA-256 hash of immutable rules plus the anchored first 50 RAW units; the hash stays equal within an eight-turn bucket and changes when the actual RAW anchor moves, without adding provider cache calls, headers or settings"
   level: каркас
   store: "turn metadata_json, recorded turns.prompt_json and response_json usage.prompt_tokens_details"

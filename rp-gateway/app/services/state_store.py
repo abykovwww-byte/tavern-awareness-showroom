@@ -1043,17 +1043,36 @@ class StateStore:
             raise ValueError(f"lore card not found: {card_id}")
         return self.lore_card_from_row(row)
 
-    def lore_cards_for_prompt(self, query: str, limit: int = 8, max_chars: int = 12_000) -> list[dict[str, Any]]:
+    def lore_cards_for_prompt(
+        self,
+        query: str,
+        limit: int = 8,
+        max_chars: int = 12_000,
+        *,
+        title_keywords_only: bool = False,
+        whole_match: bool = False,
+    ) -> list[dict[str, Any]]:
         query_terms = archive_search_terms(query)
         query_stems = {archive_stem(term) for term in query_terms}
         ranked: list[tuple[float, dict[str, Any]]] = []
         for card in self.lore_cards(limit=500):
             if not card["enabled"] or card["archived"]:
                 continue
-            text = " ".join([card["title"], card["content"], *card["keywords"]]).lower()
-            lexical = sum(text.count(term) for term in query_terms)
-            card_stems = {archive_stem(token) for token in archive_word_tokens(text)}
-            stem_hits = len(query_stems & card_stems)
+            searchable = [card["title"], *card["keywords"]]
+            if not title_keywords_only:
+                searchable.insert(1, card["content"])
+            text = " ".join(searchable).lower()
+            if whole_match:
+                lexical = sum(
+                    len(re.findall(rf"(?<!\w){re.escape(str(trigger).strip().lower())}(?!\w)", query.lower()))
+                    for trigger in searchable
+                    if str(trigger).strip()
+                )
+                stem_hits = 0
+            else:
+                lexical = sum(text.count(term) for term in query_terms)
+                card_stems = {archive_stem(token) for token in archive_word_tokens(text)}
+                stem_hits = len(query_stems & card_stems)
             if not card["always_on"] and not lexical and not stem_hits:
                 continue
             score = 1_000.0 if card["always_on"] else float((lexical * 4) + (stem_hits * 2))
@@ -1063,7 +1082,7 @@ class StateStore:
         used = 0
         for _, card in ranked[: max(limit, 1)]:
             size = len(card["title"]) + len(card["content"]) + sum(len(keyword) for keyword in card["keywords"])
-            if selected and used + size > max_chars:
+            if used + size > max_chars and (whole_match or selected):
                 continue
             selected.append(card)
             used += size
@@ -1591,7 +1610,7 @@ class StateStore:
             rows = connection.execute(
                 """
                 SELECT t.id, t.request_id, t.player_message, t.narrative_response,
-                       t.state_version, t.created_at,
+                       t.state_version, t.created_at, t.metadata_json,
                        COALESCE(f.rating, 0) AS player_rating_value,
                        COALESCE(f.liked, 0) AS player_liked
                 FROM turns t
@@ -1604,8 +1623,41 @@ class StateStore:
                 (self.campaign_id, limit),
             ).fetchall()
         turns = [dict(row) for row in reversed(rows)]
+        lore_cards = {
+            int(card["id"]): card
+            for card in self.lore_cards(include_archived=True, limit=500)
+        }
         for turn in turns:
             rating_value = int(turn.pop("player_rating_value"))
+            raw_metadata = turn.pop("metadata_json", None)
+            try:
+                metadata = json.loads(raw_metadata) if raw_metadata else {}
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            prompt_assembly = metadata.get("prompt_assembly")
+            lore_card_ids = (
+                prompt_assembly.get("lore_card_ids")
+                if isinstance(prompt_assembly, dict)
+                else None
+            )
+            normalized_lore_card_ids = [
+                int(card_id)
+                for card_id in lore_card_ids or []
+                if isinstance(card_id, int) and not isinstance(card_id, bool) and card_id > 0
+            ]
+            if isinstance(lore_card_ids, list):
+                turn["metadata"] = {
+                    "prompt_assembly": {"lore_card_ids": normalized_lore_card_ids}
+                }
+                turn["activated_lore_cards"] = [
+                    {
+                        "id": card_id,
+                        "title": str(lore_cards.get(card_id, {}).get("title") or f"Lore Card #{card_id}"),
+                    }
+                    for card_id in normalized_lore_card_ids
+                ]
             turn["player_rating"] = {1: "positive", -1: "negative"}.get(rating_value, "none")
             turn["player_liked"] = bool(turn["player_liked"])
             turn["player_disliked"] = rating_value == -1

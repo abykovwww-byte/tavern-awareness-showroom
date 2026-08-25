@@ -22,6 +22,7 @@ const appState = {
   busyText: "",
   pendingMessages: {},
   pendingStoryMemoryCorrections: [],
+  pendingLoreCardSourceTurnIds: [],
   adminUsers: [],
   adminWorldpacks: [],
   byokKeys: [],
@@ -68,6 +69,8 @@ const els = {
   loreCardContent: document.querySelector("#loreCardContent"),
   loreCardKeywords: document.querySelector("#loreCardKeywords"),
   loreCardAlwaysOn: document.querySelector("#loreCardAlwaysOn"),
+  loreCardDraftHint: document.querySelector("#loreCardDraftHint"),
+  loreCardSubmitButton: document.querySelector("#loreCardSubmitButton"),
   loreCardList: document.querySelector("#loreCardList"),
   checkpointForm: document.querySelector("#checkpointForm"),
   checkpointLabel: document.querySelector("#checkpointLabel"),
@@ -296,6 +299,7 @@ function bindEvents() {
   els.datasetTurnDialog.addEventListener("click", handleAdminDatasetDialogAction);
   els.datasetTurnDialog.addEventListener("close", () => { appState.adminDatasetReviewTurnId = null; });
   els.chatLog.addEventListener("click", handleTurnFeedbackClick);
+  els.chatLog.addEventListener("click", draftLoreCardFromTurn);
   [els.chatLog, els.historyControls].filter(Boolean).forEach((node) => node.addEventListener("click", handleChatArchiveClick));
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeInspector();
@@ -505,6 +509,7 @@ function clearWorkspaceState() {
   appState.proposals = [];
   appState.pendingMessages = {};
   appState.pendingStoryMemoryCorrections = [];
+  appState.pendingLoreCardSourceTurnIds = [];
   appState.adminUsers = [];
   appState.byokKeys = [];
   appState.serviceModelSettings = null;
@@ -553,6 +558,7 @@ async function selectParty(partyId) {
     appState.branches = [];
     appState.serviceJobs = [];
     appState.byokKeys = [];
+    resetLoreCardDraft();
   }
   appState.activeParty = party;
   appState.activeBranch = null;
@@ -1414,6 +1420,18 @@ function promptBlock(block, index) {
   </details>`;
 }
 
+function raisedLoreCardsForTurn(turn) {
+  const ids = turn?.metadata?.prompt_assembly?.lore_card_ids;
+  if (!Array.isArray(ids)) return [];
+  const summaries = new Map(
+    (turn.activated_lore_cards || []).map((card) => [Number(card.id), card]),
+  );
+  return ids
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)
+    .map((id) => ({ id, title: summaries.get(id)?.title || `Lore Card #${id}` }));
+}
+
 function renderChat({ scrollMode = "bottom" } = {}) {
   const turns = appState.history?.turns || [];
   const pending = activePendingMessage();
@@ -1434,6 +1452,9 @@ function renderChat({ scrollMode = "bottom" } = {}) {
   if (hiddenTurnCount) {
     messages.push(chatArchiveHtml(hiddenTurnCount));
   }
+  const allowLoreDraft = !appState.activeBranch
+    && appState.activeParty?.scenario_type === "rp"
+    && Number(appState.activeParty?.rp_contract_revision || 0) >= 8;
   for (const turn of visibleTurns) {
     const autoStart = isAutoStartTurn(turn);
     if (autoStart) {
@@ -1452,6 +1473,8 @@ function renderChat({ scrollMode = "bottom" } = {}) {
       },
       turn.artifacts || [],
       turn.id,
+      raisedLoreCardsForTurn(turn),
+      allowLoreDraft,
     ));
   }
   if (pending && !turns.some((turn) => turn.request_id === pending.requestId)) {
@@ -2858,6 +2881,44 @@ async function rollbackParty() {
   }
 }
 
+function resetLoreCardDraft() {
+  appState.pendingLoreCardSourceTurnIds = [];
+  els.loreCardForm?.reset();
+  if (els.loreCardDraftHint) {
+    els.loreCardDraftHint.textContent = "";
+    els.loreCardDraftHint.classList.add("hidden");
+  }
+}
+
+async function draftLoreCardFromTurn(event) {
+  const button = event.target.closest("[data-lore-draft-turn-id]");
+  if (!button || !appState.activeParty || appState.activeBranch) return;
+  const turnId = Number(button.dataset.loreDraftTurnId);
+  if (!Number.isInteger(turnId) || turnId <= 0) return;
+  try {
+    setBusy(true, `Служебная модель готовит Lore Card из хода ${turnId}...`);
+    const response = await apiPost(`/api/parties/${appState.activeParty.id}/lore-cards/draft`, {
+      source_turn_ids: [turnId],
+    });
+    const draft = response.draft || {};
+    els.loreCardTitle.value = draft.title || "";
+    els.loreCardContent.value = draft.content || "";
+    els.loreCardKeywords.value = (draft.keywords || []).join(", ");
+    els.loreCardAlwaysOn.checked = false;
+    appState.pendingLoreCardSourceTurnIds = draft.source_turn_ids || [turnId];
+    els.loreCardDraftHint.textContent = `Черновик по ходу ${turnId}. Проверьте текст и подтвердите сохранение.`;
+    els.loreCardDraftHint.classList.remove("hidden");
+    openInspector();
+    openPanelFor(els.loreCardForm);
+    els.loreCardForm.scrollIntoView({ block: "center", behavior: "smooth" });
+    showToast("Черновик готов. В память партии он ещё не записан.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function createLoreCard(event) {
   event.preventDefault();
   if (!appState.activeParty) return;
@@ -2870,9 +2931,10 @@ async function createLoreCard(event) {
       keywords,
       always_on: els.loreCardAlwaysOn.checked,
       enabled: true,
-      source_turn_ids: [],
+      source_turn_ids: appState.pendingLoreCardSourceTurnIds,
     });
     els.loreCardForm.reset();
+    resetLoreCardDraft();
     await reloadActiveParty();
     openPanelFor(els.loreCardList);
     showToast("Lore Card добавлена. Она не меняет canonical state.");
@@ -3669,7 +3731,30 @@ function messageTimeHtml(timestamp) {
   return `<time class="message-time" datetime="${escapeHtml(formatted.iso)}" title="${escapeHtml(formatted.title)}">${escapeHtml(formatted.text)}</time>`;
 }
 
-function messageHtml(kind, role, content, timestamp = Date.now(), feedback = null, artifacts = [], turnId = null) {
+function loreCardToolsHtml(cards, turnId, allowDraft) {
+  if (!turnId) return "";
+  const raised = Array.isArray(cards) && cards.length
+    ? `<div class="raised-lore-cards" aria-label="Lore Cards этого ответа">${cards
+        .map((card) => `<span class="lore-card-chip" data-lore-card-id="${escapeHtml(Number(card.id))}">${escapeHtml(card.title)}</span>`)
+        .join("")}</div>`
+    : "";
+  const draft = allowDraft
+    ? `<button class="text-button lore-card-draft-button" type="button" data-lore-draft-turn-id="${escapeHtml(Number(turnId))}">Сделать Lore Card из хода</button>`
+    : "";
+  return raised || draft ? `<div class="message-lore-tools">${raised}${draft}</div>` : "";
+}
+
+function messageHtml(
+  kind,
+  role,
+  content,
+  timestamp = Date.now(),
+  feedback = null,
+  artifacts = [],
+  turnId = null,
+  loreCards = [],
+  allowLoreDraft = false,
+) {
   const rendered = kind === "assistant"
     ? narrativeContentHtml(content)
     : { html: escapeHtml(content || ""), hasArtifacts: false };
@@ -3683,6 +3768,7 @@ function messageHtml(kind, role, content, timestamp = Date.now(), feedback = nul
     <div class="role">${escapeHtml(role)}</div>
     <div class="message-content">${rendered.html}</div>
     ${artifactHost}
+    ${kind === "assistant" ? loreCardToolsHtml(loreCards, turnId, allowLoreDraft) : ""}
     ${messageTimeHtml(timestamp)}
     ${feedbackHtml}
   </article>`;

@@ -35,6 +35,8 @@ from app.models.schemas import (
     PartyCheckRequest,
     PartyCreate,
     PartyDatasetUpdate,
+    PartyLoreCardDraft,
+    PartyLoreCardDraftRequest,
     PartyLoreCardCreate,
     PartyLoreCardUpdate,
     PartyMemorySummarizeRequest,
@@ -100,7 +102,9 @@ from app.services.party_store import PartyStore
 from app.services.prompt_tools import PromptInspector
 from app.services.rp_history import (
     AUTO_START_HISTORY_MESSAGE,
+    eligible_rp_turns,
     raw_history_window,
+    recent_rp_scan_text,
     removable_covered_history_units,
     rp_turn_messages,
     story_memory_safe_coverage,
@@ -127,6 +131,10 @@ from app.services.world_instructor import WorldInstructor
 
 
 logger = logging.getLogger(__name__)
+
+LORE_CARD_DRAFT_MODEL = "deepseek/deepseek-v4-pro"
+LORE_CARD_DRAFT_INPUT_MAX_CHARS = 8_000
+LORE_CARD_DRAFT_OUTPUT_MAX_TOKENS = 400
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -1158,6 +1166,84 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"party_id": party_id, "cards": party_state_store.lore_cards(include_archived=include_archived)}
 
+    @app.post("/api/parties/{party_id}/lore-cards/draft")
+    async def draft_party_lore_card(
+        request: Request,
+        party_id: str,
+        draft_request: PartyLoreCardDraftRequest,
+    ) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            ensure_party_playable(party)
+            party_state_store = party_store.store_for_party(party_id, owner_user_id=owner_user_id(request))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if party.scenario_type != "rp" or int(party.rp_contract_revision or 0) < 8:
+            raise HTTPException(status_code=400, detail="Lore Card drafting requires an RP revision-8 party")
+
+        source_ids = draft_request.source_turn_ids
+        source_id_set = set(source_ids)
+        selected_turns = [
+            turn
+            for turn in eligible_rp_turns(
+                party_state_store.turns_for_memory(include_noncanonical_fallback=False)
+            )
+            if int(turn["id"]) in source_id_set
+        ]
+        selected_ids = [int(turn["id"]) for turn in selected_turns]
+        if set(selected_ids) != source_id_set:
+            missing = sorted(source_id_set - set(selected_ids))
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_turn_ids must reference complete playable turns; invalid: {missing}",
+            )
+
+        source_units = [
+            {
+                "turn_id": int(turn["id"]),
+                "messages": [
+                    {"role": role, "content": content}
+                    for role, content in rp_turn_messages(turn)
+                ],
+            }
+            for turn in selected_turns
+        ]
+        payload = lore_card_draft_payload(source_units)
+        exact_prompt = service_prompt_text(payload)
+        if len(exact_prompt) > LORE_CARD_DRAFT_INPUT_MAX_CHARS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"selected turns exceed the {LORE_CARD_DRAFT_INPUT_MAX_CHARS}-character Lore Card draft input limit",
+            )
+        request_id = f"lore-card-draft:{uuid.uuid4().hex}"
+        try:
+            completion = await ServiceModelClient(settings).complete(
+                role="lore_card_draft",
+                provider="openrouter",
+                model=LORE_CARD_DRAFT_MODEL,
+                party_id=party_id,
+                turn_id=max(selected_ids),
+                request_id=request_id,
+                party_turn=int(selected_turns[-1].get("party_turn") or 0),
+                attempt=1,
+                prompt=exact_prompt,
+                payload=payload,
+            )
+            choice = completion.data.get("choices", [{}])[0]
+            if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+                raise ValueError("Lore Card draft response was truncated by the output limit")
+            draft = PartyLoreCardDraft.model_validate(json.loads(response_text(completion.data)))
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, IndexError, TypeError) as exc:
+            raise HTTPException(status_code=502, detail=f"Lore Card draft failed: {exc}") from exc
+        return {
+            "party_id": party_id,
+            "request_id": request_id,
+            "draft": {
+                **draft.model_dump(mode="json"),
+                "source_turn_ids": selected_ids,
+            },
+        }
+
     @app.post("/api/parties/{party_id}/lore-cards")
     def create_party_lore_card(request: Request, party_id: str, card: PartyLoreCardCreate) -> dict[str, Any]:
         try:
@@ -1165,7 +1251,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             created = party_state_store.create_lore_card(**card.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        party_state_store.audit("lore_card_created", {"card_id": created["id"], "title": created["title"]})
+        party_state_store.audit(
+            "lore_card_created",
+            {
+                "card_id": created["id"],
+                "title": created["title"],
+                "source_turn_ids": created["source_turn_ids"],
+                "confirmed_by_player": True,
+            },
+        )
         return {"party_id": party_id, "card": created}
 
     @app.patch("/api/parties/{party_id}/lore-cards/{card_id}")
@@ -3310,6 +3404,39 @@ def party_start_narrative_state(state: dict[str, Any], patch: StatePatch | None)
     return cloned
 
 
+def lore_card_draft_payload(source_units: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "model": LORE_CARD_DRAFT_MODEL,
+        "temperature": 0.1,
+        "max_tokens": LORE_CARD_DRAFT_OUTPUT_MAX_TOKENS,
+        "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "lore_card_draft",
+                "strict": True,
+                "schema": PartyLoreCardDraft.model_json_schema(),
+            },
+        },
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Создай одну компактную Lore Card только из приведённых завершённых игровых ходов. "
+                    "Сохрани подтверждённые детали, полезные для будущего нарратива; не добавляй новый лор, "
+                    "не превращай намерение игрока в свершившийся факт и не упоминай служебный процесс. "
+                    "Верни JSON ровно с полями title, content, keywords. keywords — непустые точные триггеры; "
+                    "для названного персонажа добавь встречающиеся или очевидные русские падежные формы имени."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps({"source_turns": source_units}, ensure_ascii=False, separators=(",", ":")),
+            },
+        ],
+    }
+
+
 def party_chat_request(
     store: StateStore,
     model: str,
@@ -3367,15 +3494,25 @@ def party_chat_request(
                 content=scene_state_boundary_block(store.get_state()),
             )
         )
+    lore_query = (
+        recent_rp_scan_text(
+            store.turns_for_memory(include_noncanonical_fallback=False),
+            request.content,
+        )
+        if revision_eight_rp
+        else request.content
+    )
     lore_block = party_lore_cards_block(
         store.lore_cards_for_prompt(
-            request.content,
+            lore_query,
             limit=settings.party_lore_card_prompt_limit,
             max_chars=(
                 min(settings.party_lore_card_prompt_max_chars, 4_000)
                 if revision_eight_rp
                 else settings.party_lore_card_prompt_max_chars
             ),
+            title_keywords_only=revision_eight_rp,
+            whole_match=revision_eight_rp,
         ),
         max_chars=4_000 if revision_eight_rp else None,
     )

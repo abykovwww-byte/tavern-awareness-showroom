@@ -23,6 +23,7 @@ from app.services.rule_engine import RuleEngine
 from app.services.rp_history import (
     eligible_rp_turns,
     raw_history_window,
+    recent_rp_scan_text,
     removable_covered_history_units,
     rp_turn_messages,
     story_memory_safe_coverage,
@@ -111,7 +112,7 @@ class PromptInspector:
             authored_stable_affiliations=self.authored_stable_affiliations(),
         )
         candidate_state = self.preview_state(state, patch)
-        request = self.chat_request(latest)
+        request = self.chat_request(latest, outcome_target=outcome.target)
         revision_eight = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8
         memory_summary = (
             None
@@ -238,7 +239,11 @@ class PromptInspector:
             character_aliases=self.character_aliases(),
             authored_stable_affiliations=self.authored_stable_affiliations(),
         )
-        request = self.chat_request(latest, before_turn_id=int(latest_turn["id"]))
+        request = self.chat_request(
+            latest,
+            before_turn_id=int(latest_turn["id"]),
+            outcome_target=outcome.target,
+        )
         memory_summary = (
             None
             if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8
@@ -301,7 +306,12 @@ class PromptInspector:
             )
         return payload
 
-    def chat_request(self, latest: str, before_turn_id: int | None = None) -> ChatCompletionRequest:
+    def chat_request(
+        self,
+        latest: str,
+        before_turn_id: int | None = None,
+        outcome_target: str | None = None,
+    ) -> ChatCompletionRequest:
         messages: list[ChatMessage] = []
         revision_seven = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 7
         revision_eight = self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8
@@ -350,15 +360,25 @@ class PromptInspector:
                 max(self.settings.effective_party_history_token_budget - estimate_tokens(latest), 0),
             )
         if before_turn_id is None:
+            lore_query = latest
+            if revision_eight:
+                lore_query = recent_rp_scan_text(
+                    self.store.turns_for_memory(include_noncanonical_fallback=False),
+                    latest,
+                )
+                if str(outcome_target or "").strip():
+                    lore_query = f"{lore_query}\n{str(outcome_target).strip()}"
             lore_block = party_lore_cards_block(
                 self.store.lore_cards_for_prompt(
-                    latest,
+                    lore_query,
                     limit=self.settings.party_lore_card_prompt_limit,
                     max_chars=(
                         min(self.settings.party_lore_card_prompt_max_chars, 4_000)
                         if revision_eight
                         else self.settings.party_lore_card_prompt_max_chars
                     ),
+                    title_keywords_only=revision_eight,
+                    whole_match=revision_eight,
                 ),
                 max_chars=4_000 if revision_eight else None,
             )

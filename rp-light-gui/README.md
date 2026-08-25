@@ -50,8 +50,15 @@ The client uses only party-scoped API routes:
 /api/parties
 /api/parties/{party_id}
 /api/parties/{party_id}/messages
+/api/parties/{party_id}/lore-cards
+/api/parties/{party_id}/lore-cards/draft
 /api/parties/{party_id}/world/instruct
 ```
+
+For revision-8 RP history, each narrator message renders only the Lore Card IDs
+recorded in that turn's final prompt metadata. An explicit per-turn button asks
+Gateway for a strict draft, fills the visible Lore Card form, and does not save
+anything until the player reviews and confirms it.
 
 Model dropdown behavior:
 

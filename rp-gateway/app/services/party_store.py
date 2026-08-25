@@ -727,6 +727,70 @@ class PartyStore:
         except OSError:
             return ""
 
+    def worldpack_lore_cards(self, pack: WorldPackSummary) -> list[dict[str, Any]]:
+        files = pack.manifest.get("files", {}) if isinstance(pack.manifest.get("files"), dict) else {}
+        relative_dir = files.get("lore_cards")
+        if relative_dir is None:
+            return []
+        if not isinstance(relative_dir, str) or not relative_dir.strip():
+            raise ValueError(f"worldpack {pack.id} lore_cards path is invalid")
+        root = Path(pack.manifest_path).resolve().parent
+        cards_dir = (root / relative_dir).resolve()
+        if root not in cards_dir.parents or not cards_dir.is_dir():
+            raise ValueError(f"worldpack {pack.id} lore_cards directory is missing or unsafe")
+        paths = sorted(cards_dir.glob("*.json"))
+        if not paths:
+            raise ValueError(f"worldpack {pack.id} declares lore_cards but contains no JSON files")
+
+        cards: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"invalid authored lore cards file: {path.name}") from exc
+            if not isinstance(payload, dict) or payload.get("schema_version") != "rp-gateway.worldpack-lore-cards.v1":
+                raise ValueError(f"invalid authored lore cards schema: {path.name}")
+            raw_cards = payload.get("cards")
+            if not isinstance(raw_cards, list) or not raw_cards:
+                raise ValueError(f"authored lore cards file must contain cards: {path.name}")
+            for index, raw_card in enumerate(raw_cards):
+                if not isinstance(raw_card, dict):
+                    raise ValueError(f"invalid lore card at {path.name}:{index + 1}")
+                key = str(raw_card.get("key") or "").strip()
+                if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]{0,127}", key):
+                    raise ValueError(f"invalid lore card key at {path.name}:{index + 1}")
+                if key in seen_keys:
+                    raise ValueError(f"duplicate lore card key: {key}")
+                seen_keys.add(key)
+                title = str(raw_card.get("title") or "").strip()
+                content = str(raw_card.get("content") or "").strip()
+                raw_keywords = raw_card.get("keywords")
+                if not title or len(title) > 160 or not content or len(content) > 12_000:
+                    raise ValueError(f"invalid lore card text for key: {key}")
+                if not isinstance(raw_keywords, list):
+                    raise ValueError(f"invalid lore card keywords for key: {key}")
+                keywords = list(
+                    dict.fromkeys(str(keyword).strip() for keyword in raw_keywords if str(keyword).strip())
+                )
+                if not keywords or len(keywords) > 40:
+                    raise ValueError(f"lore card keywords must be non-empty for key: {key}")
+                always_on = raw_card.get("always_on", False)
+                enabled = raw_card.get("enabled", True)
+                if not isinstance(always_on, bool) or not isinstance(enabled, bool):
+                    raise ValueError(f"invalid lore card flags for key: {key}")
+                cards.append(
+                    {
+                        "title": title,
+                        "content": content,
+                        "keywords": keywords,
+                        "always_on": always_on,
+                        "enabled": enabled,
+                        "source_turn_ids": [],
+                    }
+                )
+        return cards
+
     def list_player_characters(
         self,
         worldpack_id: str | None = None,
@@ -957,6 +1021,11 @@ class PartyStore:
             declared_revision,
             max(0, min(int(self.settings.rp_contract_observed_revision), RP_CONTRACT_MAX_REVISION)),
         )
+        authored_lore_cards = (
+            self.worldpack_lore_cards(pack)
+            if request.scenario_type == "rp" and rp_contract_revision >= 8
+            else []
+        )
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
@@ -965,6 +1034,14 @@ class PartyStore:
         party_id = f"party_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         self.initialize_party_state(party_id, pack, character)
+        if authored_lore_cards:
+            party_state_store = StateStore(
+                self.settings.sqlite_path,
+                party_id,
+                str(self.state_path_for(party_id)),
+            )
+            for card in authored_lore_cards:
+                party_state_store.create_lore_card(**card)
         with self.connect() as connection:
             connection.execute(
                 """

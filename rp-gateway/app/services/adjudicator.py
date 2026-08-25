@@ -22,6 +22,7 @@ from app.services.narrative import (
     PromptBudgetExceeded,
     ProviderRateLimitError,
     archived_memory_retrieval_block,
+    party_lore_cards_block,
     prompt_cache_observability,
     prompt_assembly_diagnostics,
     response_text,
@@ -315,6 +316,12 @@ class Adjudicator:
                 self.settings.scenario_type == "rp"
                 and self.settings.rp_contract_revision >= 8
             )
+            if revision_eight:
+                self.refresh_revision_eight_lore_cards(
+                    request,
+                    latest_player_message=latest,
+                    outcome_target=outcome.target,
+                )
             scene_bundle_revision = (
                 self.settings.scenario_type == "rp"
                 and self.settings.rp_contract_revision == 7
@@ -1678,6 +1685,40 @@ class Adjudicator:
             bounded = "\n".join(bounded_lines).rstrip()
             return bounded if bounded != "RELATIONSHIP_PRESSURE" else None
         return "\n\n".join(block for block in (pressure, resolution) if block) or None
+
+    def refresh_revision_eight_lore_cards(
+        self,
+        request: ChatCompletionRequest,
+        *,
+        latest_player_message: str,
+        outcome_target: str | None,
+    ) -> None:
+        scan_text = recent_rp_scan_text(
+            self.store.turns_for_memory(include_noncanonical_fallback=False),
+            latest_player_message,
+        )
+        if str(outcome_target or "").strip():
+            scan_text = f"{scan_text}\n{str(outcome_target).strip()}"
+        cards = self.store.lore_cards_for_prompt(
+            scan_text,
+            limit=self.settings.party_lore_card_prompt_limit,
+            max_chars=min(self.settings.party_lore_card_prompt_max_chars, 4_000),
+            title_keywords_only=True,
+            whole_match=True,
+        )
+        lore_block = party_lore_cards_block(cards, max_chars=4_000)
+        messages = [
+            message
+            for message in request.messages
+            if not (
+                message.role == "system"
+                and isinstance(message.content, str)
+                and message.content.startswith("PARTY_LORE_CARDS")
+            )
+        ]
+        if lore_block:
+            messages.insert(0, ChatMessage(role="system", content=lore_block))
+        request.messages = messages
 
     @staticmethod
     def prompt_assembly_trace(messages: list[dict[str, str]], latest: str) -> list[dict[str, Any]]:

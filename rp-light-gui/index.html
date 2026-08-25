@@ -185,13 +185,14 @@
             </button>
           </div>
           <div class="section-label subsection-label">Lore Cards</div>
-          <p class="panel-hint">Только ваши подтвержденные заметки. Карточка помогает retrieval, но не становится canonical state.</p>
+          <p class="panel-hint">WorldPack-карточки копируются при создании партии. Черновик из хода появляется здесь и попадет в память только после вашего подтверждения.</p>
           <form id="loreCardForm" class="stack-form">
             <input id="loreCardTitle" maxlength="160" placeholder="Название карточки" required>
             <textarea id="loreCardContent" rows="3" maxlength="12000" placeholder="Факт, деталь мира или нить сюжета" required></textarea>
-            <input id="loreCardKeywords" maxlength="500" placeholder="Триггеры через запятую">
+            <input id="loreCardKeywords" maxlength="500" placeholder="Триггеры через запятую" required>
             <label class="check-row"><input id="loreCardAlwaysOn" type="checkbox"> Всегда добавлять в prompt</label>
-            <button class="tool-button" type="submit">Добавить Lore Card</button>
+            <p id="loreCardDraftHint" class="panel-hint hidden"></p>
+            <button id="loreCardSubmitButton" class="tool-button" type="submit">Подтвердить Lore Card</button>
           </form>
           <div id="loreCardList" class="state-summary"></div>
           <div class="section-label subsection-label">Checkpoints</div>

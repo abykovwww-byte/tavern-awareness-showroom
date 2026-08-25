@@ -366,6 +366,34 @@ class PartyLoreCardCreate(BaseModel):
     source_turn_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
+class PartyLoreCardDraftRequest(BaseModel):
+    source_turn_ids: list[int] = Field(min_length=1, max_length=8)
+
+    @field_validator("source_turn_ids")
+    @classmethod
+    def validate_source_turn_ids(cls, value: list[int]) -> list[int]:
+        normalized = list(dict.fromkeys(int(turn_id) for turn_id in value))
+        if any(turn_id <= 0 for turn_id in normalized):
+            raise ValueError("source_turn_ids must contain positive turn IDs")
+        return normalized
+
+
+class PartyLoreCardDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=12000)
+    keywords: list[str] = Field(min_length=1, max_length=40)
+
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(str(keyword).strip() for keyword in value if str(keyword).strip()))
+        if not normalized:
+            raise ValueError("keywords must contain at least one non-empty trigger")
+        return normalized
+
+
 class PartyLoreCardUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=160)
     content: str | None = Field(default=None, min_length=1, max_length=12000)

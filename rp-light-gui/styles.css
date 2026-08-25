@@ -505,6 +505,34 @@ h3 {
   align-self: flex-start;
 }
 
+.message-lore-tools {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(127, 182, 133, 0.2);
+  white-space: normal;
+}
+
+.raised-lore-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lore-card-chip {
+  padding: 3px 8px;
+  border: 1px solid rgba(127, 182, 133, 0.38);
+  border-radius: 999px;
+  background: rgba(127, 182, 133, 0.09);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.lore-card-draft-button {
+  justify-self: start;
+}
+
 .message.system {
   width: auto;
   max-width: min(520px, 94%);

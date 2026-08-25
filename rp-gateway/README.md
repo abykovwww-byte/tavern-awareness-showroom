@@ -9,6 +9,13 @@ progression. The administrator-selected **service model / служебная м�
 global to the stack and handles long-term memory, world changes, and character
 generation. Party BYOK credentials remain isolated to their owning party.
 
+For revision-8 RP parties Gateway also validates and copies authored WorldPack
+Lore Cards at party creation without a provider call. The recent RAW scan selects
+cards only through whole title/keyword triggers and stores final raised IDs in
+turn metadata. `POST /api/parties/{party_id}/lore-cards/draft` makes one bounded
+stack-key OpenRouter draft from complete turns; the existing create endpoint is
+the explicit player-confirmation boundary.
+
 Application startup uses FastAPI's `lifespan` context manager. Before accepting
 requests, it reconciles interrupted party and branch work, resumes pending
 service jobs, and schedules resumable autotest runs.

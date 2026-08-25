@@ -10,11 +10,11 @@ prompt переносится с неизменяемых JSON-проекций 
 выполняется одним общим model call, а не пятью отдельными пересказами.
 
 **Delivery status:** `каркас` для строк
-[`registry/032.yml`](registry/032.yml). Реализация и локальные тесты S1 слиты и
-применены на сервере, а отдельный source-activation slice поднимает observed
-revision до `8` только вместе с declared revision `8` у
-`merchant-sviatoslav`. Сам activation slice ещё не применён и не прошёл
-обязательную живую проверку на 25/60 ходах. S2–S4 в это решение не входят.
+[`registry/032.yml`](registry/032.yml). Реализация S1 и узкая activation для
+`merchant-sviatoslav` слиты и применены на сервере: новая stamp-party получила
+effective revision `8`. Она не выполняла narrator или service model call.
+Живые gates 25/60 ходов по решению пользователя отложены до полной реализации
+RP-ядра, поэтому readiness не повышается. S2–S4 в это решение не входят.
 
 ## Context
 
@@ -221,8 +221,9 @@ parties/branches не меняется.
 
 Prompt «Купца» приведён к фактической rev8 boundary: он больше не ссылается на
 удалённый `<AUTHORITATIVE_WORLD_STATE>` и не просит narrator записывать поля
-state/memory. Source merge не равен runtime activation. До Ansible apply,
-container-env proof и живых gates 25/60 registry остаётся на уровне `каркас`.
+state/memory. Ansible apply, container-env и stamp-party подтвердили effective
+revision `8`, но stamp содержал только opening boundary без model calls. До
+отложенных живых gates 25/60 registry остаётся на уровне `каркас`.
 
 ## Verification gates
 
@@ -233,7 +234,7 @@ plain narrator response, one-call five-section cadence, structural section retry
 empty-section acceptance, `finish_reason=length`, same-coverage persistence и
 explicit provider/model logging.
 
-Живой gate остаётся отдельным действием после merge и apply:
+Живой gate остаётся отдельным действием после полной реализации RP-ядра:
 
 1. 25-turn rev-8 party: 24 предыдущих игровых units дословно, целевой состав
    blocks, service part не более 13 500 символов, no fallback и корректная
@@ -252,7 +253,8 @@ explicit provider/model logging.
 
 ## Не входит
 
-- S2 authored lore-card import и unified card scan;
+- S2 authored lore-card import и unified card scan — отдельный
+  [Decision 037](037-rp-authored-lore-cards-and-confirmed-drafts.md);
 - S3 GM channel, correction overlay и absorption;
 - S4 world clock/events;
 - автоматическая миграция существующих parties/branches или массовое поднятие

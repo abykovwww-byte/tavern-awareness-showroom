@@ -792,6 +792,69 @@ def test_revision_eight_lore_block_keeps_whole_cards_inside_four_thousand_chars(
     assert "x" * 100 not in block
 
 
+def test_revision_eight_lore_retrieval_uses_only_whole_title_keywords_in_recent_raw_scan(
+    tmp_path: Path,
+) -> None:
+    store = StateStore(
+        str(tmp_path / "lore-scan.db"),
+        "rev8-lore-scan",
+        str(tmp_path / "lore-scan-state.json"),
+    )
+    card = store.create_lore_card(
+        title="Ждан",
+        content="Скрытая деталь: синий футляр лежит в речном складе.",
+        keywords=["Ждан", "Ждана", "Ждану", "Жданом"],
+        always_on=False,
+        enabled=True,
+        source_turn_ids=[],
+    )
+    for turn_id, player in enumerate(
+        ["Я спорю со Жданом.", "Смотрю на огонь.", "Проверяю балку.", "Зову работников."],
+        start=1,
+    ):
+        store.record_turn(
+            f"lore-scan-{turn_id}",
+            f"lore-scan-{turn_id}",
+            player,
+            f"Последствие {turn_id}.",
+            {},
+            1,
+            metadata={"turn_kind": "narrative"},
+            party_turn=turn_id,
+        )
+
+    stale_scan = recent_rp_scan_text(store.turns_for_memory(), "Где синий футляр?")
+    assert store.lore_cards_for_prompt(
+        stale_scan,
+        title_keywords_only=True,
+        whole_match=True,
+    ) == []
+    assert store.lore_cards_for_prompt(
+        "Ждановский товар",
+        title_keywords_only=True,
+        whole_match=True,
+    ) == []
+
+    store.record_turn(
+        "lore-scan-5",
+        "lore-scan-5",
+        "Прошу Ждана подождать.",
+        "Ждан ждёт ответа.",
+        {},
+        1,
+        metadata={"turn_kind": "narrative"},
+        party_turn=5,
+    )
+    recent_scan = recent_rp_scan_text(store.turns_for_memory(), "Осматриваю двор.")
+    selected = store.lore_cards_for_prompt(
+        recent_scan,
+        title_keywords_only=True,
+        whole_match=True,
+    )
+
+    assert [item["id"] for item in selected] == [card["id"]]
+
+
 def test_revision_eight_overflow_raises_instead_of_truncating_protected_units() -> None:
     messages = [
         {"role": "system", "content": "WORLD_SYSTEM_PROMPT\nmandatory"},
