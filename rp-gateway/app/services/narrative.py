@@ -460,6 +460,7 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
         world_events: str | None = None,
+        opening_prompt: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(
             self.settings.llm_provider,
@@ -488,6 +489,7 @@ class NarrativeClient:
                 relationship_pressure=relationship_pressure,
                 world_events=world_events,
                 player_corrections=player_corrections,
+                opening_prompt=opening_prompt,
             )
         else:
             payload["messages"] = self.narrative_messages(
@@ -1137,6 +1139,7 @@ class NarrativeClient:
         relationship_pressure: str | None = None,
         world_events: str | None = None,
         player_corrections: str | None = None,
+        opening_prompt: str | None = None,
     ) -> list[dict[str, str]]:
         """Build a compact correction request instead of replaying the full party prompt."""
         player_resources = state.get("player", {}).get("resources", {})
@@ -1164,6 +1167,11 @@ class NarrativeClient:
             reanchor_block = scene_reanchor_prompt_block(state)
             if reanchor_block:
                 messages.append({"role": "system", "content": reanchor_block})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 11:
+            world_system_block = f"WORLD_SYSTEM_PROMPT\n{self.settings.world_system_prompt}"
+            if len(world_system_block) > 5_000:
+                raise ValueError("WORLD_SYSTEM_PROMPT exceeds the revision-8 5000 character limit")
+            messages.append({"role": "system", "content": world_system_block})
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
@@ -1185,6 +1193,13 @@ class NarrativeClient:
             messages.append({"role": "system", "content": relationship_pressure})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 10 and world_events:
             messages.append({"role": "system", "content": world_events})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 11:
+            authors_note_block = f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}"
+            if len(authors_note_block) > 1_500:
+                raise ValueError("WORLD_AUTHORS_NOTE exceeds the revision-8 1500 character limit")
+            messages.append({"role": "system", "content": authors_note_block})
+            if opening_prompt is not None:
+                messages.append({"role": "system", "content": f"OPENING_PROMPT\n{opening_prompt}"})
         messages.append(
             {
                 "role": "user",

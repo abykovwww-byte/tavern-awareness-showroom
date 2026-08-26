@@ -1,0 +1,40 @@
+- requirement: "Revision-11 WorldPacks declare non-empty closed preset and opening catalogs, stable unique IDs, explicit defaults, safe in-pack paths, exact state-seed filenames, canonical byte-equal root aliases and existing prompt budgets"
+  level: каркас
+  store: "WorldPack manifest and authored prompt and state-seed files"
+  assertion: projection
+  expectation: revision_11_catalogs_defaults_aliases_and_budgets_are_closed
+  probe_command: null
+  expected: null
+  waiver: "Repository validation covers the mechanical contract. No revision-11 WorldPack is committed, activated or exercised live in this mechanism delivery."
+- requirement: "Clients select only optional preset_id and opening_id, omission uses declared defaults, and unknown duplicate or path-like IDs fail closed without array-order fallback"
+  level: каркас
+  store: "PartyCreate request, WorldPack manifest and Gateway selection path"
+  assertion: absence
+  expectation: client_ids_resolve_only_inside_declared_worldpack_catalogs
+  probe_command: null
+  expected: null
+  waiver: "Focused source tests cover defaults and rejection paths. A deployed browser selection and real party creation are deferred to activation."
+- requirement: "Party creation snapshots selected IDs, exact prompt texts, player role and full seed with audit-only SHA-256 values, and branches or autotests inherit the immutable snapshot"
+  level: каркас
+  store: "parties materialized WorldPack snapshot and descendant party rows"
+  assertion: projection
+  expectation: party_variants_are_materialized_once_and_inherited
+  probe_command: null
+  expected: null
+  waiver: "Local storage and prompt tests cover materialization and inheritance. No source-mismatch status, telemetry or historical backfill is part of this decision, and no deployed party evidence exists yet."
+- requirement: "Source and provider canaries accept candidate revisions 0 through 11 while inventory stays observed at 10 until a revision-11 pack is committed and revisions 0 through 10 retain their behavior"
+  level: каркас
+  store: "Gateway source ceiling, provider canary CLI, inventory and WorldPack manifests"
+  assertion: absence
+  expectation: revision_11_mechanism_does_not_activate_or_downgrade_ordinary_parties
+  probe_command: null
+  expected: null
+  waiver: "Mechanism tests run with observed revision 10. Adding a conforming pack, changing observed to 11, Ansible apply and live verification are a separate activation delivery."
+- requirement: "A separate activation adds day-watch-moscow-v2 beside untouched v1 with presets book action and strategic defaulting to action, four agreed openings defaulting to independent, the existing 20 Lore Cards and 11 active NPCs, and visible Примета and Манера речи lines in every NPC card without adding a world clock"
+  level: каркас
+  store: "future day-watch-moscow-v2 manifest, prompts, opening seeds and Lore Cards"
+  assertion: projection
+  expectation: day_watch_v2_activation_content_matches_the_agreed_authored_scope
+  probe_command: null
+  expected: null
+  waiver: "The activation pack is deferred; this delivery provides only the revision-11 mechanism and keeps day-watch-moscow v1 unchanged."

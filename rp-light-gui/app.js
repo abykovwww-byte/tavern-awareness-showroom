@@ -117,6 +117,10 @@ const els = {
   partyForm: document.querySelector("#partyForm"),
   partyTitleInput: document.querySelector("#partyTitleInput"),
   worldSelect: document.querySelector("#worldSelect"),
+  partyPresetFields: document.querySelector("#partyPresetFields"),
+  partyPresetSelect: document.querySelector("#partyPresetSelect"),
+  partyOpeningFields: document.querySelector("#partyOpeningFields"),
+  partyOpeningSelect: document.querySelector("#partyOpeningSelect"),
   worldReadyFields: document.querySelector("#worldReadyFields"),
   worldPromptFields: document.querySelector("#worldPromptFields"),
   worldPromptTextFields: document.querySelector("#worldPromptTextFields"),
@@ -285,10 +289,12 @@ function bindEvents() {
   els.resetNarratorSettingsButton.addEventListener("click", resetNarratorSettingsForm);
   els.deletePartyButton.addEventListener("click", deleteActiveParty);
   els.worldSelect.addEventListener("change", () => {
+    renderPartyWorldChoices();
     syncAutoPartyTitle();
     renderWorldPreview();
     syncReadyCharacterDescription();
   });
+  els.partyOpeningSelect.addEventListener("change", syncReadyCharacterDescription);
   els.worldPromptTitleInput.addEventListener("input", renderWorldPreview);
   els.worldPromptInput.addEventListener("input", renderWorldPreview);
   els.worldMarkdownInput.addEventListener("change", loadWorldMarkdownFile);
@@ -2184,7 +2190,7 @@ function renderDialogOptions() {
   els.worldMarkdownStatus.textContent = WORLD_MARKDOWN_HELP;
   appState.worldMarkdownImport = null;
   els.characterNameInput.value = "Игрок";
-  els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
+  els.characterDescriptionInput.value = selectedPartyWorldChoices(pack).opening?.player_role || pack?.manifest?.player_role || "";
   renderWorldPreview();
   renderModelPreview();
 }
@@ -2211,12 +2217,60 @@ function renderWorldOptions() {
   if (available.some((pack) => pack.id === previous)) {
     els.worldSelect.value = previous;
   }
+  renderPartyWorldChoices();
 }
 
 function worldSupportsScenario(pack, scenarioType) {
   if (!scenarioType) return true;
   const supported = pack?.manifest?.scenario_types?.supported;
   return !Array.isArray(supported) || !supported.length || supported.includes(scenarioType);
+}
+
+function resolveWorldpackChoice(items, selectedId, defaultId) {
+  const options = Array.isArray(items) ? items : [];
+  return options.find((item) => item?.id === selectedId)
+    || options.find((item) => item?.id === defaultId)
+    || null;
+}
+
+function selectedPartyWorldChoices(pack = selectedWorldpack()) {
+  if (selectedRadioValue("scenarioType", "") !== "rp") {
+    return { preset: null, opening: null };
+  }
+  return {
+    preset: resolveWorldpackChoice(pack?.presets, els.partyPresetSelect?.value, pack?.presets_default),
+    opening: resolveWorldpackChoice(pack?.openings, els.partyOpeningSelect?.value, pack?.openings_default),
+  };
+}
+
+function renderPartyWorldChoices() {
+  const readyWorld = selectedRadioValue("worldSource") === "ready";
+  const rpScenario = selectedRadioValue("scenarioType", "") === "rp";
+  const pack = readyWorld && rpScenario ? selectedWorldpack() : null;
+
+  const renderChoice = (fields, select, items, defaultId, placeholder) => {
+    const options = Array.isArray(items) ? items : [];
+    const visible = Boolean(pack && options.length);
+    fields.classList.toggle("hidden", !visible);
+    select.toggleAttribute("required", visible);
+    select.disabled = !visible;
+    if (!visible) {
+      select.innerHTML = "";
+      select.dataset.worldpackId = "";
+      return;
+    }
+
+    const selectedId = select.dataset.worldpackId === pack.id ? select.value : "";
+    select.innerHTML = [
+      `<option value="">${escapeHtml(placeholder)}</option>`,
+      ...options.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)}</option>`),
+    ].join("");
+    select.value = resolveWorldpackChoice(options, selectedId, defaultId)?.id || "";
+    select.dataset.worldpackId = pack.id;
+  };
+
+  renderChoice(els.partyPresetFields, els.partyPresetSelect, pack?.presets, pack?.presets_default, "Выбери стиль повествования");
+  renderChoice(els.partyOpeningFields, els.partyOpeningSelect, pack?.openings, pack?.openings_default, "Выбери старт партии");
 }
 
 function syncAutoPartyTitle() {
@@ -2241,12 +2295,13 @@ function renderCreationModes() {
   els.worldSelect.toggleAttribute("required", !generatedWorld);
   els.worldPromptInput.toggleAttribute("required", worldPrompt);
   els.worldMarkdownInput.toggleAttribute("required", worldMarkdown);
+  renderPartyWorldChoices();
   els.characterDescriptionLabel.textContent = characterPrompt ? "Prompt персонажа" : "Описание готового персонажа";
   els.characterDescriptionHint.textContent = characterPrompt
     ? "Опиши роль, характер, ограничения и стартовые ресурсы. Gateway сохранит это в profile персонажа."
     : generatedWorld
       ? "Для созданного мира используется стандартная роль игрока; можно заменить ее своим описанием."
-      : "Берется роль игрока из worldpack; можно слегка поправить перед стартом.";
+      : "Берется роль из выбранного старта; для прежнего worldpack используется общая роль. Можно слегка поправить перед стартом.";
   if (!characterPrompt) {
     syncReadyCharacterDescription();
   }
@@ -2370,7 +2425,7 @@ function renderModelPreview() {
 function syncReadyCharacterDescription() {
   if (selectedRadioValue("characterSource") === "prompt") return;
   const pack = selectedWorldpack();
-  els.characterDescriptionInput.value = pack?.manifest?.player_role || "";
+  els.characterDescriptionInput.value = selectedPartyWorldChoices(pack).opening?.player_role || pack?.manifest?.player_role || "";
 }
 
 async function createParty(event) {
@@ -2383,26 +2438,36 @@ async function createParty(event) {
     if (!modelProfileId) throw new Error("Нет доступной модели для партии.");
     if (!scenarioType) throw new Error("Выбери тип сценария.");
     const worldpack = await resolveWorldpack();
+    const choices = selectedPartyWorldChoices(worldpack);
+    const hasPresets = scenarioType === "rp" && Array.isArray(worldpack?.presets) && worldpack.presets.length > 0;
+    const hasOpenings = scenarioType === "rp" && Array.isArray(worldpack?.openings) && worldpack.openings.length > 0;
+    if (hasPresets && !choices.preset) throw new Error("Выбери стиль повествования.");
+    if (hasOpenings && !choices.opening) throw new Error("Выбери старт партии.");
     const concept = characterPrompt
       ? els.characterDescriptionInput.value.trim()
-      : els.characterDescriptionInput.value.trim() || worldpack?.manifest?.player_role || "Игроковый персонаж.";
-    const draft = await apiPost("/api/player-characters/draft", {
+      : els.characterDescriptionInput.value.trim() || choices.opening?.player_role || worldpack?.manifest?.player_role || "Игроковый персонаж.";
+    const draftPayload = {
       worldpack_id: worldpack.id,
       name: els.characterNameInput.value.trim(),
       concept,
-    });
+    };
+    if (choices.opening) draftPayload.opening_id = choices.opening.id;
+    const draft = await apiPost("/api/player-characters/draft", draftPayload);
     draft.draft.profile = {
       ...(draft.draft.profile || {}),
       character_source: characterPrompt ? "prompt" : "worldpack_template",
     };
     const character = await apiPost("/api/player-characters", draft.draft);
-    const party = await apiPost("/api/parties", {
+    const partyPayload = {
       title: els.partyTitleInput.value.trim(),
       scenario_type: scenarioType,
       worldpack_id: worldpack.id,
       player_character_id: character.player_character.id,
       model_profile_id: modelProfileId,
-    });
+    };
+    if (choices.preset) partyPayload.preset_id = choices.preset.id;
+    if (choices.opening) partyPayload.opening_id = choices.opening.id;
+    const party = await apiPost("/api/parties", partyPayload);
     closePartyDialog();
     await boot();
     await selectParty(party.party.id);

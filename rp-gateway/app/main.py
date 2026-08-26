@@ -254,10 +254,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def runtime_settings_for_branch(party: Any, branch_id: str) -> Settings:
         branch = party_store.get_party_branch(party.id, branch_id, owner_user_id=party.owner_user_id)
+        branch_revision = int(branch["rp_contract_revision"])
         return replace(
-            runtime_settings_for_party(party),
+            settings_with_provider_key(
+                settings_for_party(settings, party, effective_revision=branch_revision),
+                party,
+            ),
             prompt_cache_session_id=f"rp-party:{party.id}:branch:{branch_id}",
-            rp_contract_revision=int(branch["rp_contract_revision"]),
+            rp_contract_revision=branch_revision,
         )
 
     async def run_autotest(run_id: str) -> None:
@@ -743,21 +747,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             pack = accessible_worldpack(request, payload.worldpack_id)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        description = payload.concept.strip() or str(pack.manifest.get("player_role") or "Player character")
-        return {
-            "draft": {
+            status_code = 404 if str(exc).startswith("worldpack not found:") else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        try:
+            opening_id, player_role = party_store.resolve_player_character_opening(pack, payload.opening_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        description = payload.concept.strip() or player_role
+        draft = {
+            "worldpack_id": payload.worldpack_id,
+            "name": payload.name,
+            "description": description,
+            "profile": {
+                "source": "light-gui-draft",
                 "worldpack_id": payload.worldpack_id,
-                "name": payload.name,
-                "description": description,
-                "profile": {
-                    "source": "light-gui-draft",
-                    "worldpack_id": payload.worldpack_id,
-                    "world_title": pack.title,
-                    "concept": description,
-                },
-            }
+                "world_title": pack.title,
+                "concept": description,
+            },
         }
+        if opening_id is not None:
+            draft["opening_id"] = opening_id
+            draft["profile"]["opening_id"] = opening_id
+            draft["profile"]["player_role"] = player_role
+        return {"draft": draft}
 
     @app.post("/api/player-characters")
     def create_player_character(request: Request, payload: PlayerCharacterCreate) -> dict[str, Any]:
@@ -1789,6 +1801,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             narrative_state = party_start_narrative_state(state, start_patch)
             prompt = party_start_prompt(party_store, party)
+            opening_repair_prompt = (
+                worldpack_prompt_text(
+                    party,
+                    "opening_scene",
+                    effective_revision=party_settings.rp_contract_revision,
+                )
+                if party_settings.rp_contract_revision >= 11
+                else None
+            )
             chat_request = ChatCompletionRequest(
                 model=model_profile.model,
                 messages=[ChatMessage(role="user", content=prompt)],
@@ -2176,6 +2197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                     world_events=world_events,
+                    opening_prompt=opening_repair_prompt,
                 )
                 if scene_bundle_revision:
                     scene_result = materialize_scene_bundle(
@@ -3505,8 +3527,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def settings_for_party(settings: Settings, party: Any) -> Settings:
+def settings_for_party(
+    settings: Settings,
+    party: Any,
+    *,
+    effective_revision: int | None = None,
+) -> Settings:
     model_profile = party.model_profile
+    revision = (
+        int(effective_revision)
+        if effective_revision is not None
+        else int(getattr(party, "rp_contract_revision", 0) or 0)
+    )
     party_cache_id = (
         getattr(party, "id", "")
         or getattr(party, "state_campaign_id", "")
@@ -3515,10 +3547,10 @@ def settings_for_party(settings: Settings, party: Any) -> Settings:
     prompt_values = {
         "scenario_type": getattr(party, "scenario_type", "rp"),
         "rp_contract_version": getattr(party, "rp_contract_version", "rp-core.v1"),
-        "rp_contract_revision": getattr(party, "rp_contract_revision", 0),
+        "rp_contract_revision": revision,
         "campaign_id": party.worldpack_id,
-        "world_system_prompt": worldpack_prompt_text(party, "gm_system"),
-        "world_authors_note": worldpack_prompt_text(party, "authors_note"),
+        "world_system_prompt": worldpack_prompt_text(party, "gm_system", effective_revision=revision),
+        "world_authors_note": worldpack_prompt_text(party, "authors_note", effective_revision=revision),
         "prompt_cache_session_id": f"rp-party:{party_cache_id}",
     }
     if model_profile is None:
@@ -3556,7 +3588,29 @@ def settings_for_model_profile(settings: Settings, model_profile: Any, cache_ses
     )
 
 
-def worldpack_prompt_text(party: Any, file_key: str) -> str:
+def worldpack_prompt_text(
+    party: Any,
+    file_key: str,
+    *,
+    effective_revision: int | None = None,
+) -> str:
+    revision = (
+        int(effective_revision)
+        if effective_revision is not None
+        else int(getattr(party, "rp_contract_revision", 0) or 0)
+    )
+    if revision >= 11:
+        materialization = PartyStore.validate_worldpack_materialization(
+            getattr(party, "worldpack_materialization", None)
+        )
+        materialized_key = {
+            "gm_system": "world_system_prompt",
+            "authors_note": "world_authors_note",
+            "opening_scene": "opening_prompt",
+        }.get(file_key)
+        if materialized_key is None:
+            raise ValueError(f"revision-11 prompt has no materialized field for {file_key}")
+        return str(materialization[materialized_key])
     world = getattr(party, "worldpack", None)
     if world is None or not isinstance(world.manifest, dict):
         return ""
@@ -3659,9 +3713,30 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
     world = party.worldpack or party_store.get_worldpack(party.worldpack_id)
     character = party.player_character or party_store.get_player_character(party.player_character_id)
     manifest = world.manifest if isinstance(world.manifest, dict) else {}
-    opening_scene = party_store.opening_scene_text(world)
+    revision = int(getattr(party, "rp_contract_revision", 0) or 0)
+    materialization = (
+        PartyStore.validate_worldpack_materialization(
+            getattr(party, "worldpack_materialization", None)
+        )
+        if revision >= 11
+        else None
+    )
+    opening_scene = (
+        str(materialization["opening_prompt"])
+        if materialization is not None
+        else party_store.opening_scene_text(world)
+    )
     premise = str(manifest.get("premise") or world.premise or manifest.get("prompt") or "").strip()
-    player_role = str(manifest.get("player_role") or "").strip()
+    player_role = (
+        str(materialization["player_role"])
+        if materialization is not None
+        else str(manifest.get("player_role") or "").strip()
+    )
+    rendered_player_role = (
+        player_role
+        if materialization is not None
+        else character.description or player_role or "active player character"
+    )
     opening_block = opening_scene or (
         "No dedicated opening-scene file is available. Synthesize the first scene from the current state, "
         "world premise, and player character. End with a concrete player-facing choice."
@@ -3677,8 +3752,7 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
             "rolling a check or resolving a player choice, and end with a concrete opening for player action."
         ),
     }.get(party.scenario_type, "Write the opening scene in Russian while preserving player agency.")
-    return "\n\n".join(
-        [
+    blocks = [
             "START_PARTY_OPENING_SCENE",
             "This is an internal Light GUI auto-start request, not a player action.",
             f"Selected scenario type: {party.scenario_type}",
@@ -3688,10 +3762,12 @@ def party_start_prompt(party_store: PartyStore, party: Any) -> str:
             f"World title: {world.title}",
             f"World premise: {premise or 'use the current authoritative state'}",
             f"Player character: {character.name}",
-            f"Player role: {character.description or player_role or 'active player character'}",
+            f"Player role: {rendered_player_role}",
             f"Opening scene source:\n{opening_block}",
         ]
-    )
+    if materialization is not None and character.description:
+        blocks.insert(-1, f"Player character description: {character.description}")
+    return "\n\n".join(blocks)
 
 
 def party_start_outcome(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 from app.core.config import RP_CONTRACT_MAX_REVISION
 
@@ -12,6 +12,11 @@ from app.core.config import RP_CONTRACT_MAX_REVISION
 WORLD_PROMPT_MAX_CHARS = 6_000
 WORLD_MARKDOWN_MAX_CHARS = 200_000
 WORLD_MARKDOWN_FILENAME_MAX_CHARS = 255
+
+WorldChoiceId = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$"),
+]
 
 
 CheckType = Literal[
@@ -209,6 +214,17 @@ class WorldApplyRequest(BaseModel):
     confirm: bool = False
 
 
+class WorldPackPresetSummary(BaseModel):
+    id: WorldChoiceId
+    title: str
+
+
+class WorldPackOpeningSummary(BaseModel):
+    id: WorldChoiceId
+    title: str
+    player_role: str = Field(max_length=4000)
+
+
 class WorldPackSummary(BaseModel):
     id: str
     owner_user_id: str | None = None
@@ -221,6 +237,21 @@ class WorldPackSummary(BaseModel):
     state_seed_path: str
     lorebook_path: str | None = None
     manifest: dict[str, Any] = Field(default_factory=dict)
+    presets: list[WorldPackPresetSummary] | None = None
+    presets_default: WorldChoiceId | None = None
+    openings: list[WorldPackOpeningSummary] | None = None
+    openings_default: WorldChoiceId | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_choice_fields(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.presets is None:
+            data.pop("presets", None)
+            data.pop("presets_default", None)
+        if self.openings is None:
+            data.pop("openings", None)
+            data.pop("openings_default", None)
+        return data
 
 
 class WorldPackVisibilityUpdate(BaseModel):
@@ -264,6 +295,7 @@ class PlayerCharacterDraftRequest(BaseModel):
     worldpack_id: str
     name: str = Field(default="Player Character", min_length=1, max_length=120)
     concept: str = Field(default="", max_length=4000)
+    opening_id: WorldChoiceId | None = None
 
 
 class PlayerCharacterCreate(BaseModel):
@@ -272,6 +304,7 @@ class PlayerCharacterCreate(BaseModel):
     description: str = Field(default="", max_length=4000)
     starting_state_patch_json: str | None = None
     profile: dict[str, Any] = Field(default_factory=dict)
+    opening_id: WorldChoiceId | None = None
 
 
 class PlayerCharacterSummary(BaseModel):
@@ -283,8 +316,16 @@ class PlayerCharacterSummary(BaseModel):
     status: str
     starting_state_patch_json: str | None = None
     profile: dict[str, Any] = Field(default_factory=dict)
+    opening_id: WorldChoiceId | None = None
     created_at: str
     updated_at: str
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_opening_id(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.opening_id is None:
+            data.pop("opening_id", None)
+        return data
 
 
 class ModelProfileSummary(BaseModel):
@@ -316,6 +357,8 @@ class PartyCreate(BaseModel):
     worldpack_id: str
     player_character_id: str
     model_profile_id: str
+    preset_id: WorldChoiceId | None = None
+    opening_id: WorldChoiceId | None = None
 
 
 class NarratorSettings(BaseModel):
@@ -458,11 +501,26 @@ class PartySummary(BaseModel):
     dataset_review_status: Literal["excluded", "review", "approved"] = "review"
     dataset_tags: list[str] = Field(default_factory=list)
     narrator_settings: dict[str, Any] = Field(default_factory=dict)
+    preset_id: WorldChoiceId | None = None
+    opening_id: WorldChoiceId | None = None
+    worldpack_materialization_hashes: dict[str, str] | None = None
+    worldpack_materialization: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
     created_at: str
     updated_at: str
     worldpack: WorldPackSummary | None = None
     player_character: PlayerCharacterSummary | None = None
     model_profile: ModelProfileSummary | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_legacy_materialization_fields(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if self.preset_id is None:
+            data.pop("preset_id", None)
+        if self.opening_id is None:
+            data.pop("opening_id", None)
+        if self.worldpack_materialization_hashes is None:
+            data.pop("worldpack_materialization_hashes", None)
+        return data
 
 
 RPStoryMemoryField = Literal[

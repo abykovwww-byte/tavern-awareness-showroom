@@ -454,6 +454,16 @@
             <select id="worldSelect" required title="Worldpack, установленный на сервере"></select>
           </label>
 
+          <label class="wide hidden" id="partyPresetFields">
+            <span>Стиль повествования</span>
+            <select id="partyPresetSelect" title="Авторский вариант правил и формы повествования для этой партии"></select>
+          </label>
+
+          <label class="wide hidden" id="partyOpeningFields">
+            <span>Старт партии</span>
+            <select id="partyOpeningSelect" title="Авторская стартовая роль и исходное состояние этой партии"></select>
+          </label>
+
           <div class="prompt-fields wide hidden" id="worldPromptFields">
             <label>
               <span>Название prompt-мира</span>
@@ -477,7 +487,7 @@
               <label><input type="radio" name="characterSource" value="ready" checked /> Роль из мира</label>
               <label><input type="radio" name="characterSource" value="prompt" /> Задать prompt</label>
             </div>
-            <p class="field-hint">Роль из мира берется из `manifest.player_role`; prompt-персонаж сохраняется в profile персонажа.</p>
+            <p class="field-hint">Роль берется из выбранного старта; для прежних worldpacks — из `manifest.player_role`. Prompt-персонаж сохраняется в profile персонажа.</p>
           </fieldset>
 
           <label>

@@ -127,30 +127,30 @@ def test_migration_keeps_persisted_revisions_zero_through_seven(
     assert migrated == persisted_revision
 
 
-def test_revision_schema_bounds_accept_ten_and_reject_eleven() -> None:
-    assert RP_CONTRACT_MAX_REVISION == 10
+def test_revision_schema_bounds_accept_eleven_and_reject_twelve() -> None:
+    assert RP_CONTRACT_MAX_REVISION == 11
     assert PartyBranchCreate(
         checkpoint_id=1,
         label="candidate",
-        rp_contract_revision=10,
-    ).rp_contract_revision == 10
+        rp_contract_revision=11,
+    ).rp_contract_revision == 11
     assert AutoTestCreate(
         source_party_id="party-source",
         player_prompt="continue",
         turn_count=1,
         player_model_profile_id="model",
-        rp_contract_revision=10,
-    ).rp_contract_revision == 10
+        rp_contract_revision=11,
+    ).rp_contract_revision == 11
 
     with pytest.raises(ValidationError):
-        PartyBranchCreate(checkpoint_id=1, label="unsupported", rp_contract_revision=11)
+        PartyBranchCreate(checkpoint_id=1, label="unsupported", rp_contract_revision=12)
     with pytest.raises(ValidationError):
         AutoTestCreate(
             source_party_id="party-source",
             player_prompt="continue",
             turn_count=1,
             player_model_profile_id="model",
-            rp_contract_revision=11,
+            rp_contract_revision=12,
         )
 
 
