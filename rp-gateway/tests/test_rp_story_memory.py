@@ -16,7 +16,6 @@ from app.services.rp_story_memory import (
     STORY_FIELD_LIMITS,
     STORY_MEMORY_SCHEMA,
     STORY_MEMORY_SECTION_FIELDS,
-    STORY_MEMORY_SECTIONS_MAX_TOKENS,
     apply_user_story_memory_corrections,
     completion_finish_reason,
     empty_sectioned_story_memory,
@@ -25,6 +24,7 @@ from app.services.rp_story_memory import (
     normalize_story_memory,
     reconcile_story_memory,
     story_fact_id,
+    story_memory_response_format,
     validate_story_memory_corrections,
 )
 from app.services.service_model_client import ServiceCompletion, ServiceModelClient, service_prompt_text
@@ -1390,6 +1390,31 @@ def test_revision8_combined_structural_validation_accepts_empty_sections(
     assert sections == empty_combined_sections()
 
 
+def test_revision8_story_memory_requests_use_the_existing_strict_section_schema() -> None:
+    combined = story_memory_response_format()
+    combined_json_schema = combined["json_schema"]
+    combined_schema = combined_json_schema["schema"]
+
+    assert combined["type"] == "json_schema"
+    assert combined_json_schema["strict"] is True
+    assert combined_schema["additionalProperties"] is False
+    assert combined_schema["required"] == list(RP_MEMORY_SECTION_KEYS)
+    assert set(combined_schema["properties"]) == set(RP_MEMORY_SECTION_KEYS)
+
+    situation = combined_schema["properties"]["situation"]
+    current = situation["properties"]["current_situation"]
+    canon_fact = situation["properties"]["canon"]["items"]
+    assert current["type"] == ["object", "null"]
+    assert canon_fact["properties"]["status"]["enum"] == ["active", "retracted", "superseded"]
+    assert canon_fact["properties"]["fact_id"]["pattern"] == "^[a-z0-9][a-z0-9_.:-]{7,79}$"
+
+    targeted = story_memory_response_format("characters")
+    targeted_schema = targeted["json_schema"]["schema"]
+    assert targeted["json_schema"]["strict"] is True
+    assert targeted_schema["required"] == ["characters"]
+    assert set(targeted_schema["properties"]) == {"characters"}
+
+
 def test_revision8_structural_validation_rejects_changed_existing_fact_id_only(
     tmp_path: Path,
 ) -> None:
@@ -1470,7 +1495,8 @@ def test_revision8_combined_length_finish_is_failure_for_every_section(
     assert generated["sections"] == {}
     assert set(generated["errors"]) == set(RP_MEMORY_SECTION_KEYS)
     assert recorded["section_key"] == "all"
-    assert recorded["payload"]["max_tokens"] == STORY_MEMORY_SECTIONS_MAX_TOKENS
+    assert "max_tokens" not in recorded["payload"]
+    assert recorded["payload"]["response_format"] == story_memory_response_format()
 
 
 def test_story_memory_correction_replay_is_idempotent() -> None:
@@ -1564,7 +1590,8 @@ def test_revision8_section_input_keeps_complete_turns_under_twenty_thousand_char
     context = json.loads(payload["messages"][1]["content"])
 
     assert payload["model"] == "deepseek/deepseek-v4-pro"
-    assert payload["max_tokens"] == 800
+    assert "max_tokens" not in payload
+    assert payload["response_format"] == story_memory_response_format("situation")
     assert len(service_prompt_text(payload)) <= 20_000
     assert 0 < len(included) < 8
     assert context["new_confirmed_turns"][-1]["narrator"] == included[-1]["narrative_response"]
@@ -1600,7 +1627,8 @@ def test_revision8_combined_input_keeps_complete_turns_under_twenty_thousand_cha
     context = json.loads(payload["messages"][1]["content"])
 
     assert payload["model"] == "deepseek/deepseek-v4-pro"
-    assert payload["max_tokens"] == STORY_MEMORY_SECTIONS_MAX_TOKENS
+    assert "max_tokens" not in payload
+    assert payload["response_format"] == story_memory_response_format()
     assert len(service_prompt_text(payload)) <= 20_000
     assert all(0 < len(included[key]) < 8 for key in RP_MEMORY_SECTION_KEYS)
     assert context["section_turn_ids"] == {

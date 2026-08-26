@@ -163,9 +163,12 @@ job повторяет только оставшиеся failed/stale sections, 
 absorption в S1 не вводится.
 
 Основной общий request и каждый точечный request содержат только complete turns
-и не более 20 000 символов serialized model messages. Общий request имеет
-`max_tokens=4000`, точечный — `max_tokens=800`. Если восемь units не помещаются,
-batch уменьшается с хвоста; одна слишком большая complete unit не режется.
+и не более 20 000 символов serialized model messages. Provider получает strict
+JSON Schema, собранную из тех же section/fact contracts, которые затем проверяет
+Gateway. Искусственный output `max_tokens` не задаётся: полный структурный ответ
+важнее заранее угаданного потолка, а любой фактический `finish_reason=length`
+остаётся отказом. Если восемь units не помещаются, batch уменьшается с хвоста;
+одна слишком большая complete unit не режется.
 
 ### Persistence and routing
 
@@ -243,7 +246,8 @@ explicit provider/model logging.
    call на штатный update, safe coverage без gaps, partial structural failure
    сохраняет четыре sections и вызывает только один exact section retry;
 3. `service_call_log`: calls имеют exact OpenRouter/model, input не более
-   20 000 символов, output limits 4000/800 и ни одной NVIDIA row;
+   20 000 символов, strict section JSON Schema без искусственного output cap и
+   ни одной NVIDIA row;
 4. на той же 60-turn party начало RAW и `stable_prompt_prefix_hash` меняются
    только на границе восьмиходового якоря; не менее пяти ходов из каждого окна
    восьми имеют `cached_prompt_tokens / prompt_tokens >= 0.70`, а средняя доля

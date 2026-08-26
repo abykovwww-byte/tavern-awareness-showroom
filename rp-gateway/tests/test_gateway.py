@@ -1247,6 +1247,75 @@ def test_authored_player_agency_rule_allows_sensory_feedback_but_rejects_player_
     ]
 
 
+@pytest.mark.parametrize(
+    "narration",
+    [
+        (
+            "Стою посреди двора, глядя на закрывшуюся калитку.\n\n"
+            "Подхожу к столу, сажусь на лавку и начинаю объяснять Милаве свой план."
+        ),
+        (
+            "Смотрю на Милаву и касаюсь её плеча.\n\n"
+            "Убираю руку, отступаю на шаг и решаю, что сейчас пора спать."
+        ),
+    ],
+)
+def test_rp_validator_rejects_sustained_russian_first_person_player_voice(
+    narration: str,
+) -> None:
+    outcome = Outcome(
+        check_id="first-person-player-voice",
+        action_type="narrative",
+        actor="player",
+        result="narrative_continuation",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="neutral",
+    )
+
+    result = OutputValidator().validate(
+        narration,
+        outcome,
+        base_state(),
+        scenario_type="rp",
+    )
+
+    assert result.valid is False
+    assert result.violations == [
+        "Narrative switched into the player character's first-person voice."
+    ]
+    assert "Не пиши от первого лица персонажа игрока" in str(result.repair_instruction)
+
+
+def test_rp_validator_does_not_treat_npc_first_person_dialogue_as_player_voice() -> None:
+    outcome = Outcome(
+        check_id="npc-first-person-dialogue",
+        action_type="narrative",
+        actor="player",
+        result="narrative_continuation",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="neutral",
+    )
+
+    result = OutputValidator().validate(
+        "— Я стою здесь с рассвета, — говорит Ратибор.\n\n"
+        "— Смотрю на ворота и жду твоего ответа.\n\n"
+        "Он замолкает и оставляет следующий шаг тебе.",
+        outcome,
+        base_state(),
+        scenario_type="rp",
+    )
+
+    assert result.valid is True
+
+
 def test_rp_core_v2_repeated_absolute_rule_violation_never_commits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

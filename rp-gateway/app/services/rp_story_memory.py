@@ -39,10 +39,6 @@ STORY_MEMORY_SECTION_FIELDS = {
 }
 STORY_MEMORY_SECTION_BATCH_TURNS = 8
 STORY_MEMORY_SECTION_INPUT_CHARS = 20_000
-STORY_MEMORY_SECTION_MAX_TOKENS = 800
-STORY_MEMORY_SECTIONS_MAX_TOKENS = STORY_MEMORY_SECTION_MAX_TOKENS * len(
-    RP_MEMORY_SECTION_KEYS
-)
 STORY_MEMORY_ITEM_KEYS = {
     "fact_id",
     "text",
@@ -79,6 +75,75 @@ STORY_FIELD_LIMITS = {
     "unresolved_hooks": 40,
     "chronology": 80,
 }
+
+
+def story_memory_fact_response_schema(*, text_limit: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(STORY_MEMORY_ITEM_KEYS),
+        "properties": {
+            "fact_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_.:-]{7,79}$",
+            },
+            "text": {"type": "string", "minLength": 1, "maxLength": text_limit},
+            "status": {"type": "string", "enum": sorted(STORY_MEMORY_ITEM_STATUSES)},
+            "authority": {"type": "string", "enum": sorted(STORY_MEMORY_ITEM_AUTHORITIES)},
+            "source_turn_ids": {
+                "type": "array",
+                "maxItems": 20,
+                "uniqueItems": True,
+                "items": {"type": "integer", "minimum": 0},
+            },
+        },
+    }
+
+
+def story_memory_section_response_schema(section_key: str) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    for field in STORY_MEMORY_SECTION_FIELDS[section_key]:
+        if field == "current_situation":
+            item_schema = story_memory_fact_response_schema(text_limit=2_000)
+            item_schema["type"] = ["object", "null"]
+            properties[field] = item_schema
+        else:
+            properties[field] = {
+                "type": "array",
+                "maxItems": STORY_FIELD_LIMITS[field],
+                "items": story_memory_fact_response_schema(text_limit=600),
+            }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(STORY_MEMORY_SECTION_FIELDS[section_key]),
+        "properties": properties,
+    }
+
+
+def story_memory_response_format(section_key: str | None = None) -> dict[str, Any]:
+    if section_key is None:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(RP_MEMORY_SECTION_KEYS),
+            "properties": {
+                key: story_memory_section_response_schema(key)
+                for key in RP_MEMORY_SECTION_KEYS
+            },
+        }
+        name = "rp_story_memory_sections"
+    else:
+        schema = story_memory_section_response_schema(section_key)
+        name = f"rp_story_memory_{section_key}"
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": schema,
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -1055,7 +1120,7 @@ class RPStoryMemoryUpdater:
             "model": self.settings.rp_story_memory_model,
             "stream": False,
             "temperature": 0.1,
-            "max_tokens": STORY_MEMORY_SECTION_MAX_TOKENS,
+            "response_format": story_memory_response_format(section_key),
             "messages": [
                 {
                     "role": "system",
@@ -1315,7 +1380,7 @@ class RPStoryMemoryUpdater:
                     "model": plan.model,
                     "stream": False,
                     "temperature": 0.1,
-                    "max_tokens": STORY_MEMORY_SECTIONS_MAX_TOKENS,
+                    "response_format": story_memory_response_format(),
                     "messages": [
                         system_message,
                         {
@@ -1387,7 +1452,7 @@ class RPStoryMemoryUpdater:
                     "model": plan.model,
                     "stream": False,
                     "temperature": 0.1,
-                    "max_tokens": STORY_MEMORY_SECTION_MAX_TOKENS,
+                    "response_format": story_memory_response_format(section_key),
                     "messages": [
                         system_message,
                         {
