@@ -28,6 +28,35 @@ SERVICE_PHRASES = [
     "gateway check",
     "result field",
 ]
+FIRST_PERSON_PLAYER_ACTION_STARTS = {
+    "бегу",
+    "беру",
+    "вижу",
+    "встаю",
+    "выхожу",
+    "гляжу",
+    "говорю",
+    "делаю",
+    "думаю",
+    "иду",
+    "касаюсь",
+    "киваю",
+    "кладу",
+    "ложусь",
+    "останавливаюсь",
+    "отвечаю",
+    "отступаю",
+    "поднимаю",
+    "подхожу",
+    "поворачиваюсь",
+    "сажусь",
+    "слышу",
+    "смотрю",
+    "стою",
+    "убираю",
+    "чувствую",
+}
+FIRST_PERSON_PARAGRAPH_START_RE = re.compile(r"^(?:я\s+)?([а-яё-]+)\b", re.IGNORECASE)
 RESULT_NARRATION = {
     "critical_success": "Сцена открывает ясный проход вперед.",
     "success": "Сцена продолжает двигаться в выбранном направлении.",
@@ -77,6 +106,8 @@ class OutputValidator:
         if scenario_type == "rp":
             violations.extend(absolute_rule_violations(text, state or {}))
             violations.extend(world_clock_narrative_violations(text, state or {}))
+            if sustained_first_person_player_voice(text):
+                violations.append("Narrative switched into the player character's first-person voice.")
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
         if scenario_type == "training" and training_runtime and training_runtime.enabled:
@@ -96,6 +127,7 @@ class OutputValidator:
                 violations=violations,
                 repair_instruction=(
                     "Перепиши ответ как обычную сцену для игрока. Удали служебные метки, анализ и диагностику. "
+                    "Не пиши от первого лица персонажа игрока и не создавай за него реплики или новые действия. "
                     "Не принимай решений за персонажа игрока, не вводи скрытую проверку и соблюдай каждое "
                     f"активное абсолютное правило WorldPack.{world_clock_repair}"
                 ),
@@ -122,6 +154,20 @@ def safe_fallback(
     else:
         second = "Остается решить, как обойти препятствие или чем рискнуть дальше."
     return f"{first} {second}"
+
+
+def sustained_first_person_player_voice(text: str) -> bool:
+    paragraph_starts = 0
+    for paragraph in re.split(r"\n\s*\n", text):
+        stripped = paragraph.lstrip()
+        if not stripped or stripped.startswith(("—", "–", "-", "«", '"')):
+            continue
+        match = FIRST_PERSON_PARAGRAPH_START_RE.match(stripped)
+        if match and match.group(1).casefold() in FIRST_PERSON_PLAYER_ACTION_STARTS:
+            paragraph_starts += 1
+            if paragraph_starts >= 2:
+                return True
+    return False
 
 
 def absolute_rule_violations(text: str, state: dict[str, Any]) -> list[str]:

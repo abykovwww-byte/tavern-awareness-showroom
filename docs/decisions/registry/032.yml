@@ -22,14 +22,14 @@
   probe_command: null
   expected: null
   waiver: "Local updater and persistence tests cover the 50/51 gate, one normal call, oldest batch, strict shape and fact_id validation, valid empty sections, length truncation failure, targeted retry, partial snapshot, minimum coverage and same-coverage idempotency. No deployed 60-turn party or forced live section failure has been run."
-- requirement: "Revision 8 story-memory calls use explicit provider openrouter and model deepseek/deepseek-v4-pro, complete-turn serialized messages no longer than 20000 characters, max_tokens 4000 for the combined call and 800 for a targeted section retry, at most two durable job attempts, section_key and update_id trace fields and no local or NVIDIA fallback"
+- requirement: "Revision 8 story-memory calls use explicit provider openrouter and model deepseek/deepseek-v4-pro, complete-turn serialized messages no longer than 20000 characters, strict section JSON Schema without an artificial output max_tokens ceiling, at most two durable job attempts, section_key and update_id trace fields and no local or NVIDIA fallback"
   level: каркас
   store: "exact redacted service_call_log requests and durable service_jobs attempts"
   assertion: absence
   expectation: revision8_story_memory_never_routes_to_nvidia
   probe_command: null
   expected: null
-  waiver: "Local payload and trace tests cover explicit provider/model, section_key=all versus exact retry keys, 20000-character complete-turn fitting, 4000/800 output limits and two-attempt scheduling. No real OpenRouter call or live absence proof exists yet."
+  waiver: "Local payload and trace tests cover explicit provider/model, section_key=all versus exact retry keys, 20000-character complete-turn fitting, strict section JSON Schema without an artificial output cap and two-attempt scheduling. A prior 60-turn live run proved that the retired 4000/800 caps produced finish_reason=length and zero safe coverage; the replacement contract still requires a post-apply OpenRouter proof and live NVIDIA-absence check."
 - requirement: "Revision 8 relationship prompt scope uses current input plus three complete previous eligible RAW units and excludes scene_state, seed location and active-thread presence signals while rendering only canonical human-readable names"
   level: каркас
   store: "recorded prompt_json relationship blocks, raw turns and existing relationship projections"
