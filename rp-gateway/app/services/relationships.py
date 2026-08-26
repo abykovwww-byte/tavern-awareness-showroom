@@ -246,7 +246,12 @@ class RelationshipMechanics:
         return "RELATIONSHIP_PRESSURE\n" + "\n".join(rendered)
 
     @staticmethod
-    def resolved_event_block(changes: list[dict[str, Any]], character_names: dict[str, str]) -> str | None:
+    def resolved_event_block(
+        changes: list[dict[str, Any]],
+        character_names: dict[str, str],
+        *,
+        defer_if_absent: bool = False,
+    ) -> str | None:
         rendered: list[str] = []
         for change in changes:
             if change.get("action") != "resolved":
@@ -257,7 +262,11 @@ class RelationshipMechanics:
             event_id = str(change.get("event_id") or "")
             resolution = str(change.get("resolution") or "")
             instruction = {
-                ("favour", "delivered"): "покажи в текущей сцене конкретную добровольную услугу или поддержку этого персонажа",
+                ("favour", "delivered"): (
+                    "покажи конкретную добровольную услугу или поддержку этого персонажа"
+                    if defer_if_absent
+                    else "покажи в текущей сцене конкретную добровольную услугу или поддержку этого персонажа"
+                ),
                 ("crack", "deadline_missed"): "покажи заметное охлаждение и закрытие прежнего окна для разговора",
                 ("ultimatum", "deadline_missed"): "покажи исполнение объявленного разрыва или отказа",
                 ("strike", "deadline_missed"): "покажи открытое последствие накопленного конфликта",
@@ -269,10 +278,17 @@ class RelationshipMechanics:
                 rendered.append(f"- {name}: {instruction}.")
         if not rendered:
             return None
+        execution_rule = (
+            "Эти последствия уже определены Gateway. Покажи их только если персонаж уже присутствует "
+            "в текущей сцене или может повлиять через установленный недавней историей канал; иначе "
+            "не перемещай и не вводи его, а отложи проявление — событие останется активным. "
+            if defer_if_absent
+            else "Эти последствия уже определены Gateway. Реализуй их как наблюдаемое поведение в этой сцене; "
+        )
         return (
             "RELATIONSHIP_EVENT_RESOLUTION\n"
-            "Эти последствия уже определены Gateway. Реализуй их как наблюдаемое поведение в этой сцене; "
-            "не показывай внутренние IDs, часы или числовые значения.\n"
+            + execution_rule
+            + "не показывай внутренние IDs, часы или числовые значения.\n"
             + "\n".join(rendered)
         )
 
@@ -302,7 +318,11 @@ class RelationshipMechanics:
                 or str(event["character_id"]) in allowed_character_ids
             )
         ]
-        return self.resolved_event_block(due_changes, character_names)
+        return self.resolved_event_block(
+            due_changes,
+            character_names,
+            defer_if_absent=self.rp_contract_revision >= 8,
+        )
 
     def _ensure_seed_state(self) -> None:
         """Materialize the WorldPack trust seed once in the derived relationship tables."""
@@ -903,8 +923,7 @@ class RelationshipMechanics:
         result.update(extra)
         return result
 
-    @staticmethod
-    def _qualitative_cause_pressure(causes: list[dict[str, Any]]) -> str:
+    def _qualitative_cause_pressure(self, causes: list[dict[str, Any]]) -> str:
         seed_weight = sum(int(cause.get("weight", 0)) for cause in causes if cause.get("source") == "seed")
         recent_weight = sum(int(cause.get("weight", 0)) for cause in causes if cause.get("source") != "seed")
         parts: list[str] = []
@@ -913,29 +932,55 @@ class RelationshipMechanics:
         elif seed_weight < 0:
             parts.append("Исходное недоверие уже влияет на выбор и реакцию персонажа.")
         if recent_weight > 0:
-            parts.append("Недавние поступки укрепили доверие; прояви это в текущей сцене.")
+            parts.append(
+                "Недавние поступки укрепили доверие; прояви это при доступном контакте."
+                if self.rp_contract_revision >= 8
+                else "Недавние поступки укрепили доверие; прояви это в текущей сцене."
+            )
         elif recent_weight < 0:
-            parts.append("Недавние поступки ослабили доверие; прояви это в текущей сцене.")
+            parts.append(
+                "Недавние поступки ослабили доверие; прояви это при доступном контакте."
+                if self.rp_contract_revision >= 8
+                else "Недавние поступки ослабили доверие; прояви это в текущей сцене."
+            )
         return " ".join(parts)
 
-    @staticmethod
-    def _qualitative_pressure(event_id: str, *, party_turn: int, event: dict[str, Any]) -> str:
+    def _qualitative_pressure(
+        self,
+        event_id: str,
+        *,
+        party_turn: int,
+        event: dict[str, Any],
+    ) -> str:
         opened_turn = int(event.get("opened_turn", party_turn))
         phase = max(0, party_turn - opened_turn) % 3
         if event.get("due_turn") is not None and int(event["due_turn"]) - party_turn <= 1:
-            timing = "Срок близок, и напряжение требует ответа в текущей сцене."
+            timing = (
+                "Срок близок; при доступном контакте напряжение требует ответа."
+                if self.rp_contract_revision >= 8
+                else "Срок близок, и напряжение требует ответа в текущей сцене."
+            )
         else:
             timing = (
                 "Линия только обозначилась и ищет первый жест."
                 if phase == 0
                 else "Напряжение удерживается, но уже меняет поведение участников."
                 if phase == 1
-                else "Невысказанное давление возвращается в сцену через детали и паузы."
+                else (
+                    "Невысказанное давление возвращается при доступном контакте через детали и паузы."
+                    if self.rp_contract_revision >= 8
+                    else "Невысказанное давление возвращается в сцену через детали и паузы."
+                )
             )
+        plot_pressure = (
+            "Скрытая линия развивается; при доступном контакте оставь один ненавязчивый след."
+            if self.rp_contract_revision >= 8
+            else "Скрытая линия развивается; оставь в сцене один ненавязчивый след."
+        )
         return {
             "crack": f"Появился скрытый канал для разговора. {timing}",
             "ultimatum": f"Требование ждёт ответа и может привести к разрыву. {timing}",
-            "plot": f"Скрытая линия развивается; оставь в сцене один ненавязчивый след. {timing}",
+            "plot": f"{plot_pressure} {timing}",
             "strike": f"Последствие готовится проявиться открыто. {timing}",
             "favour": f"Персонаж сам создаёт возможность для сближения. {timing}",
         }.get(event_id, timing)

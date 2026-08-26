@@ -21,6 +21,7 @@ from app.services.narrative import (
     fit_messages_to_context,
     long_term_memory_block,
     party_lore_cards_block,
+    player_character_block,
     prompt_authority_block,
     prompt_block_id,
     prompt_block_ids,
@@ -76,6 +77,8 @@ def assert_prompt_assembly_schema(value: dict[str, Any]) -> None:
 
 def make_store(tmp_path: Path, campaign_id: str, *, turn: int) -> StateStore:
     state = base_state()
+    state["player"]["name"] = "Mira"
+    state["player"]["description"] = "Investigator"
     state["meta"]["campaign_id"] = campaign_id
     state["meta"]["turn"] = turn
     state["player"]["known_world_facts"] = ["PRIVATE_STATE_VALUE"]
@@ -268,6 +271,7 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = base_state()
+    state["player"].update({"name": "Mira", "description": "Investigator"})
     state["world_constraints"] = [
         {"id": "rule-1", "kind": "absolute", "source": "worldpack", "text": "Hold."}
     ]
@@ -357,6 +361,7 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
         "rp_story_memory": rp_story_memory_block(story_snapshot(), 10_000, 7),
         "long_term_memory": long_term_memory_block(legacy_memory_summary()),
         "world_system_prompt": world_system,
+        "player_character": player_character_block(state),
         "world_authors_note": world_authors_note,
         "training_turn_contract": training_turn_prompt_block({}),
         "training_interaction_contract": training_artifact_prompt_block({}),

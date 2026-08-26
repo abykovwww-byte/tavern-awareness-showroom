@@ -13,15 +13,15 @@
   expectation: confirmed_gm_diff_is_atomic_idempotent_and_out_of_scene
   probe_command: null
   expected: null
-  waiver: "Local endpoint tests cover reject, exact draft target revalidation, duplicate confirm, state version plus one, unchanged party turn and scene, and one excluded typed history row. Source is not activated or deployed."
-- requirement: "At most 20 latest effective player-correction slots remain in a protected prompt overlay above RAW and story memory, with same-slot replacement allowed and no old correction resurfacing after the latest slot state is absorbed"
+  waiver: "Local endpoint tests cover reject, exact draft target revalidation, duplicate confirm, state version plus one, unchanged party turn and scene, and one excluded typed history row. Production party party_c82153b0c2da confirmed one correction out of scene; corrected browser and post-apply closure evidence remains pending."
+- requirement: "At most 20 latest effective player-correction slots remain in a protected prompt overlay above RAW and story memory, including compact narrator repair, with same-slot replacement allowed, older in-flight same-slot results ignored and no old correction resurfacing after the latest slot state is absorbed"
   level: каркас
   store: "turns.metadata_json player-correction artifacts, History API and recorded prompt_json"
   assertion: projection
   expectation: correction_overlay_is_bounded_latest_slot_authority
   probe_command: null
   expected: null
-  waiver: "Focused tests cover pre-model limit rejection, same-slot allowance, latest terminal slot behavior and prompt order relative to memory, cards, relationship pressure and current action. No deployed hard-overflow prompt has been inspected."
+  waiver: "Focused tests cover pre-model limit rejection, full and repair prompt authority, same-slot replacement during an in-flight section call and latest terminal slot behavior. Corrected deployed repair and concurrent confirmation evidence is pending."
 - requirement: "A confirmed memory or RAW correction triggers exactly one affected OpenRouter story-memory section even before turn 50, becomes absorbed only after an exact user-authority fact or tombstone and target coverage persist, and leaves the other four coverages unchanged"
   level: каркас
   store: "service_jobs, service_call_log, rp_story_memory_snapshots and player-correction artifact status"
@@ -29,12 +29,12 @@
   expectation: correction_valve_absorbs_only_after_user_fact_and_section_coverage
   probe_command: null
   expected: null
-  waiver: "Production party party_c82153b0c2da exercised one real OpenRouter situation-section call before turn 50 and advanced only that section, but exposed a same-fact-id collision: coverage passed while replacement authority remained inference and the overlay safely stayed active. Source regression now promotes the existing replacement in place to user authority and proves the absorption predicate; corrected post-apply live absorption remains pending."
-- requirement: "Revision-9 GM intent, GM patch draft and relationship extraction route only to local Gemma with no NVIDIA fallback, relationship jobs become stale after five failures, while sectioned story memory remains explicit OpenRouter DeepSeek with two durable attempts"
+  waiver: "Production party party_c82153b0c2da exercised one real OpenRouter situation-section call before turn 50 and exposed a same-fact-id collision. Source now promotes the replacement in place, recovers a snapshot persisted before the artifact status flip without a second model call, and makes an already absorbed retry a no-op; corrected post-apply live absorption remains pending."
+- requirement: "Revision-9 GM intent, GM patch draft and relationship extraction route only to local Gemma with no NVIDIA fallback; invalid relationship model output is audited and retried until the job becomes stale after five failures while valid events=[] succeeds once; sectioned story memory remains explicit OpenRouter DeepSeek with two durable attempts"
   level: каркас
   store: "runtime settings, service_jobs and service_call_log"
   assertion: absence
   expectation: rev9_service_roles_never_inherit_nvidia_or_party_provider
   probe_command: null
   expected: null
-  waiver: "Source and local tests prove explicit provider settings and terminal retry states. No production local outage, real OpenRouter correction or post-apply service log has been collected."
+  waiver: "The first 60-turn production endurance showed 18 invalid relationship outputs incorrectly completing as success and zero new extracted causes. Source now routes each invalid output through the existing five-attempt stale policy while preserving valid empty success; corrected post-apply service evidence is pending."

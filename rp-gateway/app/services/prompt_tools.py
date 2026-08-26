@@ -520,6 +520,8 @@ class PromptInspector:
             return "rp_story_memory", "RP_STORY_MEMORY"
         if content.startswith("WORLD_SYSTEM_PROMPT"):
             return "world_system_prompt", "World system prompt"
+        if content.startswith("PLAYER_CHARACTER"):
+            return "player_character", "Персонаж игрока"
         if content.startswith("WORLD_AUTHORS_NOTE"):
             return "world_authors_note", "World author's note"
         if content.startswith("RELEVANT_CHARACTERS"):

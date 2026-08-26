@@ -379,6 +379,62 @@ def test_local_clock_outage_finishes_with_visible_pt0s_noop(tmp_path: Path) -> N
     assert all(provider != "nvidia" for _, _, provider in calls)
 
 
+def test_legacy_clock_job_for_noncanonical_turn_is_terminal_without_state_or_model(
+    tmp_path: Path,
+) -> None:
+    store = make_store(tmp_path, "world-clock-noncanonical")
+    turn_id = store.record_turn(
+        "turn-1",
+        "clock-noncanonical-request",
+        "Пытаюсь продолжить.",
+        "Технический безопасный ответ.",
+        {"choices": []},
+        store.current_version() or 2,
+        metadata={"turn_kind": "narrative"},
+        party_turn=1,
+    )
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE turns SET excluded_from_memory = 1 WHERE id = ?",
+            (turn_id,),
+        )
+    job = store.enqueue_service_job(
+        "world_clock",
+        "clock-noncanonical-request",
+        party_turn=1,
+    )
+    before_version = store.current_version()
+    before_clock = json.loads(json.dumps(store.get_state()["world_clock"]))
+    settings = Settings(
+        app_env="test",
+        database_url=f"sqlite:///{tmp_path / 'gateway.db'}",
+        scenario_type="rp",
+        rp_contract_revision=10,
+        local_llm_enabled=False,
+        local_llm_base_url="https://local-service.invalid/v1",
+    )
+    adjudicator = Adjudicator(settings, store, world_clock_contract=contract())
+
+    asyncio.run(adjudicator.drain_service_jobs(None, wait_for_retries=False))
+
+    final_job = next(item for item in store.service_jobs() if item["id"] == job["id"])
+    assert final_job["status"] == "succeeded"
+    assert store.current_version() == before_version
+    assert store.get_state()["world_clock"] == before_clock
+    with sqlite3.connect(settings.sqlite_path) as connection:
+        has_log = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'service_call_log'"
+        ).fetchone()
+        calls = (
+            connection.execute(
+                "SELECT COUNT(*) FROM service_call_log WHERE role = 'world_clock_elapsed'"
+            ).fetchone()[0]
+            if has_log is not None
+            else 0
+        )
+    assert calls == 0
+
+
 def test_world_clock_jobs_are_selected_in_party_turn_order(tmp_path: Path) -> None:
     store = make_store(tmp_path, "world-clock-order")
     later = store.enqueue_service_job("world_clock", "turn-2", party_turn=2)

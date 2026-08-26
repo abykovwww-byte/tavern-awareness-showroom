@@ -1851,6 +1851,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if runtime_service.enabled
                 else None
             )
+            world_clock_projection = (
+                adjudicator.world_clock.prompt_projection(narrative_state)
+                if adjudicator.world_clock is not None
+                else None
+            )
+            world_events = (
+                str(world_clock_projection["block"])
+                if world_clock_projection is not None
+                else None
+            )
             prompt_messages = narrative.narrative_messages(
                 chat_request,
                 narrative_state,
@@ -1860,6 +1870,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 rp_story_memory=rp_story_memory,
                 artifact_contract=interaction_contract,
                 training_turn_contract=training_turn_contract,
+                world_events=world_events,
             )
             opening_prompt_assembly = (
                 prompt_assembly_diagnostics(
@@ -1935,6 +1946,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     request_id=request_id,
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
+                    world_events=world_events,
                 )
                 opening_prompt_cache_response = raw
             except (
@@ -2163,6 +2175,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     request_id=request_id,
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
+                    world_events=world_events,
                 )
                 if scene_bundle_revision:
                     scene_result = materialize_scene_bundle(
@@ -2331,6 +2344,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             if opening_prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = opening_prompt_assembly
+            if world_clock_projection is not None and not fallback_noncanonical:
+                turn_metadata["world_clock_events"] = dict(
+                    world_clock_projection["metadata"]
+                )
             if revision_eight:
                 turn_metadata.update(
                     prompt_cache_observability(
@@ -2457,6 +2474,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     metadata=turn_metadata,
                     artifacts=artifact_result.persistence_records,
                     workspace_files=workspace_result.persistence_records,
+                    consumed_world_clock_event_ids=(
+                        list(world_clock_projection["event_ids"])
+                        if world_clock_projection is not None and not fallback_noncanonical
+                        else []
+                    ),
                     party_turn=expected_party_turn,
                     audit_events=atomic_audits,
                     excluded_from_memory=fallback_noncanonical,

@@ -29,7 +29,7 @@
   expectation: narrator_never_commits_first_person_player_takeover
   probe_command: null
   expected: null
-  waiver: "The first revision-10 production endurance exposed several committed first-person takeovers that the narrow guard missed. Source regressions now cover the observed forms and preserve NPC direct speech; corrected provider execution is pending."
+  waiver: "The first revision-10 production endurance exposed several committed first-person takeovers that the narrow guard missed. Source regressions now cover explicit pronouns, one unambiguous action start and dialogue attribution tails while preserving NPC direct speech; corrected provider execution is pending."
 - requirement: "A retracted/corrected fact is absent from every following effective prompt"
   level: каркас
   store: "memory projection"

@@ -253,7 +253,11 @@ def test_revision_eight_prompt_omits_legacy_layers_and_preserves_block_order() -
         world_authors_note="Immediate author emphasis",
     )
     state = {
-        "player": {"location": "court"},
+        "player": {
+            "name": "Mira",
+            "description": "Investigator from the northern coast.",
+            "location": "court",
+        },
         "characters": {
             "advisor": {"name": "Advisor", "location": "court"},
         },
@@ -304,6 +308,8 @@ def test_revision_eight_prompt_omits_legacy_layers_and_preserves_block_order() -
             labels.append("system_rules")
         elif content.startswith("WORLD_SYSTEM_PROMPT"):
             labels.append("world_system_prompt")
+        elif content.startswith("PLAYER_CHARACTER"):
+            labels.append("player_character")
         elif content.startswith("WORLD_ABSOLUTE_RULES"):
             labels.append("world_absolute_rules")
         elif content.startswith("RP_STORY_MEMORY"):
@@ -328,6 +334,7 @@ def test_revision_eight_prompt_omits_legacy_layers_and_preserves_block_order() -
     assert labels == [
         "system_rules",
         "world_system_prompt",
+        "player_character",
         "world_absolute_rules",
         "raw_user",
         "raw_assistant",
@@ -353,6 +360,7 @@ def test_revision_eight_cache_hash_covers_the_anchored_fifty_unit_base() -> None
     stable_system = [
         {"role": "system", "content": "Narrator rules"},
         {"role": "system", "content": "WORLD_SYSTEM_PROMPT\nWorld rules"},
+        {"role": "system", "content": "PLAYER_CHARACTER\nИмя: Mira\nОписание: Investigator"},
         {"role": "system", "content": "WORLD_ABSOLUTE_RULES\n1. Absolute rule"},
     ]
     history = [

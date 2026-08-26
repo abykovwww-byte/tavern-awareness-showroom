@@ -715,6 +715,12 @@ class WorldClockService:
         job_party_turn = int(job.get("party_turn") or 0)
         if turn_party_turn < 1 or turn_party_turn != job_party_turn:
             raise ValueError("world clock job does not match its source party turn")
+        if turn.get("excluded_from_memory"):
+            return {
+                "applied": False,
+                "reason": "noncanonical_turn",
+                "party_turn": turn_party_turn,
+            }
         if str(turn.get("turn_kind") or "narrative") != "narrative":
             return self.apply_noop(job, reason="non_narrative_turn")
         turn_text = json.dumps(

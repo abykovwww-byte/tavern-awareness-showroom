@@ -9,9 +9,10 @@ WorldPack-часы. Модель оценивает только прошедш�
 Gateway детерминированно применяет заранее написанные события и их последствия.
 
 **Delivery status:** `каркас` для строк
-[`registry/039.yml`](registry/039.yml). Source implementation и локальные gates
-не означают activation, Ansible apply или live-проверку. Observed revision
-остаётся `8`; existing parties и WorldPacks автоматически не мигрируют.
+[`registry/039.yml`](registry/039.yml). Revision 10 уже применён и первый
+60-turn production endurance подтвердил ordinary clock path. Новая проекция
+часов в opening требует повторной post-apply проверки; existing parties
+автоматически не мигрируют.
 
 ## Context
 
@@ -68,7 +69,9 @@ Lore Card по-прежнему может подняться по имени.
 
 После успешного normal narrative commit Gateway в той же transaction создаёт
 один `world_clock` job для фактического `party_turn`. Opening scene,
-`world_command`, `gm_correction` и будущие non-game kinds job не создают.
+noncanonical safe fallback, `world_command`, `gm_correction` и будущие non-game
+kinds job не создают. Если legacy queue уже содержит job для excluded
+noncanonical turn, worker завершает его без model call и без clock tick.
 
 Jobs применяются строго по `party_turn`. Следующий игровой запрос никогда не
 ждёт часы: если main turn уже владеет состоянием, clock job откладывается без
@@ -93,16 +96,26 @@ narrator/BYOK, fallback или NVIDIA.
 action, содержит новые ещё не объявленные события, durable facts когда они
 помещаются и ближайший authored horizon.
 
+Opening scene получает ту же проекцию до первого narrator call, но не создаёт
+elapsed job: до первого действия игрока нечего оценивать. Его успешный atomic
+commit сохраняет `metadata_json.world_clock_events` и снимает фактически
+показанные pending IDs так же, как ordinary turn; repair opening получает тот же
+block.
+
 Pending event считается объявленным только внутри успешного turn commit,
 который реально получил его в prompt. Поэтому provider/validation failure не
-теряет событие. Turn `metadata_json.world_clock_events` хранит ту же безопасную
-проекцию; Light GUI показывает под соответствующим narrator response
-«В мире произошло» и «Ближайший горизонт».
+теряет событие. Неканоничный safe fallback не снимает pending ID и не записывает
+`metadata_json.world_clock_events`, поэтому UI не прикрепляет событие к ответу,
+который его не отыграл. Он также не создаёт elapsed job и потому не сдвигает
+игровую дату. Успешный turn хранит ту же безопасную проекцию; Light GUI
+показывает под соответствующим narrator response «В мире произошло» и
+«Ближайший горизонт».
 
 ### First authored canary
 
-`merchant-sviatoslav` является единственным candidate revision-10 pack. Он
-задаёт не менее четырёх событий, включая выступление Вятичского похода. Для
+`merchant-sviatoslav` является единственным authored-clock canary среди
+revision-10 WorldPacks. Он задаёт не менее четырёх событий, включая выступление
+Вятичского похода. Для
 Велимира consequence фиксирует отсутствие из Подола durable world fact, а не
 новую модель присутствия. Каждое событие имеет отдельный cancellation marker.
 
@@ -124,8 +137,8 @@ Pending event считается объявленным только внутр�
 - новые consequence types, новый provider, новая dependency или retention
   policy;
 - автоматическая миграция existing parties/WorldPacks;
-- activation revision `10`, Ansible apply, production DB mutation, live local
-  outage и длинная semantic party в этом source slice.
+- автоматическая миграция existing parties, production DB rewrite, live local
+  outage и отдельный semantic oracle времени.
 
 ## Verification gates
 
@@ -135,10 +148,10 @@ order; bounded strict local request, пять ошибок и terminal `PT0S` б
 prompt order/800-char bound, commit-only announcement, history metadata и Light
 GUI labels; а также четыре Merchant events с Вятичским походом.
 
-После отдельной activation/deploy-фазы новая длинная партия должна доказать
-цепочку `turn N commit -> local elapsed -> atomic authored event -> first
-available narrator prompt -> one GUI announcement`, включая cancellation и
-forced local outage. До этого все строки registry остаются на уровне `каркас`.
+Следующая post-apply партия должна повторно доказать цепочку `opening date ->
+turn N commit -> local elapsed -> atomic authored event -> first available
+narrator prompt -> one GUI announcement`, включая cancellation и forced local
+outage. До этого все строки registry остаются на уровне `каркас`.
 
 ## Related decisions
 

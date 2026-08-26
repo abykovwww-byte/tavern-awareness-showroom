@@ -59,8 +59,17 @@ FIRST_PERSON_PLAYER_ACTION_STARTS = {
 FIRST_PERSON_PARAGRAPH_START_RE = re.compile(r"^(?:я\s+)?([а-яё-]+)\b", re.IGNORECASE)
 FIRST_PERSON_PRONOUN_RE = re.compile(r"(?<![а-яё])я(?![а-яё])", re.IGNORECASE)
 FIRST_PERSON_DIALOGUE_ATTRIBUTION_RE = re.compile(
-    rf"[,!?…]\s*[—–-]\s*(?:я\s+)?(?:{'|'.join(sorted(FIRST_PERSON_PLAYER_ACTION_STARTS))})\b",
+    rf"[,.!?…][^\S\r\n]*[—–-][^\S\r\n]*(?:я[^\S\r\n]+)?"
+    rf"(?:{'|'.join(sorted(FIRST_PERSON_PLAYER_ACTION_STARTS))})\b",
     re.IGNORECASE,
+)
+FIRST_PERSON_DIALOGUE_PRONOUN_TAIL_RE = re.compile(
+    r"[,.!?…][^\S\r\n]*[—–-][^\S\r\n]*"
+    r"(?:[а-яё-]+[^\S\r\n]+){1,4}я(?=[\s,.!?…]|$)",
+    re.IGNORECASE,
+)
+DIALOGUE_NARRATION_SUFFIX_RE = re.compile(
+    r"^[—–-].*?[,.!?…]\s*[—–-]\s*[^.!?…]*[.!?…]\s+(.+)$"
 )
 QUOTED_SPEECH_RE = re.compile(r"«[^»]*»|“[^”]*”|\"[^\"]*\"", re.DOTALL)
 RESULT_NARRATION = {
@@ -163,28 +172,41 @@ def safe_fallback(
 
 
 def sustained_first_person_player_voice(text: str) -> bool:
-    if FIRST_PERSON_DIALOGUE_ATTRIBUTION_RE.search(text):
+    if (
+        FIRST_PERSON_DIALOGUE_ATTRIBUTION_RE.search(text)
+        or FIRST_PERSON_DIALOGUE_PRONOUN_TAIL_RE.search(text)
+    ):
         return True
 
     prose_lines = []
     for line in QUOTED_SPEECH_RE.sub("", text).splitlines():
         stripped = line.lstrip()
         if stripped.startswith(("—", "–", "-")):
+            suffix_match = DIALOGUE_NARRATION_SUFFIX_RE.match(stripped)
+            if suffix_match:
+                suffix = suffix_match.group(1).lstrip()
+                suffix_start = FIRST_PERSON_PARAGRAPH_START_RE.match(suffix)
+                if not suffix.startswith(("—", "–", "-")) and (
+                    FIRST_PERSON_PRONOUN_RE.search(suffix)
+                    or (
+                        suffix_start is not None
+                        and suffix_start.group(1).casefold()
+                        in FIRST_PERSON_PLAYER_ACTION_STARTS
+                    )
+                ):
+                    return True
             continue
         prose_lines.append(line)
     if FIRST_PERSON_PRONOUN_RE.search("\n".join(prose_lines)):
         return True
 
-    paragraph_starts = 0
     for paragraph in re.split(r"\n\s*\n", text):
         stripped = paragraph.lstrip()
         if not stripped or stripped.startswith(("—", "–", "-", "«", '"')):
             continue
         match = FIRST_PERSON_PARAGRAPH_START_RE.match(stripped)
         if match and match.group(1).casefold() in FIRST_PERSON_PLAYER_ACTION_STARTS:
-            paragraph_starts += 1
-            if paragraph_starts >= 2:
-                return True
+            return True
     return False
 
 

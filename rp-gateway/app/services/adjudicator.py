@@ -1107,7 +1107,7 @@ class Adjudicator:
             )
             if prompt_assembly is not None:
                 turn_metadata["prompt_assembly"] = prompt_assembly
-            if world_clock_projection is not None:
+            if world_clock_projection is not None and not fallback_noncanonical:
                 turn_metadata["world_clock_events"] = dict(
                     world_clock_projection["metadata"]
                 )
@@ -1206,12 +1206,16 @@ class Adjudicator:
                     consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
                     consumed_world_clock_event_ids=(
                         list(world_clock_projection["event_ids"])
-                        if world_clock_projection is not None
+                        if world_clock_projection is not None and not fallback_noncanonical
                         else []
                     ),
                     post_commit_service_jobs=(
                         [("world_clock", self.settings.service_job_max_attempts)]
-                        if self.world_clock is not None and self.world_clock.enabled(state)
+                        if (
+                            self.world_clock is not None
+                            and self.world_clock.enabled(state)
+                            and not fallback_noncanonical
+                        )
                         else []
                     ),
                     party_turn=int(projected_state["meta"]["turn"]),
@@ -1763,7 +1767,15 @@ class Adjudicator:
             pressure_lines = pressure.splitlines() if pressure else []
             if pressure_lines and pressure_lines[0] == "RELATIONSHIP_PRESSURE":
                 pressure_lines = pressure_lines[1:]
-            mandatory_lines = ["RELATIONSHIP_PRESSURE"]
+            if not pressure_lines and not resolution:
+                return None
+            mandatory_lines = [
+                "RELATIONSHIP_PRESSURE",
+                "Применяй это давление только к персонажу, который уже присутствует в текущей "
+                "сцене или может повлиять через установленный недавней историей канал. Не перемещай "
+                "и не вводи NPC ради этого блока; если контакта нет, отложи проявление — событие "
+                "останется активным.",
+            ]
             if resolution:
                 mandatory_lines.extend(["", *resolution.splitlines()])
             mandatory = "\n".join(mandatory_lines).rstrip()
@@ -1782,7 +1794,7 @@ class Adjudicator:
                     break
                 bounded_lines.append(line)
             bounded = "\n".join(bounded_lines).rstrip()
-            return bounded if bounded != "RELATIONSHIP_PRESSURE" else None
+            return bounded
         return "\n\n".join(block for block in (pressure, resolution) if block) or None
 
     def refresh_revision_eight_lore_cards(
@@ -1827,6 +1839,7 @@ class Adjudicator:
             "LONG_TERM_PARTY_MEMORY": "long_term_memory",
             "RP_STORY_MEMORY": "rp_story_memory",
             "WORLD_SYSTEM_PROMPT": "world_system_prompt",
+            "PLAYER_CHARACTER": "player_character",
             "WORLD_AUTHORS_NOTE": "world_authors_note",
             "RELEVANT_CHARACTERS": "relevant_characters",
             "RETRIEVED_ARCHIVE_SCENES": "retrieved_archive_scenes",

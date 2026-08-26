@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -275,6 +276,137 @@ def test_confirmed_raw_correction_does_not_advance_party_turn_and_updates_one_se
     )
     assert absorbed["status"] == "absorbed"
 
+    # Recreate the only durable crash gap: snapshot committed, artifact status not yet flipped.
+    gm_record = store.turn_record(gm_turn_id)
+    assert gm_record is not None
+    gm_metadata = gm_record["metadata"]
+    gm_metadata["player_correction"]["status"] = "active"
+    gm_metadata["player_correction"].pop("absorption", None)
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE turns SET metadata_json = ? WHERE id = ?",
+            (json.dumps(gm_metadata, ensure_ascii=False), gm_turn_id),
+        )
+
+    recovered = asyncio.run(
+        updater.update(None, request_id=request_id, fail_open=False)
+    )
+    assert recovered["reason"] == "player_correction_recovered"
+    assert calls == ["characters"]
+    assert next(
+        item
+        for item in store.player_correction_records()
+        if item["correction_id"] == proposal.proposal_id
+    )["status"] == "absorbed"
+
+    repeated = asyncio.run(
+        updater.update(None, request_id=request_id, fail_open=False)
+    )
+    assert repeated["reason"] == "player_correction_already_absorbed"
+    assert calls == ["characters"]
+
+
+def test_newer_same_slot_correction_wins_if_confirmed_during_section_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, "same-slot-race")
+    record_narrative_turns(store, 12)
+    service = RPGMService(settings(), store)
+
+    def proposal(proposal_id: str, after: str) -> PartyGMPatchDraft:
+        return PartyGMPatchDraft(
+            proposal_id=proposal_id,
+            target_kind="raw",
+            target_id="12",
+            target_slot="raw:12:assertion",
+            target_turn_id=12,
+            field="characters",
+            section_key="characters",
+            action="replace",
+            before="Нарратор утверждает факт 12",
+            after=after,
+            base_state_version=store.current_version() or 0,
+        )
+
+    first = service.player_correction_artifact(
+        proposal("same-slot-first", "Первая версия исправления."),
+        party_turn=12,
+        timestamp=100,
+    )
+    second = service.player_correction_artifact(
+        proposal("same-slot-second", "Итоговая версия исправления."),
+        party_turn=12,
+        timestamp=101,
+    )
+
+    def record_correction(request_id: str, artifact: dict[str, object]) -> int:
+        turn_id = store.record_turn(
+            request_id,
+            request_id,
+            str(artifact.get("after") or ""),
+            "Исправление подтверждено вне сцены.",
+            deterministic_response("Исправление подтверждено вне сцены."),
+            state_version=store.current_version() or 0,
+            metadata={
+                "turn_kind": "gm_correction",
+                "player_correction": artifact,
+                "story_memory_corrections": [artifact["story_memory_correction"]],
+            },
+            party_turn=12,
+        )
+        with store.connect() as connection:
+            connection.execute(
+                "UPDATE turns SET excluded_from_memory = 1 WHERE id = ?",
+                (turn_id,),
+            )
+        return turn_id
+
+    record_correction("same-slot-first-request", first)
+    updater = RPStoryMemoryUpdater(settings(), store)
+    calls: list[str] = []
+    second_recorded = False
+
+    async def generated_section(
+        section_key: str,
+        memory: dict[str, object],
+        artifact: dict[str, object],
+        **_: object,
+    ) -> dict[str, object]:
+        nonlocal second_recorded
+        calls.append(str(artifact["correction_id"]))
+        if not second_recorded:
+            record_correction("same-slot-second-request", second)
+            second_recorded = True
+        return {
+            "section": {
+                field: json.loads(json.dumps(memory.get(field), ensure_ascii=False))
+                for field in STORY_MEMORY_SECTION_FIELDS[section_key]
+            },
+            "model": settings().rp_story_memory_model,
+        }
+
+    monkeypatch.setattr(updater, "generate_player_correction_section", generated_section)
+    stale = asyncio.run(
+        updater.update(None, request_id="same-slot-first-request", fail_open=False)
+    )
+    assert stale["reason"] == "player_correction_superseded"
+    assert store.effective_rp_story_memory() is None
+
+    applied = asyncio.run(
+        updater.update(None, request_id="same-slot-second-request", fail_open=False)
+    )
+    assert applied["reason"] == "player_correction"
+    assert calls == ["same-slot-first", "same-slot-second"]
+    records = {
+        item["correction_id"]: item
+        for item in store.player_correction_records()
+        if item["correction_id"] in {"same-slot-first", "same-slot-second"}
+    }
+    assert records["same-slot-first"]["status"] == "active"
+    assert records["same-slot-second"]["status"] == "absorbed"
+    assert service.active_corrections() == []
+
 
 def test_rejected_draft_has_no_state_or_turn_mutation(tmp_path: Path) -> None:
     store = make_store(tmp_path)
@@ -424,6 +556,7 @@ def test_player_correction_overlay_is_between_cards_and_relationship_pressure(tm
         authoritative_block="generic",
     )
     state = store.get_state()
+    state["player"].update({"name": "Mira", "description": "Investigator"})
     state["world_constraints"] = [
         {
             "id": "rule:overlay",
@@ -460,6 +593,45 @@ def test_player_correction_overlay_is_between_cards_and_relationship_pressure(tm
         < relationship_index
         < current_action_index
     )
+
+    trace: list[dict[str, object]] = []
+    repair_client = NarrativeClient(
+        replace(
+            settings(),
+            llm_api_base="mock://success",
+            llm_api_key="test-key",
+        ),
+        trace.append,
+    )
+    asyncio.run(
+        repair_client.complete(
+            request,
+            state,
+            outcome,
+            None,
+                repair_instruction="Не играй за персонажа игрока.",
+                failed_response_text="Я киваю и ухожу.",
+                request_id="repair-overlay-test",
+                relationship_pressure="RELATIONSHIP_PRESSURE\npressure",
+            )
+    )
+    repair_messages = trace[-1]["input"]["payload"]["messages"]
+    repair_contents = [message["content"] for message in repair_messages]
+    player_index = next(
+        index for index, text in enumerate(repair_contents) if text.startswith("PLAYER_CHARACTER")
+    )
+    correction_index = next(
+        index
+        for index, text in enumerate(repair_contents)
+        if text.startswith("ИСПРАВЛЕНИЯ ИГРОКА")
+    )
+    relationship_index = next(
+        index
+        for index, text in enumerate(repair_contents)
+        if text.startswith("RELATIONSHIP_PRESSURE")
+    )
+    assert "Имя: Mira" in repair_contents[player_index]
+    assert player_index < correction_index < relationship_index
 
 
 def test_absolute_rule_replacement_preserves_identity_without_advancing_turn(tmp_path: Path) -> None:

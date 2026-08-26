@@ -53,6 +53,7 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("RP_STORY_MEMORY", "rp_story_memory"),
     ("LONG_TERM_PARTY_MEMORY", "long_term_memory"),
     ("WORLD_SYSTEM_PROMPT", "world_system_prompt"),
+    ("PLAYER_CHARACTER", "player_character"),
     ("WORLD_AUTHORS_NOTE", "world_authors_note"),
     ("ACTIVE_TRAINING_TURN_CONTRACT", "training_turn_contract"),
     ("TRAINING_INTERACTION_CONTRACT", "training_interaction_contract"),
@@ -70,6 +71,7 @@ PROMPT_SYSTEM_BLOCK_IDS = (
 )
 REVISION_EIGHT_STABLE_SYSTEM_PREFIXES = (
     "WORLD_SYSTEM_PROMPT",
+    "PLAYER_CHARACTER",
     "WORLD_ABSOLUTE_RULES",
 )
 
@@ -212,6 +214,28 @@ def meaningful_rp_outcome_block(outcome: Outcome) -> str | None:
         lines.append(f"Цель текущего действия: {target}.")
     lines.extend(f"Обязательное ограничение: {item}." for item in blocked)
     lines.extend(f"Обязательное последствие: {item}." for item in consequences)
+    return "\n".join(lines)
+
+
+def player_character_block(state: dict[str, Any]) -> str | None:
+    """Keep only the player's stable identity after rev-8 removes the full state dump."""
+
+    player = state.get("player")
+    if not isinstance(player, dict):
+        return None
+    name = str(player.get("name") or "").strip()
+    description = str(player.get("description") or "").strip()
+    if not name and not description:
+        return None
+    lines = ["PLAYER_CHARACTER"]
+    if name:
+        lines.append(f"Имя: {name}")
+    if description:
+        lines.append(f"Описание: {description}")
+    lines.append(
+        "Сохраняй эти факты о персонаже игрока, но не придумывай за него действия, "
+        "реплики, мысли, чувства или выбор."
+    )
     return "\n".join(lines)
 
 
@@ -444,6 +468,16 @@ class NarrativeClient:
         )
         payload = request.model_dump(exclude_none=True)
         if repair_instruction:
+            player_corrections = next(
+                (
+                    str(message.content)
+                    for message in request.messages
+                    if message.role == "system"
+                    and isinstance(message.content, str)
+                    and message.content.startswith("ИСПРАВЛЕНИЯ ИГРОКА")
+                ),
+                None,
+            )
             payload["messages"] = self.repair_messages(
                 state,
                 outcome,
@@ -453,6 +487,7 @@ class NarrativeClient:
                 training_turn_contract=training_turn_contract,
                 relationship_pressure=relationship_pressure,
                 world_events=world_events,
+                player_corrections=player_corrections,
             )
         else:
             payload["messages"] = self.narrative_messages(
@@ -925,6 +960,9 @@ class NarrativeClient:
                 }
             )
         if revision_eight:
+            player_block = player_character_block(state)
+            if player_block:
+                messages.append({"role": "system", "content": player_block})
             absolute_rules = world_absolute_rules_block(
                 state,
                 rp_contract_revision=self.settings.rp_contract_revision,
@@ -1098,6 +1136,7 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
         world_events: str | None = None,
+        player_corrections: str | None = None,
     ) -> list[dict[str, str]]:
         """Build a compact correction request instead of replaying the full party prompt."""
         player_resources = state.get("player", {}).get("resources", {})
@@ -1129,6 +1168,10 @@ class NarrativeClient:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
             messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8:
+            player_block = player_character_block(state)
+            if player_block:
+                messages.append({"role": "system", "content": player_block})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 3:
             absolute_rules = world_absolute_rules_block(
                 state,
@@ -1136,6 +1179,8 @@ class NarrativeClient:
             )
             if absolute_rules:
                 messages.append({"role": "system", "content": absolute_rules})
+        if self.settings.scenario_type == "rp" and player_corrections:
+            messages.append({"role": "system", "content": player_corrections})
         if self.settings.scenario_type == "rp" and relationship_pressure:
             messages.append({"role": "system", "content": relationship_pressure})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 10 and world_events:

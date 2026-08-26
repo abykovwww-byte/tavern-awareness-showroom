@@ -1307,6 +1307,7 @@ def test_rp_validator_does_not_treat_npc_first_person_dialogue_as_player_voice()
     result = OutputValidator().validate(
         "— Я стою здесь с рассвета, — говорит Ратибор.\n\n"
         "— Смотрю на ворота и жду твоего ответа.\n\n"
+        "— Нет, — говорит Ратибор. — Я согласен, — отвечает Иван.\n\n"
         "Милава отвечает: «Я принесу ведомость». Он замолкает и оставляет следующий шаг тебе.",
         outcome,
         base_state(),
@@ -1320,12 +1321,16 @@ def test_rp_validator_does_not_treat_npc_first_person_dialogue_as_player_voice()
     "narration",
     [
         "Я киваю Милаве и принимаю свёрток.",
+        "Киваю Милаве и ухожу во двор.",
         (
             "Захожу под навес и осматриваю двор.\n\n"
             "Я подхожу к столу, не дожидаясь ответа.\n\n"
             "Осторожно разгребаю бумаги."
         ),
         "— Вышло, — отвечаю Ратибору и протягиваю ему письмо.",
+        "— Нет. — шепчу я и отступаю к двери.",
+        "— Нет. — Бормочу я и отступаю к двери.",
+        "— Привет, — говорит Ратибор. Я киваю и ухожу.",
         "Отлично, я запомню. Начинаем.\n\nВо дворе звенит ведро.",
     ],
 )
@@ -2755,6 +2760,15 @@ def test_revision_eight_party_start_keeps_plain_opening_as_assistant_only_in_nex
     provider_messages = json.loads(attempt["payload_json"])["input"]["payload"]["messages"]
     stored_messages = json.loads(turns[1]["prompt_json"])
     for messages in (provider_messages, stored_messages):
+        player_blocks = [
+            message["content"]
+            for message in messages
+            if message["role"] == "system"
+            and message["content"].startswith("PLAYER_CHARACTER")
+        ]
+        assert len(player_blocks) == 1
+        assert "Имя: Mira" in player_blocks[0]
+        assert "Описание: Investigator" in player_blocks[0]
         assert not any(
             message["role"] == "user" and message["content"] == AUTO_START_HISTORY_MESSAGE
             for message in messages
@@ -2773,6 +2787,8 @@ def test_revision_eight_party_start_keeps_plain_opening_as_assistant_only_in_nex
             "rp-gateway.rp-narrator-bundle",
         ):
             assert removed_scene_marker not in serialized
+    continued_metadata = json.loads(turns[1]["metadata_json"])
+    assert "player_character" in continued_metadata["prompt_assembly"]["included_block_ids"]
 
 
 def test_party_start_reports_running_idempotency_request(tmp_path: Path):
@@ -4125,6 +4141,178 @@ def test_revision10_party_initializes_clock_and_confirms_authored_marker(tmp_pat
     )
     assert duplicate.status_code == 200
     assert duplicate.json()["duplicate"] is True
+
+
+def test_revision10_party_start_includes_and_consumes_world_clock_without_clock_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_complete = NarrativeClient.complete
+    write_worldpack(
+        tmp_path,
+        rp_revision=10,
+        world_clock={
+            "schema_version": "rp-gateway.world-clock.v1",
+            "initial_date": "0964-04-18T09:00:00Z",
+            "step_unit": "iso8601_duration",
+            "max_step": "P2D",
+            "markers": [
+                {
+                    "id": "demo.opening-ready",
+                    "label": "Стартовое событие подтверждено",
+                },
+                {
+                    "id": "demo.opening-cancelled",
+                    "label": "Стартовое событие отменено",
+                },
+            ],
+            "events": [
+                {
+                    "id": "demo.opening-event",
+                    "condition": {
+                        "type": "after_confirmed",
+                        "marker_id": "demo.opening-ready",
+                    },
+                    "summary": "Стартовое событие произошло.",
+                    "superseded_by": ["demo.opening-cancelled"],
+                    "consequences": [
+                        {
+                            "type": "world_fact",
+                            "id": "demo.fact.opening-event",
+                            "text": "Стартовое событие уже произошло.",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    c = client(tmp_path, rp_contract_observed_revision=10)
+    party = create_demo_party(c, title="World Clock Opening")
+
+    confirmed = c.post(
+        f"/api/parties/{party['id']}/world-clock/markers/demo.opening-ready/confirm",
+        json={"idempotency_key": "confirm-opening-event"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    started = c.post(
+        f"/api/parties/{party['id']}/start",
+        json={"idempotency_key": "world-clock-opening"},
+    )
+    assert started.status_code == 200, started.text
+
+    store = c.app.state.party_store.store_for_party(str(party["id"]))
+    turn = store.latest_turn(include_prompt=True)
+    prompt = json.loads(turn["prompt_json"])
+    world_events = next(
+        message["content"]
+        for message in prompt
+        if message["content"].startswith("СОБЫТИЯ МИРА")
+    )
+    assert "Текущая игровая дата: 0964-04-18T09:00:00Z" in world_events
+    assert "Стартовое событие произошло." in world_events
+    metadata = latest_turn_metadata(store)["world_clock_events"]
+    assert metadata["date"] == "0964-04-18T09:00:00Z"
+    assert [event["id"] for event in metadata["occurred"]] == ["demo.opening-event"]
+    state = store.get_state()
+    assert state["world_clock"]["pending_announcements"] == []
+    assert state["world_clock"]["event_statuses"]["demo.opening-event"][
+        "announced_party_turn"
+    ] == 1
+    assert all(job["job_type"] != "world_clock" for job in store.service_jobs(limit=20))
+
+    async def unavailable_narrator(
+        self: NarrativeClient,
+        *_args: object,
+        **_kwargs: object,
+    ) -> dict:
+        raise httpx.ConnectError(
+            "Narrative provider unavailable",
+            request=httpx.Request("POST", "https://provider.example/v1/chat/completions"),
+        )
+
+    fallback_opening = create_demo_party(c, title="World Clock Opening Fallback")
+    confirmed = c.post(
+        f"/api/parties/{fallback_opening['id']}/world-clock/markers/demo.opening-ready/confirm",
+        json={"idempotency_key": "confirm-fallback-opening-event"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    monkeypatch.setattr(NarrativeClient, "complete", unavailable_narrator)
+    started = c.post(
+        f"/api/parties/{fallback_opening['id']}/start",
+        json={"idempotency_key": "world-clock-opening-fallback"},
+    )
+    assert started.status_code == 200, started.text
+
+    fallback_store = c.app.state.party_store.store_for_party(str(fallback_opening["id"]))
+    fallback_turn = fallback_store.latest_turn(include_prompt=True)
+    fallback_record = fallback_store.turn_record(int(fallback_turn["id"]))
+    assert fallback_record is not None
+    assert fallback_record["excluded_from_memory"] is True
+    assert "world_clock_events" not in fallback_record["metadata"]
+    assert any(
+        message["content"].startswith("СОБЫТИЯ МИРА")
+        and "Стартовое событие произошло." in message["content"]
+        for message in json.loads(fallback_turn["prompt_json"])
+    )
+    fallback_state = fallback_store.get_state()
+    assert [
+        item["id"]
+        for item in fallback_state["world_clock"]["pending_announcements"]
+    ] == ["demo.opening-event"]
+    assert fallback_state["world_clock"]["event_statuses"]["demo.opening-event"].get(
+        "announced_party_turn"
+    ) is None
+
+    monkeypatch.setattr(NarrativeClient, "complete", original_complete)
+    fallback_turn_party = create_demo_party(c, title="World Clock Turn Fallback")
+    started = c.post(
+        f"/api/parties/{fallback_turn_party['id']}/start",
+        json={"idempotency_key": "world-clock-before-turn-fallback"},
+    )
+    assert started.status_code == 200, started.text
+    confirmed = c.post(
+        f"/api/parties/{fallback_turn_party['id']}/world-clock/markers/demo.opening-ready/confirm",
+        json={"idempotency_key": "confirm-turn-fallback-event"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    monkeypatch.setattr(NarrativeClient, "complete", unavailable_narrator)
+    message = c.post(
+        f"/api/parties/{fallback_turn_party['id']}/messages",
+        json={
+            "content": "Осматриваю двор.",
+            "channel": "scene",
+            "idempotency_key": "world-clock-turn-fallback",
+        },
+    )
+    assert message.status_code == 200, message.text
+    assert message.json().get("status") != "route_required"
+
+    fallback_turn_store = c.app.state.party_store.store_for_party(
+        str(fallback_turn_party["id"])
+    )
+    fallback_message = fallback_turn_store.latest_turn(include_prompt=True)
+    fallback_message_record = fallback_turn_store.turn_record(int(fallback_message["id"]))
+    assert fallback_message_record is not None
+    assert fallback_message_record["excluded_from_memory"] is True
+    assert "world_clock_events" not in fallback_message_record["metadata"]
+    assert any(
+        message["content"].startswith("СОБЫТИЯ МИРА")
+        and "Стартовое событие произошло." in message["content"]
+        for message in json.loads(fallback_message["prompt_json"])
+    )
+    fallback_turn_state = fallback_turn_store.get_state()
+    assert fallback_turn_state["world_clock"]["date"] == "0964-04-18T09:00:00Z"
+    assert [
+        item["id"]
+        for item in fallback_turn_state["world_clock"]["pending_announcements"]
+    ] == ["demo.opening-event"]
+    assert fallback_turn_state["world_clock"]["event_statuses"]["demo.opening-event"].get(
+        "announced_party_turn"
+    ) is None
+    assert all(
+        job["job_type"] != "world_clock"
+        for job in fallback_turn_store.service_jobs(limit=20)
+    )
 
 
 def test_revision10_candidate_branch_keeps_disabled_authored_event_cards(tmp_path: Path):

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from app.core.config import Settings
+from app.services.adjudicator import Adjudicator
 from app.services.relationship_extraction import (
     RelationshipExtractionRejected,
     RelationshipExtractionService,
@@ -179,7 +181,7 @@ def test_process_turn_rejects_removed_evidence_quote_alias(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Proves the observed local-model alias remains a terminal ADR rejection."""
+    """Proves the observed local-model alias is audited and retried by the job."""
     store = make_store(tmp_path)
     turn_id = store.record_turn("turn-1", "request-1", "Иван публично оскорбил цель.", "Нарратор продолжил сцену.", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
@@ -193,10 +195,10 @@ def test_process_turn_rejects_removed_evidence_quote_alias(
         }
 
     monkeypatch.setattr(service, "_complete", fenced_completion)
-    result = asyncio.run(service.process_turn(turn_id))
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        asyncio.run(service.process_turn(turn_id))
 
-    assert result["applied"] is False
-    assert result["rejection_code"] == "malformed_response"
+    assert exc_info.value.code == "malformed_response"
     with store.connect() as connection:
         cause = connection.execute("SELECT evidence FROM relationship_causes").fetchone()
     assert cause is None
@@ -231,10 +233,10 @@ def test_process_turn_rejects_player_intent_as_completed_relationship_evidence(
         }
 
     monkeypatch.setattr(service, "_complete", intent_completion)
-    result = asyncio.run(service.process_turn(turn_id))
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        asyncio.run(service.process_turn(turn_id))
 
-    assert result["applied"] is False
-    assert result["rejection_code"] == "evidence_not_narrated"
+    assert exc_info.value.code == "evidence_not_narrated"
     with store.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM relationship_causes").fetchone()[0] == 0
 
@@ -314,9 +316,10 @@ def test_process_turn_audits_unresolved_original_mention(tmp_path: Path, monkeyp
         }
 
     monkeypatch.setattr(service, "_complete", unresolved_completion)
-    result = asyncio.run(service.process_turn(turn_id))
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        asyncio.run(service.process_turn(turn_id))
 
-    assert result["rejection_code"] == "unresolved_mention"
+    assert exc_info.value.code == "unresolved_mention"
     with store.connect() as connection:
         audit = connection.execute(
             "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_rejected'"
@@ -370,6 +373,9 @@ def test_completion_payload_includes_identity_hint_for_character_targeting(tmp_p
     assert "never output an internal character ID" in prompt
     assert 'exactly these JSON keys: "character_mention", "event_id", and "evidence"' in prompt
     assert 'in "evidence"; never use "evidence_quote"' in prompt
+    assert "character_mention alias must occur literally inside that same evidence" in prompt
+    assert "Copy evidence exactly from narrative_response" in prompt
+    assert "explicitly proves the completed event" in prompt
     assert "one self-contained verbatim fragment" in prompt
     assert "quote only from narrative_response, never from player_message intent" in prompt
     assert "Approaching, sitting beside, asking, mentioning, or asking about a character never proves" in prompt
@@ -405,11 +411,11 @@ def test_completion_payload_keeps_remote_service_models_schema_free(tmp_path: Pa
     assert "response_format" not in payload
 
 
-def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
+def test_process_turn_malformed_json_is_retryable_after_durable_rejection_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Proves malformed provider output is terminal instead of retrying as a technical failure."""
+    """Proves malformed provider output reaches the existing job retry policy."""
     store = make_store(tmp_path)
     turn_id = store.record_turn("turn-1", "request-1", "Иван публично оскорбил цель.", "Нарратор продолжил сцену.", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
@@ -418,9 +424,10 @@ def test_process_turn_malformed_json_is_terminal_existing_b4_rejection(
         return {"model": "fixture", "choices": [{"message": {"content": "not json"}}]}
 
     monkeypatch.setattr(service, "_complete", malformed_completion)
-    result = asyncio.run(service.process_turn(turn_id))
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        asyncio.run(service.process_turn(turn_id))
 
-    assert result["rejection_code"] == "malformed_response"
+    assert exc_info.value.code == "malformed_response"
     with store.connect() as connection:
         audit = connection.execute(
             "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_rejected'"
@@ -447,15 +454,119 @@ def test_numeric_field_rejects_whole_response_without_partial_accrual(
         }
 
     monkeypatch.setattr(service, "_complete", numeric_completion)
-    result = asyncio.run(service.process_turn(turn_id))
+    with pytest.raises(RelationshipExtractionRejected) as exc_info:
+        asyncio.run(service.process_turn(turn_id))
 
-    assert result["rejection_code"] == "numeric_field_present"
+    assert exc_info.value.code == "numeric_field_present"
     with store.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM relationship_causes").fetchone()[0] == 0
         audit = connection.execute(
             "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_rejected'"
         ).fetchone()
     assert json.loads(audit["event_json"])["code"] == "numeric_field_present"
+
+
+def test_process_turn_accepts_valid_empty_result_without_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid empty extraction is a completed job, not a retry trigger."""
+    store = make_store(tmp_path)
+    turn_id = store.record_turn(
+        "turn-1",
+        "request-1",
+        "Я осматриваю пустой двор.",
+        "Во дворе тихо; знакомых персонажей рядом нет.",
+        {},
+        1,
+        party_turn=1,
+    )
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    async def empty_completion(*_args, **_kwargs):
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": json.dumps({"events": []})}}],
+        }
+
+    monkeypatch.setattr(service, "_complete", empty_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert result["processed"] is True
+    assert result["applied"] is False
+    assert result["events"] == []
+    with store.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM relationship_causes").fetchone()[0] == 1
+        audit = connection.execute(
+            "SELECT event_json FROM audit_events WHERE event_type = 'relationship_extraction_applied'"
+        ).fetchone()
+    assert json.loads(audit["event_json"])["extracted_events"] == 0
+
+
+def test_invalid_relationship_job_retries_five_times_then_becomes_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path, "relationship-retry")
+    request_id = "relationship-retry-request"
+    store.record_turn(
+        "relationship-retry-turn",
+        request_id,
+        "Я спорю с Иваном.",
+        "Иван публично оскорбил цель.",
+        {},
+        1,
+        metadata={"turn_kind": "narrative"},
+        party_turn=1,
+    )
+    runtime = replace(
+        settings(
+            tmp_path,
+            scenario_type="rp",
+            rp_contract_revision=9,
+        ),
+        campaign_id=store.campaign_id,
+    )
+    adjudicator = Adjudicator(runtime, store, relationship_model=MODEL)
+    assert adjudicator.relationship_extraction is not None
+    calls = 0
+
+    async def malformed_completion(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"model": "fixture", "choices": [{"message": {"content": "not json"}}]}
+
+    monkeypatch.setattr(
+        adjudicator.relationship_extraction,
+        "_complete",
+        malformed_completion,
+    )
+    job = store.enqueue_service_job(
+        "relationship_extraction",
+        request_id,
+        5,
+        party_turn=1,
+    )
+
+    for attempt in range(5):
+        asyncio.run(adjudicator.drain_service_jobs(None, wait_for_retries=False))
+        current = next(item for item in store.service_jobs() if item["id"] == job["id"])
+        if attempt < 4:
+            assert current["status"] == "pending"
+            with store.connect() as connection:
+                connection.execute(
+                    "UPDATE service_jobs SET next_attempt_at = 0 WHERE id = ?",
+                    (job["id"],),
+                )
+
+    assert calls == 5
+    assert current["attempts"] == 5
+    assert current["status"] == "stale"
+    with store.connect() as connection:
+        rejected = connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type = 'relationship_extraction_rejected'"
+        ).fetchone()[0]
+    assert rejected == 5
 
 
 def test_parse_response_rejects_numeric_values_before_shape_acceptance(tmp_path: Path) -> None:

@@ -142,7 +142,7 @@ class RelationshipExtractionService:
         )
 
     async def process_turn(self, turn_id: int, authorization: str | None = None) -> dict[str, Any]:
-        """Process exactly one recorded turn; semantic rejection is terminal."""
+        """Process exactly one recorded turn; invalid model output is retryable."""
         if self.settings.scenario_type != "rp":
             return {
                 "processed": False,
@@ -189,13 +189,7 @@ class RelationshipExtractionService:
                 audit_payload,
                 request_id,
             )
-            return {
-                "processed": True,
-                "applied": False,
-                "turn_id": int(turn_id),
-                "rejection_code": exc.code,
-                "events": [],
-            }
+            raise
 
         applied = self.mechanics.apply_events(
             turn_id=int(turn_id),
@@ -426,7 +420,10 @@ class RelationshipExtractionService:
                         "exactly these JSON keys: \"character_mention\", \"event_id\", and \"evidence\". Put a short "
                         "verbatim quote from the supplied turn in \"evidence\"; never use \"evidence_quote\". "
                         "Use only the supplied alias forms for character_mention; never output an internal character "
-                        "ID. Follow the supplied event_requirements exactly. Return at most five events. Do not "
+                        "ID. The selected character_mention alias must occur literally inside that same evidence "
+                        "fragment. Copy evidence exactly from narrative_response without changing quotation marks, "
+                        "dashes, words, or punctuation. Follow the supplied event_requirements exactly. Return at "
+                        "most five events. Do not "
                         "output numbers in any field. "
                         "Each event's evidence must be one self-contained verbatim fragment that explicitly shows "
                         "both the player and the named character in the completed interaction; quote only from "
@@ -437,7 +434,9 @@ class RelationshipExtractionService:
                         "jointly facing the same concrete danger. A fragment saying only that the character holds a "
                         "rope near a breach or chasm is not shared_risk because it shows only the character. "
                         "Do not infer hidden motives, scores, weights, bands, or events not completed in the turn. "
-                        "If nothing qualifies, return {\"events\":[]}."
+                        "Before emitting an event, verify that the one exact narrative_response fragment contains "
+                        "the literal selected alias and explicitly proves the completed event. If it does not, omit "
+                        "that event. If nothing qualifies, return {\"events\":[]}."
                     ),
                 },
                 {

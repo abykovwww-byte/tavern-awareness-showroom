@@ -724,6 +724,25 @@ def test_revision_eight_relationship_pressure_uses_declared_alias_without_state_
     assert alias_pressure is not None
     assert "Иван" in alias_pressure
     assert "ivan" not in alias_pressure.casefold()
+    assert "при доступном контакте" in alias_pressure
+    assert "прояви это в текущей сцене" not in alias_pressure
+
+    unnamed.relationship_mechanics.store.open_event(
+        character_id="ivan",
+        axis="loyalty",
+        event_id="favour",
+        opened_turn=0,
+        due_turn=1,
+    )
+    due = unnamed.relationship_mechanics.due_event_block(
+        1,
+        {"ivan": "Иван"},
+        character_ids={"ivan"},
+    )
+    assert due is not None
+    assert "только если персонаж уже присутствует" in due
+    assert "иначе не перемещай и не вводи его" in due
+    assert "покажи в текущей сцене" not in due
 
     named_store = make_store(tmp_path, "rev8-named-pressure")
     named = Adjudicator(
@@ -782,10 +801,17 @@ def test_revision_eight_relationship_prompt_is_bounded_by_whole_priority_lines(
     assert block is not None
     assert len(block) <= 1_500
     assert block.startswith("RELATIONSHIP_PRESSURE\n")
+    assert "Не перемещай и не вводи NPC ради этого блока" in block
     assert resolution_lines[-1] in block
     assert pressure_lines[-1] not in block
     assert set(block.splitlines()) <= {
         "RELATIONSHIP_PRESSURE",
+        (
+            "Применяй это давление только к персонажу, который уже присутствует в текущей "
+            "сцене или может повлиять через установленный недавней историей канал. Не перемещай "
+            "и не вводи NPC ради этого блока; если контакта нет, отложи проявление — событие "
+            "останется активным."
+        ),
         "",
         *resolution_lines,
         *pressure_lines,

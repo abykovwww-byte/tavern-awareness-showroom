@@ -10,11 +10,13 @@ prompt переносится с неизменяемых JSON-проекций 
 выполняется одним общим model call, а не пятью отдельными пересказами.
 
 **Delivery status:** `каркас` для строк
-[`registry/032.yml`](registry/032.yml). Реализация S1 и узкая activation для
-`merchant-sviatoslav` слиты и применены на сервере: новая stamp-party получила
-effective revision `8`. Она не выполняла narrator или service model call.
-Живые gates 25/60 ходов по решению пользователя отложены до полной реализации
-RP-ядра, поэтому readiness не повышается. S2–S4 в это решение не входят.
+[`registry/032.yml`](registry/032.yml). После первоначальной rev8 stamp-проверки
+последующий revision-10 rollout был применён на сервере, а production party
+`party_c82153b0c2da` прошла opening и 60 обычных ходов. Она реально исполнила
+sliding RAW window, cache anchor и combined five-section memory, но выявила
+потерю карточки игрока и перенос отсутствующего NPC из relationship pressure.
+Текущий source closure закрывает эти разрывы; до повторного post-apply прогона
+readiness не повышается. S2–S4 имеют отдельные решения.
 
 ## Context
 
@@ -42,9 +44,9 @@ API не удаляются, но его общая сериализация б�
 - relationship pre-prompt scope.
 
 Revisions `0..7` сохраняют прежнее поведение. Existing parties автоматически не
-мигрируют. Training runtime, scoring, artifacts и debrief не меняются. Первая
-реализация решения не активировала observed revision и не меняла WorldPack
-declared revision; отдельная узкая активация зафиксирована ниже.
+мигрируют. Training runtime, scoring, artifacts и debrief не меняются.
+Первоначальный source slice не активировал observed revision и не менял
+WorldPack declared revision; последующие apply и endurance зафиксированы ниже.
 
 ## Decision
 
@@ -74,22 +76,27 @@ units новее безопасного покрытия story memory. Нача�
 
 1. короткие русские правила narrator;
 2. `WORLD_SYSTEM_PROMPT`, полный блок не более 5 000 символов;
-3. `WORLD_ABSOLUTE_RULES`, один нумерованный prose-list без storage IDs/source,
+3. компактный `PLAYER_CHARACTER`: только стабильные `name` и `description`,
+   без полного state JSON и с прямым запретом играть за персонажа;
+4. `WORLD_ABSOLUTE_RULES`, один нумерованный prose-list без storage IDs/source,
    не более 3 000 символов;
-4. RAW history с якорем по восемь units;
-5. `RP_STORY_MEMORY`, если snapshot уже существует, не более 24 000 символов;
-6. `PARTY_LORE_CARDS`, только целые cards, не более 4 000 символов;
-7. только содержательный `AUTHORITATIVE_OUTCOME` — target, активное ограничение
+5. RAW history с якорем по восемь units;
+6. `RP_STORY_MEMORY`, если snapshot уже существует, не более 24 000 символов;
+7. `PARTY_LORE_CARDS`, только целые cards, не более 4 000 символов;
+8. только содержательный `AUTHORITATIVE_OUTCOME` — target, активное ограничение
    или обязательное последствие; generic no-check envelope отсутствует;
-8. `RELATIONSHIP_PRESSURE` и due resolution;
-9. `WORLD_AUTHORS_NOTE`, не более 1 500 символов и последний system block;
-10. current player action последним message.
+9. `RELATIONSHIP_PRESSURE` и due resolution;
+10. rev10 `СОБЫТИЯ МИРА`, если часы включены;
+11. `WORLD_AUTHORS_NOTE`, не более 1 500 символов и последний system block;
+12. current player action последним message.
 
 Revision `8` не читает и не рендерит `Relevant state summary`,
 `RELEVANT_CHARACTERS`, `PROMPT_AUTHORITY_HIERARCHY`, scene state/boundary/
 reanchor/transition allowance, legacy `LONG_TERM_PARTY_MEMORY`,
 `UNCOMPACTED_ARCHIVE_FALLBACK` или `RETRIEVED_ARCHIVE_SCENES`. Narrator возвращает
-plain text, а не `rp-gateway.rp-narrator-bundle.v1`.
+plain text, а не `rp-gateway.rp-narrator-bundle.v1`. Удаление полного state не
+означает удаление личности игрока: карточка обязана присутствовать и в основном
+prompt, и в compact repair.
 
 При hard input overflow Gateway действует только так:
 
@@ -100,17 +107,17 @@ plain text, а не `rp-gateway.rp-narrator-bundle.v1`.
 
 Required blocks, отдельные messages и отдельные turns не обрезаются.
 
-Блоки 1–3 и первые 50 units фактического RAW window образуют неизменяемую
+Блоки 1–4 и первые 50 units фактического RAW window образуют неизменяемую
 якорную основу provider prefix. Story memory, lore cards, correction overlay,
 relationship pressure, world events, author note и current action находятся
-после неё. В блоках 1–3 запрещены turn/state/revision IDs, timestamps и любые
+после неё. В блоках 1–4 запрещены turn/state/revision IDs, timestamps и любые
 счётчики. Новые cache controls, headers или provider settings не добавляются:
 DeepSeek/OpenAI используют совпадение prefix, существующий явный
 `cache_control` остаётся только для Anthropic.
 
 Для rev8 turn metadata рядом с `prompt_assembly` сохраняются
 `cached_prompt_tokens`, `prompt_tokens` и `stable_prompt_prefix_hash`. Hash
-считается по реально повторяемой основе — блокам 1–3 и первым 50 RAW units, а
+считается по реально повторяемой основе — блокам 1–4 и первым 50 RAW units, а
 не по растущему хвосту 51–57; поэтому он меняется при сдвиге якоря, но не при
 добавлении unit внутри одного восьмиходового bucket.
 
@@ -121,6 +128,11 @@ DeepSeek/OpenAI используют совпадение prefix, существ
 characters по whole aliases и optional `Outcome.target`. `scene_state`, seed
 location и authored active threads больше не являются сигналами присутствия.
 Canonical human-readable character name остаётся единственным label в prompt.
+Current-plus-three scan выбирает только кандидатов для relationship projection,
+но не является разрешением переместить персонажа. Pressure/due guidance
+применяется лишь к NPC, уже присутствующему в сцене либо способному повлиять
+через установленный недавней историей канал; иначе проявление откладывается, а
+durable event остаётся active.
 
 ### Five story-memory sections, one normal call
 
@@ -216,17 +228,17 @@ jobs; только rev-8 story-memory job имеет максимум две dur
 
 ## Activation slice 2026-08-25
 
-Source activation задаёт `RP_CONTRACT_OBSERVED_REVISION=8`, но declared revision
-поднимается до `8` только у `merchant-sviatoslav`. Поэтому новая ordinary
-RP-party получает `min(declared, observed)`: «Купец» становится rev8-canary,
-остальные WorldPacks остаются на своих `6/7`, а persisted revision существующих
-parties/branches не меняется.
+Последующие slices подняли observed revision до `10` и Merchant до declared
+revision `10`; effective revision по-прежнему равна `min(declared, observed)`,
+а persisted revision существующих parties/branches не меняется автоматически.
 
 Prompt «Купца» приведён к фактической rev8 boundary: он больше не ссылается на
 удалённый `<AUTHORITATIVE_WORLD_STATE>` и не просит narrator записывать поля
-state/memory. Ansible apply, container-env и stamp-party подтвердили effective
-revision `8`, но stamp содержал только opening boundary без model calls. До
-отложенных живых gates 25/60 registry остаётся на уровне `каркас`.
+state/memory. Первый 60-turn production endurance подтвердил реальный sliding
+RAW anchor, cache reuse и два combined five-section updates, но выявил потерю
+player identity после opening и телепортацию NPC из due pressure. Source closure
+устраняет оба разрыва; до повторной post-apply партии registry остаётся на
+уровне `каркас`.
 
 ## Verification gates
 
@@ -237,23 +249,19 @@ plain narrator response, one-call five-section cadence, structural section retry
 empty-section acceptance, `finish_reason=length`, same-coverage persistence и
 explicit provider/model logging.
 
-Живой gate остаётся отдельным действием после полной реализации RP-ядра:
+Следующий живой gate после apply повторяет уже исполненный 60-turn путь и
+проверяет именно исправленные границы:
 
-1. 25-turn rev-8 party: 24 предыдущих игровых units дословно, целевой состав
-   blocks, service part не более 13 500 символов, no fallback и корректная
-   местоименная связность;
-2. 60-turn party: отсутствие episodic memory jobs/rows, один `section_key=all`
-   call на штатный update, safe coverage без gaps, partial structural failure
-   сохраняет четыре sections и вызывает только один exact section retry;
-3. `service_call_log`: calls имеют exact OpenRouter/model, input не более
-   20 000 символов, strict section JSON Schema без искусственного output cap и
-   ни одной NVIDIA row;
-4. на той же 60-turn party начало RAW и `stable_prompt_prefix_hash` меняются
-   только на границе восьмиходового якоря; не менее пяти ходов из каждого окна
-   восьми имеют `cached_prompt_tokens / prompt_tokens >= 0.70`, а средняя доля
-   по партии выше 8.6%.
+1. каждый ordinary и repair prompt содержит один `PLAYER_CHARACTER`, narrator
+   сохраняет идентичность и не принимает действия за игрока;
+2. 60-turn path снова показывает отсутствие episodic memory, combined
+   five-section updates, safe coverage без gaps и сдвиг RAW/cache anchor;
+3. `service_call_log` сохраняет exact OpenRouter/model, strict section JSON
+   Schema, bounded input и ни одной NVIDIA row;
+4. relationship cause доходит до следующего prompt и сцены, а pressure не
+   переносит отсутствующего NPC ради закрытия due event.
 
-До этих gates registry не повышается выше `каркас`.
+До повторного post-apply gate registry не повышается выше `каркас`.
 
 ## Не входит
 
