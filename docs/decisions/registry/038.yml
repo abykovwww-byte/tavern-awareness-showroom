@@ -29,7 +29,7 @@
   expectation: correction_valve_absorbs_only_after_user_fact_and_section_coverage
   probe_command: null
   expected: null
-  waiver: "The turn-12 deterministic test covers one section call, four zero coverages, authority user, GM-turn provenance and terminal absorption. A real OpenRouter call and long-party causal run are deferred."
+  waiver: "Production party party_c82153b0c2da exercised one real OpenRouter situation-section call before turn 50 and advanced only that section, but exposed a same-fact-id collision: coverage passed while replacement authority remained inference and the overlay safely stayed active. Source regression now promotes the existing replacement in place to user authority and proves the absorption predicate; corrected post-apply live absorption remains pending."
 - requirement: "Revision-9 GM intent, GM patch draft and relationship extraction route only to local Gemma with no NVIDIA fallback, relationship jobs become stale after five failures, while sectioned story memory remains explicit OpenRouter DeepSeek with two durable attempts"
   level: каркас
   store: "runtime settings, service_jobs and service_call_log"

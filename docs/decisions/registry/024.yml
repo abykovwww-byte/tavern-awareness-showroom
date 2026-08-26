@@ -22,6 +22,14 @@
   probe_command: null
   expected: null
   waiver: "Typed forbidden claims are enforced before state and turn commit with repair or controlled failure; provider-canary coverage is pending."
+- requirement: "RP narrator prose never switches into the player character first-person voice or creates a first-person dialogue attribution outside NPC direct speech; one repair is allowed and a repeated violation never commits"
+  level: каркас
+  store: "narrator response validation, turn request attempts and committed turn metadata"
+  assertion: absence
+  expectation: narrator_never_commits_first_person_player_takeover
+  probe_command: null
+  expected: null
+  waiver: "The first revision-10 production endurance exposed several committed first-person takeovers that the narrow guard missed. Source regressions now cover the observed forms and preserve NPC direct speech; corrected provider execution is pending."
 - requirement: "A retracted/corrected fact is absent from every following effective prompt"
   level: каркас
   store: "memory projection"

@@ -1307,13 +1307,53 @@ def test_rp_validator_does_not_treat_npc_first_person_dialogue_as_player_voice()
     result = OutputValidator().validate(
         "— Я стою здесь с рассвета, — говорит Ратибор.\n\n"
         "— Смотрю на ворота и жду твоего ответа.\n\n"
-        "Он замолкает и оставляет следующий шаг тебе.",
+        "Милава отвечает: «Я принесу ведомость». Он замолкает и оставляет следующий шаг тебе.",
         outcome,
         base_state(),
         scenario_type="rp",
     )
 
     assert result.valid is True
+
+
+@pytest.mark.parametrize(
+    "narration",
+    [
+        "Я киваю Милаве и принимаю свёрток.",
+        (
+            "Захожу под навес и осматриваю двор.\n\n"
+            "Я подхожу к столу, не дожидаясь ответа.\n\n"
+            "Осторожно разгребаю бумаги."
+        ),
+        "— Вышло, — отвечаю Ратибору и протягиваю ему письмо.",
+        "Отлично, я запомню. Начинаем.\n\nВо дворе звенит ведро.",
+    ],
+)
+def test_rp_validator_rejects_observed_first_person_player_takeover(
+    narration: str,
+) -> None:
+    result = OutputValidator().validate(
+        narration,
+        Outcome(
+            check_id="observed-first-person-takeover",
+            action_type="narrative",
+            actor="player",
+            result="narrative_continuation",
+            roll=0,
+            difficulty=0,
+            modifiers={},
+            final_score=0,
+            consequences=[],
+            authoritative_block="neutral",
+        ),
+        base_state(),
+        scenario_type="rp",
+    )
+
+    assert result.valid is False
+    assert result.violations == [
+        "Narrative switched into the player character's first-person voice."
+    ]
 
 
 def test_rp_core_v2_repeated_absolute_rule_violation_never_commits(

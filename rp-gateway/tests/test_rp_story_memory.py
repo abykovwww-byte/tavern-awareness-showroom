@@ -16,6 +16,7 @@ from app.services.rp_story_memory import (
     STORY_FIELD_LIMITS,
     STORY_MEMORY_SCHEMA,
     STORY_MEMORY_SECTION_FIELDS,
+    apply_validated_story_memory_corrections,
     apply_user_story_memory_corrections,
     completion_finish_reason,
     empty_sectioned_story_memory,
@@ -24,6 +25,7 @@ from app.services.rp_story_memory import (
     normalize_story_memory,
     reconcile_story_memory,
     story_fact_id,
+    story_memory_correction_already_applied,
     story_memory_response_format,
     validate_story_memory_corrections,
 )
@@ -576,6 +578,66 @@ def test_typed_story_memory_replace_uses_committed_turn_id() -> None:
     assert corrected["canon"][1]["status"] == "active"
     assert corrected["canon"][1]["authority"] == "user_correction"
     assert corrected["canon"][1]["source_turn_ids"] == [17]
+
+
+def test_validated_replace_promotes_model_returned_replacement_to_user_authority() -> None:
+    replacement_text = "Милорад передал заказ."
+    replacement_id = story_fact_id(None, replacement_text)
+    generated = empty_sectioned_story_memory()
+    generated["canon"] = [
+        {
+            "fact_id": "raw:incorrect-name",
+            "text": "Горазд передал заказ.",
+            "status": "active",
+            "authority": "narrator",
+            "source_turn_ids": [12],
+        },
+        {
+            "fact_id": replacement_id,
+            "text": replacement_text,
+            "status": "active",
+            "authority": "inference",
+            "source_turn_ids": [12],
+        },
+    ]
+
+    corrected = apply_validated_story_memory_corrections(
+        generated,
+        [
+            {
+                "field": "canon",
+                "fact_id": "raw:incorrect-name",
+                "action": "replace",
+                "replacement_text": replacement_text,
+            }
+        ],
+        14,
+        24_000,
+        authority="user",
+    )
+
+    items = {item["fact_id"]: item for item in corrected["canon"]}
+    assert len(corrected["canon"]) == 2
+    assert items["raw:incorrect-name"]["status"] == "superseded"
+    assert items["raw:incorrect-name"]["authority"] == "user"
+    assert items[replacement_id] == {
+        "fact_id": replacement_id,
+        "text": replacement_text,
+        "status": "active",
+        "authority": "user",
+        "source_turn_ids": [14],
+    }
+    assert story_memory_correction_already_applied(
+        corrected,
+        {
+            "field": "canon",
+            "fact_id": "raw:incorrect-name",
+            "action": "replace",
+            "replacement_text": replacement_text,
+        },
+        14,
+        "user",
+    ) is True
 
 
 def test_typed_replace_at_field_cap_survives_current_prompt_and_persistence(

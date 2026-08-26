@@ -2284,7 +2284,22 @@ def apply_validated_story_memory_corrections(
     for correction in corrections:
         field = correction["field"]
         fact_id = correction["fact_id"]
-        if correction["action"] == "replace" and len(memory[field]) >= STORY_FIELD_LIMITS[field]:
+        replacement_text = str(correction.get("replacement_text") or "")
+        replacement_id = story_fact_id(None, replacement_text) if replacement_text else ""
+        replacement_index = next(
+            (
+                index
+                for index, item in enumerate(memory[field])
+                if str(item.get("fact_id") or "") == replacement_id
+                and str(item.get("fact_id") or "") != fact_id
+            ),
+            None,
+        )
+        if (
+            correction["action"] == "replace"
+            and replacement_index is None
+            and len(memory[field]) >= STORY_FIELD_LIMITS[field]
+        ):
             removable_index = next(
                 (
                     index
@@ -2313,16 +2328,17 @@ def apply_validated_story_memory_corrections(
             "source_turn_ids": source_turn_ids,
         }
         if correction["action"] == "replace":
-            replacement_text = correction["replacement_text"]
-            memory[field].append(
-                {
-                    "fact_id": story_fact_id(None, replacement_text),
-                    "text": replacement_text,
-                    "status": "active",
-                    "authority": authority,
-                    "source_turn_ids": source_turn_ids,
-                }
-            )
+            replacement = {
+                "fact_id": replacement_id,
+                "text": replacement_text,
+                "status": "active",
+                "authority": authority,
+                "source_turn_ids": source_turn_ids,
+            }
+            if replacement_index is None:
+                memory[field].append(replacement)
+            else:
+                memory[field][replacement_index] = replacement
     return fit_story_memory(memory, max(max_chars, 1))
 
 

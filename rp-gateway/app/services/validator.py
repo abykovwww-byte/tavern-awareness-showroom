@@ -57,6 +57,12 @@ FIRST_PERSON_PLAYER_ACTION_STARTS = {
     "чувствую",
 }
 FIRST_PERSON_PARAGRAPH_START_RE = re.compile(r"^(?:я\s+)?([а-яё-]+)\b", re.IGNORECASE)
+FIRST_PERSON_PRONOUN_RE = re.compile(r"(?<![а-яё])я(?![а-яё])", re.IGNORECASE)
+FIRST_PERSON_DIALOGUE_ATTRIBUTION_RE = re.compile(
+    rf"[,!?…]\s*[—–-]\s*(?:я\s+)?(?:{'|'.join(sorted(FIRST_PERSON_PLAYER_ACTION_STARTS))})\b",
+    re.IGNORECASE,
+)
+QUOTED_SPEECH_RE = re.compile(r"«[^»]*»|“[^”]*”|\"[^\"]*\"", re.DOTALL)
 RESULT_NARRATION = {
     "critical_success": "Сцена открывает ясный проход вперед.",
     "success": "Сцена продолжает двигаться в выбранном направлении.",
@@ -157,6 +163,18 @@ def safe_fallback(
 
 
 def sustained_first_person_player_voice(text: str) -> bool:
+    if FIRST_PERSON_DIALOGUE_ATTRIBUTION_RE.search(text):
+        return True
+
+    prose_lines = []
+    for line in QUOTED_SPEECH_RE.sub("", text).splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("—", "–", "-")):
+            continue
+        prose_lines.append(line)
+    if FIRST_PERSON_PRONOUN_RE.search("\n".join(prose_lines)):
+        return True
+
     paragraph_starts = 0
     for paragraph in re.split(r"\n\s*\n", text):
         stripped = paragraph.lstrip()

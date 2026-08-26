@@ -11,10 +11,12 @@
 зафиксирует его с authority `user`.
 
 **Delivery status:** `каркас` для строк
-[`registry/038.yml`](registry/038.yml). Source implementation и локальные
-детерминированные проверки не означают activation, Ansible apply или live
-нарративную проверку. Existing parties и WorldPacks автоматически не мигрируют;
-длинная партия проверяется после завершения всего RP-core по решению пользователя.
+[`registry/038.yml`](registry/038.yml). Revision 10 активирован, и первый
+60-turn production endurance выполнил реальный one-section OpenRouter call, но
+обнаружил collision одинакового replacement `fact_id`: coverage продвинулась,
+а replacement сохранился как `inference`, поэтому overlay правильно остался
+active. Source closure устраняет collision; повторное live absorption evidence
+ещё требуется. Existing parties автоматически не мигрируют и не переписываются.
 
 ## Context
 
@@ -122,6 +124,12 @@ attempts даже до обычного порога 50 ходов. Job пере
 Gateway применяет existing typed replace/retract детерминированно после service
 response и назначает terminal target/replacement authority `user` с GM turn как
 provenance. Overlay снимается только когда одновременно выполнены оба условия:
+
+Если service response уже содержит тот же replacement как новый `inference`,
+Gateway не добавляет второй объект с одинаковым `fact_id`, а повышает найденный
+объект до `authority=user` и заменяет provenance на GM turn. Это сохраняет один
+факт и делает absorption idempotent независимо от того, успела ли модель сама
+сформулировать исправленный текст.
 
 1. exact user-authority fact либо tombstone сохранён в effective snapshot;
 2. coverage затронутой section не меньше `target_turn_id`.
