@@ -20,7 +20,7 @@
   },
   "rp_contract": {
     "schema_version": "rp-core.v2",
-    "revision": 9,
+    "revision": 10,
     "stable_affiliations": {
       "zabulon": "day-watch",
       "gesser": "night-watch",

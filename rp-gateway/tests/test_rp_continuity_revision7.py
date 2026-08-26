@@ -154,18 +154,21 @@ def test_revision_schema_bounds_accept_ten_and_reject_eleven() -> None:
         )
 
 
-def test_only_merchant_declares_revision_ten_candidate() -> None:
+def test_revision_ten_worldpacks_keep_world_clock_optional() -> None:
     worldpacks = Path(__file__).resolve().parents[2] / "worldpacks"
-    revision_ten_packs: set[str] = set()
+    revision_ten_packs: dict[str, bool] = {}
     for manifest_path in worldpacks.glob("*/manifest.json"):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if "rp" not in manifest.get("scenario_types", {}).get("supported", []):
             continue
         contract = manifest.get("rp_contract") or {}
         if contract.get("revision") == 10:
-            revision_ten_packs.add(manifest["id"])
+            revision_ten_packs[manifest["id"]] = "world_clock" in manifest.get("files", {})
 
-    assert revision_ten_packs == {"merchant-sviatoslav"}
+    assert revision_ten_packs == {
+        "day-watch-moscow": False,
+        "merchant-sviatoslav": True,
+    }
     starosta = json.loads((worldpacks / "starosta" / "manifest.json").read_text(encoding="utf-8"))
     assert starosta["rp_contract"] == {"schema_version": "rp-core.v2", "revision": 7}
 
