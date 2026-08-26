@@ -1709,25 +1709,16 @@ class Adjudicator:
         party_turn = int(state.get("meta", {}).get("turn", 0))
         characters = state.get("characters") if isinstance(state.get("characters"), dict) else {}
         declared_aliases = normalized_aliases(self.relationship_model or {})
-        if self.settings.rp_contract_revision >= 8:
-            names = {
-                str(character_id): str(value["name"]).strip()
-                for character_id, value in characters.items()
-                if isinstance(value, dict)
-                and isinstance(value.get("name"), str)
-                and str(value["name"]).strip()
-            }
-        else:
-            names = {
-                str(character_id): self.relationship_character_name(
-                    str(character_id),
-                    value,
-                    declared_aliases.get(str(character_id))
-                    if self.settings.rp_contract_revision >= 7
-                    else None,
-                )
-                for character_id, value in characters.items()
-            }
+        names = {
+            str(character_id): self.relationship_character_name(
+                str(character_id),
+                value,
+                declared_aliases.get(str(character_id))
+                if self.settings.rp_contract_revision >= 7
+                else None,
+            )
+            for character_id, value in characters.items()
+        }
         scene_character_ids = None
         if self.settings.rp_contract_revision >= 7:
             scan_text = latest_player_message

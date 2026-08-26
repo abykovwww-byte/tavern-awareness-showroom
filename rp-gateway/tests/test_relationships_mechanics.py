@@ -704,7 +704,7 @@ def test_revision_seven_adjudicator_filters_pressure_and_due_without_mutation(
     assert all(marker not in explicitly_addressed.casefold() for marker in private_markers)
 
 
-def test_revision_eight_relationship_pressure_requires_canonical_character_name(
+def test_revision_eight_relationship_pressure_uses_declared_alias_without_state_name(
     tmp_path: Path,
 ) -> None:
     unnamed_store = make_scene_store(tmp_path, "rev8-unnamed-pressure")
@@ -716,10 +716,14 @@ def test_revision_eight_relationship_pressure_requires_canonical_character_name(
     assert unnamed.relationship_mechanics is not None
     add_favourable_pressure(unnamed.relationship_mechanics, "ivan")
 
-    assert unnamed.relationship_pressure(
+    alias_pressure = unnamed.relationship_pressure(
         unnamed_store.get_state(),
         latest_player_message="Иван, ответь мне.",
-    ) is None
+    )
+
+    assert alias_pressure is not None
+    assert "Иван" in alias_pressure
+    assert "ivan" not in alias_pressure.casefold()
 
     named_store = make_store(tmp_path, "rev8-named-pressure")
     named = Adjudicator(

@@ -1726,8 +1726,14 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Proves trust_gained -> cause -> next prompt without requiring a band crossing."""
-    pack_dir = write_worldpack(tmp_path, supported_modes=["rp"])
+    """Proves rev8 trust_gained -> alias-named pressure -> recorded next prompt."""
+    pack_dir = write_worldpack(tmp_path, rp_revision=8)
+    state_path = pack_dir / "state-seed.json"
+    state_seed = json.loads(state_path.read_text(encoding="utf-8"))
+    for character in state_seed["characters"].values():
+        character.pop("name", None)
+        character.pop("display_name", None)
+    state_path.write_text(json.dumps(state_seed, ensure_ascii=False), encoding="utf-8")
     model = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -1783,7 +1789,7 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
 
     monkeypatch.setattr(RelationshipExtractionService, "_complete", extracted_event)
     monkeypatch.setattr(NarrativeClient, "mock_completion", narrated_trust)
-    c = client(tmp_path)
+    c = client(tmp_path, rp_contract_observed_revision=8)
     offset_party = create_demo_party(c, title="Offset Party", character_name="Offset")
     for index in range(3):
         response = c.post(
@@ -1794,6 +1800,12 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
 
     target = create_demo_party(c, title="Relationship Party", character_name="Target")
     target_party_id = str(target["id"])
+    assert target["rp_contract_revision"] == 8
+    store = c.app.state.party_store.store_for_party(target_party_id)
+    assert all(
+        not character.get("name") and not character.get("display_name")
+        for character in store.get_state()["characters"].values()
+    )
     first = c.post(
         f"/api/parties/{target_party_id}/messages",
         json={"content": "The king now trusts me after I kept my word.", "idempotency_key": "relationship-positive"},
@@ -1805,7 +1817,6 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
     )
     assert second.status_code == 200, second.text
 
-    store = c.app.state.party_store.store_for_party(target_party_id)
     prompt = json.loads(store.latest_turn(include_prompt=True)["prompt_json"])
     pressure = next(
         (item["content"] for item in prompt if item["content"].startswith("RELATIONSHIP_PRESSURE")),
@@ -1813,6 +1824,8 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
     )
     assert pressure is not None, "RELATIONSHIP_PRESSURE did not appear after trust_gained"
     assert "King" in pressure and "Недавние поступки укрепили доверие" in pressure
+    metadata = latest_turn_metadata(store)
+    assert "relationship_pressure" in metadata["prompt_assembly"]["included_block_ids"]
     causes = RelationshipStore(store, model).cause_rows("king", "loyalty", 2)
     assert any(row["event_id"] == "trust_gained" and row["weight"] > 0 for row in causes)
     with store.connect() as connection:
