@@ -14,6 +14,7 @@ from app.services.narrative import NarrativeClient, json_object_content, respons
 from app.services.relationship_attribution import (
     REJECTION_CODES,
     RelationshipExtractionRejected,
+    normalize_text,
     normalized_aliases,
     resolve_mention,
 )
@@ -27,6 +28,103 @@ from app.services.state_store import StateStore
 logger = logging.getLogger(__name__)
 
 MAX_EVENTS_PER_TURN = 5
+
+EVENT_EVIDENCE_GUIDANCE = {
+    "abandoned_in_danger": "The player or character explicitly left the other without help in danger.",
+    "abandoned_in_need": "The player or character explicitly left the other without needed help.",
+    "broken_agreement": "A concrete agreement was explicitly broken or not fulfilled.",
+    "broken_promise": "A concrete promise was explicitly broken or not kept.",
+    "coercive_magic_used": "Magic was explicitly used to force or control the other participant.",
+    "defended_publicly": "One participant explicitly defended the other before witnesses.",
+    "fair_deal": "The participants explicitly completed or agreed a trade, price, or exchange.",
+    "honest_warning": "One participant explicitly gave the other a truthful warning.",
+    "insult_public": "One participant explicitly insulted the other before witnesses.",
+    "kept_agreement": "A concrete agreement was explicitly fulfilled.",
+    "kept_promise": "A concrete promise was explicitly fulfilled.",
+    "physical_assault": "One participant explicitly struck, attacked, or wounded the other.",
+    "public_humiliation": "One participant explicitly humiliated the other before witnesses.",
+    "shared_risk": "Both participants explicitly faced the same concrete danger together.",
+    "trust_gained": "One participant explicitly showed or granted new trust to the other.",
+    "voluntary_help_given": "One participant explicitly helped, rescued, or supported the other.",
+}
+
+# Every group is required; one marker inside each group is enough. This is a
+# conservative terminal gate, not a general semantic classifier. Unknown
+# WorldPack event IDs retain the existing verbatim/alias contract.
+EVENT_EVIDENCE_MARKER_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "abandoned_in_danger": ((
+        "бросил", "бросила", "оставил без", "оставила без", "оставил ранен",
+        "оставила ранен", "отказался помог", "отказалась помог", "не помог",
+        "abandoned", "left behind", "refused to help", "did not help",
+    ),),
+    "abandoned_in_need": ((
+        "бросил", "бросила", "оставил без", "оставила без", "оставил ранен",
+        "оставила ранен", "отказался помог", "отказалась помог", "не помог",
+        "abandoned", "left behind", "refused to help", "did not help",
+    ),),
+    "broken_agreement": ((
+        "нарушил договор", "нарушила договор", "нарушил соглаш", "нарушила соглаш",
+        "сорвал договор", "сорвала договор", "не выполнил договор", "не выполнила договор",
+        "broke the agreement", "broke an agreement", "failed to honor the agreement",
+    ),),
+    "broken_promise": ((
+        "нарушил обещ", "нарушила обещ", "не сдержал обещ", "не сдержала обещ",
+        "нарушил клятв", "нарушила клятв", "broke the promise", "broke a promise",
+        "failed to keep the promise",
+    ),),
+    "coercive_magic_used": (
+        ("маг", "заклин", "magic", "spell"),
+        ("застав", "принуд", "подчини", "forced", "coerced", "controlled"),
+    ),
+    "defended_publicly": (
+        ("заступ", "защит", "вступил за", "вступила за", "defended", "stood up for"),
+        ("публич", "при всех", "на глазах", "перед толп", "открыто", "public", "in front of", "before the crowd"),
+    ),
+    "fair_deal": ((
+        "по рукам", "договорил", "сторгов", "купил", "купила", "продал", "продала",
+        "обменял", "обменяла", "заплатил", "заплатила", "заключил сделк", "заключила сделк",
+        "struck a deal", "agreed the price", "agreed on the price", "bought", "sold", "paid", "traded",
+    ),),
+    "honest_warning": (
+        ("предупред", "warned", "warning"),
+        ("честн", "открыто", "правд", "honest", "truthful", "openly"),
+    ),
+    "insult_public": (
+        ("оскорб", "обозвал", "униз", "insult", "humiliat"),
+        ("публич", "при всех", "на глазах", "перед толп", "public", "in front of", "before the crowd"),
+    ),
+    "kept_agreement": ((
+        "выполнил договор", "выполнила договор", "соблюл соглаш", "соблюла соглаш",
+        "по договорённости", "по договоренности", "kept the agreement", "honored the agreement",
+        "fulfilled the agreement",
+    ),),
+    "kept_promise": ((
+        "сдержал обещ", "сдержала обещ", "выполнил обещ", "выполнила обещ",
+        "как обещал", "как обещала", "сдержал слово", "сдержала слово",
+        "kept the promise", "kept a promise", "as promised", "fulfilled the promise",
+    ),),
+    "physical_assault": ((
+        "ударил", "ударила", "избил", "избила", "напал", "напала", "ранил", "ранила",
+        "пнул", "пнула", "stabbed", "punched", "kicked", "attacked", "struck", "wounded",
+    ),),
+    "public_humiliation": (
+        ("униз", "опозор", "высме", "humiliat", "shamed", "ridiculed"),
+        ("публич", "при всех", "на глазах", "перед толп", "public", "in front of", "before the crowd"),
+    ),
+    "shared_risk": (
+        (" мы ", " оба ", " вместе ", " вдвоём ", " вдвоем ", " we ", " both ", " together "),
+        ("риск", "опасн", "под огн", "обстрел", "засад", "напад", "атак", "бой", "пропаст", "danger", "risk", "under fire", "ambush", "attack"),
+    ),
+    "trust_gained": ((
+        "доверил", "доверила", "доверился", "доверилась", "поверил", "поверила",
+        "оказал доверие", "оказала доверие", "trusted", "trusts", "placed trust", "confided",
+    ),),
+    "voluntary_help_given": ((
+        "помог", "помогла", "выручил", "выручила", "спас", "спасла", "поддержал",
+        "поддержала", "оказал помощь", "оказала помощь", "вытягивает", "вытащил", "вытащила",
+        "подхватил", "подхватила", "helped", "rescued", "aided", "supported",
+    ),),
+}
 
 
 class RelationshipExtractionService:
@@ -80,6 +178,7 @@ class RelationshipExtractionService:
                 response_text(raw_response),
                 aliases=aliases,
                 turn_text=turn_text,
+                narrative_text=str(turn.get("narrative_response") or ""),
             )
         except RelationshipExtractionRejected as exc:
             audit_payload = {"turn_id": int(turn_id), "code": exc.code}
@@ -136,6 +235,7 @@ class RelationshipExtractionService:
         *,
         aliases: dict[str, list[str]] | None = None,
         turn_text: str = "",
+        narrative_text: str = "",
     ) -> dict[str, Any]:
         """Parse and validate the all-or-nothing qualitative extraction payload."""
         try:
@@ -179,12 +279,16 @@ class RelationshipExtractionService:
             evidence = event.get("evidence")
             if not isinstance(event_id, str) or event_id not in event_ids:
                 raise RelationshipExtractionRejected("unknown_event_id")
+            if narrative_text and normalize_text(evidence) not in normalize_text(narrative_text):
+                raise RelationshipExtractionRejected("evidence_not_narrated", mention=character_mention)
             character_id = resolve_mention(
                 character_mention,
                 evidence=evidence,
-                turn_text=turn_text,
+                turn_text=narrative_text or turn_text,
                 aliases=aliases or {},
             )
+            if not self._event_evidence_matches(event_id, evidence):
+                raise RelationshipExtractionRejected("event_evidence_mismatch", mention=character_mention)
             normalized.append(
                 {
                     "character_id": character_id,
@@ -300,6 +404,13 @@ class RelationshipExtractionService:
             },
             "characters": character_catalog,
             "allowed_event_ids": sorted(self._event_models()),
+            "event_requirements": {
+                event_id: EVENT_EVIDENCE_GUIDANCE.get(
+                    event_id,
+                    "Only a directly completed interaction stated in narrative_response qualifies.",
+                )
+                for event_id in sorted(self._event_models())
+            },
         }
         payload: dict[str, Any] = {
             "model": model_name,
@@ -315,11 +426,13 @@ class RelationshipExtractionService:
                         "exactly these JSON keys: \"character_mention\", \"event_id\", and \"evidence\". Put a short "
                         "verbatim quote from the supplied turn in \"evidence\"; never use \"evidence_quote\". "
                         "Use only the supplied alias forms for character_mention; never output an internal character "
-                        "ID. Return at most five events. Do not "
+                        "ID. Follow the supplied event_requirements exactly. Return at most five events. Do not "
                         "output numbers in any field. "
                         "Each event's evidence must be one self-contained verbatim fragment that explicitly shows "
-                        "both the player and the named character in the completed interaction; do not combine "
-                        "separate snippets. The character's presence, routine action, or danger alone is not enough. "
+                        "both the player and the named character in the completed interaction; quote only from "
+                        "narrative_response, never from player_message intent, and do not combine separate snippets. "
+                        "Approaching, sitting beside, asking, mentioning, or asking about a character never proves "
+                        "an event by itself. The character's presence, routine action, or danger alone is not enough. "
                         "For shared_risk, that one fragment must explicitly show both the player and the character "
                         "jointly facing the same concrete danger. A fragment saying only that the character holds a "
                         "rope near a breach or chasm is not shared_risk because it shows only the character. "
@@ -401,6 +514,14 @@ class RelationshipExtractionService:
     def _event_models(self) -> dict[str, Any]:
         events = self.model.get("events")
         return events if isinstance(events, dict) else {}
+
+    @staticmethod
+    def _event_evidence_matches(event_id: str, evidence: str) -> bool:
+        requirements = EVENT_EVIDENCE_MARKER_GROUPS.get(event_id)
+        if requirements is None:
+            return True
+        normalized = f" {normalize_text(evidence)} "
+        return all(any(marker in normalized for marker in group) for group in requirements)
 
     @classmethod
     def _contains_number(cls, value: object) -> bool:

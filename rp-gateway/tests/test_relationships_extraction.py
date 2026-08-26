@@ -68,7 +68,7 @@ def settings(tmp_path: Path, *, scenario_type: str, rp_contract_revision: int = 
 def test_process_turn_is_idempotent_for_the_same_recorded_turn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Proves rerunning extraction cannot add a second cause or change the sum."""
     store = make_store(tmp_path)
-    turn_id = store.record_turn("turn-1", "request-1", "Иван публично оскорбил цель.", "Нарратор продолжил сцену.", {}, 1, party_turn=1)
+    turn_id = store.record_turn("turn-1", "request-1", "Я спорю с Иваном.", "Иван публично оскорбил цель.", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
     calls = 0
 
@@ -156,7 +156,7 @@ def test_process_turn_resolves_due_favour_from_marked_extracted_evidence(
 def test_process_turn_accepts_single_fenced_json_object(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Proves the local service model's fenced JSON response still accrues one valid cause."""
     store = make_store(tmp_path)
-    turn_id = store.record_turn("turn-1", "request-1", "Иван публично оскорбил цель.", "Нарратор продолжил сцену.", {}, 1, party_turn=1)
+    turn_id = store.record_turn("turn-1", "request-1", "Я спорю с Иваном.", "Иван публично оскорбил цель.", {}, 1, party_turn=1)
     service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
 
     async def fenced_completion(*_args, **_kwargs):
@@ -203,13 +203,100 @@ def test_process_turn_rejects_removed_evidence_quote_alias(
     assert RelationshipStore(store, MODEL).value("ivan", "loyalty", 1) == 0
 
 
+def test_process_turn_rejects_player_intent_as_completed_relationship_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path)
+    player_intent = "Я публично оскорбляю Ивана при всех."
+    turn_id = store.record_turn(
+        "turn-1",
+        "request-1",
+        player_intent,
+        "Иван молча смотрит на тебя.",
+        {},
+        1,
+        party_turn=1,
+    )
+    service = RelationshipExtractionService(settings(tmp_path, scenario_type="rp"), store, MODEL)
+
+    async def intent_completion(*_args, **_kwargs):
+        return {
+            "model": "fixture",
+            "choices": [{"message": {"content": json.dumps({"events": [{
+                "character_mention": "Иван",
+                "event_id": "insult_public",
+                "evidence": player_intent,
+            }]}, ensure_ascii=False)}}],
+        }
+
+    monkeypatch.setattr(service, "_complete", intent_completion)
+    result = asyncio.run(service.process_turn(turn_id))
+
+    assert result["applied"] is False
+    assert result["rejection_code"] == "evidence_not_narrated"
+    with store.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM relationship_causes").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("event_id", "evidence", "accepted"),
+    [
+        ("abandoned_in_need", "Ты подходишь к Ивану и садишься рядом.", False),
+        ("abandoned_in_need", "Ты оставил раненого Ивана без помощи и ушёл.", True),
+        ("fair_deal", "Ты спрашиваешь Ивана, кому он должен был передать монету.", False),
+        ("fair_deal", "Ты и Иван договорились о цене и ударили по рукам.", True),
+        ("voluntary_help_given", "Иван стоит рядом и смотрит на тебя.", False),
+        ("voluntary_help_given", "Иван вытягивает тебя из-под балки в безопасный проход.", True),
+    ],
+)
+def test_event_specific_gate_requires_evidence_of_the_claimed_event(
+    tmp_path: Path,
+    event_id: str,
+    evidence: str,
+    accepted: bool,
+) -> None:
+    model = json.loads(json.dumps(MODEL))
+    model["events"] = {event_id: {"axis": "loyalty", "weight": 10, "decay_turns": 40}}
+    service = RelationshipExtractionService(
+        settings(tmp_path, scenario_type="rp"),
+        make_store(tmp_path),
+        model,
+    )
+    payload = {
+        "events": [{
+            "character_mention": "Иван",
+            "event_id": event_id,
+            "evidence": evidence,
+        }]
+    }
+
+    if accepted:
+        parsed = service.parse_response(
+            payload,
+            aliases={"ivan": ["Иван"]},
+            turn_text=evidence,
+            narrative_text=evidence,
+        )
+        assert parsed["events"][0]["event_id"] == event_id
+    else:
+        with pytest.raises(RelationshipExtractionRejected) as exc_info:
+            service.parse_response(
+                payload,
+                aliases={"ivan": ["Иван"]},
+                turn_text=evidence,
+                narrative_text=evidence,
+            )
+        assert exc_info.value.code == "event_evidence_mismatch"
+
+
 def test_process_turn_audits_unresolved_original_mention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = make_store(tmp_path)
     turn_id = store.record_turn(
         "turn-1",
         "request-1",
         "Иван и Петр вошли в зал.",
-        "Нарратор продолжил сцену.",
+        "Петр вошел в зал. Нарратор продолжил сцену.",
         {},
         1,
         party_turn=1,
@@ -222,7 +309,7 @@ def test_process_turn_audits_unresolved_original_mention(tmp_path: Path, monkeyp
             "choices": [{"message": {"content": json.dumps({"events": [{
                 "character_mention": "Петр",
                 "event_id": "insult_public",
-                "evidence": "Петр вошли в зал.",
+                "evidence": "Петр вошел в зал.",
             }]})}}],
         }
 
@@ -276,11 +363,16 @@ def test_completion_payload_includes_identity_hint_for_character_targeting(tmp_p
             "identity_hint": "Энри живет в деревне Карн.",
         },
     ]
+    assert context["event_requirements"] == {
+        "insult_public": "One participant explicitly insulted the other before witnesses."
+    }
     prompt = payload["messages"][0]["content"]
     assert "never output an internal character ID" in prompt
     assert 'exactly these JSON keys: "character_mention", "event_id", and "evidence"' in prompt
     assert 'in "evidence"; never use "evidence_quote"' in prompt
     assert "one self-contained verbatim fragment" in prompt
+    assert "quote only from narrative_response, never from player_message intent" in prompt
+    assert "Approaching, sitting beside, asking, mentioning, or asking about a character never proves" in prompt
     assert "presence, routine action, or danger alone is not enough" in prompt
     assert "For shared_risk, that one fragment must explicitly show both the player" in prompt
     assert "holds a rope near a breach or chasm is not shared_risk" in prompt

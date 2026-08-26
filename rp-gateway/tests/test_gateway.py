@@ -1753,14 +1753,28 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
     (relationship_dir / "model.json").write_text(json.dumps(model, ensure_ascii=False), encoding="utf-8")
 
     target_party_id: str | None = None
+    target_narrations = 0
+    original_mock_completion = NarrativeClient.mock_completion
 
-    async def extracted_event(service, *_args, **_kwargs):
+    def narrated_trust(self, *args, **kwargs):
+        nonlocal target_narrations
+        response = original_mock_completion(self, *args, **kwargs)
+        if self.settings.prompt_cache_session_id == f"rp-party:{target_party_id}":
+            target_narrations += 1
+            if target_narrations == 1:
+                response["choices"][0]["message"]["content"] = (
+                    "The king now trusts you after you kept your word."
+                )
+        return response
+
+    async def extracted_event(service, turn, *_args, **_kwargs):
         events = []
-        if service.store.campaign_id == target_party_id:
+        evidence = str(turn.get("narrative_response") or "")
+        if service.store.campaign_id == target_party_id and "trusts" in evidence:
             events = [{
                 "character_mention": "King",
                 "event_id": "trust_gained",
-                "evidence": "The king now trusts me after I kept my word.",
+                "evidence": evidence,
             }]
         return {
             "model": "fixture",
@@ -1768,6 +1782,7 @@ def test_trust_gained_reaches_next_prompt_despite_global_turn_id_offset_end_to_e
         }
 
     monkeypatch.setattr(RelationshipExtractionService, "_complete", extracted_event)
+    monkeypatch.setattr(NarrativeClient, "mock_completion", narrated_trust)
     c = client(tmp_path)
     offset_party = create_demo_party(c, title="Offset Party", character_name="Offset")
     for index in range(3):

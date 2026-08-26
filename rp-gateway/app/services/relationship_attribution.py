@@ -12,6 +12,8 @@ REJECTION_CODES = frozenset(
         "malformed_response",
         "missing_evidence",
         "evidence_not_verbatim",
+        "evidence_not_narrated",
+        "event_evidence_mismatch",
         "mention_missing",
         "mention_not_in_evidence",
         "unresolved_mention",

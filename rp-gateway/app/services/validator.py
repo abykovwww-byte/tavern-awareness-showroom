@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.models.schemas import Outcome, ValidationResult
+from app.services.world_clock import world_clock_narrative_violations
 
 if TYPE_CHECKING:
     from app.services.training_runtime import TrainingRuntimeService
@@ -75,6 +76,7 @@ class OutputValidator:
                 violations.append(f"Narrative appears to bypass blocked constraint: {reason}")
         if scenario_type == "rp":
             violations.extend(absolute_rule_violations(text, state or {}))
+            violations.extend(world_clock_narrative_violations(text, state or {}))
         if "you decide to" in lowered or "you willingly" in lowered:
             violations.append("Narrative may have taken control of the player character.")
         if scenario_type == "training" and training_runtime and training_runtime.enabled:
@@ -82,13 +84,20 @@ class OutputValidator:
                 training_runtime.validate_narrative(text, state or {}, interaction_contract)
             )
         if violations:
+            world_clock_repair = (
+                " Текущая игровая дата и уже произошедшие события из блока «СОБЫТИЯ МИРА» — канон: "
+                "не возвращай время назад и не делай сработавший факт будущим или незавершённым."
+                if any(item.startswith("Narrative contradicts authoritative world clock") for item in violations)
+                or any(item.startswith("Narrative contradicts an authoritative world clock fact") for item in violations)
+                else ""
+            )
             return ValidationResult(
                 valid=False,
                 violations=violations,
                 repair_instruction=(
                     "Перепиши ответ как обычную сцену для игрока. Удали служебные метки, анализ и диагностику. "
                     "Не принимай решений за персонажа игрока, не вводи скрытую проверку и соблюдай каждое "
-                    "активное абсолютное правило WorldPack."
+                    f"активное абсолютное правило WorldPack.{world_clock_repair}"
                 ),
             )
         return ValidationResult(valid=True)

@@ -23,6 +23,29 @@ WORLD_CLOCK_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,127}")
 WORLD_CLOCK_DURATION_RE = re.compile(
     r"P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?"
 )
+WORLD_CLOCK_NOON_STILL_FUTURE_RE = re.compile(
+    r"(?:\bдо\s+полудня\s+(?:ещ[её]\s+)?остал\w*\b|"
+    r"\bостал\w*(?:\s+\w+){0,5}\s+до\s+полудня\b|"
+    r"\bполдень\s+(?:ещ[её]\s+)?не\s+(?:наступ\w*|приш[её]л)\b|"
+    r"\b(?:time\s+(?:is\s+)?left|time\s+remains)\s+until\s+noon\b|"
+    r"\bnoon\s+(?:has\s+not|hasn't)\s+(?:come|arrived)\b)",
+    re.IGNORECASE,
+)
+WORLD_CLOCK_DEADLINE_RE = re.compile(r"\b(?:срок\w*|дедлайн\w*|deadline\w*)\b", re.IGNORECASE)
+WORLD_CLOCK_CLOSED_DEADLINE_RE = re.compile(
+    r"(?:\bист[её]к\w*\b|\bзакрыт\w*\b|\bбольше\s+не\s+(?:счита\w*\s+)?открыт\w*\b|"
+    r"\bexpired\b|\bclosed\b|\bno\s+longer\s+open\b)",
+    re.IGNORECASE,
+)
+WORLD_CLOCK_REOPENED_DEADLINE_RE = re.compile(
+    r"(?:\b(?:срок\w*|дедлайн\w*)\b(?:\s+\w+){0,7}\s+(?:ещ[её]\s+не\s+ист[её]к\w*|"
+    r"вс[её]\s+ещ[её]\s+открыт\w*|оста[её]тся\s+открыт\w*)\b|"
+    r"\bостал\w*(?:\s+\w+){0,5}\s+до\s+(?:срока|дедлайна)\b|"
+    r"\bdeadline\b(?:\s+\w+){0,7}\s+(?:has\s+not\s+expired|is\s+still\s+open)\b|"
+    r"\b(?:time\s+(?:is\s+)?left|time\s+remains)(?:\s+\w+){0,5}\s+"
+    r"(?:before|until)\s+the\s+deadline\b)",
+    re.IGNORECASE,
+)
 WORLD_CLOCK_PREDICATE_ROOTS = (
     "/player/resources/",
     "/characters/",
@@ -526,7 +549,10 @@ def world_clock_prompt_projection(
         )
     )
     horizon = scheduled[:1]
-    lines = ["СОБЫТИЯ МИРА", f"Текущая игровая дата: {clock.get('date', '')}"]
+    lines = [
+        "СОБЫТИЯ МИРА — текущий канон; не возвращай время назад и не описывай произошедшее как будущее.",
+        f"Текущая игровая дата: {clock.get('date', '')}",
+    ]
     occurred_projection: list[dict[str, Any]] = []
     if pending:
         lines.append("В мире произошло:")
@@ -583,6 +609,36 @@ def world_clock_prompt_projection(
             "horizon": horizon_projection,
         },
     }
+
+
+def world_clock_narrative_violations(text: str, state: dict[str, Any]) -> list[str]:
+    """Reject only explicit reversals of the authoritative clock projection."""
+    clock = state.get("world_clock")
+    if not isinstance(clock, dict) or not isinstance(text, str) or not text.strip():
+        return []
+    try:
+        current_date = parse_world_datetime(clock.get("date"))
+    except ValueError:
+        return []
+
+    violations: list[str] = []
+    if current_date.hour >= 12 and WORLD_CLOCK_NOON_STILL_FUTURE_RE.search(text):
+        violations.append(
+            "Narrative contradicts authoritative world clock date "
+            f"{format_world_datetime(current_date)}: it treats the current day's noon as future."
+        )
+
+    facts = [item for item in clock.get("world_facts", []) if isinstance(item, dict)]
+    closed_deadline_is_canonical = any(
+        WORLD_CLOCK_DEADLINE_RE.search(str(item.get("text") or ""))
+        and WORLD_CLOCK_CLOSED_DEADLINE_RE.search(str(item.get("text") or ""))
+        for item in facts
+    )
+    if closed_deadline_is_canonical and WORLD_CLOCK_REOPENED_DEADLINE_RE.search(text):
+        violations.append(
+            "Narrative contradicts an authoritative world clock fact: it reopens an expired deadline."
+        )
+    return violations
 
 
 def _response_text(data: dict[str, Any]) -> tuple[str, str | None]:

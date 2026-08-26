@@ -14,6 +14,7 @@ from app.models.schemas import ChatCompletionRequest, ChatMessage, Outcome, Stat
 from app.services.adjudicator import Adjudicator
 from app.services.narrative import NarrativeClient
 from app.services.state_store import StateStore
+from app.services.validator import OutputValidator
 from app.services.world_clock import (
     WORLD_CLOCK_PROMPT_MAX_CHARS,
     WORLD_CLOCK_SERVICE_PROMPT_MAX_CHARS,
@@ -21,6 +22,7 @@ from app.services.world_clock import (
     confirm_world_clock_marker_state,
     initial_world_clock_state,
     validate_world_clock_contract,
+    world_clock_narrative_violations,
     world_clock_prompt_projection,
     world_clock_service_payload,
 )
@@ -209,6 +211,7 @@ def test_world_events_are_consumed_only_by_successful_turn_commit(tmp_path: Path
     projection = world_clock_prompt_projection(store.get_state(), contract())
     assert projection is not None
     assert len(projection["block"]) <= WORLD_CLOCK_PROMPT_MAX_CHARS
+    assert "текущий канон; не возвращай время назад" in projection["block"]
     assert projection["event_ids"] == ["test.deadline-closes", "test.follow-up"]
 
     store.begin_turn_request("turn-2", "request-2")
@@ -236,6 +239,43 @@ def test_world_events_are_consumed_only_by_successful_turn_commit(tmp_path: Path
     assert [(item["job_type"], item["party_turn"], item["max_attempts"]) for item in jobs] == [
         ("world_clock", 2, 5)
     ]
+
+
+def test_world_clock_direct_reversal_is_repairable_narrative_violation(tmp_path: Path) -> None:
+    store = make_store(tmp_path, "world-clock-narrative-gate")
+    store.apply_world_clock_tick(
+        contract(),
+        party_turn=1,
+        elapsed="PT3H40M",
+        reason="service_model",
+        request_id="clock-source",
+    )
+    state = store.get_state()
+    outcome = Outcome(
+        check_id="clock-validation",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=10,
+        difficulty=10,
+        modifiers={},
+        final_score=10,
+        authoritative_block="",
+    )
+
+    temporal = OutputValidator().validate(
+        "До полудня осталось полчаса, не больше.",
+        outcome,
+        state,
+        scenario_type="rp",
+    )
+    reopened = world_clock_narrative_violations("Прежний срок ещё не истёк.", state)
+
+    assert temporal.valid is False
+    assert any("world clock date" in item for item in temporal.violations)
+    assert "СОБЫТИЯ МИРА" in temporal.repair_instruction
+    assert any("reopens an expired deadline" in item for item in reopened)
+    assert world_clock_narrative_violations("До завтрашнего полудня ещё далеко.", state) == []
 
 
 def test_world_clock_block_follows_relationships_and_precedes_author_note() -> None:
