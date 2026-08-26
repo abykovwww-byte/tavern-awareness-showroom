@@ -20,7 +20,7 @@
   },
   "rp_contract": {
     "schema_version": "rp-core.v2",
-    "revision": 7,
+    "revision": 9,
     "stable_affiliations": {
       "zabulon": "day-watch",
       "gesser": "night-watch",
@@ -54,6 +54,7 @@
     "authors_note": "prompts/authors-note.md",
     "opening_scene": "prompts/opening-scene.md",
     "world_info": "world-info/index.md",
+    "lore_cards": "lore-cards",
     "sillytavern_lorebook": "sillytavern/day-watch-moscow.json",
     "characters": "characters/index.md",
     "checks": "rules/checks.md",
