@@ -106,6 +106,24 @@ def test_gm_draft_rejects_a_memory_field_outside_the_selected_target(tmp_path: P
         service.normalize_patch_draft(decoded, [candidate], "gm-wrong-field")
 
 
+def test_gm_patch_schema_restricts_field_to_supported_story_memory_fields() -> None:
+    field_schema = RPGMService.patch_response_format()["json_schema"]["schema"]["properties"]["field"]
+
+    assert field_schema["type"] == ["string", "null"]
+    assert set(field_schema["enum"]) == {
+        None,
+        "canon",
+        "active_threads",
+        "resolved_threads",
+        "characters",
+        "inventory_and_assets",
+        "rules_and_abilities",
+        "chronology",
+        "unresolved_hooks",
+    }
+    assert "raw:1718" not in field_schema["enum"]
+
+
 def test_unavailable_gm_intent_logs_only_local_provider_and_mutates_nothing(
     tmp_path: Path,
 ) -> None:

@@ -660,7 +660,10 @@ class RPGMService:
                     "properties": {
                         "target_kind": {"type": "string", "enum": ["memory", "raw", "absolute_rule"]},
                         "target_id": {"type": "string"},
-                        "field": {"type": ["string", "null"]},
+                        "field": {
+                            "type": ["string", "null"],
+                            "enum": [None, *FIELD_TO_SECTION],
+                        },
                         "action": {"type": "string", "enum": ["replace", "retract"]},
                         "before": {"type": "string"},
                         "after": {"type": ["string", "null"]},
