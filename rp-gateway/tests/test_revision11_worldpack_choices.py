@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from app.main import party_start_outcome, party_start_prompt, settings_for_party
 from app.services.narrative import NarrativeClient
 from app.services.party_store import PartyStore
 from test_gateway import base_state, client, create_demo_party, write_worldpack
+
+
+DAY_WATCH_V2_SOURCE = Path(__file__).resolve().parents[2] / "worldpacks" / "day-watch-moscow-v2"
 
 
 def write_revision11_worldpack(root: Path, *, invalid_seed: bool = False) -> Path:
@@ -239,6 +243,69 @@ def test_revision11_explicit_nondefault_choices_drive_character_snapshot_and_see
     state = api.app.state.party_store.store_for_party(party["id"]).get_state()
     assert state["player"]["location"] == "seed-first-location"
     assert state["player"]["role"] == "First opening role"
+
+
+def test_day_watch_v2_all_openings_create_distinct_materialized_parties(tmp_path: Path) -> None:
+    shutil.copytree(DAY_WATCH_V2_SOURCE, tmp_path / "worldpacks" / "day-watch-moscow-v2")
+    api = client(tmp_path, rp_contract_observed_revision=11)
+
+    worldpack = api.get("/api/worldpacks/day-watch-moscow-v2").json()["worldpack"]
+    assert [item["id"] for item in worldpack["presets"]] == ["book", "action", "strategic"]
+    assert worldpack["presets_default"] == "action"
+    assert [item["id"] for item in worldpack["openings"]] == [
+        "independent",
+        "night-trainee",
+        "day-witch",
+        "inquisition-observer",
+    ]
+    assert worldpack["openings_default"] == "independent"
+
+    expected_locations = {
+        "independent": "moscow-city",
+        "night-trainee": "night-watch-hq",
+        "day-witch": "day-watch-hq",
+        "inquisition-observer": "inquisition-msu",
+    }
+    for index, (opening_id, location_id) in enumerate(expected_locations.items()):
+        draft_response = api.post(
+            "/api/player-characters/draft",
+            json={
+                "worldpack_id": "day-watch-moscow-v2",
+                "opening_id": opening_id,
+                "name": f"Tester {index}",
+                "concept": "",
+            },
+        )
+        assert draft_response.status_code == 200, draft_response.text
+        character_response = api.post(
+            "/api/player-characters",
+            json=draft_response.json()["draft"],
+        )
+        assert character_response.status_code == 200, character_response.text
+        character = character_response.json()["player_character"]
+
+        party_response = api.post(
+            "/api/parties",
+            json={
+                "title": f"Day Watch v2 {opening_id}",
+                "scenario_type": "rp",
+                "worldpack_id": "day-watch-moscow-v2",
+                "player_character_id": character["id"],
+                "model_profile_id": model_id(api),
+                "preset_id": ("book", "action", "strategic", "action")[index],
+                "opening_id": opening_id,
+            },
+        )
+        assert party_response.status_code == 200, party_response.text
+        party = party_response.json()["party"]
+        stored = api.app.state.party_store.get_party(party["id"])
+        state = api.app.state.party_store.store_for_party(party["id"]).get_state()
+
+        assert party["opening_id"] == opening_id
+        assert state["player"]["location"] == location_id
+        assert state["player"]["role"] == character["description"]
+        assert stored.worldpack_materialization["state_seed"]["player"]["location"] == location_id
+        assert stored.worldpack_materialization["opening_prompt"].startswith("# Opening —")
 
 
 def test_revision11_observed_gate_precedes_character_party_and_state_writes(tmp_path: Path) -> None:

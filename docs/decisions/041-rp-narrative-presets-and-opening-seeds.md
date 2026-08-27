@@ -9,10 +9,10 @@ whole-prompt narrative presets and authored opening seeds selected before party
 creation.
 
 **Delivery status:** `каркас` for the requirements in
-[`registry/041.yml`](registry/041.yml). This delivery raises the source ceiling
-and adds the mechanism only. The inventory remains observed revision `10`; no
-revision-11 WorldPack is committed, activated, applied, or verified live by
-this delivery.
+[`registry/041.yml`](registry/041.yml). The mechanism delivery raised the source
+ceiling without activation. The separate source activation now adds
+`day-watch-moscow-v2` and configures observed revision `11`; Ansible apply and
+live-party verification remain separate and are not claimed here.
 
 ## Context
 
@@ -33,8 +33,9 @@ model call.
 
 - Source accepts `rp-core.v2` revisions `0..11`; provider canaries may explicitly
   exercise candidates in the same range.
-- The ordinary runtime remains observed at `10` until a separate delivery adds
-  a conforming revision-11 pack and changes the inventory to `11`.
+- The mechanism delivery kept ordinary runtime observed at `10`. The separate
+  activation adds a conforming revision-11 pack and changes source inventory to
+  `11`; live runtime changes only after Ansible apply.
 - Packs at revisions `0..10` keep their existing loader, API, storage and prompt
   behavior. A revision-11 pack is rejected by ordinary creation while observed
   is lower than `11`; it is never downgraded silently.
@@ -144,18 +145,18 @@ semantic classifier. Repository validation mechanically checks closed shapes,
 paths, non-empty text, aliases and budgets only; it does not guess prose meaning
 or silently shorten authored rules.
 
-For the future `day-watch-moscow-v2` activation pack, the current LF-normalized
+For the `day-watch-moscow-v2` activation pack, the LF-normalized
 default provides the concrete authoring arithmetic:
 
 | block | current complete block | hard limit | remaining |
 |---|---:|---:|---:|
-| `WORLD_SYSTEM_PROMPT` | 4816 | 5000 | 184 |
-| `WORLD_AUTHORS_NOTE` | 961 | 1500 | 539 |
+| `WORLD_SYSTEM_PROMPT` | 4821 | 5000 | 179 |
+| `WORLD_AUTHORS_NOTE` | 970 | 1500 | 530 |
 
-The system rules are not shortened silently: the 184 characters are editing
+The system rules are not shortened silently: the 179 characters are editing
 headroom, not space for a new semantic layer. Four compact scene forms plus the
-conflict block are budgeted at approximately 500 characters and belong only in
-the authors note, within its 539-character headroom. If an authored variant does
+conflict block belong only in the authors note, within its 530-character
+headroom. If an authored variant does
 not fit, pack validation fails and the user decides what to change; tooling does
 not weaken or compress rules to make the gate green.
 
@@ -202,11 +203,11 @@ texts or full seed.
 - Pack authors duplicate the default payload at legacy root aliases; repository
   validation catches divergence before delivery.
 
-## Separate activation content: `day-watch-moscow-v2`
+## Activation content: `day-watch-moscow-v2`
 
-The later activation delivery adds a new `day-watch-moscow-v2` pack beside the
-unchanged playable `day-watch-moscow` v1; this mechanism delivery does not
-create either content delta or inventory activation.
+The separate activation delivery adds `day-watch-moscow-v2` beside the unchanged
+playable `day-watch-moscow` v1 and configures inventory observed revision `11`.
+This source state still requires Ansible apply and live verification.
 
 The v2 manifest has exactly three independently selectable narrative presets:
 
@@ -246,8 +247,8 @@ change the canonical builder intake question limit.
 1. Mechanism delivery: source ceiling `11`, fail-closed API/storage behavior,
    repository guards, canary range, docs and focused tests. Inventory remains
    observed `10`, and revisions `0..10` remain compatible.
-2. Separate activation delivery: add and validate a revision-11 WorldPack,
-   change observed revision to `11`, apply through Ansible, then prove real UI
+2. Separate activation delivery: add and validate the revision-11 WorldPack and
+   change source inventory to observed revision `11`; after merge, apply through Ansible, then prove real UI
    selection, persisted materialization, first prompt and divergent opening
    state. CI and hashes alone are not live evidence.
 
