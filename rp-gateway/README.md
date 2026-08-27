@@ -1,57 +1,45 @@
-# RP Gateway
+# Awareness Gateway
 
-FastAPI authority and provider gateway for RP Stack.
+FastAPI authority for the standalone Awareness Showroom. The Showroom proxies
+same-origin `/api` requests to this service. Gateway owns authentication,
+visitor identity, the two training WorldPacks, model profiles, canonical state,
+turn history, deterministic training progression, scoring, artifacts and
+workspace events.
 
-Light GUI proxies party-scoped `/api` requests to this service. Gateway owns
-authentication, world-pack discovery, character drafts, model profiles,
-canonical state, turn history, memory chapters, legacy check compatibility, and training
-progression. The administrator-selected **service model / служебная модель** is
-global to the stack and handles long-term memory, world changes, and character
-generation. Party BYOK credentials remain isolated to their owning party.
+The process starts only with `SCENARIO_TYPE=training`. RP, novel, generated
+prompt worlds, Light GUI routes and `/v1/chat/completions` are not registered.
+Persisted foreign-mode parties, runs, branches, autotests and covers are hidden
+before state recovery, provider calls or new writes.
 
-For revision-8 RP parties Gateway also validates and copies authored WorldPack
-Lore Cards at party creation without a provider call. The recent RAW scan selects
-cards only through whole title/keyword triggers and stores final raised IDs in
-turn metadata. `POST /api/parties/{party_id}/lore-cards/draft` makes one bounded
-stack-key OpenRouter draft from complete turns; the existing create endpoint is
-the explicit player-confirmation boundary.
-
-Candidate revision-9 RP parties also have a separate GM correction channel.
-Local Gemma classifies `auto` messages and drafts one bounded replacement or
-retraction of an existing memory/RAW/absolute-rule target. Only explicit confirm
-creates an excluded `gm_correction` turn and state version; party turn, scene and
-time do not advance. Active corrections stay in a protected narrator overlay
-until one affected OpenRouter story-memory section persists authority `user` and
-the target coverage. Revision 9 is source-only until a separate activation.
-
-Application startup uses FastAPI's `lifespan` context manager. Before accepting
-requests, it reconciles interrupted party and branch work, resumes pending
-service jobs, and schedules resumable autotest runs.
+Some inherited internal turn-pipeline modules remain because Showroom training
+runs reuse them. They are not public API authority; remove them only together
+with their proven consumers and tests.
 
 ## Development
 
-```bash
-python -m pytest tests
-uvicorn app.main:app --host 0.0.0.0 --port 8088
+Run the repository training gate from the project root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ci.ps1
 ```
 
-## Runtime endpoints
+For a prepared Python environment, a local process can be started with:
+
+```bash
+uvicorn app.main:create_app --factory --host 0.0.0.0 --port 8088
+```
+
+## Active endpoint groups
 
 ```text
-GET  /health
-GET  /api/worldpacks
-GET  /api/model-profiles
-GET  /api/parties
-POST /api/parties
-POST /api/parties/{party_id}/messages
-POST /api/parties/{party_id}/gm-corrections/decide
-POST /api/parties/{party_id}/checks
+GET/POST /api/auth/*
+GET      /api/worldpacks
+GET      /api/model-profiles
+GET/POST /api/showroom/*
+GET/POST /api/admin/showroom/*
+GET/POST /api/admin/autotests/*
+GET      /health
 ```
 
-`POST /checks` is a compatibility endpoint. For `rp-core.v2` it enters the
-ordinary narrative turn path without dice, difficulty, success/failure, or a
-persisted check row. Existing `rp-core.v1` parties retain the legacy resolver
-until an explicit migration.
-
-The OpenAI-compatible `/v1/chat/completions` endpoint remains available for
-generic integrations, but Light GUI uses the party-scoped API.
+The public browser contract is `/api/showroom/*`; internal `party_id` values
+are not exposed to visitors.

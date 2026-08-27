@@ -1,9 +1,18 @@
 .env
+.env.*
+!.env.example
 *.log
 data/*
 backups/*
 !data/.gitkeep
 !backups/.gitkeep
+runtime/
+tmp/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
 state/current.json
 state/parties/*
 state/audit.log
@@ -15,4 +24,5 @@ state/history/*
 .test-workdir/
 .test-tmp/
 rp-gateway/.pytest_cache/
+rp-gateway/pytest-cache-files-*/
 rp-gateway/**/__pycache__/

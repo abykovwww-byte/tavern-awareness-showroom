@@ -17,7 +17,6 @@ from app.models.schemas import (
     PlayerCharacterCreate,
     ShowroomRunCreate,
     ShowroomScenarioCreate,
-    WorldPromptCreate,
 )
 from app.services.party_store import PartyStore, now_iso, slug
 from app.services.training_capabilities import TrainingCapabilityPolicy
@@ -223,6 +222,7 @@ class ShowroomStore:
                 suffix += 1
 
     def create_scenario(self, request: ShowroomScenarioCreate, created_by: str | None) -> dict[str, Any]:
+        self.require_training_scenario(request.scenario_type, request.world_source)
         model = self.party_store.require_active_model_profile(request.model_profile_id)
         worldpack_id, world_prompt = self.resolve_world(
             title=request.title,
@@ -285,8 +285,13 @@ class ShowroomStore:
         return self.get_scenario(scenario_id, public_only=False)
 
     def update_scenario(self, scenario_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        if "scenario_type" in changes and changes["scenario_type"] != "training":
+            raise ValueError("training ShowRoom accepts only scenario_type=training")
+        if "world_source" in changes and changes["world_source"] != "preset":
+            raise ValueError("training ShowRoom accepts only world_source=preset")
         current = self.get_scenario(scenario_id, public_only=False, include_internal=True)
         merged = {**current, **changes}
+        self.require_training_scenario(str(merged["scenario_type"]), str(merged["world_source"]))
         if current["status"] == "archived" and merged["status"] != "archived":
             raise ValueError("archived showroom scenario is terminal")
         title = str(merged["title"]).strip()
@@ -370,22 +375,20 @@ class ShowroomStore:
         worldpack_id: str | None,
         world_prompt: str | None,
     ) -> tuple[str, str | None]:
-        if world_source == "preset":
-            if not worldpack_id:
-                raise ValueError("worldpack_id is required for preset world source")
-            pack = self.party_store.get_worldpack(str(worldpack_id))
-            self.ensure_public_worldpack(pack)
-            return pack.id, None
-        if world_source != "prompt":
-            raise ValueError("world_source must be preset or prompt")
-        prompt = str(world_prompt or "").strip()
-        if not prompt:
-            raise ValueError("world_prompt is required for prompt world source")
-        pack = self.party_store.create_prompt_worldpack(
-            WorldPromptCreate(title=f"{title} — внутренний мир", prompt=prompt),
-            owner_user_id=SHOWROOM_WORLD_OWNER,
-        )
-        return pack.id, prompt
+        if world_source != "preset":
+            raise ValueError("training ShowRoom accepts only world_source=preset")
+        if not worldpack_id:
+            raise ValueError("worldpack_id is required for preset world source")
+        pack = self.party_store.get_worldpack(str(worldpack_id))
+        self.ensure_public_worldpack(pack)
+        return pack.id, None
+
+    @staticmethod
+    def require_training_scenario(scenario_type: str, world_source: str) -> None:
+        if scenario_type != "training":
+            raise ValueError("training ShowRoom accepts only scenario_type=training")
+        if world_source != "preset":
+            raise ValueError("training ShowRoom accepts only world_source=preset")
 
     @staticmethod
     def ensure_public_worldpack(pack: Any) -> None:
@@ -394,6 +397,8 @@ class ShowroomStore:
 
     @staticmethod
     def validate_scenario_type(manifest: dict[str, Any], scenario_type: str) -> None:
+        if scenario_type != "training":
+            raise ValueError("training ShowRoom accepts only scenario_type=training")
         scenario_types = manifest.get("scenario_types") if isinstance(manifest, dict) else None
         supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
         if isinstance(supported, list) and supported and scenario_type not in supported:
@@ -402,7 +407,10 @@ class ShowroomStore:
     def list_scenarios(self, public_only: bool) -> list[dict[str, Any]]:
         sql = "SELECT ss.* FROM showroom_scenarios ss"
         if public_only:
-            sql += " JOIN worldpacks wp ON wp.id = ss.worldpack_id WHERE ss.status = 'published' AND wp.visibility = 'public'"
+            sql += " JOIN worldpacks wp ON wp.id = ss.worldpack_id"
+        sql += " WHERE ss.scenario_type = 'training' AND ss.world_source = 'preset'"
+        if public_only:
+            sql += " AND ss.status = 'published' AND wp.visibility = 'public'"
         sql += " ORDER BY ss.sort_order, ss.updated_at DESC"
         with self.connect() as connection:
             rows = connection.execute(sql).fetchall()
@@ -418,7 +426,7 @@ class ShowroomStore:
         sql = "SELECT ss.* FROM showroom_scenarios ss"
         if public_only:
             sql += " JOIN worldpacks wp ON wp.id = ss.worldpack_id"
-        sql += " WHERE ss.id = ?"
+        sql += " WHERE ss.id = ? AND ss.scenario_type = 'training' AND ss.world_source = 'preset'"
         if public_only:
             sql += " AND ss.status = 'published' AND wp.visibility = 'public'"
         with self.connect() as connection:
@@ -534,11 +542,6 @@ class ShowroomStore:
                 "SELECT id FROM showroom_visitors WHERE token_hash = ?",
                 (self.token_hash(token),),
             ).fetchone()
-            if row:
-                connection.execute(
-                    "UPDATE showroom_visitors SET updated_at = ? WHERE id = ?",
-                    (now_iso(), row["id"]),
-                )
         return str(row["id"]) if row else None
 
     def ensure_visitor(self, token: str | None) -> tuple[str, str | None]:
@@ -556,7 +559,8 @@ class ShowroomStore:
         return visitor_id, new_token
 
     def create_run(self, scenario_id: str, visitor_id: str, request: ShowroomRunCreate) -> dict[str, Any]:
-        self.get_scenario(scenario_id, public_only=True)
+        public_scenario = self.get_scenario(scenario_id, public_only=True)
+        self.require_training_scenario(public_scenario["scenario_type"], public_scenario["world_source"])
         if request.client_request_id:
             with self.connect() as connection:
                 existing = connection.execute(
@@ -651,6 +655,8 @@ class ShowroomStore:
                 JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE sr.visitor_id = ? AND wp.visibility = 'public'
+                  AND sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
                 ORDER BY sr.updated_at DESC
                 """,
                 (visitor_id,),
@@ -666,6 +672,8 @@ class ShowroomStore:
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE sr.id = ? AND sr.visitor_id = ?
                   AND wp.visibility = 'public'
+                  AND sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
                 """,
                 (run_id, visitor_id),
             ).fetchone()
@@ -831,7 +839,9 @@ class ShowroomStore:
                 JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE sr.id = ? AND sr.visitor_id = ?
-                  AND wp.visibility = 'public'{status_filter}
+                  AND wp.visibility = 'public'
+                  AND sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'{status_filter}
                 """,
                 (run_id, visitor_id),
             ).fetchone()
@@ -844,8 +854,11 @@ class ShowroomStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT interactive_links_enabled, interactive_workspace_enabled
-                FROM showroom_runs WHERE party_id = ?
+                SELECT sr.interactive_links_enabled, sr.interactive_workspace_enabled
+                FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                WHERE sr.party_id = ? AND sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
                 """,
                 (party_id,),
             ).fetchone()
@@ -980,6 +993,7 @@ class ShowroomStore:
                 SELECT ss.cover_filename, ss.cover_mime_type FROM showroom_scenarios ss
                 JOIN worldpacks wp ON wp.id = ss.worldpack_id
                 WHERE ss.id = ? AND ss.status = 'published' AND wp.visibility = 'public'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
                 """,
                 (scenario_id,),
             ).fetchone()

@@ -1,51 +1,38 @@
 # Testing
 
-## Static validation
+## Source gate
 
-```bash
-python3 scripts/validate-state.py --state worldpacks/<slug>/state-seed.json --schema state/schema.json
-python3 scripts/validate-training-runtime.py --worldpacks worldpacks
-python3 scripts/test-state-workflow.py
-python3 scripts/test-check-workflow.py
+On Windows, run the dependency-free wrapper from the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ci.ps1
 ```
 
-Validate every world-pack JSON file and each `state-seed.json` against
-`state/schema.json`.
+It enforces exactly two WorldPacks, validates both state seeds and deterministic
+training contracts, compiles Gateway sources, runs the explicit training-only
+pytest list, checks browser JavaScript syntax and executes the Showroom tests.
+The inherited full RP pytest suite is not this project's gate.
 
-## Gateway suite
+## Container gate
 
-```bash
-cd /srv/apps/rp-stack
-docker compose build rp-gateway rp-light-gui
-docker compose run --rm rp-gateway pytest
-```
-
-The suite covers world-pack discovery, party isolation, state versioning,
-deterministic checks, WorldPack training runtime portability/snapshots,
-training progression, memory chapters, provider errors,
-authentication, and Light GUI APIs.
-
-Focused training checks:
+With an untracked `.env` and Docker available:
 
 ```bash
-docker compose run --rm rp-gateway pytest \
-  tests/test_training_runtime.py \
-  tests/test_training_capabilities.py \
-  tests/test_training_artifacts.py
+docker compose --env-file .env config --quiet
+docker compose -f compose.yml -f compose.local-llm.yml --env-file .env config --quiet
+docker compose --env-file .env build awareness-gateway showroom
+docker compose --env-file .env run --rm awareness-gateway sh -lc \
+  'pytest -q tests/test_awareness_one_day.py tests/test_training_runtime.py tests/test_training_artifacts.py tests/test_training_capabilities.py tests/test_showroom_portal.py tests/test_decision_019_contracts.py tests/test_training_gateway_mode_guard.py tests/test_training_showroom_mode_guard.py'
 ```
 
-The runtime test includes a non-awareness ОБЖ fixture to prove that turns and
-scoring come from the WorldPack rather than campaign-specific Gateway code.
+## Shadow acceptance
 
-## Runtime acceptance
+After the authorized IaC apply:
 
 ```bash
-docker compose ps
-docker inspect --format='{{.State.Health.Status}}' rp-stack-gateway
-docker inspect --format='{{.State.Health.Status}}' rp-stack-light-gui
-curl -fsS http://192.168.1.88:8010/health
-curl -fsS http://192.168.1.88:8010/api/worldpacks
+sudo /srv/apps/awareness-showroom/scripts/check.sh
 ```
 
-Confirm that only the expected services exist in the Compose project and that
-party state, history, and memory remain isolated across two test parties.
+Then complete the browser/provider, persistence, scoring, artifact/workspace,
+backup and restore checks in `docs/operations.md`. Healthy containers and HTTP
+200 alone are not functional proof.

@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for RP Gateway."""
+"""FastAPI entrypoint for Awareness Gateway."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import re
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -63,7 +64,6 @@ from app.models.schemas import (
     UserDeleteRequest,
     UserPasswordUpdate,
     UserStatusUpdate,
-    WorldPromptCreate,
     WorldApplyRequest,
     WorldInstructionRequest,
     WorldClockMarkerConfirm,
@@ -149,9 +149,111 @@ LORE_CARD_DRAFT_INPUT_MAX_CHARS = 8_000
 LORE_CARD_DRAFT_OUTPUT_MAX_TOKENS = 400
 
 
+def ensure_training_database_ownership(settings: Settings) -> None:
+    database_path = Path(settings.sqlite_path)
+    if str(database_path) == ":memory:" or not database_path.exists() or database_path.stat().st_size == 0:
+        return
+
+    violations: list[str] = []
+    try:
+        with sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True) as connection:
+            connection.execute("PRAGMA query_only = ON")
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            user_tables = {table for table in tables if not table.startswith("sqlite_")}
+            ownership_tables = {"parties", "showroom_scenarios", "worldpacks", "model_profiles"}
+            if user_tables and user_tables.isdisjoint(ownership_tables):
+                raise RuntimeError("existing database has an unrecognized ownership schema")
+
+            def columns(table: str) -> set[str]:
+                return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+            def row_count(table: str) -> int:
+                return int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+            if "parties" in tables and row_count("parties"):
+                if "scenario_type" not in columns("parties"):
+                    violations.append("parties schema")
+                else:
+                    count = int(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM parties WHERE scenario_type IS NULL OR scenario_type != 'training'"
+                        ).fetchone()[0]
+                    )
+                    if count:
+                        violations.append(f"non-training parties={count}")
+
+            if "showroom_scenarios" in tables and row_count("showroom_scenarios"):
+                scenario_columns = columns("showroom_scenarios")
+                if not {"scenario_type", "world_source"}.issubset(scenario_columns):
+                    violations.append("showroom_scenarios schema")
+                else:
+                    count = int(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) FROM showroom_scenarios
+                            WHERE scenario_type IS NULL OR scenario_type != 'training'
+                               OR world_source IS NULL OR world_source != 'preset'
+                            """
+                        ).fetchone()[0]
+                    )
+                    if count:
+                        violations.append(f"foreign showroom scenarios={count}")
+
+            if "worldpacks" in tables and row_count("worldpacks"):
+                if "manifest_json" not in columns("worldpacks"):
+                    violations.append("worldpacks schema")
+                else:
+                    foreign_worldpacks = 0
+                    for row in connection.execute("SELECT manifest_json FROM worldpacks"):
+                        try:
+                            manifest = json.loads(str(row[0]))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            foreign_worldpacks += 1
+                            continue
+                        scenario_types = manifest.get("scenario_types") if isinstance(manifest, dict) else None
+                        if not (
+                            isinstance(scenario_types, dict)
+                            and scenario_types.get("recommended") == "training"
+                            and scenario_types.get("supported") == ["training"]
+                            and isinstance(manifest.get("training_runtime"), dict)
+                        ):
+                            foreign_worldpacks += 1
+                    if foreign_worldpacks:
+                        violations.append(f"foreign worldpacks={foreign_worldpacks}")
+
+            if "model_profiles" in tables and row_count("model_profiles"):
+                if "provider" not in columns("model_profiles"):
+                    violations.append("model_profiles schema")
+                else:
+                    count = int(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) FROM model_profiles
+                            WHERE lower(provider) NOT IN ('local', 'gemini', 'openrouter')
+                            """
+                        ).fetchone()[0]
+                    )
+                    if count:
+                        violations.append(f"retired model profiles={count}")
+    except sqlite3.Error as exc:
+        raise RuntimeError("existing Awareness database cannot be verified read-only") from exc
+
+    if violations:
+        raise RuntimeError(
+            "existing database is not owned by the training-only Awareness project: "
+            + ", ".join(violations)
+        )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
+    if settings.scenario_type != "training":
+        raise RuntimeError("training gateway requires SCENARIO_TYPE=training")
+    ensure_training_database_ownership(settings)
     store = StateStore(settings.sqlite_path, settings.campaign_id, settings.world_state_path)
     auth_store = AuthStore(settings)
     party_store = PartyStore(settings, default_owner_user_id=auth_store.default_owner_user_id())
@@ -192,7 +294,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             schedule_autotest(run["id"])
         yield
 
-    app = FastAPI(title="RP Gateway", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="Awareness Gateway", version="0.5.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.store = store
     app.state.auth_store = auth_store
@@ -570,7 +672,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime = settings_with_global_service_model(settings)
         return {
             "term": "Служебная модель",
-            "scope": "Весь RP Stack: все текущие и будущие партии всех пользователей",
+            "scope": "Все текущие и будущие training-прохождения",
             "uses": ["Долговременная память", "Изменение мира", "Генерация персонажей"],
             "choice_id": runtime.service_model_choice,
             "selected": service_model_choice(runtime),
@@ -591,7 +693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runtime = settings_with_global_service_model(settings)
         return {
             "term": "Служебная модель",
-            "scope": "Весь RP Stack: все текущие и будущие партии всех пользователей",
+            "scope": "Все текущие и будущие training-прохождения",
             "uses": ["Долговременная память", "Изменение мира", "Генерация персонажей"],
             "choice_id": runtime.service_model_choice,
             "selected": service_model_choice(runtime),
@@ -666,11 +768,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         include_branches: bool = True,
     ) -> StreamingResponse:
         admin = require_admin(request)
-        if scenario_type and scenario_type not in {"rp", "novel", "training"}:
-            raise HTTPException(status_code=400, detail="scenario_type must be rp, novel, or training")
+        if scenario_type not in {None, "training"}:
+            raise HTTPException(status_code=400, detail="scenario_type must be training")
         export = party_store.export_dataset_records(
             owner_user_id=admin.id if admin else None,
-            scenario_type=scenario_type,
+            scenario_type="training",
             include_branches=include_branches,
         )
         body = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in export["records"])
@@ -678,7 +780,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             iter([body]),
             media_type="application/x-ndjson",
             headers={
-                "Content-Disposition": 'attachment; filename="rp-gateway-sft-v1.jsonl"',
+                "Content-Disposition": 'attachment; filename="awareness-showroom-training-sft-v1.jsonl"',
                 "X-Dataset-Approved-Turns": str(export["approved_turns"]),
                 "X-Dataset-Skipped-Missing-Prompt": str(export["skipped_missing_prompt"]),
             },
@@ -715,13 +817,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"worldpack": pack.model_dump(mode="json")}
 
-    @app.post("/api/worldpacks/prompt")
-    def create_prompt_worldpack(request: Request, payload: WorldPromptCreate) -> dict[str, Any]:
-        try:
-            pack = party_store.create_prompt_worldpack(payload, owner_user_id=owner_user_id(request))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"worldpack": pack.model_dump(mode="json")}
+    @app.post("/api/worldpacks/prompt", include_in_schema=False)
+    def reject_prompt_worldpack() -> None:
+        raise HTTPException(status_code=404, detail="not found")
 
     @app.get("/api/worldpacks/{worldpack_id}")
     def get_worldpack(request: Request, worldpack_id: str) -> dict[str, Any]:
@@ -2996,6 +3094,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         scenario_id: str,
         payload: ShowroomRunCreate,
     ) -> dict[str, Any]:
+        try:
+            showroom_store.get_scenario(scenario_id, public_only=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         visitor_id, new_token = showroom_store.ensure_visitor(
             http_request.cookies.get(settings.showroom_visitor_cookie_name)
         )
@@ -3543,37 +3645,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"rolled_back": True, "state": state}
 
-    @app.post("/v1/chat/completions")
-    async def chat_completions(
-        request: ChatCompletionRequest,
-        authorization: str | None = Header(default=None),
-        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-        x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
-    ):
-        request_id = x_request_id or f"req_{uuid.uuid4().hex}"
-        try:
-            response = await Adjudicator(settings_with_provider_key(settings), store).handle_chat(request, authorization, idempotency_key, request_id)
-        except RequestAlreadyRunning as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "status": "running",
-                    "request_id": exc.request_id,
-                    "idempotency_key": exc.idempotency_key,
-                    "message": "request is already running",
-                },
-            ) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=401, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        if request.stream:
-            return StreamingResponse(stream_openai_response(response), media_type="text/event-stream")
-        return JSONResponse(response)
-
+    legacy_client_prefixes = (
+        "/api/parties",
+        "/api/player-characters",
+        "/api/state",
+        "/api/world",
+        "/api/turn",
+        "/api/turn-traces",
+    )
+    app.router.routes[:] = [
+        route
+        for route in app.router.routes
+        if not any(
+            getattr(route, "path", "") == prefix
+            or getattr(route, "path", "").startswith(f"{prefix}/")
+            for prefix in legacy_client_prefixes
+        )
+    ]
     return app
 
 
@@ -3583,6 +3671,8 @@ def settings_for_party(
     *,
     effective_revision: int | None = None,
 ) -> Settings:
+    if settings.scenario_type != "training" or getattr(party, "scenario_type", None) != "training":
+        raise ValueError("training gateway accepts only scenario_type=training")
     model_profile = party.model_profile
     revision = (
         int(effective_revision)

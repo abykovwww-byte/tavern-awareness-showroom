@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY rp-gateway/app ./app
 COPY rp-gateway/tests ./tests
 COPY rp-gateway/pyproject.toml rp-gateway/README.md ./
-COPY evals /evals
 COPY scripts /scripts
+COPY state/schema.json /app/state-schema.json
 COPY worldpacks /worldpacks
 
 EXPOSE 8088
