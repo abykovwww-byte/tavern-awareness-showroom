@@ -8,11 +8,17 @@
 whole-prompt narrative presets and authored opening seeds selected before party
 creation.
 
-**Delivery status:** `каркас` for the requirements in
-[`registry/041.yml`](registry/041.yml). The mechanism delivery raised the source
-ceiling without activation. The separate source activation now adds
-`day-watch-moscow-v2` and configures observed revision `11`; Ansible apply and
-live-party verification remain separate and are not claimed here.
+**Delivery status:** `подключено` for the requirements in
+[`registry/041.yml`](registry/041.yml). Mechanism PR #85 raised the source
+ceiling without activation. Activation merge
+`80ab6d3f199b8935d4efdac7d5b55437dbb837e7` added
+`day-watch-moscow-v2`, configured observed revision `11` and was Ansible-applied
+on 27 August 2026. Authenticated Light GUI party `party_3e09b9092765` then
+persisted the non-default `strategic` preset and `inquisition-observer` opening,
+their materialized hashes, revision `11` and the selected full seed. The chosen
+content reached real narrator prompts and produced two subsequent successful
+OpenRouter turns. No registered causal probe or endurance run exists for this
+mechanic, so `наблюдается` or `держится` is not claimed.
 
 ## Context
 
@@ -207,7 +213,9 @@ texts or full seed.
 
 The separate activation delivery adds `day-watch-moscow-v2` beside the unchanged
 playable `day-watch-moscow` v1 and configures inventory observed revision `11`.
-This source state still requires Ansible apply and live verification.
+That activation was applied on 27 August 2026 and exercised through an
+authenticated ordinary Light GUI party; source merge, apply and live evidence
+remain separate delivery facts.
 
 The v2 manifest has exactly three independently selectable narrative presets:
 
@@ -248,9 +256,19 @@ change the canonical builder intake question limit.
    repository guards, canary range, docs and focused tests. Inventory remains
    observed `10`, and revisions `0..10` remain compatible.
 2. Separate activation delivery: add and validate the revision-11 WorldPack and
-   change source inventory to observed revision `11`; after merge, apply through Ansible, then prove real UI
-   selection, persisted materialization, first prompt and divergent opening
-   state. CI and hashes alone are not live evidence.
+   change source inventory to observed revision `11`; after merge, apply through
+   Ansible, then prove real UI selection, persisted materialization, first
+   prompt and divergent opening state. CI and hashes alone are not live
+   evidence.
+3. Post-apply proof: server checkout and deployed files matched activation merge
+   `80ab6d3f199b8935d4efdac7d5b55437dbb837e7`; the browser exposed all three
+   presets and four openings, while `party_3e09b9092765` preserved
+   `strategic` + `inquisition-observer`, revision `11`, audit hashes and the
+   selected seed. Its auto-start prompt reached the selected materialization,
+   although the then-selected Gemini profile returned HTTP `400`; after the
+   party profile was changed to OpenRouter `deepseek/deepseek-v4-flash`, two
+   later turns completed without fallback or repair and retained the selected
+   opening and preset in their prompts. This proves `подключено`, not endurance.
 
 ## Related decisions
 

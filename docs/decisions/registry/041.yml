@@ -1,40 +1,40 @@
 - requirement: "Revision-11 WorldPacks declare non-empty closed preset and opening catalogs, stable unique IDs, explicit defaults, safe in-pack paths, exact state-seed filenames, canonical byte-equal root aliases and existing prompt budgets"
-  level: каркас
+  level: подключено
   store: "WorldPack manifest and authored prompt and state-seed files"
   assertion: projection
   expectation: revision_11_catalogs_defaults_aliases_and_budgets_are_closed
   probe_command: null
   expected: null
-  waiver: "Repository validation covers the committed day-watch-moscow-v2 catalogs, aliases and budgets. Ansible apply and a real Light GUI party remain pending."
+  waiver: "Activation merge 80ab6d3 was Ansible-applied with failed=0; all 28 deployed day-watch-moscow-v2 files matched source SHA-256, and the authenticated Light GUI exposed the committed three presets and four openings. Repository validation still owns aliases and prompt budgets; no registered causal probe or endurance claim is made."
 - requirement: "Clients select only optional preset_id and opening_id, omission uses declared defaults, and unknown duplicate or path-like IDs fail closed without array-order fallback"
-  level: каркас
+  level: подключено
   store: "PartyCreate request, WorldPack manifest and Gateway selection path"
   assertion: absence
   expectation: client_ids_resolve_only_inside_declared_worldpack_catalogs
   probe_command: null
   expected: null
-  waiver: "Focused source tests cover defaults and rejection paths. A deployed browser selection and real party creation remain pending after activation apply."
+  waiver: "Authenticated Light GUI selected non-default strategic and inquisition-observer IDs and created ordinary party_3e09b9092765 at revision 11. Focused source tests retain coverage for omitted defaults and fail-closed unknown, duplicate and path-like IDs; those rejection cases were not submitted against production."
 - requirement: "Party creation snapshots selected IDs, exact prompt texts, player role and full seed with audit-only SHA-256 values, and branches or autotests inherit the immutable snapshot"
-  level: каркас
+  level: подключено
   store: "parties materialized WorldPack snapshot and descendant party rows"
   assertion: projection
   expectation: party_variants_are_materialized_once_and_inherited
   probe_command: null
   expected: null
-  waiver: "Local storage and prompt tests cover materialization and inheritance. No source-mismatch status, telemetry or historical backfill is part of this decision, and no deployed day-watch-moscow-v2 party evidence exists yet."
+  waiver: "Read-only production SQLite for party_3e09b9092765 contained preset_id=strategic, opening_id=inquisition-observer, revision 11, the selected role, full seed and audit hashes; recorded prompts contained the selected opening and preset. Branch/autotest inheritance remains covered by focused tests. No source-mismatch status, telemetry or historical backfill is part of this decision."
 - requirement: "Source and provider canaries accept candidate revisions 0 through 11 while inventory stays observed at 10 until a revision-11 pack is committed and revisions 0 through 10 retain their behavior"
-  level: каркас
+  level: подключено
   store: "Gateway source ceiling, provider canary CLI, inventory and WorldPack manifests"
   assertion: absence
   expectation: revision_11_mechanism_does_not_activate_or_downgrade_ordinary_parties
   probe_command: null
   expected: null
-  waiver: "The source activation commits a conforming pack and configures observed revision 11. Ansible apply and a new ordinary-party stamp remain pending; existing parties are not migrated."
+  waiver: "Server checkout 80ab6d3 and ordinary party_3e09b9092765 proved applied observed revision 11 without downgrading the revision-11 manifest; day-watch-moscow v1 remained separately deployed and unchanged. Compatibility and fail-closed boundaries for revisions 0 through 10 remain covered by source tests; historical rows were not migrated or endurance-tested in this proof."
 - requirement: "A separate activation adds day-watch-moscow-v2 beside untouched v1 with presets book action and strategic defaulting to action, four agreed openings defaulting to independent, the existing 20 Lore Cards and 11 active NPCs, and visible Примета and Манера речи lines in every NPC card without adding a world clock"
-  level: каркас
+  level: подключено
   store: "day-watch-moscow-v2 manifest, prompts, opening seeds and Lore Cards"
   assertion: projection
   expectation: day_watch_v2_activation_content_matches_the_agreed_authored_scope
   probe_command: null
   expected: null
-  waiver: "Repository validation covers the source pack and keeps day-watch-moscow v1 unchanged. Real preset/opening selection, persisted hashes, first prompt and divergent state require post-apply live proof."
+  waiver: "Applied browser and SQLite proof exposed book/action/strategic and all four openings, persisted strategic plus inquisition-observer with 11 seeded NPCs and no world clock, and found the selected content in real prompts. The initial Gemini provider attempt returned HTTP 400, then two OpenRouter deepseek/deepseek-v4-flash turns completed without fallback or repair and reflected the chosen opening. No standardized causal probe or endurance run is claimed."
