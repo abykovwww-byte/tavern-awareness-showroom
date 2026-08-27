@@ -1,46 +1,81 @@
-# RP Stack Architecture
+# Standalone architecture
 
-## Runtime flow
+## Product boundary
 
 ```text
 Browser
-  -> rp-light-gui (static UI and /api reverse proxy)
-  -> rp-gateway (FastAPI authority)
-  -> provider APIs or rp-local-llm
+  -> showroom:80
+       static client
+       same-origin /api and /health reverse proxy
+  -> awareness-gateway:8088
+       authentication and visitor identity
+       training scenarios, runs, scoring and results
+       portal, artifacts and workspace
+       provider routing
+  -> dedicated SQLite + state + covers
 ```
 
-Light GUI depends only on Gateway. Gateway owns the active binding between a
-world pack, player character, model profile, canonical state, turn history, and
-memory chapters. All persistent party data is scoped by party and stored in
-SQLite plus isolated state files.
+The standalone service has no runtime dependency on RP Gateway or Light GUI.
+It owns its release, configuration, database, canonical state, uploaded covers,
+session cookies and visitor cookies. The optional local LLM process may be
+shared as infrastructure, but only through the explicit `rp-llm` network; its
+credentials and routing policy remain owned by this deployment.
 
-For deterministic training, Gateway is a domain-neutral interpreter. A
-WorldPack `training_runtime` owns its program, assessment and fallbacks;
-Gateway validates and snapshots that combined contract per party, evaluates
-generic detectors/effects, supplies only the active sanitized turn to the
-narrator and applies canonical state changes. Subject-specific schedules,
-regexes, scoring weights and answer keys do not belong in Gateway.
+## API boundary
 
-Interactive sites and the department workspace are separate optional
-capabilities. Their Showroom run flags are immutable and independent from the
-training runtime contract. UI events are typed sub-turn evidence and do not
-call an LLM or advance the authored schedule.
+The browser speaks only to Showroom on one origin. Nginx serves static assets
+and proxies `/api/*` and `/health` to `awareness-gateway`. The Gateway remains
+the authority behind the existing `/api/showroom/*` contracts for visitor
+identity, scenarios, runs, portal, leaderboard, cover assets, artifacts and
+workspace events. Provider calls are never exposed directly to the browser.
 
-The canonical term **service model / служебная модель** means the one global
-LLM selected by an administrator for long-term memory, world-state changes,
-and character generation across all current and future parties. It is not a
-narrator model. BYOK credentials are user-owned and party-scoped; service-model
-requests use only stack-managed credentials.
+The extraction preserves those public response shapes and cookie behavior so
+the existing Showroom client can move without a coordinated browser rewrite.
+Breaking changes require a versioned API migration, not a silent split-only
+change.
 
-World-pack prompts and `world-info/index.md` provide immutable context.
-`state-seed.json` initializes each party. Canonical state and
-`AUTHORITATIVE_OUTCOME` override prose memory.
+## Data authority
 
-See [Decision 017](decisions/017-worldpack-owned-training-runtime.md) for the
-runtime contracts and prompt/scoring boundaries.
+| Data | Authority | Host storage |
+| --- | --- | --- |
+| Gateway SQLite | Awareness Gateway | `AWARENESS_GATEWAY_DATA_DIR` |
+| Canonical state files | Awareness Gateway | `AWARENESS_STATE_DIR` |
+| Uploaded covers | Awareness Gateway | `AWARENESS_SHOWROOM_COVER_DIR` |
+| Training definitions | Git | `worldpacks/awareness*` |
+| Browser session/visitor tokens | Awareness Gateway; opaque to browser | dedicated cookie names |
+| Provider secrets | deployment configuration | untracked environment/secret store |
+| Backups | operator/IaC | `AWARENESS_BACKUP_DIR` |
 
-## Deployment
+The three mutable runtime mounts are intentionally distinct. They must not
+point into RP Stack paths. Covers are mounted at `/data/showroom-covers`, while
+the database uses `/data/awareness_gateway.db`; the nested container path does
+not imply shared host storage.
 
-Ansible copies the committed source tree to `/srv/apps/rp-stack`, renders the
-Compose and environment files, and runs Compose with orphan cleanup. Mutable
-Gateway data remains under `/srv/app-data/rp-stack/gateway`.
+## Training-only contract
+
+`worldpacks` has exactly two top-level directories:
+`awareness` and `awareness-one-day`. Each manifest recommends and supports only
+`training` and declares `training_runtime`. CI enforces this closed set.
+
+Gateway interprets the versioned training program, assessment and fallback
+contracts. Interactive sites and workspace actions are typed evidence: they do
+not independently advance the authored turn schedule or make a provider call.
+The browser cannot author scores, run completion or canonical artifact state.
+
+Process and resource guards close the active scenario surface before storage or
+provider side effects. Some coupled internal Gateway modules remain until a
+separate dependency-backed prune; live shadow acceptance is still required
+before production cutover.
+
+## Migration decision
+
+The minimal safe migration starts with a fresh standalone SQLite database and
+empty state/covers directories. After the shadow is accepted and the old
+Showroom is frozen, only published scenario configuration is recreated through
+the new admin API. Model profiles are mapped by `(provider, base_url, model)`,
+and covers are uploaded again after new scenario IDs exist.
+
+Mixed RP history, runs, state, old sessions, visitor tokens, identities and
+provider keys remain readable in the original RP deployment but are not
+copied. Existing users receive new standalone cookies and create new training
+runs. Historical migration would require a separate explicit contract.

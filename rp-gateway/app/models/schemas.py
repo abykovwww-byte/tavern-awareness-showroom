@@ -44,10 +44,10 @@ OutcomeLabel = Literal[
     "deterministic_resolution",
 ]
 
-ActiveScenarioType = Literal["rp", "training"]
+ActiveScenarioType = Literal["training"]
 StoredScenarioType = Literal["rp", "novel", "training"]
 ShowroomScenarioStatus = Literal["draft", "published", "archived"]
-ShowroomWorldSource = Literal["preset", "prompt"]
+ShowroomWorldSource = Literal["preset"]
 ShowroomLeaderboardMetric = Literal["state_path", "turn_count"]
 TrainingArtifactEventType = Literal["link_opened", "form_submitted", "site_closed", "reported"]
 

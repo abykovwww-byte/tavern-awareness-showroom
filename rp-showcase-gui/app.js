@@ -79,10 +79,7 @@ const els = {
   scenarioStatusSelect: document.querySelector("#scenarioStatusSelect"),
   providerSelect: document.querySelector("#providerSelect"),
   modelSelect: document.querySelector("#modelSelect"),
-  presetWorldField: document.querySelector("#presetWorldField"),
-  promptWorldField: document.querySelector("#promptWorldField"),
   worldpackSelect: document.querySelector("#worldpackSelect"),
-  worldPromptInput: document.querySelector("#worldPromptInput"),
   trainingCapabilitiesField: document.querySelector("#trainingCapabilitiesField"),
   interactiveLinksEnabledInput: document.querySelector("#interactiveLinksEnabledInput"),
   interactiveWorkspaceEnabledInput: document.querySelector("#interactiveWorkspaceEnabledInput"),
@@ -98,7 +95,7 @@ const els = {
   busyText: document.querySelector("#busyText"),
 };
 
-const scenarioTypeLabels = { rp: "RP", novel: "Архивный Novel", training: "Обучение" };
+const scenarioTypeLabels = { training: "Обучение" };
 const statusLabels = { draft: "Черновик", published: "Опубликован", archived: "Архив" };
 
 function bindEvents() {
@@ -118,12 +115,8 @@ function bindEvents() {
   els.newScenarioButton.addEventListener("click", newScenario);
   els.scenarioForm.addEventListener("submit", saveScenario);
   els.providerSelect.addEventListener("change", () => renderModelOptions());
-  els.scenarioTypeSelect.addEventListener("change", renderTrainingCapabilities);
   els.worldpackSelect.addEventListener("change", renderTrainingCapabilities);
   els.scenarioStatusSelect.addEventListener("change", renderStatusPill);
-  document.querySelectorAll('input[name="worldSource"]').forEach((radio) => {
-    radio.addEventListener("change", renderWorldSource);
-  });
   els.coverInput.addEventListener("change", previewCover);
   els.deleteCoverButton.addEventListener("click", deleteCover);
 }
@@ -233,7 +226,7 @@ function openStart(scenario) {
   els.selectedMode.textContent = scenarioTypeLabels[scenario.scenario_type] || scenario.scenario_type;
   els.selectedTitle.textContent = scenario.title;
   els.selectedDescription.textContent = scenario.description || "";
-  els.selectedWorld.textContent = scenario.world?.title || "Внутренний prompt-мир";
+  els.selectedWorld.textContent = scenario.world?.title || "WorldPack не указан";
   renderCover(els.selectedCover, scenario.cover_url);
   els.selectedLeaderboardButton.disabled = !scenario.leaderboard_enabled;
   els.leaderboardOptInInput.checked = Boolean(scenario.leaderboard_enabled);
@@ -1018,17 +1011,14 @@ function newScenario() {
   els.scenarioSaveButton.textContent = "Создать сценарий";
   els.scenarioTitleInput.value = "";
   els.scenarioDescriptionInput.value = "";
-  els.scenarioTypeSelect.value = "rp";
+  els.scenarioTypeSelect.value = "training";
   els.scenarioStatusSelect.value = "draft";
   els.leaderboardEnabledInput.checked = true;
   els.interactiveLinksEnabledInput.checked = false;
   els.interactiveWorkspaceEnabledInput.checked = false;
   els.leaderboardLabelInput.value = "Очки";
-  const preset = document.querySelector('input[name="worldSource"][value="preset"]');
-  preset.checked = true;
   renderProviderOptions();
   renderModelOptions();
-  renderWorldSource();
   renderTrainingCapabilities();
   renderStatusPill();
   els.coverPreview.textContent = "Обложка не выбрана";
@@ -1046,19 +1036,15 @@ function editScenario(scenario) {
   els.scenarioSaveButton.textContent = "Сохранить изменения";
   els.scenarioTitleInput.value = scenario.title;
   els.scenarioDescriptionInput.value = scenario.description || "";
-  els.scenarioTypeSelect.value = scenario.scenario_type;
+  els.scenarioTypeSelect.value = "training";
   els.scenarioStatusSelect.value = scenario.status;
   els.leaderboardEnabledInput.checked = scenario.leaderboard_enabled;
   els.interactiveLinksEnabledInput.checked = Boolean(scenario.interactive_links_enabled);
   els.interactiveWorkspaceEnabledInput.checked = Boolean(scenario.interactive_workspace_enabled);
   els.leaderboardLabelInput.value = scenario.leaderboard_label || "Очки";
-  const worldSource = document.querySelector(`input[name="worldSource"][value="${scenario.world_source}"]`);
-  if (worldSource) worldSource.checked = true;
   els.worldpackSelect.value = scenario.worldpack_id;
-  els.worldPromptInput.value = scenario.world_prompt || "";
   els.providerSelect.value = scenario.model_profile?.provider || "";
   renderModelOptions(scenario.model_profile_id);
-  renderWorldSource();
   renderTrainingCapabilities();
   renderStatusPill();
   els.coverInput.value = "";
@@ -1106,35 +1092,18 @@ function renderWorldpackOptions() {
   }
 }
 
-function renderWorldSource() {
-  const source = selectedWorldSource();
-  els.presetWorldField.classList.toggle("hidden", source !== "preset");
-  els.promptWorldField.classList.toggle("hidden", source !== "prompt");
-  els.worldpackSelect.required = source === "preset";
-  els.worldPromptInput.required = source === "prompt";
-  renderTrainingCapabilities();
-}
-
 function selectedWorldpack() {
   return appState.worldpacks.find((pack) => pack.id === els.worldpackSelect.value) || null;
 }
 
 function renderTrainingCapabilities() {
-  const training = els.scenarioTypeSelect.value === "training";
-  const preset = selectedWorldSource() === "preset";
-  const pack = preset ? selectedWorldpack() : null;
+  const pack = selectedWorldpack();
   const linksSupported = Boolean(pack?.manifest?.training_artifacts?.schema_version === "rp-training-artifacts.v1");
   const workspaceSupported = Boolean(pack?.manifest?.training_workspace?.schema_version === "rp-training-workspace.v1");
-  els.trainingCapabilitiesField.classList.toggle("hidden", !training);
-  els.interactiveLinksEnabledInput.disabled = !training || !linksSupported;
-  els.interactiveWorkspaceEnabledInput.disabled = !training || !workspaceSupported;
-  if (!training) {
-    els.interactiveLinksEnabledInput.checked = false;
-    els.interactiveWorkspaceEnabledInput.checked = false;
-  } else {
-    if (!linksSupported) els.interactiveLinksEnabledInput.checked = false;
-    if (!workspaceSupported) els.interactiveWorkspaceEnabledInput.checked = false;
-  }
+  els.interactiveLinksEnabledInput.disabled = !linksSupported;
+  els.interactiveWorkspaceEnabledInput.disabled = !workspaceSupported;
+  if (!linksSupported) els.interactiveLinksEnabledInput.checked = false;
+  if (!workspaceSupported) els.interactiveWorkspaceEnabledInput.checked = false;
   els.interactiveLinksHint.textContent = linksSupported
     ? "WorldPack поддерживает учебные сайты. Выбор будет зафиксирован в каждом запуске."
     : "Выбранный WorldPack не содержит валидный каталог учебных сайтов.";
@@ -1175,19 +1144,18 @@ async function saveScenario(event) {
     showToast("Не выбран сценарий для редактирования. Нажмите «Новый сценарий» для создания.", true);
     return;
   }
-  const source = selectedWorldSource();
   const payload = {
     title: els.scenarioTitleInput.value.trim(),
     description: els.scenarioDescriptionInput.value.trim(),
     status: els.scenarioStatusSelect.value,
-    scenario_type: els.scenarioTypeSelect.value,
+    scenario_type: "training",
     model_profile_id: els.modelSelect.value,
-    world_source: source,
-    worldpack_id: source === "preset" ? els.worldpackSelect.value : null,
-    world_prompt: source === "prompt" ? els.worldPromptInput.value.trim() : null,
+    world_source: "preset",
+    worldpack_id: els.worldpackSelect.value,
+    world_prompt: null,
     leaderboard_enabled: els.leaderboardEnabledInput.checked,
-    interactive_links_enabled: els.scenarioTypeSelect.value === "training" && els.interactiveLinksEnabledInput.checked,
-    interactive_workspace_enabled: els.scenarioTypeSelect.value === "training" && els.interactiveWorkspaceEnabledInput.checked,
+    interactive_links_enabled: els.interactiveLinksEnabledInput.checked,
+    interactive_workspace_enabled: els.interactiveWorkspaceEnabledInput.checked,
     leaderboard_label: els.leaderboardLabelInput.value.trim() || "Очки",
     sort_order: editorMode === "edit" ? appState.editingScenario?.sort_order ?? 100 : 100,
   };
@@ -1232,10 +1200,6 @@ async function deleteCover() {
   }
 }
 
-function selectedWorldSource() {
-  return document.querySelector('input[name="worldSource"]:checked')?.value || "preset";
-}
-
 function button(text, className) {
   const element = document.createElement("button");
   element.type = "button";
@@ -1245,7 +1209,7 @@ function button(text, className) {
 }
 
 function providerLabel(provider) {
-  return { openrouter: "OpenRouter", nvidia: "NVIDIA (архив)", gemini: "Gemini", local: "Local LLM" }[provider] || provider;
+  return { openrouter: "OpenRouter", gemini: "Gemini", local: "Local LLM" }[provider] || provider;
 }
 
 function formatDate(value) {

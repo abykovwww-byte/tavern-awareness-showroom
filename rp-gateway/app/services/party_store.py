@@ -815,6 +815,8 @@ class PartyStore:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if not self.is_training_worldpack_manifest(manifest):
+                continue
             pack_dir = manifest_path.parent
             pack_id = str(manifest.get("id") or pack_dir.name)
             files = manifest.get("files", {}) if isinstance(manifest.get("files"), dict) else {}
@@ -839,6 +841,19 @@ class PartyStore:
             packs.append(summary)
             self.upsert_worldpack(summary)
         return packs
+
+    @staticmethod
+    def is_training_worldpack_manifest(manifest: Any) -> bool:
+        if not isinstance(manifest, dict):
+            return False
+        scenario_types = manifest.get("scenario_types")
+        training_runtime = manifest.get("training_runtime")
+        return (
+            isinstance(scenario_types, dict)
+            and scenario_types.get("recommended") == "training"
+            and scenario_types.get("supported") == ["training"]
+            and isinstance(training_runtime, dict)
+        )
 
     def upsert_worldpack(self, pack: WorldPackSummary, owner_user_id: str | None = None) -> None:
         timestamp = now_iso()
@@ -1018,7 +1033,8 @@ class PartyStore:
         sql += " ORDER BY title"
         with self.connect() as connection:
             rows = connection.execute(sql, tuple(params)).fetchall()
-        return [self.worldpack_from_row(row) for row in rows]
+        packs = [self.worldpack_from_row(row) for row in rows]
+        return [pack for pack in packs if self.is_training_worldpack_manifest(pack.manifest)]
 
     def get_worldpack(
         self,
@@ -1039,7 +1055,10 @@ class PartyStore:
             row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"worldpack not found: {worldpack_id}")
-        return self.worldpack_from_row(row)
+        pack = self.worldpack_from_row(row)
+        if not self.is_training_worldpack_manifest(pack.manifest):
+            raise ValueError(f"worldpack not found: {worldpack_id}")
+        return pack
 
     def set_worldpack_visibility(self, worldpack_id: str, visibility: str) -> WorldPackSummary:
         if visibility not in {"public", "private"}:
@@ -1385,7 +1404,9 @@ class PartyStore:
 
     def list_parties(self, owner_user_id: str | None = None) -> list[PartySummary]:
         self.scan_worldpacks()
-        sql = "SELECT * FROM parties WHERE id NOT IN (SELECT test_party_id FROM autotest_runs WHERE branch_id IS NULL)"
+        sql = """SELECT * FROM parties
+                 WHERE scenario_type = 'training'
+                   AND id NOT IN (SELECT test_party_id FROM autotest_runs WHERE branch_id IS NULL)"""
         params: tuple[Any, ...] = ()
         if owner_user_id:
             sql += " AND owner_user_id = ?"
@@ -1393,9 +1414,18 @@ class PartyStore:
         sql += " ORDER BY updated_at DESC"
         with self.connect() as connection:
             rows = connection.execute(sql, params).fetchall()
-        return [self.party_from_row(row, include_related=True) for row in rows]
+        parties: list[PartySummary] = []
+        for row in rows:
+            try:
+                self.get_worldpack(str(row["worldpack_id"]))
+            except ValueError:
+                continue
+            parties.append(self.party_from_row(row, include_related=True))
+        return parties
 
     def create_party(self, request: PartyCreate, owner_user_id: str | None = None) -> PartySummary:
+        if request.scenario_type != "training":
+            raise ValueError("training gateway accepts only scenario_type=training")
         pack = self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
         scenario_types = pack.manifest.get("scenario_types") if isinstance(pack.manifest, dict) else None
         supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
@@ -1503,7 +1533,7 @@ class PartyStore:
         return self.get_party(party_id, owner_user_id=owner_user_id)
 
     def get_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
-        sql = "SELECT * FROM parties WHERE id = ?"
+        sql = "SELECT * FROM parties WHERE id = ? AND scenario_type = 'training'"
         params: list[Any] = [party_id]
         if owner_user_id:
             sql += " AND owner_user_id = ?"
@@ -1512,6 +1542,10 @@ class PartyStore:
             row = connection.execute(sql, tuple(params)).fetchone()
         if row is None:
             raise ValueError(f"party not found: {party_id}")
+        try:
+            self.get_worldpack(str(row["worldpack_id"]))
+        except ValueError as exc:
+            raise ValueError(f"party not found: {party_id}") from exc
         return self.party_from_row(row, include_related=True)
 
     def activate_party(self, party_id: str, owner_user_id: str | None = None) -> PartySummary:
@@ -2128,7 +2162,14 @@ class PartyStore:
     def list_all_party_branches(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM party_branches ORDER BY created_at ASC").fetchall()
-        return [dict(row) for row in rows]
+        branches: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                self.get_party(str(row["party_id"]))
+            except ValueError:
+                continue
+            branches.append(dict(row))
+        return branches
 
     def store_for_branch(
         self,
@@ -2219,7 +2260,14 @@ class PartyStore:
             rows = connection.execute(
                 "SELECT * FROM autotest_runs WHERE status IN ('running', 'stopping') ORDER BY created_at ASC"
             ).fetchall()
-        return [self.autotest_run_from_row(row) for row in rows]
+        runs: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                self.get_party(str(row["source_party_id"]))
+            except ValueError:
+                continue
+            runs.append(self.autotest_run_from_row(row))
+        return runs
 
     def active_autotest_for_party(self, party_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:

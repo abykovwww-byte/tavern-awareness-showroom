@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRAINING_TESTS: >-
+    tests/test_awareness_one_day.py
+    tests/test_training_runtime.py
+    tests/test_training_artifacts.py
+    tests/test_training_capabilities.py
+    tests/test_showroom_portal.py
+    tests/test_decision_019_contracts.py
+    tests/test_training_gateway_mode_guard.py
+    tests/test_training_showroom_mode_guard.py
+
+jobs:
+  worldpack-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Enforce the two training-only WorldPacks
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path("worldpacks")
+          expected = ["awareness", "awareness-one-day"]
+          actual = sorted(path.name for path in root.iterdir() if path.is_dir())
+          assert actual == expected, f"top-level WorldPacks: expected {expected}, got {actual}"
+          for slug in expected:
+              manifest = json.loads((root / slug / "manifest.json").read_text(encoding="utf-8"))
+              scenario_types = manifest.get("scenario_types")
+              assert scenario_types == {"recommended": "training", "supported": ["training"]}, (
+                  f"{slug}: expected training-only scenario_types, got {scenario_types!r}"
+              )
+              assert isinstance(manifest.get("training_runtime"), dict), (
+                  f"{slug}: training_runtime is required"
+              )
+          PY
+      - name: Validate canonical state seeds
+        shell: bash
+        run: |
+          find worldpacks -name state-seed.json -print0 | sort -z | while IFS= read -r -d '' state_seed; do
+            python scripts/validate-state.py --state "$state_seed" --schema state/schema.json
+          done
+      - name: Validate deterministic training runtime
+        run: python scripts/validate-training-runtime.py --worldpacks worldpacks
+
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: rp-gateway/requirements.txt
+      - name: Install Gateway dependencies
+        working-directory: rp-gateway
+        run: python -m pip install -r requirements.txt
+      - name: Check Gateway syntax
+        working-directory: rp-gateway
+        run: python -m compileall -q app
+      - name: Run training-only Gateway gate
+        working-directory: rp-gateway
+        shell: bash
+        run: python -m pytest -q $TRAINING_TESTS
+      - name: Build Gateway image
+        run: docker build --file rp-gateway/Dockerfile --tag awareness-gateway-ci .
+      - name: Repeat training-only gate inside image
+        shell: bash
+        run: docker run --rm awareness-gateway-ci sh -lc "pytest -q $TRAINING_TESTS"
+
+  browser-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check browser JavaScript syntax
+        run: |
+          node --check rp-showcase-gui/app.js
+          node --check rp-showcase-gui/structured-content.js
+          node --check rp-showcase-gui/message-time.js
+          node --check rp-showcase-gui/training-only.test.js
+          node --check ui-shared/training-artifacts.js
+      - name: Run Showroom browser tests
+        run: |
+          node rp-showcase-gui/request-policy.test.js
+          node rp-showcase-gui/structured-content.test.js
+          node rp-showcase-gui/message-time.test.js
+          node rp-showcase-gui/training-only.test.js
+          node ui-shared/training-artifacts.test.js
+      - name: Build Showroom image
+        run: docker build --file rp-showcase-gui/Dockerfile --tag awareness-showroom-ci .
+
+  compose-contract:
+    runs-on: ubuntu-latest
+    env:
+      AWARENESS_ENV_FILE: .env.example
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate standalone Compose
+        run: docker compose --env-file .env.example config --quiet
+      - name: Validate optional local-LLM overlay
+        run: docker compose -f compose.yml -f compose.local-llm.yml --env-file .env.example config --quiet

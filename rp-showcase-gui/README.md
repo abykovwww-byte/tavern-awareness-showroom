@@ -1,19 +1,20 @@
-# RP Showroom GUI
+# Awareness Showroom GUI
 
-Public, registration-free scenario storefront for `rp-gateway`.
+Public, registration-free storefront for training scenarios served by the
+standalone Awareness Gateway.
 
-- A showroom scenario is not a world pack. It references a world pack and adds
-  its own public title, description, scenario type, model, cover, and leaderboard.
-- Anonymous participants receive an HttpOnly visitor cookie from Gateway.
-- Gameplay uses showroom-scoped wrapper endpoints; raw party IDs are not exposed.
-- Training WorldPacks can show a five-person corporate directory beside the
-  session chat. Dynamic job titles are resolved from the employee position once
-  at run creation and returned as an immutable run snapshot.
-- Scenario administration reuses the existing Gateway admin role.
-- Training responses render valid `ПИСЬМО` blocks as Outlook-style email cards
-  and valid `СООБЩЕНИЕ` blocks as Telegram-style chat bubbles. Rendering uses
-  text nodes only; shown links and attachments are intentionally not clickable.
-- Runtime target is `abykovserv`; this client is deployed through the RP Stack
-  Compose template and Ansible.
+- A scenario references either `awareness` or `awareness-one-day` and adds its
+  public title, description, model, cover and leaderboard presentation.
+- Scenario type is fixed to `training`; world source is fixed to a preset
+  WorldPack. RP and prompt-world controls are absent.
+- Anonymous participants receive the dedicated HttpOnly visitor cookie from
+  Awareness Gateway; raw internal party IDs are not exposed.
+- Gateway remains authoritative for results, scoring, artifacts, workspace
+  events and training progression.
+- Administration uses the standalone Gateway admin session and credentials.
 
-Parser smoke test: `node structured-content.test.js`.
+The client is built by this repository's `compose.yml` and proxies `/api/*` to
+the `awareness-gateway` service. It does not call or join RP Stack.
+
+Run the browser checks through `scripts/ci.ps1`; a source check is not a live
+browser or provider proof.

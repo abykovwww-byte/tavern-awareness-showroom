@@ -1,0 +1,50 @@
+name: ${COMPOSE_PROJECT_NAME:-tavern-awareness-showroom}
+
+services:
+  awareness-gateway:
+    build:
+      context: .
+      dockerfile: rp-gateway/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ${AWARENESS_ENV_FILE:-.env}
+    volumes:
+      - "${AWARENESS_GATEWAY_DATA_DIR:?set AWARENESS_GATEWAY_DATA_DIR}:/data:rw"
+      - "${AWARENESS_STATE_DIR:?set AWARENESS_STATE_DIR}:/state:rw"
+      - "${AWARENESS_SHOWROOM_COVER_DIR:?set AWARENESS_SHOWROOM_COVER_DIR}:/data/showroom-covers:rw"
+    expose:
+      - "8088"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - app
+
+  showroom:
+    build:
+      context: .
+      dockerfile: rp-showcase-gui/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      awareness-gateway:
+        condition: service_healthy
+    ports:
+      - "${SHOWROOM_BIND_HOST:-127.0.0.1}:${SHOWROOM_HOST_PORT:-18011}:80"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    networks:
+      - app
+
+networks:
+  app:

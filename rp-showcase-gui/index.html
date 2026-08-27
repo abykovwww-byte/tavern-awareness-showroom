@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>RP Showroom</title>
+  <title>Awareness Showroom</title>
   <link rel="stylesheet" href="/styles.css?v=20260803-training-workspace">
   <link rel="stylesheet" href="/pt-design.css?v=20260730-turn-rating">
   <link rel="stylesheet" href="/training-artifacts.css?v=20260731-messenger-links">
@@ -208,7 +208,7 @@
           <label><span>Описание карточки</span><textarea id="scenarioDescriptionInput" maxlength="1200" rows="4"></textarea></label>
 
           <div class="form-grid">
-            <label><span>Тип сценария</span><select id="scenarioTypeSelect"><option value="rp">RP</option><option value="training">Training</option></select></label>
+            <label><span>Тип сценария</span><select id="scenarioTypeSelect" disabled><option value="training">Training</option></select></label>
             <label><span>Статус</span><select id="scenarioStatusSelect"><option value="draft">Черновик</option><option value="published">Опубликован</option><option value="archived">Архив</option></select></label>
           </div>
 
@@ -217,18 +217,9 @@
             <label><span>Модель</span><select id="modelSelect" required></select></label>
           </div>
 
-          <fieldset>
-            <legend>Источник мира</legend>
-            <div class="radio-row">
-              <label><input type="radio" name="worldSource" value="preset" checked> Готовый WorldPack</label>
-              <label><input type="radio" name="worldSource" value="prompt"> Произвольный prompt</label>
-            </div>
-          </fieldset>
+          <label><span>WorldPack — не название сценария</span><select id="worldpackSelect" required></select><small>Один WorldPack можно выбрать в нескольких сценариях витрины.</small></label>
 
-          <label id="presetWorldField"><span>Мир — не название сценария</span><select id="worldpackSelect"></select><small>Один WorldPack можно выбрать в нескольких сценариях витрины.</small></label>
-          <label class="hidden" id="promptWorldField"><span>Стартовый prompt внутреннего мира</span><textarea id="worldPromptInput" maxlength="6000" rows="7"></textarea></label>
-
-          <fieldset class="capability-panel hidden" id="trainingCapabilitiesField">
+          <fieldset class="capability-panel" id="trainingCapabilitiesField">
             <legend>Интерактивные функции Training</legend>
             <label class="switch-row"><input id="interactiveLinksEnabledInput" type="checkbox"><span>Подключить интерактивные ссылки</span></label>
             <small id="interactiveLinksHint">WorldPack должен содержать валидный каталог учебных сайтов.</small>

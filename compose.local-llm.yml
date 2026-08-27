@@ -1,0 +1,10 @@
+services:
+  awareness-gateway:
+    networks:
+      - app
+      - provider
+
+networks:
+  provider:
+    external: true
+    name: ${LOCAL_LLM_NETWORK:-rp-llm}

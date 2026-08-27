@@ -1,85 +1,95 @@
-# RP Stack
+# Tavern Awareness Showroom
 
-RP Stack is the LAN-only roleplay and training application managed by this IaC
-repository.
+This repository is the standalone training product extracted from Tavern RP
+Stack. It contains the Showroom browser client, a training-only Gateway target,
+the `awareness` and `awareness-one-day` WorldPacks, and the deterministic
+training artifact/workspace runtime.
+
+The intended runtime is independent:
 
 ```text
 Browser
-  -> Light GUI on http://192.168.1.88:8010
-  -> party-scoped /api proxy
-  -> RP Gateway
-  -> provider APIs or the optional local model runner
+  -> Showroom (static UI and same-origin /api proxy)
+  -> Awareness Gateway
+  -> its own SQLite database, state files, covers and provider credentials
 ```
 
-Gateway owns authentication, world packs, player characters, model profiles,
-party state, history, memory chapters, deterministic checks, and training
-runtime execution. Training subject logic, schedule, assessment and fallback
-belong to the versioned WorldPack contract; Gateway interprets and snapshots it
-without campaign-specific branches. The browser stores only its active session
-and party preference.
+It must not call the RP Gateway or share RP Stack database, state, cover,
+authentication, visitor-cookie, or provider-secret storage. Sharing the
+optional local model process is allowed only through the explicit external
+`rp-llm` network overlay.
 
-**Service model / Служебная модель** is the single administrator-selected LLM
-for the whole RP Stack. It serves long-term memory, world-state change drafts,
-and character generation for every current and future party. Party narrator
-models remain independent. User BYOK credentials are scoped to exactly one
-party and are never used by the service model.
+## Bootstrap status
 
-Active cloud narrator routes are Gemini and OpenRouter. The service model uses
-only an explicitly selected local or OpenRouter route and never changes provider
-when the local runner is unavailable. Retired provider/profile/log rows remain
-readable for history, but cannot be selected for new or continuing runtime work.
+The bootstrap establishes provenance, a standalone Compose contract, safe
+shadow defaults, training-only process/resource guards, a closed two-WorldPack
+catalog and a training-focused CI gate. Light GUI, RP WorldPacks and RP evals
+are removed. Some inherited internal Gateway modules and their coupled tests
+remain until dependency-backed pruning proves that Showroom does not use them;
+they are not an active scenario mode or browser surface.
 
-Revision-8 RP WorldPacks may declare reviewed `lore-cards/*.json`. Gateway copies
-them into a new party without a model call, retrieves them only by whole
-title/keyword matches from the current-plus-three-turn scan, and records the
-exact raised IDs in turn metadata. A player-triggered Lore Card draft uses one
-bounded stack-key OpenRouter call and is persisted only after explicit confirm.
+Source history is recorded in [PROVENANCE.md](PROVENANCE.md).
 
-Candidate revision-9 RP adds a separate confirmed GM correction path. Bounded
-local Gemma calls may classify and draft only an edit of an existing target;
-Gateway alone commits it without advancing the scene and keeps a typed overlay
-until the affected OpenRouter memory section absorbs authority `user`. This
-source capability is not an activation or live-runtime claim.
+## Configuration
 
-Candidate revision-10 RP may declare an authored `world-clock.json`. Exact local
-Gemma estimates only elapsed time from the last committed turn; Gateway applies
-cancelable authored events atomically as durable world facts or existing Lore
-Card toggles. The narrator and Light GUI receive a bounded one-shot event plus
-nearest horizon. Observed revision remains 8 until a separate activation and
-live verification slice.
+Copy `.env.example` to an untracked `.env`, set `AWARENESS_ENV_FILE=.env`,
+replace the bootstrap password, and configure only the provider credentials
+this deployment needs. Keep the three writable host paths separate:
 
-## Runtime paths
+- `AWARENESS_GATEWAY_DATA_DIR`: SQLite and Gateway-owned data;
+- `AWARENESS_STATE_DIR`: canonical state files;
+- `AWARENESS_SHOWROOM_COVER_DIR`: uploaded Showroom covers.
 
-```text
-/srv/apps/rp-stack
-/srv/apps/rp-stack/worldpacks
-/srv/apps/rp-stack/state
-/srv/app-data/rp-stack/gateway/rp_gateway.db
-/srv/backups/rp-stack
-```
+`AWARENESS_BACKUP_DIR` is an operator-side backup destination and is not mounted
+into either container. Shadow defaults bind only `127.0.0.1:18011`. Port `8011`
+is reserved for the separately approved C1 production cutover.
 
-## Operations
+## Validate and start a shadow
 
 ```bash
-cd /srv/apps/rp-stack
-docker compose up -d --build --remove-orphans
-docker compose ps
-docker compose logs --tail=100 rp-gateway rp-light-gui
-docker compose run --rm rp-gateway pytest
-bash scripts/backup.sh
+docker compose --env-file .env config --quiet
+docker compose --env-file .env up -d --build
+docker compose --env-file .env ps
 ```
 
-Provider keys are configured only in `/etc/ansible/local-overrides.yml` on the
-server. Never store them in Git or enter them in the browser.
-
-## Deployment
-
-Commit on a `codex/` branch or in an isolated worktree, push only that branch,
-open a non-draft PR, and merge it into `main` after CI is green. Direct pushes
-to `main` are prohibited. Then apply the server checkout through:
+To reuse an already managed local model endpoint:
 
 ```bash
-sudo systemctl start ansible-local-apply.service
+docker compose -f compose.yml -f compose.local-llm.yml --env-file .env config --quiet
+docker compose -f compose.yml -f compose.local-llm.yml --env-file .env up -d --build
 ```
 
-Do not maintain long-lived manual edits under `/srv/apps/rp-stack`.
+The overlay expects an existing external network named by `LOCAL_LLM_NETWORK`
+(default `rp-llm`) and does not create or own the model runner.
+
+## Focused source checks
+
+Use the explicit training-only Gateway gate from `.github/workflows/ci.yml`;
+the inherited full pytest suite is intentionally not the repository gate until
+the coupled RP modules and tests are pruned. Browser checks remain
+dependency-free:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ci.ps1
+```
+
+The script installs nothing and does not start Docker. It uses an active or
+bundled Python/Node runtime and expects Gateway test dependencies to be already
+available. The equivalent browser-only checks are:
+
+```bash
+node --check rp-showcase-gui/app.js
+node --check rp-showcase-gui/structured-content.js
+node --check rp-showcase-gui/message-time.js
+node --check rp-showcase-gui/training-only.test.js
+node --check ui-shared/training-artifacts.js
+node rp-showcase-gui/request-policy.test.js
+node rp-showcase-gui/structured-content.test.js
+node rp-showcase-gui/message-time.test.js
+node rp-showcase-gui/training-only.test.js
+node ui-shared/training-artifacts.test.js
+```
+
+See [docs/operations.md](docs/operations.md) for shadow acceptance, backups,
+cutover and rollback. A successful source check or image build is not live
+runtime proof.
