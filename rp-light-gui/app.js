@@ -13,6 +13,7 @@ const appState = {
   checkpoints: [],
   branches: [],
   serviceJobs: [],
+  supervisor: null,
   characters: null,
   promptPreview: null,
   history: null,
@@ -450,6 +451,7 @@ async function boot() {
       appState.partyState = null;
       appState.contextEstimate = null;
       appState.memory = null;
+      appState.supervisor = null;
       appState.characters = null;
       appState.byokKeys = [];
       appState.promptPreview = null;
@@ -529,6 +531,7 @@ function clearWorkspaceState() {
   appState.checkpoints = [];
   appState.branches = [];
   appState.serviceJobs = [];
+  appState.supervisor = null;
   appState.characters = null;
   appState.promptPreview = null;
   appState.history = null;
@@ -586,6 +589,7 @@ async function selectParty(partyId) {
     appState.checkpoints = [];
     appState.branches = [];
     appState.serviceJobs = [];
+    appState.supervisor = null;
     appState.byokKeys = [];
     resetLoreCardDraft();
   }
@@ -652,6 +656,7 @@ async function openPartyBranch(partyId, branchId) {
   appState.characters = { characters: payload.characters || {} };
   appState.contextEstimate = null;
   appState.memory = null;
+  appState.supervisor = null;
   appState.byokKeys = [];
   appState.proposals = [];
   appState.chatArchiveExpanded = false;
@@ -667,11 +672,12 @@ async function reloadActiveBranch() {
 }
 
 async function loadOptionalPartyData(partyId, reloadGeneration) {
-  const [loreCards, checkpoints, branches, serviceJobs, byok] = await Promise.allSettled([
+  const [loreCards, checkpoints, branches, serviceJobs, supervisor, byok] = await Promise.allSettled([
     apiGet(`/api/parties/${partyId}/lore-cards`),
     apiGet(`/api/parties/${partyId}/checkpoints`),
     apiGet(`/api/parties/${partyId}/branches`),
     apiGet(`/api/parties/${partyId}/service-jobs`),
+    apiGet(`/api/parties/${partyId}/supervisor`),
     apiGet(`/api/parties/${partyId}/byok`),
   ]);
   if (appState.activeParty?.id !== partyId || reloadGeneration !== partyReloadGeneration) return;
@@ -679,6 +685,7 @@ async function loadOptionalPartyData(partyId, reloadGeneration) {
   if (checkpoints.status === "fulfilled") appState.checkpoints = checkpoints.value.checkpoints || [];
   if (branches.status === "fulfilled") appState.branches = branches.value.branches || [];
   if (serviceJobs.status === "fulfilled") appState.serviceJobs = serviceJobs.value.jobs || [];
+  appState.supervisor = supervisor.status === "fulfilled" ? supervisor.value : null;
   if (byok.status === "fulfilled") appState.byokKeys = byok.value.api_keys || [];
   renderMemoryTools();
   renderByok();
@@ -1196,7 +1203,7 @@ function renderMemoryTools() {
         .join("<br>")}</div>`
     : `<div class="state-item"><strong>Служебная LLM</strong>очередь пуста</div>`;
   const cards = appState.loreCards || [];
-  els.loreCardList.innerHTML = jobHtml + (cards.length
+  els.loreCardList.innerHTML = rpSupervisorStatusHtml() + jobHtml + (cards.length
     ? cards.map((card) => `<div class="state-item lore-card">
         <strong>${escapeHtml(card.title)}</strong>
         <div>${escapeHtml(clipText(card.content, 500))}</div>
@@ -1223,6 +1230,37 @@ function renderMemoryTools() {
       </div>`).join("")
     : `<div class="state-item">Веток пока нет.</div>`;
   els.checkpointList.innerHTML = `${checkpointHtml}${branchHtml}`;
+}
+
+function rpSupervisorStatusHtml() {
+  const supervisor = appState.supervisor;
+  if (!supervisor?.enabled) return "";
+  const mode = supervisor.mode === "enforce" ? "режим рекомендаций" : "наблюдение";
+  const storyTurns = Number(supervisor.story_turn_count || 0);
+  const firstDue = Number(supervisor.first_retrospective_story_turn || 56);
+  const nextDue = Number(supervisor.next_retrospective_story_turn || firstDue);
+  const progress = storyTurns < firstDue
+    ? `${storyTurns}/${firstDue} канонических ходов до первой оценки`
+    : `последний учтённый ход ${storyTurns} · следующая оценка на ${nextDue}`;
+  const last = supervisor.last_evaluation || null;
+  const statusLabels = { checked: "проверено", unchecked: "не проверено", error: "ошибка" };
+  const lastStatus = last
+    ? `${statusLabels[last.status] || last.status}${last.status_reason ? ` · ${last.status_reason}` : ""}`
+    : "ещё не запускался";
+  const serviceModel = supervisor.service_model || {};
+  const model = serviceModel.title || serviceModel.model || "служебная модель не выбрана";
+  const activeAdvisories = Number(supervisor.active_advisory_count || 0);
+  const modeHint = supervisor.mode === "enforce"
+    ? (activeAdvisories > 0
+      ? `Активных рекомендаций: ${activeAdvisories}. Канон и правила мира всегда выше.`
+      : "Активных рекомендаций нет; Gateway не добавляет supervisor-блок в prompt.")
+    : "Режим наблюдения только измеряет дрейф и ничего не добавляет в prompt нарратора.";
+  return `<div class="state-item">
+    <strong>Надзор · ${escapeHtml(mode)}</strong>
+    <div>${escapeHtml(progress)}</div>
+    <div class="mini-metrics"><span>${escapeHtml(lastStatus)}</span><span>${escapeHtml(model)}</span></div>
+    <div class="muted-label">${escapeHtml(modeHint)}</div>
+  </div>`;
 }
 
 function renderCharacters() {

@@ -1959,6 +1959,7 @@ class PartyStore:
                 if "service_call_log" in available_tables:
                     connection.execute("DELETE FROM service_call_log WHERE party_id = ?", (campaign_id,))
                 for table in (
+                    "rp_supervisor_evaluations",
                     "turn_phase_annotations",
                     "turn_state_mutations",
                     "turn_trace_events",

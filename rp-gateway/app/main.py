@@ -113,6 +113,10 @@ from app.services.rp_history import (
 )
 from app.services.rp_gm import RPGMService
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.rp_supervisor import (
+    RPSupervisorService,
+    load_rp_supervisor_contract,
+)
 from app.services.relationship_attribution import normalized_aliases
 from app.services.scene_state import (
     SceneMaterialization,
@@ -177,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         party,
                         effective_revision=party_runtime.rp_contract_revision,
                     ),
+                    rp_supervisor_contract=rp_supervisor_contract_for_party(party),
                 ).schedule_service_jobs()
         for branch in party_store.list_all_party_branches():
             branch_store = party_store.store_for_branch(branch["party_id"], branch["id"])
@@ -348,6 +353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         party,
                         effective_revision=party_settings.rp_contract_revision,
                     ),
+                    rp_supervisor_contract=rp_supervisor_contract_for_party(party),
                 ).handle_chat(
                     chat_request,
                     authorization=None,
@@ -1530,6 +1536,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "characters": party_character_sheets(party_state_store.get_state()),
         }
 
+    @app.get("/api/parties/{party_id}/supervisor")
+    def get_party_supervisor(request: Request, party_id: str) -> dict[str, Any]:
+        try:
+            party = party_store.get_party(party_id, owner_user_id=owner_user_id(request))
+            party_state_store = party_store.store_for_party(
+                party_id,
+                owner_user_id=owner_user_id(request),
+            )
+            party_settings = runtime_settings_for_party(party)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        try:
+            contract = rp_supervisor_contract_for_party(party)
+            if contract is None:
+                return {"party_id": party_id, "enabled": False}
+            return {
+                "party_id": party_id,
+                **RPSupervisorService(
+                    party_settings,
+                    party_state_store,
+                    contract,
+                ).status_payload(),
+            }
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/parties/{party_id}/characters/edit")
     def party_character_edit(http_request: Request, party_id: str, request: PartyCharacterStateEditRequest) -> dict[str, Any]:
         try:
@@ -1654,6 +1686,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_state_store,
                     world_clock_contract,
                 )
+            supervisor_contract = rp_supervisor_contract_for_party(party)
+            if supervisor_contract is not None:
+                inspector.rp_supervisor = RPSupervisorService(
+                    party_settings,
+                    party_state_store,
+                    supervisor_contract,
+                )
             preview = inspector.preview(request.content, source=request.source)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1747,6 +1786,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 party,
                 effective_revision=party_settings.rp_contract_revision,
             ),
+            rp_supervisor_contract=rp_supervisor_contract_for_party(party),
         )
         narrative = adjudicator.narrative
         expected_party_turn = int(party_state_store.get_state().get("meta", {}).get("turn", 0)) + 1
@@ -1882,6 +1922,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if world_clock_projection is not None
                 else None
             )
+            supervisor_advisory = (
+                adjudicator.rp_supervisor.prompt_advisory()
+                if adjudicator.rp_supervisor is not None
+                else None
+            )
             prompt_messages = narrative.narrative_messages(
                 chat_request,
                 narrative_state,
@@ -1892,6 +1937,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 artifact_contract=interaction_contract,
                 training_turn_contract=training_turn_contract,
                 world_events=world_events,
+                supervisor_advisory=supervisor_advisory,
             )
             opening_prompt_assembly = (
                 prompt_assembly_diagnostics(
@@ -1968,6 +2014,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                     world_events=world_events,
+                    supervisor_advisory=supervisor_advisory,
                 )
                 opening_prompt_cache_response = raw
             except (
@@ -2197,6 +2244,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                     world_events=world_events,
+                    supervisor_advisory=supervisor_advisory,
                     opening_prompt=opening_repair_prompt,
                 )
                 if scene_bundle_revision:
@@ -2674,6 +2722,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party,
                     effective_revision=party_settings.rp_contract_revision,
                 ),
+                rp_supervisor_contract=rp_supervisor_contract_for_party(party),
             ).handle_chat(
                 chat_request,
                 authorization,
@@ -2761,6 +2810,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         party,
                         effective_revision=party_settings.rp_contract_revision,
                     ),
+                    rp_supervisor_contract=rp_supervisor_contract_for_party(party),
                 )
                 if party_settings.post_turn_helpers_inline and party_settings.app_env == "test":
                     await adjudicator.drain_service_jobs(
@@ -3707,6 +3757,17 @@ def world_clock_contract_for_party(
     if not isinstance(manifest, dict) or not manifest_path:
         return None
     return load_world_clock_contract(manifest_path, manifest)
+
+
+def rp_supervisor_contract_for_party(party: Any) -> dict[str, Any] | None:
+    if getattr(party, "scenario_type", None) != "rp":
+        return None
+    world = getattr(party, "worldpack", None)
+    manifest = getattr(world, "manifest", None)
+    manifest_path = getattr(world, "manifest_path", None)
+    if not isinstance(manifest, dict) or not manifest_path:
+        return None
+    return load_rp_supervisor_contract(manifest_path, manifest)
 
 
 def party_start_prompt(party_store: PartyStore, party: Any) -> str:

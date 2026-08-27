@@ -79,6 +79,7 @@ class ServiceModelClient:
         attempt: int | None = None,
         section_key: str | None = None,
         update_id: str | None = None,
+        trace: bool = True,
         **opts: Any,
     ) -> ServiceCompletion:
         payload = dict(opts.pop("payload", {}))
@@ -112,6 +113,29 @@ class ServiceModelClient:
                 raise RuntimeError("Service model response must be a JSON object")
         except Exception as exc:
             raw_response = response.text if response is not None else f"{type(exc).__name__}: {exc}"
+            if trace:
+                self._safe_record(
+                    party_id=party_id,
+                    turn_id=turn_id,
+                    request_id=request_id,
+                    party_turn=party_turn,
+                    role=role,
+                    prompt=prompt,
+                    raw_response=raw_response,
+                    status="error",
+                    provider=provider,
+                    model=model,
+                    attempt=attempt,
+                    section_key=section_key,
+                    update_id=update_id,
+                    latency_ms=self._elapsed_ms(started),
+                    http_status=response.status_code if response is not None else None,
+                    usage=None,
+                    error={"type": type(exc).__name__, "message": str(exc)},
+                )
+            raise
+
+        if trace:
             self._safe_record(
                 party_id=party_id,
                 turn_id=turn_id,
@@ -120,38 +144,17 @@ class ServiceModelClient:
                 role=role,
                 prompt=prompt,
                 raw_response=raw_response,
-                status="error",
+                status="completed",
                 provider=provider,
-                model=model,
+                model=self._model_name(data.get("model") or model),
                 attempt=attempt,
                 section_key=section_key,
                 update_id=update_id,
                 latency_ms=self._elapsed_ms(started),
-                http_status=response.status_code if response is not None else None,
-                usage=None,
-                error={"type": type(exc).__name__, "message": str(exc)},
+                http_status=response.status_code,
+                usage=data.get("usage"),
+                error=None,
             )
-            raise
-
-        self._safe_record(
-            party_id=party_id,
-            turn_id=turn_id,
-            request_id=request_id,
-            party_turn=party_turn,
-            role=role,
-            prompt=prompt,
-            raw_response=raw_response,
-            status="completed",
-            provider=provider,
-            model=self._model_name(data.get("model") or model),
-            attempt=attempt,
-            section_key=section_key,
-            update_id=update_id,
-            latency_ms=self._elapsed_ms(started),
-            http_status=response.status_code,
-            usage=data.get("usage"),
-            error=None,
-        )
         return ServiceCompletion(
             data=data,
             raw_response=raw_response,

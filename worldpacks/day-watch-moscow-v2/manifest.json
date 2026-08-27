@@ -63,6 +63,7 @@
     "opening_scene": "prompts/opening-scene.md", "world_info": "world-info/index.md",
     "lore_cards": "lore-cards", "sillytavern_lorebook": "sillytavern/day-watch-moscow-v2.json",
     "characters": "characters/index.md", "checks": "rules/checks.md",
-    "quick_replies": "quick-replies/notes.md", "setup_flow": "setup-flow.md"
+    "quick_replies": "quick-replies/notes.md", "setup_flow": "setup-flow.md",
+    "rp_supervisor": "rp-supervisor.json"
   }
 }

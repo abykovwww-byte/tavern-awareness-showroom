@@ -29,6 +29,7 @@ from app.services.narrative import (
     with_text,
 )
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.rp_supervisor import RPSupervisorService
 from app.services.relationship_attribution import normalized_aliases
 from app.services.relationship_extraction import RelationshipExtractionService
 from app.services.relationships import RelationshipMechanics
@@ -87,6 +88,7 @@ class Adjudicator:
         relationship_model: dict[str, Any] | None = None,
         scene_contract: dict[str, Any] | None = None,
         world_clock_contract: dict[str, Any] | None = None,
+        rp_supervisor_contract: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -107,6 +109,11 @@ class Adjudicator:
             if settings.scenario_type == "rp"
             and settings.rp_contract_revision >= 10
             and world_clock_contract is not None
+            else None
+        )
+        self.rp_supervisor = (
+            RPSupervisorService(settings, store, rp_supervisor_contract)
+            if settings.scenario_type == "rp" and rp_supervisor_contract is not None
             else None
         )
         self.relationship_mechanics = (
@@ -387,6 +394,11 @@ class Adjudicator:
                     if world_clock_projection is not None
                     else None
                 )
+                supervisor_advisory = (
+                    self.rp_supervisor.prompt_advisory()
+                    if self.rp_supervisor is not None
+                    else None
+                )
 
                 def assemble_prompt() -> list[dict[str, str]]:
                     return self.narrative.narrative_messages(
@@ -400,6 +412,7 @@ class Adjudicator:
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
                         world_events=world_events,
+                        supervisor_advisory=supervisor_advisory,
                         diagnostics=prompt_diagnostics if revision_seven else None,
                     )
 
@@ -627,6 +640,7 @@ class Adjudicator:
                     training_turn_contract=training_turn_contract,
                     relationship_pressure=relationship_pressure,
                     world_events=world_events,
+                    supervisor_advisory=supervisor_advisory,
                 )
                 prompt_cache_response = raw
                 bundle_received = True
@@ -802,6 +816,7 @@ class Adjudicator:
                         training_turn_contract=training_turn_contract,
                         relationship_pressure=relationship_pressure,
                         world_events=world_events,
+                        supervisor_advisory=supervisor_advisory,
                     )
                     if scene_bundle_revision:
                         scene_result = materialize_scene_bundle(
@@ -1476,6 +1491,8 @@ class Adjudicator:
                 )
             if self.relationship_extraction is not None:
                 jobs.append(("relationship_extraction", self.settings.service_job_max_attempts))
+            if self.rp_supervisor is not None and self.rp_supervisor.should_enqueue(request_id):
+                jobs.append(("rp_supervisor", 1))
         for job_type, max_attempts in jobs:
             self.store.enqueue_service_job(job_type, request_id, max_attempts)
         if self.settings.post_turn_helpers_inline and self.settings.app_env == "test":
@@ -1597,6 +1614,10 @@ class Adjudicator:
                     source="world_clock",
                     reason=f"service_job:{job['id']}",
                 )
+            return
+        if job["job_type"] == "rp_supervisor":
+            if self.rp_supervisor is not None:
+                await self.rp_supervisor.process_turn(job)
             return
         if (
             self.settings.scenario_type == "rp"

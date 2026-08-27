@@ -29,6 +29,7 @@ from app.services.rp_history import (
     story_memory_safe_coverage,
 )
 from app.services.rp_story_memory import RPStoryMemoryUpdater
+from app.services.rp_supervisor import RPSupervisorService
 from app.services.relationship_attribution import normalized_aliases
 from app.services.scene_state import (
     scene_state_boundary_block,
@@ -46,6 +47,7 @@ class PromptInspector:
         relationship_model: dict[str, Any] | None = None,
         scene_contract: dict[str, Any] | None = None,
         world_clock_contract: dict[str, Any] | None = None,
+        rp_supervisor_contract: dict[str, Any] | None = None,
     ):
         self.settings = settings
         self.store = store
@@ -56,6 +58,11 @@ class PromptInspector:
             if settings.scenario_type == "rp"
             and settings.rp_contract_revision >= 10
             and world_clock_contract is not None
+            else None
+        )
+        self.rp_supervisor = (
+            RPSupervisorService(settings, store, rp_supervisor_contract)
+            if settings.scenario_type == "rp" and rp_supervisor_contract is not None
             else None
         )
         self.intent_parser = IntentParser()
@@ -149,6 +156,11 @@ class PromptInspector:
                 world_events=(
                     str(world_clock_projection["block"])
                     if world_clock_projection is not None
+                    else None
+                ),
+                supervisor_advisory=(
+                    self.rp_supervisor.prompt_advisory()
+                    if self.rp_supervisor is not None
                     else None
                 ),
                 diagnostics=prompt_diagnostics if revision_seven else None,
@@ -284,6 +296,11 @@ class PromptInspector:
             world_events=(
                 str(world_clock_projection["block"])
                 if world_clock_projection is not None
+                else None
+            ),
+            supervisor_advisory=(
+                self.rp_supervisor.prompt_advisory()
+                if self.rp_supervisor is not None
                 else None
             ),
         )

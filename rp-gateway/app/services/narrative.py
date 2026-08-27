@@ -66,6 +66,7 @@ PROMPT_SYSTEM_BLOCK_IDS = (
     ("RELATIONSHIP_PRESSURE", "relationship_pressure"),
     ("RELATIONSHIP_EVENT_RESOLUTION", "relationship_event_resolution"),
     ("СОБЫТИЯ МИРА", "world_events"),
+    ("RP_SUPERVISOR_ADVISORY", "rp_supervisor_advisory"),
     ("SCENE_STATE_CONTRACT", "scene_state_contract"),
     ("SCENE_REANCHOR_BASELINE", "scene_reanchor_baseline"),
 )
@@ -460,6 +461,7 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
         world_events: str | None = None,
+        supervisor_advisory: str | None = None,
         opening_prompt: str | None = None,
     ) -> dict[str, Any]:
         headers = outbound_headers(
@@ -488,6 +490,7 @@ class NarrativeClient:
                 training_turn_contract=training_turn_contract,
                 relationship_pressure=relationship_pressure,
                 world_events=world_events,
+                supervisor_advisory=supervisor_advisory,
                 player_corrections=player_corrections,
                 opening_prompt=opening_prompt,
             )
@@ -503,6 +506,7 @@ class NarrativeClient:
                 training_turn_contract=training_turn_contract,
                 relationship_pressure=relationship_pressure,
                 world_events=world_events,
+                supervisor_advisory=supervisor_advisory,
             )
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
@@ -889,6 +893,7 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
         world_events: str | None = None,
+        supervisor_advisory: str | None = None,
         diagnostics: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         revision_seven = (
@@ -1059,6 +1064,10 @@ class NarrativeClient:
             if len(world_events) > 800 or not world_events.startswith("СОБЫТИЯ МИРА"):
                 raise ValueError("invalid revision-10 world events prompt block")
             messages.append({"role": "system", "content": world_events})
+        if revision_eight and supervisor_advisory:
+            if len(supervisor_advisory) > 800 or not supervisor_advisory.startswith("RP_SUPERVISOR_ADVISORY"):
+                raise ValueError("invalid RP supervisor advisory prompt block")
+            messages.append({"role": "system", "content": supervisor_advisory})
         if self.settings.world_authors_note and revision_eight:
             authors_note_block = f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}"
             if len(authors_note_block) > 1_500:
@@ -1138,6 +1147,7 @@ class NarrativeClient:
         training_turn_contract: dict[str, Any] | None = None,
         relationship_pressure: str | None = None,
         world_events: str | None = None,
+        supervisor_advisory: str | None = None,
         player_corrections: str | None = None,
         opening_prompt: str | None = None,
     ) -> list[dict[str, str]]:
@@ -1193,6 +1203,10 @@ class NarrativeClient:
             messages.append({"role": "system", "content": relationship_pressure})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 10 and world_events:
             messages.append({"role": "system", "content": world_events})
+        if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 8 and supervisor_advisory:
+            if len(supervisor_advisory) > 800 or not supervisor_advisory.startswith("RP_SUPERVISOR_ADVISORY"):
+                raise ValueError("invalid RP supervisor advisory prompt block")
+            messages.append({"role": "system", "content": supervisor_advisory})
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision >= 11:
             authors_note_block = f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}"
             if len(authors_note_block) > 1_500:

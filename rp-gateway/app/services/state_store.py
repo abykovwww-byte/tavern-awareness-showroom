@@ -495,6 +495,38 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_service_jobs_campaign_status
                     ON service_jobs(campaign_id, status, next_attempt_at, id);
+                CREATE TABLE IF NOT EXISTS rp_supervisor_evaluations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    campaign_id TEXT NOT NULL,
+                    request_id TEXT,
+                    source_turn_id INTEGER NOT NULL,
+                    source_party_turn INTEGER NOT NULL,
+                    story_turn_count INTEGER NOT NULL,
+                    window_start_turn_id INTEGER NOT NULL,
+                    window_end_turn_id INTEGER NOT NULL,
+                    window_hash TEXT NOT NULL,
+                    contract_hash TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    status_reason TEXT,
+                    results_json TEXT NOT NULL,
+                    advisories_json TEXT NOT NULL,
+                    diagnostic_flags_json TEXT NOT NULL,
+                    latency_ms REAL NOT NULL,
+                    context_tokens INTEGER NOT NULL,
+                    estimated_input_tokens INTEGER NOT NULL,
+                    invalidated INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id),
+                    FOREIGN KEY(source_turn_id) REFERENCES turns(id)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_rp_supervisor_window_contract
+                    ON rp_supervisor_evaluations(campaign_id, window_end_turn_id, contract_hash);
+                CREATE INDEX IF NOT EXISTS idx_rp_supervisor_campaign_latest
+                    ON rp_supervisor_evaluations(campaign_id, invalidated, expires_at, window_end_turn_id DESC);
                 """
             )
             self.migrate_turn_columns(connection)
@@ -533,6 +565,11 @@ class StateStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_service_jobs_world_clock_turn "
             "ON service_jobs(campaign_id, party_turn) "
             "WHERE job_type = 'world_clock' AND party_turn IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_service_jobs_rp_supervisor_request "
+            "ON service_jobs(campaign_id, request_id) "
+            "WHERE job_type = 'rp_supervisor' AND request_id IS NOT NULL"
         )
 
     def migrate_turn_columns(self, connection: sqlite3.Connection) -> None:
@@ -876,13 +913,20 @@ class StateStore:
         request_scoped: bool = False,
         party_turn: int | None = None,
     ) -> dict[str, Any]:
-        if job_type not in {"memory", "rp_story_memory", "relationship_extraction", "journal", "world_clock"}:
+        if job_type not in {
+            "memory",
+            "rp_story_memory",
+            "relationship_extraction",
+            "journal",
+            "world_clock",
+            "rp_supervisor",
+        }:
             raise ValueError(f"unsupported service job type: {job_type}")
         if job_type == "world_clock" and (party_turn is None or int(party_turn) < 1):
             raise ValueError("world_clock service job requires a positive party_turn")
         timestamp = now_ts()
         with self.connect() as connection:
-            if job_type in {"relationship_extraction", "world_clock"} or request_scoped:
+            if job_type in {"relationship_extraction", "world_clock", "rp_supervisor"} or request_scoped:
                 row = connection.execute(
                     """
                     SELECT * FROM service_jobs
@@ -1077,6 +1121,168 @@ class StateStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    def cleanup_rp_supervisor_evaluations(self, *, timestamp: int | None = None) -> int:
+        """Delete expired typed retrospectives without touching turns or service traces."""
+
+        cutoff = int(timestamp if timestamp is not None else now_ts())
+        with self.connect() as connection:
+            deleted = connection.execute(
+                "DELETE FROM rp_supervisor_evaluations WHERE expires_at <= ?",
+                (cutoff,),
+            ).rowcount
+        return max(int(deleted), 0)
+
+    @staticmethod
+    def rp_supervisor_evaluation_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        def decode_list(column: str) -> list[Any]:
+            try:
+                value = json.loads(row[column] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                return []
+            return value if isinstance(value, list) else []
+
+        return {
+            "id": int(row["id"]),
+            "campaign_id": str(row["campaign_id"]),
+            "request_id": row["request_id"],
+            "source_turn_id": int(row["source_turn_id"]),
+            "source_party_turn": int(row["source_party_turn"]),
+            "story_turn_count": int(row["story_turn_count"]),
+            "window_start_turn_id": int(row["window_start_turn_id"]),
+            "window_end_turn_id": int(row["window_end_turn_id"]),
+            "window_hash": str(row["window_hash"]),
+            "contract_hash": str(row["contract_hash"]),
+            "mode": str(row["mode"]),
+            "provider": str(row["provider"]),
+            "model": str(row["model"]),
+            "status": str(row["status"]),
+            "status_reason": row["status_reason"],
+            "results": decode_list("results_json"),
+            "advisories": decode_list("advisories_json"),
+            "diagnostic_flags": decode_list("diagnostic_flags_json"),
+            "latency_ms": float(row["latency_ms"]),
+            "context_tokens": int(row["context_tokens"]),
+            "estimated_input_tokens": int(row["estimated_input_tokens"]),
+            "invalidated": bool(row["invalidated"]),
+            "created_at": int(row["created_at"]),
+            "expires_at": int(row["expires_at"]),
+        }
+
+    def save_rp_supervisor_evaluation(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Upsert one metadata-only retrospective for a frozen canonical window."""
+
+        status = str(record.get("status") or "")
+        mode = str(record.get("mode") or "")
+        if status not in {"checked", "unchecked", "error"}:
+            raise ValueError("invalid RP supervisor evaluation status")
+        if mode not in {"observe", "enforce"}:
+            raise ValueError("invalid RP supervisor evaluation mode")
+        results = record.get("results")
+        advisories = record.get("advisories")
+        flags = record.get("diagnostic_flags")
+        if not isinstance(results, list) or not isinstance(advisories, list) or not isinstance(flags, list):
+            raise ValueError("RP supervisor typed results must be lists")
+        retention_days = int(record.get("retention_days") or 0)
+        if retention_days != 30:
+            raise ValueError("RP supervisor retention must equal 30 days")
+        created = now_ts()
+        expires = created + retention_days * 24 * 60 * 60
+        self.cleanup_rp_supervisor_evaluations(timestamp=created)
+        values = (
+            self.campaign_id,
+            record.get("request_id"),
+            int(record["source_turn_id"]),
+            int(record.get("source_party_turn") or 0),
+            int(record["story_turn_count"]),
+            int(record["window_start_turn_id"]),
+            int(record["window_end_turn_id"]),
+            str(record["window_hash"]),
+            str(record["contract_hash"]),
+            mode,
+            str(record.get("provider") or ""),
+            str(record.get("model") or ""),
+            status,
+            str(record.get("status_reason")) if record.get("status_reason") is not None else None,
+            json.dumps(results, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(advisories, ensure_ascii=False, separators=(",", ":")),
+            json.dumps(flags, ensure_ascii=False, separators=(",", ":")),
+            float(record.get("latency_ms") or 0.0),
+            int(record.get("context_tokens") or 0),
+            int(record.get("estimated_input_tokens") or 0),
+            created,
+            expires,
+        )
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO rp_supervisor_evaluations(
+                    campaign_id, request_id, source_turn_id, source_party_turn,
+                    story_turn_count, window_start_turn_id, window_end_turn_id,
+                    window_hash, contract_hash, mode, provider, model, status,
+                    status_reason, results_json, advisories_json,
+                    diagnostic_flags_json, latency_ms, context_tokens,
+                    estimated_input_tokens, invalidated, created_at, expires_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(campaign_id, window_end_turn_id, contract_hash) DO UPDATE SET
+                    request_id = excluded.request_id,
+                    source_turn_id = excluded.source_turn_id,
+                    source_party_turn = excluded.source_party_turn,
+                    story_turn_count = excluded.story_turn_count,
+                    window_start_turn_id = excluded.window_start_turn_id,
+                    window_hash = excluded.window_hash,
+                    mode = excluded.mode,
+                    provider = excluded.provider,
+                    model = excluded.model,
+                    status = excluded.status,
+                    status_reason = excluded.status_reason,
+                    results_json = excluded.results_json,
+                    advisories_json = excluded.advisories_json,
+                    diagnostic_flags_json = excluded.diagnostic_flags_json,
+                    latency_ms = excluded.latency_ms,
+                    context_tokens = excluded.context_tokens,
+                    estimated_input_tokens = excluded.estimated_input_tokens,
+                    invalidated = 0,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                """,
+                values,
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM rp_supervisor_evaluations
+                WHERE campaign_id = ? AND window_end_turn_id = ? AND contract_hash = ?
+                """,
+                (
+                    self.campaign_id,
+                    int(record["window_end_turn_id"]),
+                    str(record["contract_hash"]),
+                ),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("failed to save RP supervisor evaluation")
+        return self.rp_supervisor_evaluation_from_row(row)
+
+    def latest_rp_supervisor_evaluation(
+        self,
+        *,
+        contract_hash: str,
+        before_window_end_turn_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        timestamp = now_ts()
+        query = """
+            SELECT * FROM rp_supervisor_evaluations
+            WHERE campaign_id = ? AND contract_hash = ?
+              AND invalidated = 0 AND expires_at > ?
+        """
+        params: list[Any] = [self.campaign_id, str(contract_hash), timestamp]
+        if before_window_end_turn_id is not None:
+            query += " AND window_end_turn_id < ?"
+            params.append(int(before_window_end_turn_id))
+        query += " ORDER BY window_end_turn_id DESC, id DESC LIMIT 1"
+        with self.connect() as connection:
+            row = connection.execute(query, tuple(params)).fetchone()
+        return self.rp_supervisor_evaluation_from_row(row) if row is not None else None
 
     def create_lore_card(
         self,
@@ -1565,7 +1771,7 @@ class StateStore:
         except Exception:
             with self.connect() as connection:
                 for table in (
-                    "turns", "turn_requests", "checks", "state_patches", "state_versions",
+                    "rp_supervisor_evaluations", "turns", "turn_requests", "checks", "state_patches", "state_versions",
                     "audit_events", "memory_summaries", "memory_chapters", "rp_story_memory_snapshots", "journal_entries",
                     "lore_cards", "memory_checkpoints", "service_jobs", "training_runtime_snapshots",
                 ):
@@ -3788,6 +3994,23 @@ class StateStore:
                       WHERE turn_record.campaign_id = snapshot.campaign_id
                         AND turn_record.state_version > ?
                         AND turn_record.id BETWEEN snapshot.from_turn_id AND snapshot.to_turn_id
+                  )
+                """,
+                (self.campaign_id, target_version),
+            )
+            connection.execute(
+                """
+                UPDATE rp_supervisor_evaluations AS evaluation
+                SET invalidated = 1
+                WHERE evaluation.campaign_id = ?
+                  AND evaluation.invalidated = 0
+                  AND EXISTS (
+                      SELECT 1
+                      FROM turns AS turn_record
+                      WHERE turn_record.campaign_id = evaluation.campaign_id
+                        AND turn_record.state_version > ?
+                        AND turn_record.id BETWEEN evaluation.window_start_turn_id
+                                               AND evaluation.window_end_turn_id
                   )
                 """,
                 (self.campaign_id, target_version),

@@ -104,6 +104,32 @@ def test_complete_preserves_provider_payload_and_logs_nonempty_trace(tmp_path: P
     assert trace["trace_schema_version"] == TRACE_SCHEMA_VERSION
 
 
+def test_complete_can_skip_raw_trace_for_privacy_bounded_service_roles(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"model": "service/model", "choices": [{"message": {"content": "{}"}}]},
+        )
+
+    settings = settings_for(tmp_path)
+    completion = asyncio.run(
+        ServiceModelClient(settings, transport=httpx.MockTransport(handler)).complete(
+            role="rp_supervisor",
+            provider="openrouter",
+            model="service/model",
+            party_id="party-private",
+            turn_id=56,
+            request_id="req-private",
+            prompt="full private retrospective window",
+            trace=False,
+        )
+    )
+
+    assert completion.data["choices"][0]["message"]["content"] == "{}"
+    assert rows(settings) == []
+
+
 def test_complete_uses_explicit_role_provider_and_model_without_payload_leakage(
     tmp_path: Path,
 ) -> None:

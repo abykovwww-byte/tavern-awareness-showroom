@@ -307,6 +307,17 @@ def test_day_watch_v2_all_openings_create_distinct_materialized_parties(tmp_path
         assert stored.worldpack_materialization["state_seed"]["player"]["location"] == location_id
         assert stored.worldpack_materialization["opening_prompt"].startswith("# Opening —")
 
+        supervisor_response = api.get(f"/api/parties/{party['id']}/supervisor")
+        assert supervisor_response.status_code == 200, supervisor_response.text
+        supervisor = supervisor_response.json()
+        assert supervisor["enabled"] is True
+        assert supervisor["mode"] == "observe"
+        assert supervisor["story_turn_count"] == 0
+        assert supervisor["first_retrospective_story_turn"] == 56
+        assert supervisor["next_retrospective_story_turn"] == 56
+        assert supervisor["active_advisory"] is False
+        assert supervisor["last_evaluation"] is None
+
 
 def test_revision11_observed_gate_precedes_character_party_and_state_writes(tmp_path: Path) -> None:
     write_revision11_worldpack(tmp_path)

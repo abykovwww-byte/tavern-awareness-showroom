@@ -38,6 +38,7 @@ from app.services.prompt_tools import PromptInspector
 from app.services.relationships import RelationshipMechanics
 from app.services.rp_gm import RPGMService
 from app.services.rp_story_memory import empty_story_memory
+from app.services.rp_supervisor import rp_supervisor_advisory_block
 from app.services.scene_state import initial_scene_state
 from app.services.state_store import StateStore
 from app.services.world_clock import world_clock_prompt_projection
@@ -389,6 +390,9 @@ def test_registered_prompt_block_ids_match_their_real_emitters(
         "player_corrections": gm_service.overlay_block(),
         "relationship_pressure": relationship_pressure,
         "relationship_event_resolution": relationship_resolution,
+        "rp_supervisor_advisory": rp_supervisor_advisory_block(
+            [{"text": "Сохраняй разнообразие естественных возвратов хода."}]
+        ),
         "world_events": world_clock_prompt_projection(
             {
                 "world_clock": {
