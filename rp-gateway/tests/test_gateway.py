@@ -30,7 +30,12 @@ from app.models.schemas import (
 from app.services.adjudicator import Adjudicator
 from app.services.intent_parser import IntentParser
 from app.services.memory import MemorySummarizer
-from app.services.narrative import NarrativeClient, provider_rate_limit_error, response_text
+from app.services.narrative import (
+    NarrativeClient,
+    provider_rate_limit_error,
+    response_text,
+    training_interaction_response_format,
+)
 from app.services.provider_catalog import (
     OPENROUTER_FEATURED_MODELS,
     enrich_openrouter_profile_params,
@@ -5242,6 +5247,134 @@ def test_openrouter_deepseek_flash_uses_supported_throughput_routing(
     assert "reasoning" not in captured
     assert captured["provider"] == {"sort": "throughput"}
     assert "max_tokens" not in captured
+    assert "response_format" not in captured
+
+
+def test_training_interaction_response_format_is_strict_and_contract_specific():
+    site = {
+        "artifact_key": "turn-1-project-files",
+        "blueprint_id": "cloud-file-share",
+        "slots": {
+            "page_title": {"required": True, "max_length": 120},
+            "page_subtitle": {"required": True, "max_length": 240},
+        },
+    }
+    workspace = {
+        "files": [
+            {
+                "file_key": "security-policy",
+                "blueprint_id": "security-policy",
+                "slots": {"summary": {"required": True, "max_length": 1200}},
+            }
+        ]
+    }
+
+    site_format = training_interaction_response_format({"site": site, "workspace": None})
+    assert site_format["type"] == "json_schema"
+    assert site_format["json_schema"]["strict"] is True
+    site_schema = site_format["json_schema"]["schema"]
+    assert site_schema["additionalProperties"] is False
+    assert site_schema["required"] == ["schema_version", "narrative_text", "artifacts"]
+    assert site_schema["properties"]["schema_version"]["enum"] == ["rp-gateway.narrative-bundle.v1"]
+    artifact_array = site_schema["properties"]["artifacts"]
+    assert artifact_array["minItems"] == artifact_array["maxItems"] == 1
+    artifact_schema = artifact_array["items"]
+    assert artifact_schema["additionalProperties"] is False
+    assert artifact_schema["properties"]["artifact_key"]["enum"] == ["turn-1-project-files"]
+    assert artifact_schema["properties"]["blueprint_id"]["enum"] == ["cloud-file-share"]
+    assert artifact_schema["properties"]["slots"]["required"] == ["page_title", "page_subtitle"]
+    assert artifact_schema["properties"]["slots"]["additionalProperties"] is False
+    assert artifact_schema["properties"]["slots"]["properties"]["page_subtitle"]["maxLength"] == 240
+    assert "workspace_files" not in site_schema["properties"]
+
+    workspace_format = training_interaction_response_format({"site": None, "workspace": workspace})
+    workspace_schema = workspace_format["json_schema"]["schema"]
+    assert workspace_schema["properties"]["schema_version"]["enum"] == ["rp-gateway.narrative-bundle.v2"]
+    assert workspace_schema["properties"]["artifacts"]["minItems"] == 0
+    file_array = workspace_schema["properties"]["workspace_files"]
+    assert file_array["minItems"] == file_array["maxItems"] == 1
+    assert file_array["items"]["properties"]["file_key"]["enum"] == ["security-policy"]
+    assert file_array["items"]["properties"]["slots"]["properties"]["summary"]["maxLength"] == 1200
+
+    combined_schema = training_interaction_response_format({"site": site, "workspace": workspace})["json_schema"]["schema"]
+    assert combined_schema["properties"]["artifacts"]["minItems"] == 1
+    assert combined_schema["properties"]["workspace_files"]["minItems"] == 1
+
+
+@pytest.mark.parametrize("repair_instruction", [None, "Return a valid training bundle."])
+def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
+    monkeypatch: pytest.MonkeyPatch,
+    repair_instruction: str | None,
+):
+    captured: dict[str, object] = {}
+
+    class CapturingAsyncClient:
+        def __init__(self, **kwargs: object):
+            pass
+
+        async def __aenter__(self) -> "CapturingAsyncClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> httpx.Response:
+            captured.update(kwargs["json"])  # type: ignore[arg-type]
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                request=request,
+                json={"choices": [{"message": {"role": "assistant", "content": "{}"}}]},
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", CapturingAsyncClient)
+    settings = Settings(
+        llm_provider="openrouter",
+        llm_api_base="https://openrouter.ai/api/v1",
+        llm_api_key="test-key",
+        narrative_model="deepseek/deepseek-v4-flash",
+        llm_fallback_models=(),
+        scenario_type="training",
+    )
+    request = ChatCompletionRequest(
+        model=settings.narrative_model,
+        messages=[ChatMessage(role="user", content="Continue the training scene.")],
+    )
+    outcome = Outcome(
+        check_id="training-structured-output",
+        action_type="feasibility",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="AUTHORITATIVE_OUTCOME: continue the training turn.",
+    )
+    contract = {
+        "site": {
+            "artifact_key": "turn-1-project-files",
+            "blueprint_id": "cloud-file-share",
+            "slots": {"page_title": {"required": True, "max_length": 120}},
+        },
+        "workspace": None,
+    }
+
+    asyncio.run(
+        NarrativeClient(settings).complete(
+            request,
+            base_state(),
+            outcome,
+            None,
+            repair_instruction=repair_instruction,
+            failed_response_text="invalid bundle" if repair_instruction else None,
+            artifact_contract=contract,
+        )
+    )
+
+    assert captured["response_format"] == training_interaction_response_format(contract)
+    assert captured["provider"] == {"sort": "throughput", "require_parameters": True}
 
 
 def test_narrative_retries_empty_success_once_on_the_same_deepseek_model(
