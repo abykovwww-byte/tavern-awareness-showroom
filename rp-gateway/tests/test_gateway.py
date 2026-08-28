@@ -5276,6 +5276,9 @@ def test_training_interaction_response_format_is_strict_and_contract_specific():
     assert site_schema["additionalProperties"] is False
     assert site_schema["required"] == ["schema_version", "narrative_text", "artifacts"]
     assert site_schema["properties"]["schema_version"]["enum"] == ["rp-gateway.narrative-bundle.v1"]
+    narrative_description = site_schema["properties"]["narrative_text"]["description"]
+    assert "literal undecorated standalone" in narrative_description
+    assert "no Markdown, HTML, or angle brackets" in narrative_description
     artifact_array = site_schema["properties"]["artifacts"]
     assert artifact_array["minItems"] == artifact_array["maxItems"] == 1
     artifact_schema = artifact_array["items"]
@@ -5338,7 +5341,11 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
     )
     request = ChatCompletionRequest(
         model=settings.narrative_model,
-        messages=[ChatMessage(role="user", content="Continue the training scene.")],
+        messages=[
+            ChatMessage(role="user", content="Previous learner action."),
+            ChatMessage(role="assistant", content="Previous visible training turn."),
+            ChatMessage(role="user", content="Continue the training scene."),
+        ],
     )
     outcome = Outcome(
         check_id="training-structured-output",
@@ -5360,6 +5367,22 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
         },
         "workspace": None,
     }
+    turn_contract = {
+        "kind": "turn",
+        "turn": 2,
+        "surfaces": [
+            {
+                "type": "email",
+                "count": 1,
+                "links": "artifact",
+                "required_fields": ["Канал:", "От:", "Кому:", "Ссылки:", "Тело:"],
+                "effective_links": {
+                    "enabled": True,
+                    "display_url": "https://training.example.test/current-turn",
+                },
+            }
+        ],
+    }
 
     asyncio.run(
         NarrativeClient(settings).complete(
@@ -5370,11 +5393,25 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
             repair_instruction=repair_instruction,
             failed_response_text="invalid bundle" if repair_instruction else None,
             artifact_contract=contract,
+            training_turn_contract=turn_contract,
         )
     )
 
     assert captured["response_format"] == training_interaction_response_format(contract)
     assert captured["provider"] == {"sort": "throughput", "require_parameters": True}
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    active_index = next(index for index, item in enumerate(messages) if item["content"].startswith("ACTIVE_TRAINING_TURN_CONTRACT"))
+    interaction_index = next(index for index, item in enumerate(messages) if item["content"].startswith("TRAINING_INTERACTION_CONTRACT"))
+    assert active_index < interaction_index < len(messages) - 1
+    assert "Emit exactly 1 ПИСЬМО block(s)." in messages[active_index]["content"]
+    assert "Канал: | От: | Кому: | Ссылки: | Тело:" in messages[active_index]["content"]
+    assert "https://training.example.test/current-turn" in messages[active_index]["content"]
+    if repair_instruction is None:
+        history_index = next(index for index, item in enumerate(messages) if item["content"] == "Previous visible training turn.")
+        outcome_index = next(index for index, item in enumerate(messages) if item["content"] == outcome.authoritative_block)
+        assert history_index < outcome_index < active_index
+        assert messages[-1] == {"role": "user", "content": "Continue the training scene."}
 
 
 def test_narrative_retries_empty_success_once_on_the_same_deepseek_model(
