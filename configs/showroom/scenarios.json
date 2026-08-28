@@ -2,6 +2,24 @@
   "schema_version": "awareness-showroom.catalog.v1",
   "scenarios": [
     {
+      "key": "awareness-week",
+      "title": "Awareness. Неделя",
+      "description": "Недельный курс по информационной безопасности",
+      "status": "published",
+      "worldpack_id": "awareness",
+      "model": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash"
+      },
+      "leaderboard_enabled": true,
+      "leaderboard_label": "Очки",
+      "interactive_links_enabled": true,
+      "interactive_workspace_enabled": true,
+      "sort_order": 90,
+      "cover": null
+    },
+    {
       "key": "test",
       "title": "Тест",
       "description": "Тест 3.08",
