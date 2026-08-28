@@ -357,7 +357,7 @@ def scene_reanchor_prompt_block(state: dict[str, Any]) -> str | None:
 
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     output_rules = [
-        "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences.",
+        "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences. If a TRAINING_INTERACTION_CONTRACT is also supplied, put that narration only in its narrative_text JSON field.",
         "Write fresh natural wording for the visible surface body. Gateway applies the exact authored header and final question.",
     ]
     return "\n".join(
@@ -402,6 +402,93 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, Any]:
+    combined = "site" in contract or "workspace" in contract
+    site = contract.get("site") if combined else contract
+    workspace = contract.get("workspace") if combined else None
+
+    def slots_schema(slots: dict[str, Any]) -> dict[str, Any]:
+        properties = {
+            str(slot_id): {
+                "type": "string",
+                "minLength": 1 if slot_contract.get("required", True) else 0,
+                "maxLength": int(slot_contract["max_length"]),
+            }
+            for slot_id, slot_contract in slots.items()
+        }
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(properties),
+            "properties": properties,
+        }
+
+    def content_schema(item: dict[str, Any], key_name: str) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [key_name, "blueprint_id", "slots"],
+            "properties": {
+                key_name: {"type": "string", "enum": [str(item[key_name])]},
+                "blueprint_id": {"type": "string", "enum": [str(item["blueprint_id"])]},
+                "slots": slots_schema(item.get("slots") or {}),
+            },
+        }
+
+    artifact_count = 1 if site else 0
+    artifact_item = (
+        content_schema(site, "artifact_key")
+        if site
+        else {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [],
+            "properties": {},
+        }
+    )
+    properties: dict[str, Any] = {
+        "schema_version": {
+            "type": "string",
+            "enum": [
+                "rp-gateway.narrative-bundle.v2"
+                if workspace
+                else "rp-gateway.narrative-bundle.v1"
+            ],
+        },
+        "narrative_text": {"type": "string", "minLength": 1, "maxLength": 30000},
+        "artifacts": {
+            "type": "array",
+            "minItems": artifact_count,
+            "maxItems": artifact_count,
+            "items": artifact_item,
+        },
+    }
+    required = ["schema_version", "narrative_text", "artifacts"]
+    if workspace:
+        files = list(workspace.get("files") or [])
+        file_schemas = [content_schema(item, "file_key") for item in files]
+        properties["workspace_files"] = {
+            "type": "array",
+            "minItems": len(files),
+            "maxItems": len(files),
+            "items": file_schemas[0] if len(file_schemas) == 1 else {"anyOf": file_schemas},
+        }
+        required.append("workspace_files")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "training_narrative_bundle",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": required,
+                "properties": properties,
+            },
+        },
+    }
 
 
 class ProviderRateLimitError(RuntimeError):
@@ -508,6 +595,8 @@ class NarrativeClient:
                 world_events=world_events,
                 supervisor_advisory=supervisor_advisory,
             )
+        if artifact_contract:
+            payload["response_format"] = training_interaction_response_format(artifact_contract)
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
         narrator_settings_model = (request._narrator_settings_model or "").strip().lower()
@@ -522,7 +611,7 @@ class NarrativeClient:
             self.apply_model_policy(
                 attempt_payload,
                 self.settings.narrative_model,
-                require_parameters=uses_narrator_settings,
+                require_parameters=uses_narrator_settings or bool(artifact_contract),
             )
             started = time.perf_counter()
             try:
@@ -571,7 +660,7 @@ class NarrativeClient:
                 self.apply_model_policy(
                     attempt_payload,
                     model,
-                    require_parameters=uses_narrator_settings,
+                    require_parameters=uses_narrator_settings or bool(artifact_contract),
                 )
                 empty_response_retry_used = False
                 while True:
