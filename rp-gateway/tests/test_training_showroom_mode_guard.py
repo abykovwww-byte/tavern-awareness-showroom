@@ -367,9 +367,14 @@ def test_git_catalog_prevalidates_all_entries_and_rejects_cover_escape(tmp_path:
 
 def test_checked_in_catalog_recreates_published_legacy_configuration_only(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[2]
+    catalog_candidates = (
+        project_root / "configs" / "showroom" / "scenarios.json",
+        Path(__file__).resolve().parents[1] / "configs" / "showroom" / "scenarios.json",
+    )
+    catalog_path = next(path for path in catalog_candidates if path.is_file())
     settings = training_settings(
         tmp_path,
-        showroom_catalog_path=str(project_root / "configs" / "showroom" / "scenarios.json"),
+        showroom_catalog_path=str(catalog_path),
         openrouter_api_base="https://openrouter.ai/api/v1",
         openrouter_models=("deepseek/deepseek-v4-flash", "google/gemini-3.6-flash"),
     )
