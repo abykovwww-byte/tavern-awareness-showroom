@@ -14,6 +14,7 @@ COPY rp-gateway/pyproject.toml rp-gateway/README.md ./
 COPY scripts /scripts
 COPY state/schema.json /app/state-schema.json
 COPY worldpacks /worldpacks
+COPY configs/showroom /app/configs/showroom
 
 EXPOSE 8088
 

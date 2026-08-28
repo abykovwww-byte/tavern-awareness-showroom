@@ -42,6 +42,7 @@ change.
 | Canonical state files | Awareness Gateway | `AWARENESS_STATE_DIR` |
 | Uploaded covers | Awareness Gateway | `AWARENESS_SHOWROOM_COVER_DIR` |
 | Training definitions | Git | `worldpacks/awareness*` |
+| Published scenario settings and source covers | Git | `configs/showroom/` |
 | Browser session/visitor tokens | Awareness Gateway; opaque to browser | dedicated cookie names |
 | Provider secrets | deployment configuration | untracked environment/secret store |
 | Backups | operator/IaC | `AWARENESS_BACKUP_DIR` |
@@ -70,10 +71,23 @@ before production cutover.
 ## Migration decision
 
 The minimal safe migration starts with a fresh standalone SQLite database and
-empty state/covers directories. After the shadow is accepted and the old
-Showroom is frozen, only published scenario configuration is recreated through
-the new admin API. Model profiles are mapped by `(provider, base_url, model)`,
-and covers are uploaded again after new scenario IDs exist.
+empty state/covers directories. Published scenario configuration is captured
+in the versioned Git catalog and reconciled at Gateway start. Scenario identity
+uses a stable catalog key, model profiles are mapped by
+`(provider, base_url, model)`, and catalog covers pass the same size, signature
+and MIME validation as an admin upload before they enter mutable cover storage.
+
+Reconciliation is an idempotent upsert: unchanged rows keep their revision and
+timestamp, and absent catalog rows are not deleted or archived. A missing or
+ambiguous model tuple, invalid WorldPack contract or unsafe cover stops startup
+instead of selecting a fallback.
+
+Every managed row explicitly declares a relative cover path or `null`. `null`
+removes a drifting runtime cover for that scenario; removing the whole catalog
+row still preserves the scenario and all run data. All entries are validated
+before writes. Applying several DB/file changes is retry-convergent rather than
+one cross-filesystem transaction, and a failed reconciliation never starts the
+HTTP application.
 
 Mixed RP history, runs, state, old sessions, visitor tokens, identities and
 provider keys remain readable in the original RP deployment but are not

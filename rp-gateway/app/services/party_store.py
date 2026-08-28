@@ -1299,12 +1299,13 @@ class PartyStore:
             updated_at=row["updated_at"],
         )
 
-    def list_model_profiles(self) -> list[ModelProfileSummary]:
+    def list_model_profiles(self, *, visible_only: bool = True) -> list[ModelProfileSummary]:
         self.seed_model_profiles()
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM model_profiles ORDER BY title").fetchall()
         profiles = [self.model_profile_from_row(row) for row in rows]
-        profiles = [profile for profile in profiles if self.model_profile_is_visible(profile)]
+        if visible_only:
+            profiles = [profile for profile in profiles if self.model_profile_is_visible(profile)]
         return sorted(profiles, key=lambda profile: (int(profile.params.get("rank", 9999)), profile.title))
 
     def list_autotest_model_profiles(self) -> list[ModelProfileSummary]:

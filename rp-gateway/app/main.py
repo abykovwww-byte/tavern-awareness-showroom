@@ -258,6 +258,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     auth_store = AuthStore(settings)
     party_store = PartyStore(settings, default_owner_user_id=auth_store.default_owner_user_id())
     showroom_store = ShowroomStore(settings, party_store)
+    if settings.showroom_catalog_path:
+        showroom_store.reconcile_catalog(settings.showroom_catalog_path)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
