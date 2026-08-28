@@ -365,7 +365,7 @@ def test_git_catalog_prevalidates_all_entries_and_rejects_cover_escape(tmp_path:
     assert table_counts(Path(settings.sqlite_path), "showroom_scenarios") == {"showroom_scenarios": 0}
 
 
-def test_checked_in_catalog_recreates_published_legacy_configuration_only(tmp_path: Path) -> None:
+def test_checked_in_catalog_publishes_both_training_courses(tmp_path: Path) -> None:
     project_root = Path(__file__).resolve().parents[2]
     catalog_candidates = (
         project_root / "configs" / "showroom" / "scenarios.json",
@@ -383,10 +383,25 @@ def test_checked_in_catalog_recreates_published_legacy_configuration_only(tmp_pa
     scenarios = app.state.showroom_store.list_scenarios(public_only=False)
     by_title = {scenario["title"]: scenario for scenario in scenarios}
 
-    assert set(by_title) == {"Тест", "One Day. Эллина", "Один день. V5", "Один день. V3"}
+    assert set(by_title) == {
+        "Awareness. Неделя",
+        "Тест",
+        "One Day. Эллина",
+        "Один день. V5",
+        "Один день. V3",
+    }
     assert all(scenario["status"] == "published" for scenario in scenarios)
-    assert all(scenario["worldpack_id"] == "awareness-one-day" for scenario in scenarios)
-    assert all(scenario["leaderboard_state_path"] == "player.resources.total-score" for scenario in scenarios)
+    weekly = by_title["Awareness. Неделя"]
+    assert weekly["worldpack_id"] == "awareness"
+    assert weekly["leaderboard_state_path"] == "player.resources.awareness-score"
+    assert weekly["interactive_links_enabled"] is True
+    assert weekly["interactive_workspace_enabled"] is True
+    one_day_scenarios = [scenario for scenario in scenarios if scenario is not weekly]
+    assert all(scenario["worldpack_id"] == "awareness-one-day" for scenario in one_day_scenarios)
+    assert all(
+        scenario["leaderboard_state_path"] == "player.resources.total-score"
+        for scenario in one_day_scenarios
+    )
     assert by_title["Тест"]["interactive_workspace_enabled"] is True
     assert by_title["One Day. Эллина"]["interactive_workspace_enabled"] is False
 
