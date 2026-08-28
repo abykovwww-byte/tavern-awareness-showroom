@@ -14,9 +14,10 @@ None of these paths may alias an RP Stack data directory. The source checkout
 is immutable; database, state, covers and backups stay outside it.
 
 Required deployment configuration includes `APP_REVISION`, the three
-`AWARENESS_*_DIR` runtime paths, `AWARENESS_BACKUP_DIR`, distinct Gateway and
-visitor cookie names, a non-default bootstrap administrator password, and the
-selected provider credentials. Do not inherit a generic RP `.env`.
+`AWARENESS_*_DIR` runtime paths, `AWARENESS_BACKUP_DIR`,
+`SHOWROOM_CATALOG_PATH=/app/configs/showroom/scenarios.json`, distinct Gateway
+and visitor cookie names, a non-default bootstrap administrator password, and
+the selected provider credentials. Do not inherit a generic RP `.env`.
 
 ## Shadow preflight
 
@@ -57,22 +58,34 @@ Never paste provider keys into Showroom or commit them to Git.
 
 ## Config-only migration
 
-Perform this only after shadow acceptance and an O1 write freeze on the old
-Showroom. Refresh the source inventory from the legacy SQLite in read-only mode
-at that time; the earlier planning snapshot is not cutover evidence.
-
-Recreate only published scenario configuration through the new admin API:
+Refresh the source inventory from legacy SQLite in read-only mode before each
+catalog migration change; an earlier snapshot is not cutover evidence. Commit
+only published scenario configuration to `configs/showroom/scenarios.json`:
 
 - title, description, status and sort order;
 - Awareness WorldPack slug;
 - model matched by `(provider, base_url, model)`, never by a legacy profile ID;
 - leaderboard presentation and interactive links/workspace flags;
-- cover uploaded again after the new scenario ID is returned.
+- `cover` set either to a relative file below `configs/showroom/covers/` or to
+  `null`; a file is revalidated into the new scenario-owned mutable path, while
+  `null` removes an out-of-band cover for that managed scenario.
+
+The catalog uses stable keys and deterministic new scenario IDs. It reconciles
+only declared fields, does not prune rows that disappear from Git and does not
+rewrite an unchanged row. To remove a scenario from the public surface, first
+commit it with `status: draft` or `archived`; deleting the catalog entry alone
+is intentionally non-destructive.
+
+Gateway validates the complete document before the first scenario write. The
+subsequent per-scenario DB and cover writes are idempotent and converge on a
+retry, but are not one transaction across SQLite and the filesystem. Any error
+stops startup, so no request is served from a partially reconciled catalog.
 
 Do not copy visitors, runs, internal parties, turns, state versions, events,
 sessions, users, provider keys, feedback or leaderboard rows. Verify the new
-published count and every mapped field in the admin UI before accepting the
-import. `Мои прохождения` and the leaderboard intentionally start empty.
+published count, model tuple, cover hash and every mapped field in the admin UI
+before accepting the import. `Мои прохождения` and the leaderboard intentionally
+start empty.
 
 ## Live acceptance
 

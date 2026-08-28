@@ -44,6 +44,13 @@ this deployment needs. Keep the three writable host paths separate:
 into either container. Shadow defaults bind only `127.0.0.1:18011`. Port `8011`
 is reserved for the separately approved C1 production cutover.
 
+Published scenario settings live in `configs/showroom/scenarios.json`. On
+Gateway start they are validated against the two training WorldPacks, mapped to
+exact model tuples and idempotently created or updated. Removing a catalog row
+does not delete runtime data; unpublish it explicitly in the catalog first.
+Every row declares either a relative source cover or `null`, so an out-of-band
+cover upload cannot make two deployments render different cards after restart.
+
 ## Validate and start a shadow
 
 ```bash

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import uuid
@@ -19,6 +20,7 @@ from app.models.schemas import (
     ShowroomScenarioCreate,
 )
 from app.services.party_store import PartyStore, now_iso, slug
+from app.services.provider_catalog import normalize_provider
 from app.services.training_capabilities import TrainingCapabilityPolicy
 
 
@@ -27,6 +29,22 @@ MAX_PORTAL_CHARACTERS = 5
 PORTAL_CONTACT_FIELDS = ("city", "birthday", "phone", "messenger", "email")
 DEFAULT_LEADERBOARD_METRIC = "state_path"
 DEFAULT_LEADERBOARD_STATE_PATH = "meta.turn"
+SHOWROOM_CATALOG_SCHEMA_VERSION = "awareness-showroom.catalog.v1"
+SHOWROOM_CATALOG_FIELDS = {
+    "key",
+    "title",
+    "description",
+    "status",
+    "worldpack_id",
+    "model",
+    "leaderboard_enabled",
+    "leaderboard_label",
+    "interactive_links_enabled",
+    "interactive_workspace_enabled",
+    "sort_order",
+    "cover",
+}
+SHOWROOM_CATALOG_REQUIRED_FIELDS = SHOWROOM_CATALOG_FIELDS
 
 
 class ShowroomStore:
@@ -221,7 +239,13 @@ class ShowroomStore:
                 candidate = f"{base[:72]}-{suffix}"
                 suffix += 1
 
-    def create_scenario(self, request: ShowroomScenarioCreate, created_by: str | None) -> dict[str, Any]:
+    def create_scenario(
+        self,
+        request: ShowroomScenarioCreate,
+        created_by: str | None,
+        *,
+        scenario_id: str | None = None,
+    ) -> dict[str, Any]:
         self.require_training_scenario(request.scenario_type, request.world_source)
         model = self.party_store.require_active_model_profile(request.model_profile_id)
         worldpack_id, world_prompt = self.resolve_world(
@@ -246,7 +270,7 @@ class ShowroomStore:
             fallback_metric=request.leaderboard_metric,
             fallback_state_path=request.leaderboard_state_path,
         )
-        scenario_id = f"scenario_{uuid.uuid4().hex[:12]}"
+        scenario_id = scenario_id or f"scenario_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         with self.connect() as connection:
             connection.execute(
@@ -283,6 +307,197 @@ class ShowroomStore:
                 ),
             )
         return self.get_scenario(scenario_id, public_only=False)
+
+    def reconcile_catalog(self, catalog_path: str) -> list[str]:
+        path = Path(catalog_path)
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read showroom catalog: {path}") from exc
+        if not isinstance(document, dict) or set(document) != {"schema_version", "scenarios"}:
+            raise ValueError("showroom catalog must contain only schema_version and scenarios")
+        if document["schema_version"] != SHOWROOM_CATALOG_SCHEMA_VERSION:
+            raise ValueError(f"unsupported showroom catalog schema: {document['schema_version']!r}")
+        entries = document["scenarios"]
+        if not isinstance(entries, list):
+            raise ValueError("showroom catalog scenarios must be a list")
+
+        catalog_root = path.parent.resolve()
+        profiles = self.party_store.list_model_profiles(visible_only=False)
+        seen_keys: set[str] = set()
+        prepared: list[dict[str, Any]] = []
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise ValueError(f"showroom catalog scenario {index} must be an object")
+            unknown = set(entry) - SHOWROOM_CATALOG_FIELDS
+            missing = SHOWROOM_CATALOG_REQUIRED_FIELDS - set(entry)
+            if unknown or missing:
+                raise ValueError(
+                    f"showroom catalog scenario {index} fields are invalid: "
+                    f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+                )
+            key = entry["key"]
+            if not isinstance(key, str) or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", key) is None:
+                raise ValueError(f"showroom catalog scenario {index} has invalid key")
+            if key in seen_keys:
+                raise ValueError(f"duplicate showroom catalog key: {key}")
+            seen_keys.add(key)
+
+            selector = entry["model"]
+            if not isinstance(selector, dict) or set(selector) != {"provider", "base_url", "model"}:
+                raise ValueError(f"showroom catalog scenario {key} has invalid model selector")
+            provider = normalize_provider(str(selector["provider"]).strip())
+            base_url = str(selector["base_url"]).strip().rstrip("/")
+            model_name = str(selector["model"]).strip()
+            configured_base_url = ""
+            configured_models: tuple[str, ...] = ()
+            if provider == "openrouter":
+                configured_base_url = self.settings.openrouter_api_base.strip().rstrip("/")
+                configured_models = self.settings.openrouter_models
+            elif provider == "gemini":
+                configured_base_url = self.settings.gemini_api_base.strip().rstrip("/")
+                configured_models = self.settings.gemini_models
+            elif provider == "local" and self.settings.local_llm_enabled:
+                configured_base_url = self.settings.local_llm_base_url.strip().rstrip("/")
+                configured_models = (self.settings.local_llm_model_alias,)
+            matches = [
+                profile
+                for profile in profiles
+                if base_url == configured_base_url
+                and model_name in configured_models
+                and normalize_provider(profile.provider) == provider
+                and profile.base_url.strip().rstrip("/") == base_url
+                and profile.model == model_name
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"showroom catalog scenario {key} requires exactly one active model profile; "
+                    f"matched {len(matches)} for ({provider}, {base_url}, {model_name})"
+                )
+            self.party_store.require_active_model_profile(matches[0].id)
+
+            request = ShowroomScenarioCreate.model_validate(
+                {
+                    "title": entry["title"],
+                    "description": entry["description"],
+                    "status": entry["status"],
+                    "scenario_type": "training",
+                    "model_profile_id": matches[0].id,
+                    "world_source": "preset",
+                    "worldpack_id": entry["worldpack_id"],
+                    "leaderboard_enabled": entry["leaderboard_enabled"],
+                    "leaderboard_label": entry["leaderboard_label"],
+                    "interactive_links_enabled": entry["interactive_links_enabled"],
+                    "interactive_workspace_enabled": entry["interactive_workspace_enabled"],
+                    "sort_order": entry["sort_order"],
+                }
+            )
+            pack = self.party_store.get_worldpack(str(request.worldpack_id))
+            self.ensure_public_worldpack(pack)
+            self.portal_from_manifest(pack.manifest, strict=True)
+            self.validate_scenario_type(pack.manifest, request.scenario_type)
+            capabilities = TrainingCapabilityPolicy.validate(
+                scenario_type=request.scenario_type,
+                worldpack=pack,
+                interactive_links_enabled=request.interactive_links_enabled,
+                interactive_workspace_enabled=request.interactive_workspace_enabled,
+            )
+            result = self.result_from_manifest(pack.manifest, strict=True)
+
+            cover_data: bytes | None = None
+            cover_type: str | None = None
+            cover = entry["cover"]
+            if cover is not None:
+                if not isinstance(cover, str) or not cover.strip():
+                    raise ValueError(f"showroom catalog scenario {key} has invalid cover path")
+                cover_path = (catalog_root / cover).resolve()
+                if not cover_path.is_relative_to(catalog_root) or not cover_path.is_file():
+                    raise ValueError(f"showroom catalog scenario {key} cover is outside the catalog or missing")
+                cover_data = cover_path.read_bytes()
+                if len(cover_data) > self.settings.showroom_cover_max_bytes:
+                    raise ValueError(f"showroom catalog scenario {key} cover is too large")
+                detected = self.detect_image_type(cover_data)
+                if detected is None:
+                    raise ValueError(f"showroom catalog scenario {key} cover is not PNG, JPEG, or WebP")
+                cover_type = detected[0]
+
+            scenario_id = f"scenario_catalog_{key}"
+            with self.connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM showroom_scenarios WHERE id = ?",
+                    (scenario_id,),
+                ).fetchone()
+            if row is not None and row["status"] == "archived" and request.status != "archived":
+                raise ValueError(f"archived showroom catalog scenario is terminal: {key}")
+            prepared.append(
+                {
+                    "id": scenario_id,
+                    "request": request,
+                    "row": row,
+                    "capabilities": capabilities,
+                    "result": result,
+                    "cover_data": cover_data,
+                    "cover_type": cover_type,
+                }
+            )
+
+        reconciled: list[str] = []
+        for item in prepared:
+            scenario_id = item["id"]
+            request = item["request"]
+            row = item["row"]
+            if row is None:
+                self.create_scenario(request, created_by=None, scenario_id=scenario_id)
+            else:
+                desired = {
+                    "title": request.title.strip(),
+                    "description": request.description.strip(),
+                    "status": request.status,
+                    "scenario_type": request.scenario_type,
+                    "model_profile_id": request.model_profile_id,
+                    "world_source": request.world_source,
+                    "worldpack_id": request.worldpack_id,
+                    "world_prompt": None,
+                    "leaderboard_enabled": int(request.leaderboard_enabled),
+                    "leaderboard_metric": item["result"]["metric"],
+                    "leaderboard_state_path": item["result"]["state_path"],
+                    "leaderboard_label": request.leaderboard_label.strip(),
+                    "interactive_links_enabled": int(item["capabilities"]["interactive_links_enabled"]),
+                    "interactive_workspace_enabled": int(item["capabilities"]["interactive_workspace_enabled"]),
+                    "sort_order": request.sort_order,
+                }
+                changes = {
+                    field: value
+                    for field, value in desired.items()
+                    if row[field] != value
+                }
+                if changes:
+                    self.update_scenario(scenario_id, changes)
+
+            cover_data = item["cover_data"]
+            if cover_data is not None:
+                with self.connect() as connection:
+                    cover_row = connection.execute(
+                        "SELECT cover_filename, cover_mime_type FROM showroom_scenarios WHERE id = ?",
+                        (scenario_id,),
+                    ).fetchone()
+                existing_cover = None
+                if cover_row is not None and cover_row["cover_filename"]:
+                    existing_path = self.cover_dir / Path(str(cover_row["cover_filename"])).name
+                    if existing_path.is_file():
+                        existing_cover = existing_path.read_bytes()
+                if existing_cover != cover_data or cover_row["cover_mime_type"] != item["cover_type"]:
+                    self.save_cover(scenario_id, str(item["cover_type"]), cover_data)
+            else:
+                with self.connect() as connection:
+                    has_cover = connection.execute(
+                        "SELECT cover_filename FROM showroom_scenarios WHERE id = ?",
+                        (scenario_id,),
+                    ).fetchone()
+                if has_cover is not None and has_cover["cover_filename"]:
+                    self.delete_cover(scenario_id)
+            reconciled.append(scenario_id)
+        return reconciled
 
     def update_scenario(self, scenario_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         if "scenario_type" in changes and changes["scenario_type"] != "training":

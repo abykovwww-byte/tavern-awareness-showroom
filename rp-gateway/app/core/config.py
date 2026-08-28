@@ -141,6 +141,7 @@ class Settings:
     showroom_visitor_ttl_seconds: int = env_int("SHOWROOM_VISITOR_TTL_SECONDS", 60 * 60 * 24 * 30)
     showroom_cover_dir: str = os.getenv("SHOWROOM_COVER_DIR", "/data/showroom-covers")
     showroom_cover_max_bytes: int = env_int("SHOWROOM_COVER_MAX_BYTES", 5 * 1024 * 1024)
+    showroom_catalog_path: str = os.getenv("SHOWROOM_CATALOG_PATH", "")
 
     @property
     def sqlite_path(self) -> str:

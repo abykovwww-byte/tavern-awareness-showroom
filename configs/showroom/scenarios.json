@@ -1,0 +1,77 @@
+{
+  "schema_version": "awareness-showroom.catalog.v1",
+  "scenarios": [
+    {
+      "key": "test",
+      "title": "Тест",
+      "description": "Тест 3.08",
+      "status": "published",
+      "worldpack_id": "awareness-one-day",
+      "model": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash"
+      },
+      "leaderboard_enabled": true,
+      "leaderboard_label": "Очки",
+      "interactive_links_enabled": true,
+      "interactive_workspace_enabled": true,
+      "sort_order": 100,
+      "cover": null
+    },
+    {
+      "key": "one-day-ellina",
+      "title": "One Day. Эллина",
+      "description": "Один день, тестирование на реальном человеке",
+      "status": "published",
+      "worldpack_id": "awareness-one-day",
+      "model": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash"
+      },
+      "leaderboard_enabled": true,
+      "leaderboard_label": "Очки",
+      "interactive_links_enabled": true,
+      "interactive_workspace_enabled": false,
+      "sort_order": 100,
+      "cover": "covers/one-day-ellina.png"
+    },
+    {
+      "key": "one-day-v5",
+      "title": "Один день. V5",
+      "description": "Один день, тестирование на реальном человеке",
+      "status": "published",
+      "worldpack_id": "awareness-one-day",
+      "model": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash"
+      },
+      "leaderboard_enabled": true,
+      "leaderboard_label": "Очки",
+      "interactive_links_enabled": true,
+      "interactive_workspace_enabled": false,
+      "sort_order": 100,
+      "cover": null
+    },
+    {
+      "key": "one-day-v3",
+      "title": "Один день. V3",
+      "description": "Один день, тестирование на реальном человеке",
+      "status": "published",
+      "worldpack_id": "awareness-one-day",
+      "model": {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "google/gemini-3.6-flash"
+      },
+      "leaderboard_enabled": true,
+      "leaderboard_label": "Очки",
+      "interactive_links_enabled": true,
+      "interactive_workspace_enabled": false,
+      "sort_order": 100,
+      "cover": null
+    }
+  ]
+}
