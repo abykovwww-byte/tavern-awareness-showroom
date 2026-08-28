@@ -27,6 +27,7 @@ def training_settings(tmp_path: Path, **overrides: object) -> Settings:
         "party_state_root": str(tmp_path / "state" / "parties"),
         "state_schema_path": str(PROJECT_ROOT / "state" / "schema.json"),
         "showroom_cover_dir": str(tmp_path / "showroom-covers"),
+        "showroom_catalog_path": "",
         "worldpacks_path": str(PROJECT_ROOT / "worldpacks"),
         "llm_api_base": "mock://success",
         "llm_api_key": "test-key",

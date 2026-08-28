@@ -85,7 +85,10 @@ jobs:
         run: docker build --file rp-gateway/Dockerfile --tag awareness-gateway-ci .
       - name: Repeat training-only gate inside image
         shell: bash
-        run: docker run --rm awareness-gateway-ci sh -lc "pytest -q $TRAINING_TESTS"
+        run: >-
+          docker run --rm
+          --env SHOWROOM_CATALOG_PATH=/app/configs/showroom/scenarios.json
+          awareness-gateway-ci sh -lc "pytest -q $TRAINING_TESTS"
 
   browser-client:
     runs-on: ubuntu-latest
