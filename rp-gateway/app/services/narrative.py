@@ -359,7 +359,44 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     output_rules = [
         "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences. If a TRAINING_INTERACTION_CONTRACT is also supplied, put that narration only in its narrative_text JSON field.",
         "Write fresh natural wording for the visible surface body. Gateway applies the exact authored header and final question.",
+        "The current ACTIVE_TRAINING_TURN_CONTRACT has priority over every earlier turn and message.",
     ]
+    format_rules: list[str] = []
+    surfaces = contract.get("surfaces") if contract.get("kind") == "turn" else None
+    if isinstance(surfaces, list) and surfaces:
+        format_rules.extend(
+            [
+                "VISIBLE_PLAIN_TEXT_FORMAT",
+                "Inside narrative_text use plain text with real line breaks. Do not use Markdown headings, emphasis, lists, blockquotes, code fences, HTML, or the characters < and >.",
+                "A surface marker is valid only when its whole line is exactly ПИСЬМО or СООБЩЕНИЕ, starting in the first column with no prefix, suffix, numbering, or decoration.",
+                "Start every declared field on its own new line. Write sender identities as 'От: Имя — login@domain' or 'От: Имя — handle', never inside angle brackets.",
+            ]
+        )
+        for surface in surfaces:
+            if not isinstance(surface, dict):
+                continue
+            marker = "ПИСЬМО" if surface.get("type") == "email" else "СООБЩЕНИЕ"
+            count = max(int(surface.get("count", 1) or 1), 1)
+            fields = [str(field) for field in surface.get("required_fields", [])]
+            format_rules.append(f"Emit exactly {count} {marker} block(s).")
+            if fields:
+                format_rules.append(
+                    f"Every {marker} block must contain these labels at the start of separate lines: {' | '.join(fields)}"
+                )
+            links_policy = str(surface.get("links", "none"))
+            effective_links = surface.get("effective_links")
+            if links_policy == "none" or (
+                links_policy == "artifact"
+                and isinstance(effective_links, dict)
+                and not effective_links.get("enabled")
+            ):
+                format_rules.append(f"Every {marker} block must contain the exact standalone line 'Ссылки: нет' and no URL.")
+            elif links_policy == "artifact" and isinstance(effective_links, dict):
+                display_url = str(effective_links.get("display_url") or "").strip()
+                if display_url:
+                    format_rules.append(
+                        f"Across the {marker} block(s), put the exact URL {display_url} once and only as the value of a 'Ссылки:' line; use 'Ссылки: нет' in every other {marker} block and never repeat the URL in body text."
+                    )
     return "\n".join(
         [
             "ACTIVE_TRAINING_TURN_CONTRACT",
@@ -367,6 +404,7 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
             "Generate fresh natural wording with the LLM, but do not change its turn, sender, channel, required facts, attachment, URL policy, or player-role boundary.",
             "Do not infer a different event from prior history and never expose hidden assessment rules.",
             *output_rules,
+            *format_rules,
             json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
         ]
     )
@@ -396,6 +434,8 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
     lines.extend(
         [
             "Put the complete visible surface body inside narrative_text; Gateway applies the exact authored header and final question.",
+            "After JSON decoding, narrative_text must obey VISIBLE_PLAIN_TEXT_FORMAT: preserve the required line breaks and literal undecorated ПИСЬМО/СООБЩЕНИЕ marker lines.",
+            "Inside narrative_text and generated slots do not use Markdown, HTML, angle brackets, or Markdown-formatted links. Write sender identities after an em dash.",
             "Do not put any text before or after the JSON object. Do not wrap it in a Markdown code fence.",
             "Never emit HTML, CSS, JavaScript, remote assets, credentials, paths, MIME types, file classification, answer keys, scoring, correctness, or remediation.",
             json.dumps({"site": site, "workspace": workspace}, ensure_ascii=False, separators=(",", ":")),
@@ -457,7 +497,15 @@ def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, 
                 else "rp-gateway.narrative-bundle.v1"
             ],
         },
-        "narrative_text": {"type": "string", "minLength": 1, "maxLength": 30000},
+        "narrative_text": {
+            "type": "string",
+            "description": (
+                "Visible plain text with real line breaks. Surface markers are literal undecorated standalone "
+                "ПИСЬМО or СООБЩЕНИЕ lines; every field starts on a new line; no Markdown, HTML, or angle brackets."
+            ),
+            "minLength": 1,
+            "maxLength": 30000,
+        },
         "artifacts": {
             "type": "array",
             "minItems": artifact_count,
@@ -1072,8 +1120,6 @@ class NarrativeClient:
                     "content": f"WORLD_AUTHORS_NOTE\n{self.settings.world_authors_note}",
                 }
             )
-        if training_turn_contract:
-            messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         request_messages = [message for message in request.messages if isinstance(message.content, str)]
         prior_request_messages = request_messages[:-1]
         volatile_request_messages: list[dict[str, str]] = []
@@ -1097,8 +1143,6 @@ class NarrativeClient:
                     ),
                 }
             )
-        if artifact_contract:
-            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
         if memory_summary and revision_eight:
             record_prompt_omission(
                 diagnostics,
@@ -1167,6 +1211,10 @@ class NarrativeClient:
                     "content": authors_note_block,
                 }
             )
+        if training_turn_contract:
+            messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
+        if artifact_contract:
+            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
         # The current player action must remain the final message after dynamic runtime context.
         if request_messages:
             current_action = request_messages[-1]

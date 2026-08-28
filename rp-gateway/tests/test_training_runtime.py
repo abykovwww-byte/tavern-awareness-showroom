@@ -61,7 +61,13 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     prompt_block = training_turn_prompt_block(prompt_contract)
     assert "Gateway applies the exact authored header and final question" in prompt_block
     assert "must start with this exact authored header" not in prompt_block
-    assert "комплектность требований" in runtime.fallback_text(state)
+    assert "VISIBLE_PLAIN_TEXT_FORMAT" in prompt_block
+    assert "Emit exactly 1 ПИСЬМО block(s)." in prompt_block
+    assert "Канал: | От: | Кому:" in prompt_block
+    fallback = runtime.fallback_text(state)
+    assert "комплектность требований" in fallback
+    assert fallback.count(prompt_contract["question"]) == 1
+    assert fallback.endswith(prompt_contract["question"])
     serialized = json.dumps(prompt_contract, ensure_ascii=False)
     assert "security-score" not in serialized
     assert "assessment" not in serialized
@@ -215,8 +221,8 @@ def awareness_v3_fresh_narrative(
     definition = runtime.turn_definition(turn)
     bodies = AWARENESS_V3_FRESH_BODIES[turn][variant]
     display_url = (interaction_contract or {}).get("site", {}).get("display_url", "")
-    email_sender = "Служба доступа <access@example.test>" if turn == 7 else "Елена Шевелёва <elena@example.test>"
-    message_sender = "Роман Иванов <roman@example.test>" if turn == 7 else "Кирилл Орлов <kirill@example.test>"
+    email_sender = "Служба доступа — access@example.test" if turn == 7 else "Елена Шевелёва — elena@example.test"
+    message_sender = "Роман Иванов — roman@example.test" if turn == 7 else "Кирилл Орлов — kirill@example.test"
     email_links = next(surface["links"] for surface in definition["surfaces"] if surface["type"] == "email")
     message_links = next(surface["links"] for surface in definition["surfaces"] if surface["type"] == "messenger")
 
@@ -236,9 +242,9 @@ def awareness_v3_fresh_narrative(
 
     blocks: list[str] = []
     if turn == 1:
-        blocks.append(email(bodies[0], link="нет", sender="Ольга Смирнова <olga@example.test>"))
-        blocks.append(email(bodies[1], attachment="WorkSchedule_Update.xlsx.exe", link=display_url,
-                            sender="Support Desk <support@example.test>"))
+        blocks.append(email(bodies[0], link=display_url, sender="Ольга Смирнова — olga@example.test"))
+        blocks.append(email(bodies[1], attachment="WorkSchedule_Update.xlsx.exe", link="нет",
+                            sender="Support Desk — support@example.test"))
         message_body = bodies[2]
     else:
         blocks.append(email(bodies[0], link=display_url if email_links == "artifact" else "нет"))
@@ -254,7 +260,8 @@ def test_awareness_v3_accepts_two_fresh_multichannel_wordings_per_turn(tmp_path:
         worldpack(root),
         StateStore(str(tmp_path / f"awareness-v3-{turn}.db"), f"party-awareness-v3-{turn}", root / "state-seed.json"),
     )
-    assert runtime.contract_hash == "c590ff30a1803732b3b599ee7669cfce778351c662dc7f3023bf8b9c2b34680c"
+    assert runtime.contract_hash == "23989a8335e0db6918b3fa47ec77d76cd1330709b4cf651ac0129ebe1d5c240d"
+    assert runtime.program["revision"] == 2
     state = runtime.store.get_state()
     state["meta"]["turn"] = turn
     interaction_contract = (
@@ -270,9 +277,58 @@ def test_awareness_v3_accepts_two_fresh_multichannel_wordings_per_turn(tmp_path:
         assert text != runtime.fallback_text(state, interaction_contract)
         assert text not in program_source
         assert runtime.validate_narrative(text, state, interaction_contract) == []
+    fallback = runtime.fallback_text(state, interaction_contract)
+    question = runtime.turn_definition(turn)["question"]
+    assert fallback.count(question) == 1
+    assert fallback.endswith(question)
     if turn == 1:
         assert variants[0].count("\nПИСЬМО\n") == 2
         assert variants[0].count("\nСООБЩЕНИЕ\n") == 1
+        assert variants[0].split("\nПИСЬМО\n", 2)[1].count(interaction_contract["site"]["display_url"]) == 1
+        assert "WorkSchedule_Update.xlsx.exe\nСсылки: нет" in variants[0]
+
+
+def test_training_visible_sources_do_not_teach_angle_sender_syntax():
+    sources = [
+        WORLD_PACKS_ROOT / "awareness" / "campaign-bible.md",
+        WORLD_PACKS_ROOT / "awareness" / "prompts" / "gm-system.md",
+        WORLD_PACKS_ROOT / "awareness" / "prompts" / "opening-scene.md",
+    ]
+    for path in sources:
+        assert not re.search(r"<[A-Za-z0-9._@+\-]+>", path.read_text(encoding="utf-8"))
+
+    for slug in ("awareness", "awareness-one-day"):
+        source = (WORLD_PACKS_ROOT / slug / "training" / "program.json").read_text(encoding="utf-8")
+        assert not re.search(r"<[A-Za-z0-9._@+\-]+>", source)
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "body_only", "next_line"])
+def test_awareness_v3_requires_one_active_url_on_the_links_line(tmp_path: Path, mutation: str):
+    root = WORLD_PACKS_ROOT / "awareness"
+    runtime = TrainingRuntimeService(
+        worldpack(root),
+        StateStore(str(tmp_path / "state.db"), f"party-url-{mutation}", root / "state-seed.json"),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    url = "https://training.example.test/turn-1"
+    interaction_contract = {"site": {"display_url": url}}
+    narrative = runtime.fallback_text(state, interaction_contract)
+    if mutation == "duplicate":
+        narrative = narrative.replace("Материалы лежат", f"Повторная ссылка {url}. Материалы лежат", 1)
+    elif mutation == "body_only":
+        narrative = narrative.replace(f"Ссылки: {url}", "Ссылки: нет", 1).replace(
+            "Материалы лежат",
+            f"Материалы по адресу {url} лежат",
+            1,
+        )
+    else:
+        narrative = narrative.replace(f"Ссылки: {url}", f"Ссылки:\n{url}", 1)
+
+    assert (
+        "Training turn must contain the active artifact URL exactly once on its standalone Ссылки line."
+        in runtime.hard_violations(narrative, state, interaction_contract)
+    )
 
 
 def test_one_day_negated_dangerous_actions_do_not_create_unsafe_evidence(tmp_path: Path):
@@ -609,6 +665,27 @@ def write_obzh_world(root: Path) -> WorldPackSummary:
     return worldpack(root)
 
 
+def test_legacy_turn_with_explicit_empty_question_stays_without_question(tmp_path: Path):
+    root = tmp_path / "obzh-no-question"
+    pack = write_obzh_world(root)
+    program_path = root / "training" / "program.json"
+    program = json.loads(program_path.read_text(encoding="utf-8"))
+    program["turns"][0]["question"] = ""
+    program["turns"][0]["surface"]["require_question"] = False
+    program_path.write_text(json.dumps(program, ensure_ascii=False), encoding="utf-8")
+    runtime = TrainingRuntimeService(
+        pack,
+        StateStore(str(tmp_path / "state.db"), "party-no-question", pack.state_seed_path),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+
+    fallback = runtime.fallback_text(state)
+
+    assert "Что ты делаешь и как отвечаешь?" not in fallback
+    assert fallback.endswith("Обозначь порядок действий при эвакуации.")
+
+
 V3_EMAIL_ONE = (
     "ПИСЬМО\nОт: Руководитель\nКому: Ученик\nТема: Первый запрос\n"
     "Вложения: нет\nСсылки: нет\nТело:\nПроверь первый документ."
@@ -816,8 +893,9 @@ def test_v2_one_day_contract_hash_and_single_surface_compatibility(tmp_path: Pat
     state["meta"]["turn"] = 1
     contract = runtime.prompt_contract(state)
 
-    assert runtime.contract_hash == "7011d55c45ebb21594dacb5a62ce451625799ec34a7e4298fc70b65f98660464"
+    assert runtime.contract_hash == "298378be5b9b12da2bac4162ee48ae4dae19ec4babeca715f04cd36665fc905a"
     assert runtime.program["schema_version"] == "rp-training-program.v2"
+    assert runtime.program["revision"] == 3
     assert contract["schema_version"] == "rp-gateway.training-turn-contract.v2"
     assert len(contract["surfaces"]) == 1
     assert runtime.validate_narrative(runtime.fallback_text(state), state) == []

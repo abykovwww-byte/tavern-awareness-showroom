@@ -459,10 +459,20 @@ class TrainingRuntimeService:
             if links_policy == "none" and urls:
                 issues.append(("hard", "Training turn must not contain a URL.", ""))
             if links_policy == "artifact":
-                if site and str(site["display_url"]) not in surface_text:
-                    issues.append(("hard", "Training turn must contain the active artifact URL.", ""))
-                if site and any(str(site["display_url"]).casefold() not in url.casefold() for url in urls):
-                    issues.append(("hard", "Training turn must not contain a URL outside the active artifact contract.", ""))
+                if site:
+                    display_url = str(site["display_url"])
+                    exact_link_lines = re.findall(
+                        rf"(?mi)^Ссылки:[ \t]*{re.escape(display_url)}[ \t]*$",
+                        surface_text,
+                    )
+                    if surface_text.count(display_url) != 1 or len(exact_link_lines) != 1:
+                        issues.append((
+                            "hard",
+                            "Training turn must contain the active artifact URL exactly once on its standalone Ссылки line.",
+                            "",
+                        ))
+                    if any(display_url.casefold() not in url.casefold() for url in urls):
+                        issues.append(("hard", "Training turn must not contain a URL outside the active artifact contract.", ""))
                 if not site and urls:
                     issues.append(("hard", "Training turn with disabled links must not contain a URL.", ""))
                 if not site and not re.search(r"(?mi)^Ссылки:\s*нет\s*$", surface_text):
@@ -552,7 +562,15 @@ class TrainingRuntimeService:
         if not turn:
             return self.render_template(str(self.program["debrief"]["fallback"]), state, interaction_contract)
         rendered = self.render_template(self.turn_fallback(turn), state, interaction_contract)
-        return f"{turn['header']}\n\n{rendered}\n\n{turn.get('question', 'Что ты делаешь и как отвечаешь?')}"
+        question = str(
+            turn["question"] if "question" in turn else "Что ты делаешь и как отвечаешь?"
+        ).strip()
+        body = rendered.rstrip()
+        if not question:
+            return f"{turn['header']}\n\n{body}"
+        if body.endswith(question):
+            return f"{turn['header']}\n\n{body}"
+        return f"{turn['header']}\n\n{body}\n\n{question}"
 
     def evaluate_detectors(
         self,

@@ -10,7 +10,7 @@ from app.services.training_runtime import TrainingRuntimeService
 
 
 WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
-FROZEN_CONTRACT_HASH = "7011d55c45ebb21594dacb5a62ce451625799ec34a7e4298fc70b65f98660464"
+FROZEN_CONTRACT_HASH = "298378be5b9b12da2bac4162ee48ae4dae19ec4babeca715f04cd36665fc905a"
 
 
 def runtime_for(tmp_path: Path) -> TrainingRuntimeService:
@@ -38,6 +38,7 @@ def test_one_day_v2_contract_hash_and_schedule_are_unchanged(tmp_path: Path):
 
     assert runtime.contract["schema_version"] == "rp-training-runtime.v2"
     assert runtime.program["schema_version"] == "rp-training-program.v2"
+    assert runtime.program["revision"] == 3
     assert runtime.contract_hash == FROZEN_CONTRACT_HASH
     assert [turn["window"] for turn in runtime.program["turns"]] == [
         "ход 1, понедельник, 09:00-09:30",
