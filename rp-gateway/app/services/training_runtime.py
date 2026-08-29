@@ -478,7 +478,11 @@ class TrainingRuntimeService:
             links_policy = str(surface.get("links", "none"))
             urls = re.findall(r"(?:https?://|www\.)[^\s<>]+", surface_text, re.IGNORECASE)
             if links_policy == "none" and urls:
-                issues.append(("hard", "Training turn must not contain a URL.", ""))
+                issues.append((
+                    "hard",
+                    "Training turn must not contain a URL.",
+                    "Удали все URL из этого блока и укажи отдельной строкой «Ссылки: нет».",
+                ))
             if links_policy == "artifact":
                 if site:
                     display_url = str(site["display_url"])
