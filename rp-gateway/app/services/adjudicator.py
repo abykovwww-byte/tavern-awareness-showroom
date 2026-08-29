@@ -666,11 +666,11 @@ class Adjudicator:
                     text = response_text(raw)
                 if self.training_artifacts:
                     artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
-                    if artifact_result.valid:
+                    if artifact_contract and artifact_result.valid:
                         text = artifact_result.text
                 if self.training_workspace:
                     workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
-                    if workspace_result.valid:
+                    if workspace_contract and workspace_result.valid:
                         text = workspace_result.text
                 if self.training_runtime and self.training_runtime.enabled:
                     text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
@@ -840,11 +840,11 @@ class Adjudicator:
                         text = response_text(raw)
                     if self.training_artifacts:
                         artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
-                        if artifact_result.valid:
+                        if artifact_contract and artifact_result.valid:
                             text = artifact_result.text
                     if self.training_workspace:
                         workspace_result = self.training_workspace.materialize_response(raw, workspace_contract)
-                        if workspace_result.valid:
+                        if workspace_contract and workspace_result.valid:
                             text = workspace_result.text
                     if self.training_runtime and self.training_runtime.enabled:
                         text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)

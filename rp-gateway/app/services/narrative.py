@@ -360,6 +360,7 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
         "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences. If a TRAINING_INTERACTION_CONTRACT is also supplied, put that narration only in its narrative_text JSON field.",
         "Write fresh natural wording for the visible surface body. Gateway applies the exact authored header and final question.",
         "The current ACTIVE_TRAINING_TURN_CONTRACT has priority over every earlier turn and message.",
+        "Every must_include item is mandatory. Preserve complete authored sender names; never shorten, replace, or generalize them.",
     ]
     format_rules: list[str] = []
     surfaces = contract.get("surfaces") if contract.get("kind") == "turn" else None

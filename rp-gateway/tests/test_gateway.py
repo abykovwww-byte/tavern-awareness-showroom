@@ -53,6 +53,7 @@ from app.services.rule_engine import RuleEngine
 from app.services.service_models import SERVICE_MODEL_SETTING_KEY, service_model_settings
 from app.services.service_model_client import ServiceModelClient
 from app.services.state_store import StateStore
+from app.services.training_runtime import TrainingRuntimeService
 from app.services.validator import OutputValidator, safe_fallback
 
 
@@ -752,6 +753,131 @@ def test_showroom_training_capabilities_are_validated_and_snapshotted(tmp_path: 
     )
     assert unsupported.status_code == 400
     assert "does not support interactive links" in unsupported.text
+
+
+def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness"
+    shutil.copytree(source, tmp_path / "worldpacks" / "awareness")
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    scenario_response = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Artifact-only provider regression",
+            "status": "published",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "awareness",
+            "interactive_links_enabled": True,
+            "interactive_workspace_enabled": False,
+        },
+    )
+    assert scenario_response.status_code == 200, scenario_response.text
+    scenario = scenario_response.json()["scenario"]
+    public = TestClient(admin.app)
+    run_response = public.post(
+        f"/api/showroom/scenarios/{scenario['id']}/runs",
+        json={
+            "character_name": "Provider QA",
+            "character_prompt": "Инженер QA",
+            "employee_position": "Инженер QA",
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run = run_response.json()["run"]
+    with admin.app.state.showroom_store.connect() as connection:
+        party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?",
+            (run["id"],),
+        ).fetchone()["party_id"]
+    party = admin.app.state.party_store.get_party(party_id)
+    party_state_store = admin.app.state.party_store.store_for_party(party_id)
+    runtime = TrainingRuntimeService(party.worldpack, party_state_store)
+    provider_turns: list[int] = []
+
+    async def provider_complete(*args: object, **kwargs: object) -> dict[str, object]:
+        state = args[2]
+        assert isinstance(state, dict)
+        turn = int(state["meta"]["turn"])
+        provider_turns.append(turn)
+        interaction_contract = kwargs.get("artifact_contract")
+        assert interaction_contract is None or isinstance(interaction_contract, dict)
+        visible = runtime.fallback_text(state, interaction_contract)
+        site = interaction_contract.get("site") if interaction_contract else None
+        content = visible
+        if site:
+            content = json.dumps(
+                {
+                    "schema_version": "rp-gateway.narrative-bundle.v1",
+                    "narrative_text": visible,
+                    "artifacts": [
+                        {
+                            "artifact_key": site["artifact_key"],
+                            "blueprint_id": site["blueprint_id"],
+                            "slots": {slot_id: "Проверка" for slot_id in site["slots"]},
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        return {
+            "id": f"artifact-only-{turn}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "mock-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", provider_complete)
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": "artifact-only-start"},
+    )
+    assert started.status_code == 200, started.text
+    start_message = started.json()["choices"][0]["message"]
+    assert start_message["content"].startswith("Ход 1.")
+    assert not start_message["content"].lstrip().startswith("{")
+    assert len(start_message["artifacts"]) == 1
+    start_metadata = latest_turn_metadata(party_state_store)
+    assert start_metadata["fallback"] is False
+    assert start_metadata["validator_valid"] is True
+    assert start_metadata["llm_calls"] == 1
+
+    for answered_turn in (1, 2):
+        response = public.post(
+            f"/api/showroom/runs/{run['id']}/messages",
+            json={
+                "content": "Сообщаю о подозрительном запросе по штатному каналу и продолжаю рабочую задачу.",
+                "idempotency_key": f"artifact-only-turn-{answered_turn}",
+            },
+        )
+        assert response.status_code == 200, response.text
+
+    turn_three_message = response.json()["choices"][0]["message"]
+    assert turn_three_message["content"].startswith("Ход 3.")
+    assert not turn_three_message["content"].lstrip().startswith("{")
+    assert len(turn_three_message["artifacts"]) == 1
+    turn_three_metadata = latest_turn_metadata(party_state_store)
+    assert turn_three_metadata["fallback"] is False
+    assert turn_three_metadata["validator_valid"] is True
+    assert turn_three_metadata["llm_calls"] == 1
+    assert provider_turns == [1, 2, 3]
 
 
 def test_showroom_rp_start_ignores_semantic_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

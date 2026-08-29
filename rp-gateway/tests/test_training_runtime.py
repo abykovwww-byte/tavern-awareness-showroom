@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from app.models.schemas import Intent, WorldPackSummary
+from app.models.schemas import Intent, Outcome, WorldPackSummary
 from app.services.narrative import training_turn_prompt_block
 from app.services.rule_engine import RuleEngine
 from app.services.state_store import StateStore
 from app.services.training_runtime import TrainingRuntimeService
+from app.services.validator import OutputValidator
 
 
 WORLD_PACKS_ROOT = Path(__file__).resolve().parents[2] / "worldpacks"
@@ -64,6 +65,8 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     assert "VISIBLE_PLAIN_TEXT_FORMAT" in prompt_block
     assert "Emit exactly 1 ПИСЬМО block(s)." in prompt_block
     assert "Канал: | От: | Кому:" in prompt_block
+    assert "Every must_include item is mandatory" in prompt_block
+    assert "never shorten, replace, or generalize" in prompt_block
     fallback = runtime.fallback_text(state)
     assert "комплектность требований" in fallback
     assert fallback.count(prompt_contract["question"]) == 1
@@ -260,7 +263,7 @@ def test_awareness_v3_accepts_two_fresh_multichannel_wordings_per_turn(tmp_path:
         worldpack(root),
         StateStore(str(tmp_path / f"awareness-v3-{turn}.db"), f"party-awareness-v3-{turn}", root / "state-seed.json"),
     )
-    assert runtime.contract_hash == "23989a8335e0db6918b3fa47ec77d76cd1330709b4cf651ac0129ebe1d5c240d"
+    assert runtime.contract_hash == "c4c46377028d7539e0292edb387cc2165b36eb190a7dae5dc0e69097f16a0706"
     assert runtime.program["revision"] == 2
     state = runtime.store.get_state()
     state["meta"]["turn"] = turn
@@ -552,6 +555,79 @@ def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: 
     state["meta"]["turn"] = 11
     wrong_scores = runtime.fallback_text(state).replace("0 из 100", "1 из 100", 1)
     assert any("canonical total-score=0/100" in item for item in runtime.hard_violations(wrong_scores, state))
+
+
+def test_training_debrief_accepts_natural_score_wording_and_recommendations(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness")
+    store = StateStore(str(tmp_path / "state.db"), "party-natural-debrief", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = 11
+    text = runtime.fallback_text(state).replace("0 из 100", "0 баллов из 100", 1)
+    text += "\n\nРекомендации:\nПродолжай проверять адрес и домен отправителя."
+    outcome = Outcome(
+        check_id="training-debrief",
+        action_type="narrative",
+        actor="player",
+        result="success",
+        roll=0,
+        difficulty=0,
+        modifiers={},
+        final_score=0,
+        consequences=[],
+        authoritative_block="training debrief",
+    )
+
+    result = OutputValidator().validate(
+        text,
+        outcome,
+        state,
+        scenario_type="training",
+        training_runtime=runtime,
+    )
+
+    assert result.valid is True
+    assert runtime.hard_violations(text, state) == []
+
+    state["meta"]["turn"] = 1
+    normal_turn = runtime.fallback_text(state) + "\n\nРекомендации:\nСлужебный разбор."
+    normal_result = OutputValidator().validate(
+        normal_turn,
+        outcome,
+        state,
+        scenario_type="training",
+        training_runtime=runtime,
+    )
+    rp_result = OutputValidator().validate("Рекомендации:\nСлужебный разбор.", outcome, {}, scenario_type="rp")
+    expected_violation = "Narrative exposed analysis, recommendation, or diagnostic labels to the player."
+    assert expected_violation in normal_result.violations
+    assert expected_violation in rp_result.violations
+    for forbidden_label in ("Diagnostics:\ninternal", "Gateway:\ninternal"):
+        debrief_with_service_label = OutputValidator().validate(
+            f"{text}\n\n{forbidden_label}",
+            outcome,
+            state | {"meta": state["meta"] | {"turn": 11}},
+            scenario_type="training",
+            training_runtime=runtime,
+        )
+        assert expected_violation in debrief_with_service_label.violations
+
+
+def test_awareness_allows_ordinary_dashboard_work_but_keeps_service_internals_forbidden(tmp_path: Path):
+    pack = worldpack(WORLD_PACKS_ROOT / "awareness")
+    store = StateStore(str(tmp_path / "state.db"), "party-dashboard-wording", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    state["meta"]["turn"] = 1
+    visible = runtime.fallback_text(state).replace(
+        "\n\n",
+        "\n\nСтатус по обычной рабочей задаче обновлён в дашборде.\n\n",
+        1,
+    )
+
+    assert runtime.validate_narrative(visible, state) == []
+    forbidden = visible.replace("Статус по обычной рабочей задаче", "Статус backend")
+    assert any("globally forbidden content" in item for item in runtime.hard_violations(forbidden, state))
 
 
 def write_obzh_world(root: Path) -> WorldPackSummary:
