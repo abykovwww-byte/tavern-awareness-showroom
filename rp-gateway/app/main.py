@@ -2219,9 +2219,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if fallback_reason is None:
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
                 workspace_result = workspace_service.materialize_response(response, workspace_contract)
-                if artifact_result.valid:
+                if artifact_contract and artifact_result.valid:
                     text = artifact_result.text
-                if workspace_result.valid:
+                if workspace_contract and workspace_result.valid:
                     text = workspace_result.text
                 if artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
@@ -2370,9 +2370,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 text = scene_result.text if scene_result is not None else response_text(response)
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
                 workspace_result = workspace_service.materialize_response(response, workspace_contract)
-                if artifact_result.valid:
+                if artifact_contract and artifact_result.valid:
                     text = artifact_result.text
-                if workspace_result.valid:
+                if workspace_contract and workspace_result.valid:
                     text = workspace_result.text
                 if artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)

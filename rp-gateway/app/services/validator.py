@@ -96,9 +96,22 @@ class OutputValidator:
     ) -> ValidationResult:
         lowered = text.lower()
         violations: list[str] = []
+        training_contract = (
+            training_runtime.prompt_contract(state or {}, interaction_contract)
+            if scenario_type == "training" and training_runtime and training_runtime.enabled
+            else None
+        )
+        training_debrief = bool(training_contract and training_contract.get("kind") == "debrief")
         if "<authoritative_outcome>" in lowered or "</authoritative_outcome>" in lowered:
             violations.append("Narrative exposed service outcome tags to the player.")
-        if SERVICE_LINE_RE.search(text):
+        service_labels = [match.group(1).casefold() for match in SERVICE_LINE_RE.finditer(text)]
+        if training_debrief:
+            service_labels = [
+                label
+                for label in service_labels
+                if label != "recommendation" and not label.startswith("рекомендац")
+            ]
+        if service_labels:
             violations.append("Narrative exposed analysis, recommendation, or diagnostic labels to the player.")
         for phrase in SERVICE_PHRASES:
             if phrase in lowered:

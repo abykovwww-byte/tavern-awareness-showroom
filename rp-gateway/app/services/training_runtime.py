@@ -393,7 +393,11 @@ class TrainingRuntimeService:
                 maximum = int(score["max"])
                 found = {
                     int(value)
-                    for value in re.findall(rf"\b(\d{{1,4}})\s*(?:из|/)\s*{maximum}\b", text, re.IGNORECASE)
+                    for value in re.findall(
+                        rf"\b(\d{{1,4}})\s*(?:балл(?:а|ов)?\s+)?(?:из|/)\s*{maximum}\b",
+                        text,
+                        re.IGNORECASE,
+                    )
                 }
                 if found != {expected}:
                     issues.append((
