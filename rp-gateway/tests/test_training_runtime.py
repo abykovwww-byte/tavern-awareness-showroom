@@ -332,6 +332,7 @@ def test_awareness_v3_requires_one_active_url_on_the_links_line(tmp_path: Path, 
         "Training turn must contain the active artifact URL exactly once on its standalone Ссылки line."
         in runtime.hard_violations(narrative, state, interaction_contract)
     )
+    assert runtime.repair_blockers(narrative, state, interaction_contract)
 
 
 def test_one_day_negated_dangerous_actions_do_not_create_unsafe_evidence(tmp_path: Path):
@@ -496,6 +497,10 @@ def test_training_normalization_repairs_boundaries_and_no_link_marker_but_not_ur
     normalized_url = runtime.normalize_narrative(with_url, state)
     assert "https://outside.example" in normalized_url
     assert runtime.hard_violations(normalized_url, state) == ["Training turn must not contain a URL."]
+    assert runtime.repair_blockers(normalized_url, state) == []
+    instruction = runtime.repair_instruction(normalized_url, state)
+    assert "Удали все URL" in instruction
+    assert "Ссылки: нет" in instruction
 
 
 def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp_path: Path):
@@ -557,6 +562,8 @@ def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: 
     site = {"site": {"display_url": "https://training.example.test/turn-9"}}
     wrong_attachment = runtime.fallback_text(state, site).replace("Act_July.pdf.exe", "Act_July.pdf", 1)
     assert any("authored fact" in item for item in runtime.hard_violations(wrong_attachment, state, site))
+    assert runtime.repair_blockers(wrong_attachment, state, site)
+    assert runtime.repair_instruction(wrong_attachment, state, site) == ""
 
     state["meta"]["turn"] = 11
     wrong_scores = runtime.fallback_text(state).replace("0 из 100", "1 из 100", 1)

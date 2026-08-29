@@ -823,6 +823,11 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
             visible = visible.replace("От: Елена Шевелёва", "От: Посторонний", 1)
         if turn == 3:
             visible = visible.replace("Елена Шевелёва", "Посторонний")
+        if turn == 4 and not repairing:
+            visible = visible.replace("Ссылки: нет", "Ссылки: https://outside.example", 1)
+        if turn == 4 and repairing:
+            assert "Удали все URL" in str(repair_instruction)
+            assert "Ссылки: нет" in str(repair_instruction)
         site = interaction_contract.get("site") if interaction_contract else None
         content = visible
         if site:
@@ -902,6 +907,23 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
     assert turn_three_metadata["validator_valid"] is True
     assert turn_three_metadata["repaired"] is True
     assert turn_three_metadata["llm_calls"] == 2
+
+    turn_four_response = public.post(
+        f"/api/showroom/runs/{run['id']}/messages",
+        json={
+            "content": "Не выполняю подозрительную просьбу и сообщаю о ней по штатному каналу.",
+            "idempotency_key": "artifact-only-turn-3",
+        },
+    )
+    assert turn_four_response.status_code == 200, turn_four_response.text
+    turn_four_message = turn_four_response.json()["choices"][0]["message"]
+    assert turn_four_response.json()["choices"][0]["finish_reason"] == "stop"
+    assert "https://outside.example" not in turn_four_message["content"]
+    turn_four_metadata = latest_turn_metadata(party_state_store)
+    assert turn_four_metadata["fallback"] is False
+    assert turn_four_metadata["validator_valid"] is True
+    assert turn_four_metadata["repaired"] is True
+    assert turn_four_metadata["llm_calls"] == 2
     assert provider_turns == [
         (1, False),
         (1, True),
@@ -909,6 +931,8 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
         (2, True),
         (3, False),
         (3, True),
+        (4, False),
+        (4, True),
     ]
 
 
