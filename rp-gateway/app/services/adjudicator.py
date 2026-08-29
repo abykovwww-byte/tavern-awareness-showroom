@@ -750,7 +750,7 @@ class Adjudicator:
                         text, narrative_state, interaction_contract
                     )
                     runtime_violation_set = set(runtime_violations)
-                    training_repair_allowed = not self.training_runtime.hard_violations(
+                    training_repair_allowed = not self.training_runtime.repair_blockers(
                         text, narrative_state, interaction_contract
                     ) and not any(
                         violation not in runtime_violation_set for violation in validation.violations

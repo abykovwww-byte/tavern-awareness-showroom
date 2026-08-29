@@ -498,7 +498,7 @@ def test_training_normalization_repairs_boundaries_and_no_link_marker_but_not_ur
     assert runtime.hard_violations(normalized_url, state) == ["Training turn must not contain a URL."]
 
 
-def test_training_hard_violations_skip_repair_and_soft_profile_has_russian_instruction(tmp_path: Path):
+def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp_path: Path):
     pack = worldpack(WORLD_PACKS_ROOT / "awareness-one-day")
     store = StateStore(str(tmp_path / "state.db"), "party-severity", pack.state_seed_path)
     runtime = TrainingRuntimeService(pack, store)
@@ -508,10 +508,14 @@ def test_training_hard_violations_skip_repair_and_soft_profile_has_russian_instr
 
     wrong_sender = runtime.fallback_text(state).replace("От: Анна Петрова", "От: Посторонний", 1)
     assert any("authored fact" in item for item in runtime.hard_violations(wrong_sender, state))
+    assert runtime.repair_blockers(wrong_sender, state) == []
+    assert "Анна Петрова" in runtime.repair_instruction(wrong_sender, state)
 
     state["meta"]["turn"] = 5
     wrong_channel = runtime.fallback_text(state).replace("Канал: рабочий мессенджер", "Канал: личная почта", 1)
     assert any("authored fact" in item for item in runtime.hard_violations(wrong_channel, state))
+    assert runtime.repair_blockers(wrong_channel, state)
+    assert runtime.repair_instruction(wrong_channel, state) == ""
 
     state["meta"]["turn"] = 1
 
@@ -538,6 +542,8 @@ def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Pa
     mutated = runtime.fallback_text(state).replace("ПИСЬМО", "ПИСЬМО-ПЕРЕИМЕНОВАНО", 1)
     violations = runtime.validate_narrative(mutated, state)
     assert violations == ["Training turn must contain exactly 1 ПИСЬМО block(s)."]
+    assert runtime.hard_violations(mutated, state) == []
+    assert "ровно 1 полных блока" in runtime.repair_instruction(mutated, state)
 
 
 def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: Path):
@@ -847,9 +853,11 @@ def test_v3_multichannel_turn_rejects_wrong_declared_count(tmp_path: Path):
     state["meta"]["turn"] = 1
     narrative = runtime.normalize_narrative(runtime.fallback_text(state).replace(V3_EMAIL_TWO, "", 1), state)
 
-    assert runtime.hard_violations(narrative, state) == [
+    assert runtime.validate_narrative(narrative, state) == [
         "Training turn must contain exactly 2 ПИСЬМО block(s)."
     ]
+    assert runtime.hard_violations(narrative, state) == []
+    assert "ровно 2 полных блока" in runtime.repair_instruction(narrative, state)
 
 
 def test_v3_turn_rejects_undeclared_surface_marker(tmp_path: Path):

@@ -360,6 +360,18 @@ class TrainingRuntimeService:
             if severity == "hard"
         ]
 
+    def repair_blockers(
+        self,
+        text: str,
+        state: dict[str, Any],
+        interaction_contract: dict[str, Any] | None = None,
+    ) -> list[str]:
+        return [
+            message
+            for severity, message, repair in self._narrative_issues(text, state, interaction_contract)
+            if severity == "hard" and not repair
+        ]
+
     def repair_instruction(
         self,
         text: str,
@@ -368,8 +380,8 @@ class TrainingRuntimeService:
     ) -> str:
         repairs = [
             repair
-            for severity, _, repair in self._narrative_issues(text, state, interaction_contract)
-            if severity == "soft" and repair
+            for _, _, repair in self._narrative_issues(text, state, interaction_contract)
+            if repair
         ]
         if not repairs:
             return ""
@@ -424,9 +436,10 @@ class TrainingRuntimeService:
             expected = int(surface.get("count", 1))
             if len(blocks) != expected:
                 return [(
-                    "hard",
+                    "soft",
                     f"Training turn must contain exactly {expected} {marker} block(s).",
-                    "",
+                    f"Верни ровно {expected} полных блока «{marker}»; "
+                    "каждый маркер должен стоять на отдельной строке, а все поля и authored facts остаются обязательными.",
                 )]
             surface_blocks.append((surface, "\n".join(blocks)))
 
@@ -442,15 +455,19 @@ class TrainingRuntimeService:
                         f"Добавь видимое поле «{field}».",
                     ))
             for pattern in surface.get("required_patterns", []):
-                if not re.search(str(pattern), block, re.IGNORECASE | re.DOTALL):
-                    field_name = self._pattern_field_name(str(pattern))
+                field_name = self._pattern_field_name(str(pattern))
+                pattern_flags = re.IGNORECASE
+                if field_name not in {"канал", "от", "вложения"}:
+                    pattern_flags |= re.DOTALL
+                if not re.search(str(pattern), block, pattern_flags):
                     if field_name and field_name in missing_fields:
                         continue
                     hard = field_name in {"канал", "от", "вложения"}
+                    repair = self._pattern_repair_text(str(pattern), surface)
                     issues.append((
                         "hard" if hard else "soft",
                         f"Training surface is missing authored fact: {pattern}",
-                        "" if hard else self._pattern_repair_text(str(pattern), surface),
+                        repair if field_name == "от" or not hard else "",
                     ))
             for pattern in surface.get("forbidden_patterns", []):
                 if re.search(str(pattern), surface_text, re.IGNORECASE | re.DOTALL):
