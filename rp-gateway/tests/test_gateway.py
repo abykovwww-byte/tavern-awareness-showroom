@@ -803,16 +803,26 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
     party = admin.app.state.party_store.get_party(party_id)
     party_state_store = admin.app.state.party_store.store_for_party(party_id)
     runtime = TrainingRuntimeService(party.worldpack, party_state_store)
-    provider_turns: list[int] = []
+    provider_turns: list[tuple[int, bool]] = []
 
     async def provider_complete(*args: object, **kwargs: object) -> dict[str, object]:
         state = args[2]
         assert isinstance(state, dict)
         turn = int(state["meta"]["turn"])
-        provider_turns.append(turn)
+        repair_instruction = kwargs.get("repair_instruction")
+        if repair_instruction is None and len(args) > 5:
+            repair_instruction = args[5]
+        repairing = bool(repair_instruction)
+        provider_turns.append((turn, repairing))
         interaction_contract = kwargs.get("artifact_contract")
         assert interaction_contract is None or isinstance(interaction_contract, dict)
         visible = runtime.fallback_text(state, interaction_contract)
+        if turn == 1 and not repairing:
+            visible = "Рабочий блок начался, но provider потерял обязательные структурные блоки."
+        if turn == 2 and not repairing:
+            visible = visible.replace("От: Елена Шевелёва", "От: Посторонний", 1)
+        if turn == 3:
+            visible = visible.replace("Елена Шевелёва", "Посторонний")
         site = interaction_contract.get("site") if interaction_contract else None
         content = visible
         if site:
@@ -857,7 +867,8 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
     start_metadata = latest_turn_metadata(party_state_store)
     assert start_metadata["fallback"] is False
     assert start_metadata["validator_valid"] is True
-    assert start_metadata["llm_calls"] == 1
+    assert start_metadata["repaired"] is True
+    assert start_metadata["llm_calls"] == 2
 
     for answered_turn in (1, 2):
         response = public.post(
@@ -868,16 +879,37 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
             },
         )
         assert response.status_code == 200, response.text
+        if answered_turn == 1:
+            turn_two_metadata = latest_turn_metadata(party_state_store)
+            turn_two_content = response.json()["choices"][0]["message"]["content"]
+            assert "От: Елена Шевелёва" in turn_two_content
+            assert "От: Посторонний" not in turn_two_content
+            assert turn_two_metadata["fallback"] is False
+            assert turn_two_metadata["validator_valid"] is True
+            assert turn_two_metadata["repaired"] is True
+            assert turn_two_metadata["llm_calls"] == 2
 
     turn_three_message = response.json()["choices"][0]["message"]
+    assert response.json()["choices"][0]["finish_reason"] == "provider_fallback"
     assert turn_three_message["content"].startswith("Ход 3.")
     assert not turn_three_message["content"].lstrip().startswith("{")
+    assert "От: Елена Шевелёва" in turn_three_message["content"]
+    assert "От: Посторонний" not in turn_three_message["content"]
     assert len(turn_three_message["artifacts"]) == 1
     turn_three_metadata = latest_turn_metadata(party_state_store)
-    assert turn_three_metadata["fallback"] is False
+    assert turn_three_metadata["fallback"] is True
+    assert turn_three_metadata["fallback_reason"] == "validation_failed"
     assert turn_three_metadata["validator_valid"] is True
-    assert turn_three_metadata["llm_calls"] == 1
-    assert provider_turns == [1, 2, 3]
+    assert turn_three_metadata["repaired"] is True
+    assert turn_three_metadata["llm_calls"] == 2
+    assert provider_turns == [
+        (1, False),
+        (1, True),
+        (2, False),
+        (2, True),
+        (3, False),
+        (3, True),
+    ]
 
 
 def test_showroom_rp_start_ignores_semantic_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

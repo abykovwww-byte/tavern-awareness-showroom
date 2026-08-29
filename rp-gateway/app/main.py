@@ -2278,7 +2278,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     text, narrative_state, interaction_contract
                 )
                 runtime_violation_set = set(runtime_violations)
-                training_repair_allowed = not runtime_service.hard_violations(
+                training_repair_allowed = not runtime_service.repair_blockers(
                     text, narrative_state, interaction_contract
                 ) and not any(
                     violation not in runtime_violation_set for violation in validation.violations
