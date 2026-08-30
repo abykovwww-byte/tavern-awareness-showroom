@@ -264,7 +264,7 @@ def test_awareness_v3_accepts_two_fresh_multichannel_wordings_per_turn(tmp_path:
         worldpack(root),
         StateStore(str(tmp_path / f"awareness-v3-{turn}.db"), f"party-awareness-v3-{turn}", root / "state-seed.json"),
     )
-    assert runtime.contract_hash == "c4c46377028d7539e0292edb387cc2165b36eb190a7dae5dc0e69097f16a0706"
+    assert runtime.contract_hash == "3ecd9cb805234e423e557e4b426b8b88cd32f678a2c03943fd0af80b9b487b5d"
     assert runtime.program["revision"] == 2
     state = runtime.store.get_state()
     state["meta"]["turn"] = turn
@@ -1041,7 +1041,7 @@ def test_v2_one_day_contract_hash_and_single_surface_compatibility(tmp_path: Pat
     state["meta"]["turn"] = 1
     contract = runtime.prompt_contract(state)
 
-    assert runtime.contract_hash == "298378be5b9b12da2bac4162ee48ae4dae19ec4babeca715f04cd36665fc905a"
+    assert runtime.contract_hash == "facbd786e4e7b2de283afc00eea5ebf6aa4784983afda26db106265806145872"
     assert runtime.program["schema_version"] == "rp-training-program.v2"
     assert runtime.program["revision"] == 3
     assert contract["schema_version"] == "rp-gateway.training-turn-contract.v2"
