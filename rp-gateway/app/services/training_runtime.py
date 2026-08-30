@@ -241,10 +241,21 @@ class TrainingRuntimeService:
                 surface["must_include"] = self.must_include_requirements(authored_surface)
                 if profile_adaptation:
                     description = str(player.get("description") or "").strip()
+                    exact_profile_tokens = [
+                        token
+                        for token in TOKEN_RE.findall(description)
+                        if len(token) >= 6 and token[:6].casefold() not in ROLE_STOP_WORDS
+                    ]
                     surface["profile_adaptation_instruction"] = (
                         "Свяжи рабочую просьбу с профессией и обязанностями игрока"
                         + (f" «{description}»" if description else "")
                         + " и назови конкретный рабочий предмет из этой профессии."
+                        + (
+                            " Дословно используй в видимом блоке слово "
+                            f"«{exact_profile_tokens[0]}» из сохранённого описания профессии."
+                            if exact_profile_tokens
+                            else ""
+                        )
                     )
                 if surface.get("links") == "artifact":
                     surface["effective_links"] = (
