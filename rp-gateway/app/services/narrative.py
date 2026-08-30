@@ -1310,14 +1310,21 @@ class NarrativeClient:
             "repair_instruction": repair_instruction,
             "failed_response": failed_response_text,
         }
+        repair_rules = (
+            " Correct only the supplied failed response. Do not continue the story, redo the turn, "
+            "or introduce new facts. Return only the corrected narration or required narrative bundle."
+        )
+        if training_turn_contract:
+            repair_rules += (
+                " Return a complete corrected response, not a patch. Fix the named defects while preserving every "
+                "visible fact and requirement the failed response already satisfied. Before returning it, recheck "
+                "every surface in ACTIVE_TRAINING_TURN_CONTRACT, including marker counts, required_fields, "
+                "must_include, profile_adaptation_instruction, effective_links, and attachments."
+            )
         messages = [
             {
                 "role": "system",
-                "content": (
-                    self.scenario_rules()
-                    + " Correct only the supplied failed response. Do not continue the story, redo the turn, "
-                    "or introduce new facts. Return only the corrected narration or required narrative bundle."
-                ),
+                "content": self.scenario_rules() + repair_rules,
             }
         ]
         if self.settings.scenario_type == "rp" and self.settings.rp_contract_revision == 7:

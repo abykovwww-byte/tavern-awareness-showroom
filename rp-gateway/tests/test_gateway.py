@@ -831,7 +831,9 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
         if turn == 2 and not repairing:
             visible = visible.replace("ПИСЬМО", "ПИСЬМО-ПОВРЕЖДЕНО", 1)
         if turn == 2 and repairing:
-            assert "весь visible response целиком" in str(repair_instruction)
+            assert "Верни полный исправленный ответ" in str(repair_instruction)
+            assert "В полном исправленном ответе используй состав блоков" in str(repair_instruction)
+            assert "Перепиши весь visible response" not in str(repair_instruction)
             assert '{"ПИСЬМО":1,"СООБЩЕНИЕ":1}' in str(repair_instruction)
             visible = visible.replace(
                 "Рабочий блок продолжается по расписанию.",
@@ -953,6 +955,120 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
         (4, False),
         (4, True),
     ]
+
+
+@pytest.mark.parametrize(
+    ("preserve_profile", "expected_finish_reason", "expected_transport"),
+    [(True, "stop", "ok"), (False, "provider_fallback", "invalid_response")],
+)
+def test_showroom_training_repair_preserves_previously_valid_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    preserve_profile: bool,
+    expected_finish_reason: str,
+    expected_transport: str,
+):
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
+    shutil.copytree(source, tmp_path / "worldpacks" / "awareness-one-day")
+    admin = client(
+        tmp_path,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    login(admin)
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    scenario_response = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Repair preservation regression",
+            "status": "published",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "awareness-one-day",
+            "interactive_links_enabled": False,
+            "interactive_workspace_enabled": False,
+        },
+    )
+    assert scenario_response.status_code == 200, scenario_response.text
+    public = TestClient(admin.app)
+    run_response = public.post(
+        f"/api/showroom/scenarios/{scenario_response.json()['scenario']['id']}/runs",
+        json={
+            "character_name": "Provider QA",
+            "character_prompt": "Инженер QA",
+            "employee_position": "Инженер QA",
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run = run_response.json()["run"]
+    with admin.app.state.showroom_store.connect() as connection:
+        party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?",
+            (run["id"],),
+        ).fetchone()["party_id"]
+    party_state_store = admin.app.state.party_store.store_for_party(party_id)
+    llm_calls = 0
+
+    async def provider_complete(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal llm_calls
+        llm_calls += 1
+        repair_instruction = kwargs.get("repair_instruction")
+        if repair_instruction is None and len(args) > 5:
+            repair_instruction = args[5]
+        if llm_calls == 1:
+            body = "К 09:35 пришли конкретный вопрос по работе инженера QA."
+        else:
+            assert "запрошен первый результат" in str(repair_instruction)
+            assert "сохрани все остальные уже выполненные требования" in str(repair_instruction)
+            assert "profile_adaptation_instruction" in str(repair_instruction)
+            assert "Инженер QA" in str(repair_instruction)
+            role_context = "по работе инженера QA" if preserve_profile else "по текущей задаче"
+            body = f"К 09:35 пришли первый результат или конкретный вопрос {role_context}."
+        content = (
+            "ПИСЬМО\n"
+            "Канал: корпоративная почта\n"
+            "От: Анна Петрова — petrova@ptsecurity.com\n"
+            "Кому: Provider QA\n"
+            "Дата/время: понедельник, 09:12\n"
+            "Тема: Первая рабочая задача\n"
+            "Вложения: нет\n"
+            "Ссылки: нет\n"
+            "Тело:\n"
+            f"{body}\n"
+            "Подпись:\nАнна Петрова"
+        )
+        return {
+            "id": f"profile-preservation-{llm_calls}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "mock-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", provider_complete)
+    started = public.post(
+        f"/api/showroom/runs/{run['id']}/start",
+        json={"idempotency_key": f"profile-preservation-{preserve_profile}"},
+    )
+
+    assert started.status_code == 200, started.text
+    assert llm_calls == 2
+    assert started.json()["choices"][0]["finish_reason"] == expected_finish_reason
+    metadata = latest_turn_metadata(party_state_store)
+    assert metadata["transport_status"] == expected_transport
+    assert metadata["repaired"] is True
+    assert metadata["llm_calls"] == 2
+    assert metadata["fallback"] is (not preserve_profile)
+    assert metadata["validator_valid"] is True
 
 
 def test_showroom_rp_start_ignores_semantic_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -5613,6 +5729,11 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
         outcome_index = next(index for index, item in enumerate(messages) if item["content"] == outcome.authoritative_block)
         assert history_index < outcome_index < active_index
         assert messages[-1] == {"role": "user", "content": "Continue the training scene."}
+    else:
+        assert "Return a complete corrected response, not a patch." in messages[0]["content"]
+        assert "preserving every visible fact and requirement" in messages[0]["content"]
+        assert "profile_adaptation_instruction" in messages[0]["content"]
+        assert "required_patterns" not in json.dumps(messages, ensure_ascii=False)
 
 
 def test_narrative_retries_empty_success_once_on_the_same_deepseek_model(
