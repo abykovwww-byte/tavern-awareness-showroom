@@ -391,7 +391,27 @@ class TrainingRuntimeService:
         ]
         if not repairs:
             return ""
-        return "Исправь только перечисленные ограничения: " + " ".join(dict.fromkeys(repairs))
+        contract = self.prompt_contract(state, interaction_contract)
+        instruction = (
+            "Верни полный исправленный ответ, а не патч. "
+            "Исправь только перечисленное и сохрани все остальные уже выполненные требования "
+            "ACTIVE_TRAINING_TURN_CONTRACT."
+        )
+        if contract and contract.get("kind") == "turn":
+            instruction += (
+                " Перед ответом перепроверь каждый surface: число маркеров, required_fields, "
+                "must_include, profile_adaptation_instruction, effective_links и attachments."
+            )
+            profile_requirements = [
+                str(surface.get("profile_adaptation_instruction") or "").strip()
+                for surface in contract.get("surfaces", [])
+                if isinstance(surface, dict) and surface.get("profile_adaptation_instruction")
+            ]
+            if profile_requirements:
+                instruction += " Сохрани профильную адаптацию: " + " ".join(
+                    dict.fromkeys(profile_requirements)
+                )
+        return instruction + " Конкретные исправления: " + " ".join(dict.fromkeys(repairs))
 
     def _narrative_issues(
         self,
@@ -450,8 +470,8 @@ class TrainingRuntimeService:
                 return [(
                     "soft",
                     f"Training turn must contain exactly {expected} {marker} block(s).",
-                    "Перепиши весь visible response целиком, а не отдельный фрагмент. "
-                    "Полный состав блоков задан JSON-объектом (это инструкция, не текст ответа): "
+                    "В полном исправленном ответе используй состав блоков из JSON-объекта "
+                    "(это инструкция, не текст ответа): "
                     + json.dumps(marker_counts, ensure_ascii=False, separators=(",", ":"))
                     + ". Выведи ровно это количество; каждый маркер должен стоять на отдельной строке без Markdown и нумерации; "
                     "заполни все поля и must_include из ACTIVE_TRAINING_TURN_CONTRACT, сохрани fresh wording тела.",

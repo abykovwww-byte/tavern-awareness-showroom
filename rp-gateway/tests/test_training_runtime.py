@@ -533,15 +533,27 @@ def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp
     no_profile = runtime.fallback_text(state).replace("«Археолог по керамическим артефактам»", "по текущей задаче")
     assert runtime.hard_violations(no_profile, state) == []
     instruction = runtime.repair_instruction(no_profile, state)
-    assert instruction.startswith("Исправь только перечисленные ограничения:")
+    assert instruction.startswith("Верни полный исправленный ответ, а не патч.")
+    assert "сохрани все остальные уже выполненные требования" in instruction
     assert "Археолог" in instruction
     assert "(?m)" not in instruction
 
     missing_deadline = runtime.fallback_text(state).replace("09:35", "утром")
     deadline_instruction = runtime.repair_instruction(missing_deadline, state)
     assert "указан срок 09:35" in deadline_instruction
+    assert "profile_adaptation_instruction" in deadline_instruction
+    assert "Археолог по керамическим артефактам" in deadline_instruction
     assert "первый результат" not in deadline_instruction
     assert "(?m)" not in deadline_instruction
+
+    missing_result = re.sub(r"результ\w*", "материал", runtime.fallback_text(state), flags=re.IGNORECASE)
+    assert runtime.validate_narrative(missing_result, state) == [
+        "Training surface is missing authored fact: результ"
+    ]
+    result_instruction = runtime.repair_instruction(missing_result, state)
+    assert "запрошен первый результат" in result_instruction
+    assert "сохрани все остальные уже выполненные требования" in result_instruction
+    assert "Археолог по керамическим артефактам" in result_instruction
 
 
 def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Path):
@@ -555,7 +567,10 @@ def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Pa
     assert violations == ["Training turn must contain exactly 1 ПИСЬМО block(s)."]
     assert runtime.hard_violations(mutated, state) == []
     instruction = runtime.repair_instruction(mutated, state)
-    assert "весь visible response целиком" in instruction
+    assert "Верни полный исправленный ответ" in instruction
+    assert "В полном исправленном ответе используй состав блоков" in instruction
+    assert "Перепиши весь visible response" not in instruction
+    assert "сохрани все остальные уже выполненные требования" in instruction
     assert '{"ПИСЬМО":1}' in instruction
 
 
@@ -874,7 +889,9 @@ def test_v3_multichannel_turn_rejects_wrong_declared_count(tmp_path: Path):
     ]
     assert runtime.hard_violations(narrative, state) == []
     instruction = runtime.repair_instruction(narrative, state)
-    assert "весь visible response целиком" in instruction
+    assert "Верни полный исправленный ответ" in instruction
+    assert "В полном исправленном ответе используй состав блоков" in instruction
+    assert "Перепиши весь visible response" not in instruction
     assert '{"ПИСЬМО":2,"СООБЩЕНИЕ":1}' in instruction
 
 
