@@ -5684,9 +5684,14 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
         },
         "workspace": None,
     }
+    pre_debrief_rule = (
+        "До отдельного итогового разбора не используй ни в повествовании, ни внутри симулированных "
+        "блоков ПИСЬМО/СООБЩЕНИЕ формы «рекомендую» и «рекомендация»."
+    )
     turn_contract = {
         "kind": "turn",
         "turn": 2,
+        "instruction": pre_debrief_rule,
         "surfaces": [
             {
                 "type": "email",
@@ -5724,6 +5729,7 @@ def test_training_interaction_requests_strict_json_schema_on_initial_and_repair(
     assert "Emit exactly 1 ПИСЬМО block(s)." in messages[active_index]["content"]
     assert "Канал: | От: | Кому: | Ссылки: | Тело:" in messages[active_index]["content"]
     assert "https://training.example.test/current-turn" in messages[active_index]["content"]
+    assert pre_debrief_rule in messages[active_index]["content"]
     if repair_instruction is None:
         history_index = next(index for index, item in enumerate(messages) if item["content"] == "Previous visible training turn.")
         outcome_index = next(index for index, item in enumerate(messages) if item["content"] == outcome.authoritative_block)

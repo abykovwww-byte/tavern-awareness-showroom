@@ -593,6 +593,35 @@ def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: 
     assert any("canonical total-score=0/100" in item for item in runtime.hard_violations(wrong_scores, state))
 
 
+@pytest.mark.parametrize("slug", ["awareness", "awareness-one-day"])
+def test_predebrief_recommendation_rule_reaches_every_turn_contract_but_not_debrief(
+    tmp_path: Path,
+    slug: str,
+):
+    pack = worldpack(WORLD_PACKS_ROOT / slug)
+    store = StateStore(str(tmp_path / "state.db"), f"party-predebrief-{slug}", pack.state_seed_path)
+    runtime = TrainingRuntimeService(pack, store)
+    state = store.get_state()
+    pre_debrief_rule = (
+        "До отдельного итогового разбора не используй ни в повествовании, ни внутри "
+        "симулированных блоков ПИСЬМО/СООБЩЕНИЕ формы «рекомендую» и «рекомендация». "
+        "Если симулированному отправителю нужен такой смысл, переформулируй его как "
+        "нейтральный запрос или факт. В итоговом разборе эти формы разрешены."
+    )
+
+    for turn in range(1, 11):
+        state["meta"]["turn"] = turn
+        contract = runtime.prompt_contract(state)
+        assert contract["kind"] == "turn"
+        assert contract["instruction"].endswith(pre_debrief_rule)
+        assert pre_debrief_rule in training_turn_prompt_block(contract)
+
+    state["meta"]["turn"] = 11
+    debrief_contract = runtime.prompt_contract(state)
+    assert debrief_contract["kind"] == "debrief"
+    assert pre_debrief_rule not in debrief_contract["instruction"]
+
+
 def test_training_debrief_accepts_natural_score_wording_and_recommendations(tmp_path: Path):
     pack = worldpack(WORLD_PACKS_ROOT / "awareness")
     store = StateStore(str(tmp_path / "state.db"), "party-natural-debrief", pack.state_seed_path)
