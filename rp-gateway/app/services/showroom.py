@@ -217,11 +217,6 @@ class ShowroomStore:
                     )
                     """
                 )
-            connection.execute(
-                "UPDATE showroom_scenarios SET status = 'archived', updated_at = ? "
-                "WHERE scenario_type = 'novel' AND status != 'archived'",
-                (now_iso(),),
-            )
 
     def unique_slug(self, title: str, scenario_id: str | None = None) -> str:
         base = slug(title)[:80]
@@ -1063,6 +1058,76 @@ class ShowroomStore:
         if row is None:
             raise ValueError(f"showroom run not found: {run_id}")
         return str(row["party_id"])
+
+    def require_training_party(self, party_id: str) -> str:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT sr.id FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN parties p ON p.id = sr.party_id
+                WHERE sr.party_id = ?
+                  AND sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
+                  AND p.scenario_type = 'training' AND p.owner_user_id = ?
+                """,
+                (party_id, SHOWROOM_WORLD_OWNER),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"training Showroom party not found: {party_id}")
+        return str(row["id"])
+
+    def training_party_ids(self) -> set[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT sr.party_id FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN parties p ON p.id = sr.party_id
+                WHERE sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
+                  AND p.scenario_type = 'training' AND p.owner_user_id = ?
+                """,
+                (SHOWROOM_WORLD_OWNER,),
+            ).fetchall()
+        return {str(row["party_id"]) for row in rows}
+
+    def list_admin_runs(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT sr.id AS run_id, sr.party_id, sr.scenario_id,
+                       COALESCE(sr.scenario_title_snapshot, ss.title) AS scenario_title,
+                       sr.display_name, sr.employee_position,
+                       p.status AS party_status, p.dataset_review_status,
+                       p.dataset_tags_json, sr.created_at, sr.updated_at
+                FROM showroom_runs sr
+                JOIN showroom_scenarios ss ON ss.id = sr.scenario_id
+                JOIN parties p ON p.id = sr.party_id
+                WHERE sr.scenario_type_snapshot = 'training'
+                  AND ss.scenario_type = 'training' AND ss.world_source = 'preset'
+                  AND p.scenario_type = 'training' AND p.owner_user_id = ?
+                ORDER BY sr.updated_at DESC
+                LIMIT ?
+                """,
+                (SHOWROOM_WORLD_OWNER, min(max(limit, 1), 500)),
+            ).fetchall()
+        return [
+            {
+                "run_id": str(row["run_id"]),
+                "party_id": str(row["party_id"]),
+                "scenario_id": str(row["scenario_id"]),
+                "scenario_title": str(row["scenario_title"] or ""),
+                "display_name": str(row["display_name"] or ""),
+                "employee_position": str(row["employee_position"] or ""),
+                "party_status": str(row["party_status"]),
+                "dataset_review_status": str(row["dataset_review_status"]),
+                "dataset_tags": json.loads(row["dataset_tags_json"] or "[]"),
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
 
     def capabilities_for_party(self, party_id: str) -> dict[str, bool] | None:
         """Return immutable Showroom run permissions; None means an ordinary non-Showroom party."""

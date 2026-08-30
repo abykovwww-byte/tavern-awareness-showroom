@@ -1,5 +1,10 @@
 # Decision 015: Independent Training Interaction Capabilities
 
+> **Source-era record with an active training contract.** Independent link and
+> workspace capability flags remain applicable. References below to public
+> party APIs, the legacy compatibility resolver and RP Stack/IaC topology are
+> historical; the standalone Showroom run is the active product boundary.
+
 ## Status
 
 Accepted and implemented in the IaC repository. Deployment and live browser
@@ -153,7 +158,7 @@ capability combinations are not silently merged.
 
 ## Related decisions
 
-- [Decision 010: Party Scenario Types](010-party-scenario-types.md)
+- [Decision 010: Party Scenario Types](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/010-party-scenario-types.md)
 - [Decision 012: Public Showroom Scenarios](012-public-showroom-scenarios.md)
 - [Decision 014: Interactive Training Site Artifacts](014-interactive-training-site-artifacts.md)
 - [Decision 017: WorldPack-owned Training Runtime](017-worldpack-owned-training-runtime.md)

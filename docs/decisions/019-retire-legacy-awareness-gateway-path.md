@@ -1,5 +1,11 @@
 # Decision 019: Убрать legacy Awareness из Gateway и упорядочить снятие RP-валидатора
 
+> **Исторический source-era ADR.** Миграция Awareness на WorldPack-owned
+> training runtime остаётся происхождением текущего контракта, но RP Gateway,
+> RP-валидатор и legacy Awareness path в этом standalone-проекте уже удалены.
+> Execution brief ниже сохранён только как история исходного изменения и не
+> является инструкцией для текущего репозитория.
+
 <!--
 Part A is the permanent decision record. It matches Decisions 006-018 in tone:
 prose, no agent instructions, no task lists. It must still read correctly years
@@ -229,8 +235,8 @@ Decision 018 остаётся в силе по своим причинам — �
 
 ## Related decisions
 
-- [Decision 010: Party Scenario Types](010-party-scenario-types.md)
-- [Decision 016: RP-only living story memory](016-rp-living-story-memory.md)
+- [Decision 010: Party Scenario Types](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/010-party-scenario-types.md)
+- [Decision 016: RP-only living story memory](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/016-rp-living-story-memory.md)
 - [Decision 017: WorldPack-owned Training Runtime](017-worldpack-owned-training-runtime.md)
 - [Decision 018: Разделить Training и RP Gateway](018-separate-training-and-rp-gateways.md)
 

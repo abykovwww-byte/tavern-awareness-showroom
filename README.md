@@ -21,12 +21,10 @@ optional local model process is allowed only through the explicit external
 
 ## Bootstrap status
 
-The bootstrap establishes provenance, a standalone Compose contract, safe
-shadow defaults, training-only process/resource guards, a closed two-WorldPack
-catalog and a training-focused CI gate. Light GUI, RP WorldPacks and RP evals
-are removed. Some inherited internal Gateway modules and their coupled tests
-remain until dependency-backed pruning proves that Showroom does not use them;
-they are not an active scenario mode or browser surface.
+The standalone stack is training-only in source and at runtime. Dedicated RP,
+novel, Light GUI, world-clock, relationship and GM services/routes/tests are
+removed. The retained Gateway pipeline serves only Showroom training runs,
+provider turns, deterministic scoring/debrief, resume, artifacts and workspace.
 
 Source history is recorded in [PROVENANCE.md](PROVENANCE.md).
 
@@ -71,9 +69,8 @@ The overlay expects an existing external network named by `LOCAL_LLM_NETWORK`
 
 ## Focused source checks
 
-Use the explicit training-only Gateway gate from `.github/workflows/ci.yml`;
-the inherited full pytest suite is intentionally not the repository gate until
-the coupled RP modules and tests are pruned. Browser checks remain
+Use the explicit training-only Gateway gate from `.github/workflows/ci.yml`.
+It includes the public Showroom provider-flow regression; browser checks remain
 dependency-free:
 
 ```powershell
@@ -98,5 +95,5 @@ node ui-shared/training-artifacts.test.js
 ```
 
 See [docs/operations.md](docs/operations.md) for shadow acceptance, backups,
-cutover and rollback. A successful source check or image build is not live
+cutover and recovery. A successful source check or image build is not live
 runtime proof.

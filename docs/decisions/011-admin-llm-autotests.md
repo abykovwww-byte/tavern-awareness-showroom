@@ -1,5 +1,10 @@
 # Decision 011: Admin LLM-vs-LLM Auto-tests
 
+> **Source-era record.** This ADR explains the inherited admin autotest
+> storage and API. Its Light GUI workflow and RP/novel usage are superseded in
+> this standalone project, whose active runtime accepts training scenarios
+> only. The current source and standalone documentation are authoritative.
+
 ## Status
 
 Accepted for Light GUI admin accounts.

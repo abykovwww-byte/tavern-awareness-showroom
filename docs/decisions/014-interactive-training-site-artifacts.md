@@ -1,5 +1,11 @@
 # Decision 014: Interactive Training Site Artifacts
 
+> **Source-era record with an active training contract.** Artifact authority,
+> validation, privacy and deterministic scoring remain applicable. References
+> to Light GUI, RP Showroom and RP Stack deployment evidence describe the
+> former topology and are superseded by the standalone Showroom and Awareness
+> Gateway.
+
 ## Status
 
 Accepted, implemented and deployed. The live verification snapshot for revision

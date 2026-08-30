@@ -115,7 +115,7 @@ def test_complete_can_skip_raw_trace_for_privacy_bounded_service_roles(tmp_path:
     settings = settings_for(tmp_path)
     completion = asyncio.run(
         ServiceModelClient(settings, transport=httpx.MockTransport(handler)).complete(
-            role="rp_supervisor",
+            role="training_quality",
             provider="openrouter",
             model="service/model",
             party_id="party-private",
@@ -150,7 +150,7 @@ def test_complete_uses_explicit_role_provider_and_model_without_payload_leakage(
     client = ServiceModelClient(settings, transport=httpx.MockTransport(handler))
     asyncio.run(
         client.complete(
-            role="rp_story_memory_section",
+            role="training_memory_section",
             provider="openrouter",
             model="deepseek/deepseek-v4-pro",
             party_id="party-rev8",
@@ -186,7 +186,7 @@ def test_complete_logs_error_status_and_raw_provider_response(tmp_path: Path) ->
     with pytest.raises(httpx.HTTPStatusError):
         asyncio.run(
             client.complete(
-                role="world_instructor",
+                role="training_content",
                 provider="openrouter",
                 party_id="party_test",
                 turn_id=3,
@@ -240,7 +240,7 @@ def test_complete_redacts_secrets_only_when_writing_trace(tmp_path: Path) -> Non
 
     completion = asyncio.run(
         client.complete(
-            role="rp_story_memory",
+            role="training_memory",
             provider="openrouter",
             party_id="party_test",
             turn_id=9,

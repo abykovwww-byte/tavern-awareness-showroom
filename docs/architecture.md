@@ -63,10 +63,13 @@ contracts. Interactive sites and workspace actions are typed evidence: they do
 not independently advance the authored turn schedule or make a provider call.
 The browser cannot author scores, run completion or canonical artifact state.
 
-Process and resource guards close the active scenario surface before storage or
-provider side effects. Some coupled internal Gateway modules remain until a
-separate dependency-backed prune; live shadow acceptance is still required
-before production cutover.
+Process and resource guards close the scenario surface before storage or
+provider side effects. Dedicated RP routes and services are absent; the shared
+state layer keeps legacy schema and table names, columns and migration-compatible
+storage shapes to preserve database compatibility without a destructive rewrite.
+Those names are compatibility surfaces only; they do not reactivate RP routes or
+behavior. Shadow preflight is required before cutover; full production acceptance
+is required immediately after activation.
 
 ## Migration decision
 
@@ -90,6 +93,6 @@ one cross-filesystem transaction, and a failed reconciliation never starts the
 HTTP application.
 
 Mixed RP history, runs, state, old sessions, visitor tokens, identities and
-provider keys remain readable in the original RP deployment but are not
-copied. Existing users receive new standalone cookies and create new training
-runs. Historical migration would require a separate explicit contract.
+provider keys are not copied. Existing users receive new standalone cookies
+and create new training runs. Historical migration would require a separate
+explicit contract.

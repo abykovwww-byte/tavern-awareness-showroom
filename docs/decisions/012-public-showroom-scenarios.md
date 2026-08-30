@@ -1,5 +1,10 @@
 # Decision 012: Public showroom scenarios
 
+> **Source-era record.** The Showroom aggregate described here is the origin of
+> the current public catalog, but RP/novel scenario choices, Light GUI and the
+> shared RP Stack topology are superseded. The standalone catalog publishes
+> training scenarios only.
+
 Date: 2026-07-28
 Status: accepted and implemented; active scenario set superseded by Decision 036
 
@@ -23,7 +28,7 @@ storefront entity.
 
 Legacy stored `novel` scenarios remain readable but are archived idempotently.
 Archived scenarios cannot be republished or used to create runs. See
-[Decision 036](036-retire-novel-and-nvidia.md).
+[Decision 036](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/036-retire-novel-and-nvidia.md).
 
 Visitors do not register. The Gateway issues a random HttpOnly cookie and maps:
 

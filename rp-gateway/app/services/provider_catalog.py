@@ -77,7 +77,7 @@ STATIC_GEMINI_MODELS: list[dict[str, Any]] = [
         "title": "Gemini 3.6 Flash",
         "publisher": "Google",
         "description": "Google Gemini fast reasoning model exposed through the OpenAI-compatible API.",
-        "rp_fit": "Fast option for interactive scenes and utility actions.",
+        "rp_fit": "Fast option for deterministic training turns and utility actions.",
         "context_window": "1,048,576 tokens",
         "context_tokens": 1_048_576,
         "tags": ["reasoning", "fast", "live catalog"],
@@ -88,7 +88,7 @@ STATIC_GEMINI_MODELS: list[dict[str, Any]] = [
         "title": "Gemini 3.5 Flash",
         "publisher": "Google",
         "description": "Google Gemini model exposed through the OpenAI-compatible API.",
-        "rp_fit": "Balanced option for narration and frequent utility calls.",
+        "rp_fit": "Balanced option for training narration and frequent utility calls.",
         "context_window": "1,048,576 tokens",
         "context_tokens": 1_048_576,
         "tags": ["fast", "live catalog"],
@@ -102,7 +102,7 @@ STATIC_OPENROUTER_MODELS: list[dict[str, Any]] = [
         "title": "Auto Router",
         "publisher": "OpenRouter",
         "description": "OpenRouter automatically selects a compatible text model.",
-        "rp_fit": "Useful as a broad availability fallback; a specific model is more predictable for a campaign.",
+        "rp_fit": "Broad availability fallback; a specific model is more predictable for scored training.",
         "context_window": "131,072 tokens (minimum routed budget)",
         "context_tokens": 131_072,
         "tags": ["router", "automatic"],
@@ -113,7 +113,7 @@ STATIC_OPENROUTER_MODELS: list[dict[str, Any]] = [
         "title": "Free Models Router",
         "publisher": "OpenRouter",
         "description": "OpenRouter selects a currently available free text model.",
-        "rp_fit": "Zero-cost testing option; model identity and narrative style can change between requests.",
+        "rp_fit": "Zero-cost testing option; model identity and output style can change between requests.",
         "context_window": "131,072 tokens (minimum routed budget)",
         "context_tokens": 131_072,
         "tags": ["router", "automatic", "free"],
@@ -163,22 +163,9 @@ LOW_CAPACITY_MODEL_TERMS = {
     "gpt-4-turbo-preview",
     "llama-2",
 }
-MIN_RP_MODEL_BILLIONS = 30.0
-MIN_RP_CONTEXT_TOKENS = 131072
-SPECIALIZED_RP_TERMS = {
-    "roleplay",
-    "roleplaying",
-    "storytelling",
-    "creative writing",
-    "interactive fiction",
-    "character chat",
-    "narrative-rich",
-    "narrative structure",
-}
-OPENROUTER_RP_PREFERENCE = (
-    "aion-3.0",
-    "euryale",
-    "cydonia",
+MIN_TRAINING_MODEL_BILLIONS = 30.0
+MIN_TRAINING_CONTEXT_TOKENS = 131_072
+OPENROUTER_TRAINING_PREFERENCE = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
     "mimo-v2.5",
@@ -189,70 +176,55 @@ OPENROUTER_RP_PREFERENCE = (
     "openrouter/free",
 )
 
-# Presentation metadata is deliberately kept separate from the live catalogue:
-# availability, context, and pricing continue to come from OpenRouter /models.
+# Presentation metadata is separate from live availability, context and pricing.
+# `rp_fit` remains a legacy public response key; its value now describes training suitability.
 OPENROUTER_FEATURED_MODELS: dict[str, dict[str, Any]] = {
     "z-ai/glm-5.2": {
         "rank": 1,
         "title": "GLM 5.2",
-        "rp_fit": "Главный выбор для длинной кампании: хорошо держит канон, причинность, NPC-мотивы и многоходовые планы.",
-        "tags": ["длинная кампания", "канон", "сложный GM"],
+        "rp_fit": "Стабильный выбор для длинных учебных сценариев, причинности и соблюдения сложных инструкций.",
+        "tags": ["training", "длинный контекст", "инструкции"],
     },
     "deepseek/deepseek-v4-pro": {
         "rank": 2,
         "title": "DeepSeek V4 Pro",
-        "rp_fit": "Для расследований, фракций и правил мира: сильнее всего там, где важны последствия и логика сцены.",
-        "tags": ["причинность", "расследование", "правила"],
+        "rp_fit": "Подходит для детерминированных упражнений с большим числом правил и проверяемыми последствиями.",
+        "tags": ["training", "причинность", "правила"],
     },
     "deepseek/deepseek-v4-flash": {
         "rank": 3,
         "title": "DeepSeek V4 Flash",
-        "rp_fit": "Быстрый и экономный рабочий GM для обычных ходов; выбирай, когда темп важнее литературной полировки.",
-        "tags": ["быстро", "экономно", "длинный контекст"],
+        "rp_fit": "Быстрый и экономный вариант для частых ходов учебной симуляции.",
+        "tags": ["training", "быстро", "экономно"],
     },
     "qwen/qwen3.5-397b-a17b": {
         "rank": 4,
         "title": "Qwen3.5 397B A17B",
-        "rp_fit": "Насыщенный GM для больших сцен и нескольких NPC: хороший баланс диалогов, следования инструкциям и масштаба.",
-        "tags": ["богатая сцена", "NPC", "баланс"],
-    },
-    "aion-labs/aion-3.0": {
-        "rank": 5,
-        "title": "Aion 3.0",
-        "rp_fit": "Специализированный multi-model рассказчик для ролевой игры и сторителлинга; дорогой, но уместен для ключевых сцен.",
-        "tags": ["RP-специализация", "сторителлинг", "премиум"],
-    },
-    "sao10k/l3.3-euryale-70b": {
-        "rank": 6,
-        "title": "Euryale 70B",
-        "rp_fit": "Творческая RP-модель для живых диалогов, характерных голосов и атмосферной прозы.",
-        "tags": ["RP-специализация", "персонажи", "проза"],
-    },
-    "thedrummer/cydonia-24b-v4.1": {
-        "rank": 7,
-        "title": "Cydonia 24B V4.1",
-        "rp_fit": "Недорогой креативный вариант с хорошим следованием prompt и памятью деталей сцены.",
-        "tags": ["RP-специализация", "креатив", "экономно"],
+        "rp_fit": "Полезен для насыщенных учебных диалогов и точного следования формату ответа.",
+        "tags": ["training", "диалоги", "формат"],
     },
     "minimax/minimax-m3": {
-        "rank": 8,
+        "rank": 5,
         "title": "MiniMax M3",
-        "rp_fit": "Длинный контекст и сильная работа с текстом и изображениями; подходит для кампаний с картами и референсами.",
-        "tags": ["мультимодальность", "длинная кампания", "референсы"],
+        "rp_fit": "Длинный контекст для учебных сценариев с документами и визуальными материалами.",
+        "tags": ["training", "мультимодальность", "длинный контекст"],
     },
     "anthropic/claude-sonnet-4.6": {
-        "rank": 9,
+        "rank": 6,
         "title": "Claude Sonnet 4.6",
-        "rp_fit": "Премиальный универсальный GM для аккуратной прозы, сложных инструкций и важных поворотных сцен.",
-        "tags": ["премиум", "инструкции", "поворотная сцена"],
+        "rp_fit": "Премиальный вариант для сложных инструкций и аккуратного учебного текста.",
+        "tags": ["training", "премиум", "инструкции"],
     },
     "moonshotai/kimi-k3": {
-        "rank": 10,
+        "rank": 7,
         "title": "Kimi K3",
-        "rp_fit": "Сильная long-context альтернатива для масштабной кампании; полезна, когда нужен широкий контекст и сложное рассуждение.",
-        "tags": ["длинный контекст", "сложный сюжет", "альтернатива"],
+        "rp_fit": "Long-context альтернатива для больших учебных сценариев и сложного рассуждения.",
+        "tags": ["training", "длинный контекст", "рассуждение"],
     },
 }
+
+# Presentation metadata is deliberately kept separate from the live catalogue:
+# availability, context, and pricing continue to come from OpenRouter /models.
 
 def profile_id_for_model(model_id: str) -> str:
     clean = re.sub(r"[^\w\-]+", "-", model_id.strip().lower(), flags=re.UNICODE).strip("-")
@@ -333,7 +305,7 @@ def static_model_profiles(settings: Any) -> list[dict[str, Any]]:
                     "title": "Gemma 4 26B A4B QAT Q4",
                     "publisher": "Google",
                     "description": "Локальная Gemma 4 на Radeon 780M через Vulkan; модель доступна только Gateway внутри Docker.",
-                    "rp_fit": "Локальный одиночный RP-рассказчик: 32k рабочий контекст, без неявного cloud fallback.",
+                    "rp_fit": "Локальный training-рассказчик: 32k рабочий контекст, без неявного cloud fallback.",
                     "context_window": f"{settings.local_llm_context_tokens:,} tokens (working budget)",
                     "context_tokens": settings.local_llm_context_tokens,
                     "tags": ["local", "Vulkan", "Radeon 780M", "no cloud fallback"],
@@ -365,7 +337,7 @@ def configured_provider_profiles(
         item.setdefault("title", display_title_from_model(model_id))
         item.setdefault("publisher", PROVIDER_TITLES[provider])
         item.setdefault("description", f"Server-configured {PROVIDER_TITLES[provider]} model.")
-        item.setdefault("rp_fit", "Explicit server model; validate style on a short scene before a long campaign.")
+        item.setdefault("rp_fit", "Explicit server model; validate format on a short exercise before scored training.")
         item.setdefault("tags", ["server configured"])
         item.setdefault("availability", f"{PROVIDER_TITLES[provider]} API")
         profiles.append(
@@ -391,7 +363,7 @@ def profile_payload(
     model_id = str(item["model"])
     title = str(item.get("title") or model_id)
     description = str(item.get("description") or "OpenAI-compatible text model.")
-    rp_fit = str(item.get("rp_fit") or "Validate prose style on a short scene before a long campaign.")
+    rp_fit = str(item.get("rp_fit") or "Validate output format on a short exercise before scored training.")
     params = {
         "temperature": item.get("temperature", 0.8),
         "max_tokens": item.get("max_tokens", 4096),
@@ -464,7 +436,6 @@ def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, 
         supported_raw = raw.get("supported_parameters") or []
         supported = [str(value) for value in supported_raw[:6]] if isinstance(supported_raw, list) else []
         description = str(raw.get("description") or f"Model returned by the {PROVIDER_TITLES[provider]} catalog.")
-        rp_specialized = has_specialized_rp_signal(model_id, description)
         pricing = raw.get("pricing") or {}
         prompt_price = str(pricing.get("prompt") or "")
         completion_price = str(pricing.get("completion") or "")
@@ -474,14 +445,10 @@ def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, 
             "title": str(raw.get("name") or display_title_from_model(model_id)),
             "publisher": publisher_from_model(model_id) if "/" in model_id else PROVIDER_TITLES[provider],
             "description": description,
-            "rp_fit": (
-                f"RP-specialized: {description[:420]}{'...' if len(description) > 420 else ''}"
-                if rp_specialized
-                else "Long-context text model available from the selected provider; validate prose style before a long campaign."
-            ),
+            "rp_fit": "Long-context text model; validate the required training format before scored use.",
             "context_window": context_label,
             "context_tokens": int(context_length) if isinstance(context_length, (int, float)) else None,
-            "tags": ["live api", *( ["RP specialized"] if rp_specialized else []), *( ["FREE"] if is_free else []), *supported],
+            "tags": ["live api", "training", *( ["FREE"] if is_free else []), *supported],
             "availability": f"{PROVIDER_TITLES[provider]} /models",
             "catalog_url": provider_catalog_url(provider, model_id),
             "is_free": is_free,
@@ -490,13 +457,13 @@ def fetch_provider_api_profiles(settings: Any, provider: str) -> list[dict[str, 
             "pricing_input_cache_read": str(pricing.get("input_cache_read") or ""),
             "pricing_input_cache_write": str(pricing.get("input_cache_write") or ""),
             "pricing_input_cache_write_1h": str(pricing.get("input_cache_write_1h") or ""),
-            "rp_specialized": rp_specialized,
+            "rp_specialized": False,
         }
         profiles.append(
             profile_payload(
                 settings,
                 item,
-                rank=(1100 + index if provider == "gemini" else openrouter_rp_rank(model_id, description, index)),
+                rank=(1100 + index if provider == "gemini" else openrouter_training_rank(model_id, index)),
                 source=f"{provider}_api_live",
                 provider=provider,
             )
@@ -511,7 +478,7 @@ def provider_model_is_suitable(provider: str, model_id: str, raw: dict[str, Any]
         return False
     if provider == "gemini":
         return (
-            is_quality_rp_model(model_id)
+            is_quality_training_model(model_id)
             and model_id.startswith("gemini-")
             and not any(term in model_id for term in {"image", "audio", "embedding", "tts"})
         )
@@ -522,16 +489,9 @@ def provider_model_is_suitable(provider: str, model_id: str, raw: dict[str, Any]
     if output_modalities and "text" not in output_modalities:
         return False
     context_length = raw.get("context_length")
-    description = str(raw.get("description") or "")
-    rp_specialized = has_specialized_rp_signal(model_id, description)
-    if not rp_specialized and not is_quality_rp_model(model_id):
+    if not is_quality_training_model(model_id):
         return False
-    return isinstance(context_length, (int, float)) and context_length >= MIN_RP_CONTEXT_TOKENS
-
-
-def has_specialized_rp_signal(model_id: str, description: str) -> bool:
-    haystack = f"{model_id} {description}".lower()
-    return any(term in haystack for term in SPECIALIZED_RP_TERMS)
+    return isinstance(context_length, (int, float)) and context_length >= MIN_TRAINING_CONTEXT_TOKENS
 
 
 def prices_are_free(prompt_price: str, completion_price: str) -> bool:
@@ -541,24 +501,22 @@ def prices_are_free(prompt_price: str, completion_price: str) -> bool:
         return False
 
 
-def openrouter_rp_rank(model_id: str, description: str, catalog_index: int) -> int:
-    haystack = f"{model_id} {description}".lower()
-    for index, term in enumerate(OPENROUTER_RP_PREFERENCE):
-        if term in haystack:
+def openrouter_training_rank(model_id: str, catalog_index: int) -> int:
+    lower = model_id.lower()
+    for index, term in enumerate(OPENROUTER_TRAINING_PREFERENCE):
+        if term in lower:
             return 2000 + index
-    if has_specialized_rp_signal(model_id, description):
-        return 2050 + catalog_index
     return 3000 + catalog_index
 
 
-def is_quality_rp_model(model_id: str) -> bool:
+def is_quality_training_model(model_id: str) -> bool:
     lower = model_id.lower()
     if any(term in lower for term in SKIP_MODEL_TERMS | LOW_CAPACITY_MODEL_TERMS):
         return False
     if re.search(r"(?:^|[-_/:])(mini|nano|small|lite)(?:[-_/:]|$)", lower):
         return False
     sizes = [float(value) for value in re.findall(r"(?:^|[-_/])(\d+(?:\.\d+)?)b(?:[-_/]|$)", lower)]
-    return not sizes or max(sizes) >= MIN_RP_MODEL_BILLIONS
+    return not sizes or max(sizes) >= MIN_TRAINING_MODEL_BILLIONS
 
 
 def display_title_from_model(model_id: str) -> str:

@@ -1,5 +1,10 @@
 # Decision 013: Party Logs as Curated Training Data
 
+> **Source-era record.** The dataset overlay and Showroom feedback contract are
+> retained lineage. References below to RP/novel parties, Light GUI, public
+> party endpoints and cross-mode exports describe the former shared stack and
+> are not an active standalone product boundary.
+
 ## Status
 
 Accepted. Decision 036 retains the retired scenario value only on the legacy

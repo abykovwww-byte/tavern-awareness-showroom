@@ -23,7 +23,8 @@ env:
     tests/test_decision_019_contracts.py
     tests/test_training_gateway_mode_guard.py
     tests/test_training_showroom_mode_guard.py
-    tests/test_gateway.py::test_showroom_artifact_only_turn_keeps_materialized_provider_narrative
+    tests/test_training_gateway_flow.py
+    tests/test_service_model_client.py
 
 jobs:
   worldpack-contracts:

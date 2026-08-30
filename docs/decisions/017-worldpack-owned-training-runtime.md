@@ -1,5 +1,11 @@
 # Decision 017: WorldPack-owned Training Runtime
 
+> **Source-era record with an active training contract.** WorldPack-owned
+> scheduling, validation, fallback and scoring remain applicable. References
+> below to parties/branches, the legacy compatibility resolver and RP Stack
+> deployment tooling describe the former shared topology; standalone Showroom
+> runs are the active boundary.
+
 ## Status
 
 Accepted and implemented in the IaC source. Commit, deployment and live
@@ -173,7 +179,7 @@ the party contract snapshot remains immutable after source edits.
 
 ## Related decisions
 
-- [Decision 010: Party Scenario Types](010-party-scenario-types.md)
+- [Decision 010: Party Scenario Types](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/010-party-scenario-types.md)
 - [Decision 014: Interactive Training Site Artifacts](014-interactive-training-site-artifacts.md)
 - [Decision 015: Independent Training Interaction Capabilities](015-training-scenario-interaction-capabilities.md)
-- [Decision 016: RP Living Story Memory](016-rp-living-story-memory.md)
+- [Decision 016: RP Living Story Memory](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/016-rp-living-story-memory.md)

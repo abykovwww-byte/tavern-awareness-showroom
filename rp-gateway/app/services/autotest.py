@@ -1,4 +1,4 @@
-"""Admin-only LLM player used by isolated Light GUI auto-test parties."""
+"""Admin-only LLM player used by isolated training auto-test sessions."""
 
 from __future__ import annotations
 
