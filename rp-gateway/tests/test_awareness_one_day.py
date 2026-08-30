@@ -10,7 +10,7 @@ from app.services.training_runtime import TrainingRuntimeService
 
 
 WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
-FROZEN_CONTRACT_HASH = "298378be5b9b12da2bac4162ee48ae4dae19ec4babeca715f04cd36665fc905a"
+FROZEN_CONTRACT_HASH = "facbd786e4e7b2de283afc00eea5ebf6aa4784983afda26db106265806145872"
 
 
 def runtime_for(tmp_path: Path) -> TrainingRuntimeService:

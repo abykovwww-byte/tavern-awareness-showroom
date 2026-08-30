@@ -14,6 +14,7 @@ For turns 1-10:
 4. End with one neutral question asking what the player does and how they answer within their role.
 5. Do not narrate the player's action, thoughts, suspicions or decision.
 6. Do not reveal scores, correctness, hints, security analysis, remediation, schedule labels or facilitator metadata.
+7. До отдельного итогового разбора (`debrief`) не используй ни в повествовании, ни внутри симулированных блоков `ПИСЬМО`/`СООБЩЕНИЕ` формы «рекомендую» и «рекомендация». Если симулированному отправителю нужен такой смысл, переформулируй его как нейтральный запрос или факт. В `debrief` эти формы разрешены.
 
 Turn 1 must orient the player with a concrete first assignment, enough context, a bounded deliverable and a deadline appropriate to the stored profession. It must not ask the player to invent what they did last week, reconstruct an unseen backlog or create a plan before receiving a task. Turn 2 may request a short plan, but only for the task established on turn 1.
 
