@@ -516,6 +516,9 @@ def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp
     state = store.get_state()
     state["meta"]["turn"] = 1
     state["player"]["description"] = "Археолог по керамическим артефактам"
+    profile_instruction = runtime.prompt_contract(state)["surfaces"][0]["profile_adaptation_instruction"]
+    assert "«Археолог»" in profile_instruction
+    assert "археол" in runtime.profile_markers(state["player"]["description"])
 
     wrong_sender = runtime.fallback_text(state).replace("От: Анна Петрова", "От: Посторонний", 1)
     assert any("authored fact" in item for item in runtime.hard_violations(wrong_sender, state))
@@ -572,6 +575,13 @@ def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Pa
     assert "Перепиши весь visible response" not in instruction
     assert "сохрани все остальные уже выполненные требования" in instruction
     assert '{"ПИСЬМО":1}' in instruction
+
+    state["meta"]["turn"] = 3
+    undeclared_email = runtime.fallback_text(state) + "\nПИСЬМО\nОт: Повтор прошлого хода"
+    undeclared_violation = "Training turn contains undeclared ПИСЬМО block(s)."
+    assert runtime.hard_violations(undeclared_email, state) == [undeclared_violation]
+    assert runtime.repair_blockers(undeclared_email, state) == [undeclared_violation]
+    assert runtime.repair_instruction(undeclared_email, state) == ""
 
 
 def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: Path):
@@ -1041,9 +1051,9 @@ def test_v2_one_day_contract_hash_and_single_surface_compatibility(tmp_path: Pat
     state["meta"]["turn"] = 1
     contract = runtime.prompt_contract(state)
 
-    assert runtime.contract_hash == "facbd786e4e7b2de283afc00eea5ebf6aa4784983afda26db106265806145872"
+    assert runtime.contract_hash == "cd49e0d9c5ff7e17c3a3d7ada868f5382633d509ab7ed4ec17b419d0a94cc59b"
     assert runtime.program["schema_version"] == "rp-training-program.v2"
-    assert runtime.program["revision"] == 3
+    assert runtime.program["revision"] == 4
     assert contract["schema_version"] == "rp-gateway.training-turn-contract.v2"
     assert len(contract["surfaces"]) == 1
     assert runtime.validate_narrative(runtime.fallback_text(state), state) == []

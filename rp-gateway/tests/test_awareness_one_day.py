@@ -10,7 +10,7 @@ from app.services.training_runtime import TrainingRuntimeService
 
 
 WORLD_ROOT = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness-one-day"
-FROZEN_CONTRACT_HASH = "facbd786e4e7b2de283afc00eea5ebf6aa4784983afda26db106265806145872"
+FROZEN_CONTRACT_HASH = "cd49e0d9c5ff7e17c3a3d7ada868f5382633d509ab7ed4ec17b419d0a94cc59b"
 
 
 def runtime_for(tmp_path: Path) -> TrainingRuntimeService:
@@ -38,7 +38,7 @@ def test_one_day_v2_contract_hash_and_schedule_are_unchanged(tmp_path: Path):
 
     assert runtime.contract["schema_version"] == "rp-training-runtime.v2"
     assert runtime.program["schema_version"] == "rp-training-program.v2"
-    assert runtime.program["revision"] == 3
+    assert runtime.program["revision"] == 4
     assert runtime.contract_hash == FROZEN_CONTRACT_HASH
     assert [turn["window"] for turn in runtime.program["turns"]] == [
         "ход 1, понедельник, 09:00-09:30",
@@ -52,6 +52,26 @@ def test_one_day_v2_contract_hash_and_schedule_are_unchanged(tmp_path: Path):
         "ход 9, понедельник, 16:15-17:15",
         "ход 10, понедельник, 17:15-18:00",
     ]
+
+
+def test_one_day_v4_turn_instructions_pin_one_current_surface(tmp_path: Path):
+    runtime = runtime_for(tmp_path)
+
+    for turn in runtime.program["turns"]:
+        marker = "ПИСЬМО" if turn["surface"]["type"] == "email" else "СООБЩЕНИЕ"
+        forbidden_marker = "СООБЩЕНИЕ" if marker == "ПИСЬМО" else "ПИСЬМО"
+        instruction = turn["instruction"]
+        assert f"ровно один новый блок {marker}" in instruction
+        assert f"ни одного блока {forbidden_marker}" in instruction
+        assert "не повторяй блоки прошлых ходов" in instruction
+
+    turn_five_instruction = runtime.program["turns"][4]["instruction"]
+    for fact in ("имена сотрудников", "личные данные", "телефоны", "сведения об отпусках"):
+        assert fact in turn_five_instruction
+
+    turn_six_instruction = runtime.program["turns"][5]["instruction"]
+    for fact in ("что уже готово", "что осталось", "владелец блокера"):
+        assert fact in turn_six_instruction
 
 
 def test_one_day_v2_fallbacks_validate_for_every_turn_and_debrief(tmp_path: Path):
