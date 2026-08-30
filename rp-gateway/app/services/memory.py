@@ -242,7 +242,7 @@ class MemorySummarizer:
                 {
                     "role": "system",
                     "content": (
-                        "You write one immutable episodic chapter for a roleplaying party. Return strict JSON only. "
+                        "You write one immutable episodic chapter for a deterministic training session. Return strict JSON only. "
                         "Use only supplied current authoritative state and the supplied turn history. "
                         "Do not turn attempts, player claims, failed checks, or unresolved possibilities into confirmed facts. "
                         "summary_text is a detailed chronological history, not a state summary: preserve scene order, "

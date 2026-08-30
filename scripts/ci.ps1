@@ -151,8 +151,8 @@ try {
         "tests/test_decision_019_contracts.py",
         "tests/test_training_gateway_mode_guard.py",
         "tests/test_training_showroom_mode_guard.py",
-        "tests/test_gateway.py::test_showroom_artifact_only_turn_keeps_materialized_provider_narrative",
-        "tests/test_gateway.py::test_showroom_training_repair_preserves_previously_valid_profile"
+        "tests/test_training_gateway_flow.py",
+        "tests/test_service_model_client.py"
     )
     Invoke-Checked -Executable $python -WorkingDirectory $gatewayRoot -Arguments (@("-m", "pytest", "-q") + $trainingTests)
 

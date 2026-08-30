@@ -11,11 +11,13 @@ application subtree.
 | Subtree split revision | `f6074084cbb15f4fc7c8cf6a56f5ed80201eb1d1` |
 | Bootstrap branch | `codex/bootstrap-training-project` |
 
-The split preserves source history; it does not prove that every inherited RP
-file belongs in the final training-only product. Removal and process-level mode
-isolation are reviewed follow-up changes. Conversely, files must not be removed
-only because their names look RP-specific: Showroom currently calls the shared
-Gateway turn pipeline, so dependency removal requires tests.
+The split preserves source history. The later training-only prune removed the
+dedicated RP, novel, Light GUI, world-clock, relationship and GM surface while
+retaining the shared Gateway turn/state primitives required by Showroom. The
+public provider-flow regression exercises scenario start and one provider turn
+with a mocked provider completion. It verifies route integration and retained
+turn/state dependencies, but it is not a live-provider or full-course runtime
+proof.
 
 Runtime data and secrets are deliberately outside provenance:
 
@@ -24,5 +26,5 @@ Runtime data and secrets are deliberately outside provenance:
 - no users, sessions, visitors, runs, or provider keys were copied;
 - no server `.env` or local override was copied.
 
-The recommended cutover starts with a fresh standalone database and retains the
-old RP Stack database/state as a separate legacy recovery set.
+The production stack starts with a fresh standalone database. Historical RP
+Stack data is not imported into this project.

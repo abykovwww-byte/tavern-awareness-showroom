@@ -1,5 +1,10 @@
 # Decision 018: Разделить Training и RP Gateway
 
+> **Исторический source-era ADR.** Разделение, которое здесь описано как
+> целевое, уже выполнено границей отдельного проекта. В этом репозитории нет
+> активного RP Gateway, Light GUI или общей Compose-топологии; дальнейший текст
+> и execution brief сохранены только как история исходного решения.
+
 Date: 2026-08-08 · Переоформлено 2026-08-09 в формат ADR + execution brief.
 
 ## Status
@@ -163,8 +168,8 @@ Training Gateway сохраняет schema validation, hard/soft constraints,
 
 ## Связанные решения
 
-- [Decision 010: Party Scenario Types](010-party-scenario-types.md)
-- [Decision 016: RP-only living story memory](016-rp-living-story-memory.md)
+- [Decision 010: Party Scenario Types](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/010-party-scenario-types.md)
+- [Decision 016: RP-only living story memory](https://github.com/abykovwww-byte/tavern-awareness-showroom/blob/1f0d5cb73afb23f36900623ad99f4ac762da9ff9/docs/decisions/016-rp-living-story-memory.md)
 - [Decision 017: WorldPack-owned Training Runtime](017-worldpack-owned-training-runtime.md)
 
 ---

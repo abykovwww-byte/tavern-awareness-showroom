@@ -1,9 +1,7 @@
-"""Party/session registry for the light GUI."""
+"""Training session and WorldPack registry for the standalone Showroom."""
 
 from __future__ import annotations
 
-import copy
-import hashlib
 import json
 import re
 import shutil
@@ -24,17 +22,13 @@ from app.models.schemas import (
     PlayerCharacterCreate,
     PlayerCharacterSummary,
     PlayerTemplate,
-    WORLD_PROMPT_MAX_CHARS,
-    WorldPromptCreate,
-    WorldPackOpeningSummary,
-    WorldPackPresetSummary,
     WorldPackSummary,
 )
 from app.services.provider_catalog import (
-    MIN_RP_CONTEXT_TOKENS,
+    MIN_TRAINING_CONTEXT_TOKENS,
     fetch_provider_api_profiles,
     enrich_openrouter_profile_params,
-    is_quality_rp_model,
+    is_quality_training_model,
     narrator_control_capabilities,
     normalize_provider,
     static_model_profiles,
@@ -42,11 +36,6 @@ from app.services.provider_catalog import (
 )
 from app.services.context_budget import model_context_limit_tokens
 from app.services.state_store import StateStore
-from app.services.world_clock import initial_world_clock_state, load_world_clock_contract
-
-
-WORLD_CHOICE_ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-WORLDPACK_MATERIALIZATION_SCHEMA_VERSION = "rp-gateway.worldpack-materialization.v1"
 
 
 def now_iso() -> str:
@@ -126,7 +115,7 @@ class PartyStore:
                 CREATE TABLE IF NOT EXISTS parties (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
-                    scenario_type TEXT NOT NULL DEFAULT 'rp',
+                    scenario_type TEXT NOT NULL DEFAULT 'training',
                     rp_contract_version TEXT NOT NULL DEFAULT 'rp-core.v1',
                     rp_contract_revision INTEGER NOT NULL DEFAULT 0,
                     worldpack_id TEXT NOT NULL REFERENCES worldpacks(id),
@@ -213,7 +202,6 @@ class PartyStore:
             self.migrate_owner_columns(connection)
             self.migrate_worldpack_visibility(connection)
             self.migrate_scenario_type(connection)
-            self.archive_legacy_novel_parties(connection)
             self.migrate_rp_contract_version(connection)
             self.migrate_autotest_branches(connection)
             self.migrate_dataset_columns(connection)
@@ -247,15 +235,7 @@ class PartyStore:
     def migrate_scenario_type(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
         if "scenario_type" not in columns:
-            connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'rp'")
-
-    @staticmethod
-    def archive_legacy_novel_parties(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            "UPDATE parties SET status = 'archived', updated_at = ? "
-            "WHERE scenario_type = 'novel' AND status != 'archived'",
-            (now_iso(),),
-        )
+            connection.execute("ALTER TABLE parties ADD COLUMN scenario_type TEXT NOT NULL DEFAULT 'training'")
 
     def migrate_rp_contract_version(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(parties)").fetchall()}
@@ -458,352 +438,20 @@ class PartyStore:
                 (key, json.dumps(value, ensure_ascii=False), timestamp),
             )
 
-    @staticmethod
-    def worldpack_declared_revision(pack: WorldPackSummary) -> int:
-        manifest = pack.manifest if isinstance(pack.manifest, dict) else {}
-        rp_contract = manifest.get("rp_contract")
-        if not isinstance(rp_contract, dict):
-            return 0
-        schema_version = str(rp_contract.get("schema_version") or "rp-core.v1")
-        fallback = 6 if schema_version == "rp-core.v2" else 0
-        try:
-            revision = int(rp_contract.get("revision", fallback))
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"worldpack {pack.id} declares an invalid RP contract revision") from exc
-        if revision >= 11 and schema_version != "rp-core.v2":
-            raise ValueError(f"worldpack {pack.id} revision 11 requires RP contract rp-core.v2")
-        return revision
 
-    @staticmethod
-    def normalize_worldpack_text(value: str) -> str:
-        return value.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff").strip()
 
-    @staticmethod
-    def canonical_seed_json(seed: dict[str, Any]) -> str:
-        return json.dumps(seed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    @classmethod
-    def materialization_hashes(cls, materialization: dict[str, Any]) -> dict[str, str]:
-        values = {
-            "world_system_prompt": materialization.get("world_system_prompt"),
-            "world_authors_note": materialization.get("world_authors_note"),
-            "opening_prompt": materialization.get("opening_prompt"),
-            "player_role": materialization.get("player_role"),
-        }
-        if not all(isinstance(value, str) for value in values.values()):
-            raise ValueError("invalid revision-11 WorldPack materialization text")
-        seed = materialization.get("state_seed")
-        if not isinstance(seed, dict):
-            raise ValueError("invalid revision-11 WorldPack materialization state_seed")
-        return {
-            **{
-                key: hashlib.sha256(value.encode("utf-8")).hexdigest()
-                for key, value in values.items()
-                if isinstance(value, str)
-            },
-            "state_seed": hashlib.sha256(cls.canonical_seed_json(seed).encode("utf-8")).hexdigest(),
-        }
 
-    @classmethod
-    def validate_worldpack_materialization(cls, materialization: Any) -> dict[str, Any]:
-        if not isinstance(materialization, dict):
-            raise ValueError("revision-11 party is missing its WorldPack materialization")
-        if materialization.get("schema_version") != WORLDPACK_MATERIALIZATION_SCHEMA_VERSION:
-            raise ValueError("revision-11 party has an invalid WorldPack materialization schema")
-        for key in ("preset_id", "opening_id"):
-            value = materialization.get(key)
-            if not isinstance(value, str) or WORLD_CHOICE_ID_PATTERN.fullmatch(value) is None:
-                raise ValueError(f"revision-11 WorldPack materialization has an invalid {key}")
-        expected_hashes = cls.materialization_hashes(materialization)
-        for key in ("world_system_prompt", "world_authors_note", "opening_prompt", "player_role"):
-            value = materialization[key]
-            if cls.normalize_worldpack_text(value) != value:
-                raise ValueError(f"revision-11 WorldPack materialization has non-normalized {key}")
-        if materialization.get("hashes") != expected_hashes:
-            raise ValueError("revision-11 WorldPack materialization hashes do not match its content")
-        return materialization
 
-    @staticmethod
-    def _validated_choice_id(value: Any, *, label: str) -> str:
-        if not isinstance(value, str) or WORLD_CHOICE_ID_PATTERN.fullmatch(value) is None:
-            raise ValueError(f"invalid WorldPack {label}")
-        return value
 
-    @classmethod
-    def _revision11_catalog(cls, manifest: dict[str, Any]) -> dict[str, Any]:
-        raw_presets = manifest.get("presets")
-        raw_openings = manifest.get("openings")
-        if not isinstance(raw_presets, list) or not raw_presets:
-            raise ValueError("revision-11 WorldPack must declare non-empty presets")
-        if not isinstance(raw_openings, list) or not raw_openings:
-            raise ValueError("revision-11 WorldPack must declare non-empty openings")
 
-        presets: dict[str, dict[str, Any]] = {}
-        for entry in raw_presets:
-            if not isinstance(entry, dict):
-                raise ValueError("invalid revision-11 WorldPack preset")
-            if set(entry) != {"id", "title", "world_system_prompt", "world_authors_note"}:
-                raise ValueError("revision-11 WorldPack preset has an invalid shape")
-            choice_id = cls._validated_choice_id(entry.get("id"), label="preset id")
-            if choice_id in presets:
-                raise ValueError(f"duplicate WorldPack preset id: {choice_id}")
-            if (
-                not isinstance(entry.get("title"), str)
-                or not entry["title"].strip()
-            ):
-                raise ValueError(f"WorldPack preset {choice_id} has no title")
-            for path_key in ("world_system_prompt", "world_authors_note"):
-                if not isinstance(entry.get(path_key), str) or not entry[path_key].strip():
-                    raise ValueError(f"WorldPack preset {choice_id} has no {path_key} path")
-            presets[choice_id] = entry
 
-        openings: dict[str, dict[str, Any]] = {}
-        for entry in raw_openings:
-            if not isinstance(entry, dict):
-                raise ValueError("invalid revision-11 WorldPack opening")
-            if set(entry) != {"id", "title", "player_role", "prompt", "state_seed"}:
-                raise ValueError("revision-11 WorldPack opening has an invalid shape")
-            choice_id = cls._validated_choice_id(entry.get("id"), label="opening id")
-            if choice_id in openings:
-                raise ValueError(f"duplicate WorldPack opening id: {choice_id}")
-            if (
-                not isinstance(entry.get("title"), str)
-                or not entry["title"].strip()
-            ):
-                raise ValueError(f"WorldPack opening {choice_id} has no title")
-            raw_player_role = entry.get("player_role")
-            normalized_player_role = (
-                cls.normalize_worldpack_text(raw_player_role)
-                if isinstance(raw_player_role, str)
-                else ""
-            )
-            if not normalized_player_role or len(normalized_player_role) > 4000:
-                raise ValueError(f"WorldPack opening {choice_id} has an invalid player_role")
-            for path_key in ("prompt", "state_seed"):
-                if not isinstance(entry.get(path_key), str) or not entry[path_key].strip():
-                    raise ValueError(f"WorldPack opening {choice_id} has no {path_key} path")
-            expected_seed_path = f"prompts/openings/{choice_id}/state-seed.json"
-            if entry["state_seed"] != expected_seed_path:
-                raise ValueError(f"WorldPack opening {choice_id} state_seed must equal {expected_seed_path}")
-            openings[choice_id] = entry
 
-        preset_default = cls._validated_choice_id(manifest.get("presets_default"), label="presets_default")
-        opening_default = cls._validated_choice_id(manifest.get("openings_default"), label="openings_default")
-        if preset_default not in presets:
-            raise ValueError("WorldPack presets_default does not name a declared preset")
-        if opening_default not in openings:
-            raise ValueError("WorldPack openings_default does not name a declared opening")
-        root_role = manifest.get("player_role")
-        if not isinstance(root_role, str) or root_role != openings[opening_default]["player_role"]:
-            raise ValueError("manifest.player_role must equal the default opening player_role")
-        return {
-            "presets": presets,
-            "preset_default": preset_default,
-            "openings": openings,
-            "opening_default": opening_default,
-        }
 
-    @classmethod
-    def public_worldpack_choices(cls, manifest: dict[str, Any]) -> dict[str, Any]:
-        rp_contract = manifest.get("rp_contract") if isinstance(manifest, dict) else None
-        try:
-            revision = int(rp_contract.get("revision", 0)) if isinstance(rp_contract, dict) else 0
-        except (TypeError, ValueError):
-            return {}
-        if revision < 11:
-            return {}
-        if rp_contract.get("schema_version") != "rp-core.v2":
-            raise ValueError("revision-11 WorldPack requires RP contract rp-core.v2")
-        catalog = cls._revision11_catalog(manifest)
-        return {
-            "presets": [
-                WorldPackPresetSummary(id=entry["id"], title=entry["title"].strip())
-                for entry in catalog["presets"].values()
-            ],
-            "presets_default": catalog["preset_default"],
-            "openings": [
-                WorldPackOpeningSummary(
-                    id=entry["id"],
-                    title=entry["title"].strip(),
-                    player_role=cls.normalize_worldpack_text(entry["player_role"]),
-                )
-                for entry in catalog["openings"].values()
-            ],
-            "openings_default": catalog["opening_default"],
-        }
 
-    def require_revision11_enabled(self, pack: WorldPackSummary) -> None:
-        if int(self.settings.rp_contract_observed_revision) < 11:
-            raise ValueError(
-                f"worldpack {pack.id} requires RP contract revision 11, but revision 11 is not activated"
-            )
 
-    def resolve_player_character_opening(
-        self,
-        pack: WorldPackSummary,
-        opening_id: str | None,
-    ) -> tuple[str | None, str]:
-        revision = self.worldpack_declared_revision(pack)
-        if revision < 11:
-            if opening_id:
-                raise ValueError("opening_id is available only for revision-11 WorldPacks")
-            return None, str(pack.manifest.get("player_role") or "Player character")
-        if revision > RP_CONTRACT_MAX_REVISION:
-            raise ValueError(f"worldpack {pack.id} declares unsupported RP contract revision {revision}")
-        self.require_revision11_enabled(pack)
-        catalog = self._revision11_catalog(pack.manifest)
-        selected_id = opening_id or catalog["opening_default"]
-        self._validated_choice_id(selected_id, label="opening id")
-        selected = catalog["openings"].get(selected_id)
-        if selected is None:
-            raise ValueError(f"unknown WorldPack opening_id: {selected_id}")
-        return selected_id, self.normalize_worldpack_text(selected["player_role"])
 
-    @staticmethod
-    def _worldpack_file(pack: WorldPackSummary, relative_path: Any, *, label: str) -> Path:
-        if not isinstance(relative_path, str) or not relative_path.strip():
-            raise ValueError(f"WorldPack {label} path is missing")
-        relative = relative_path.strip()
-        normalized = relative.replace("\\", "/")
-        components = normalized.split("/")
-        if (
-            relative != relative_path
-            or normalized != relative
-            or normalized.startswith("/")
-            or ":" in normalized
-            or any(component in {"", ".", ".."} for component in components)
-        ):
-            raise ValueError(f"WorldPack {label} path is unsafe")
-        root = Path(pack.manifest_path).resolve().parent
-        target = (root / normalized).resolve()
-        if root not in target.parents or not target.is_file():
-            raise ValueError(f"WorldPack {label} file is missing or unsafe")
-        return target
 
-    @classmethod
-    def _worldpack_text(cls, pack: WorldPackSummary, relative_path: Any, *, label: str) -> str:
-        path = cls._worldpack_file(pack, relative_path, label=label)
-        try:
-            return cls.normalize_worldpack_text(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"cannot read WorldPack {label}") from exc
-
-    @classmethod
-    def _worldpack_seed(cls, pack: WorldPackSummary, relative_path: Any, *, label: str) -> dict[str, Any]:
-        path = cls._worldpack_file(pack, relative_path, label=label)
-        try:
-            seed = json.loads(path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read WorldPack {label}") from exc
-        if not isinstance(seed, dict):
-            raise ValueError(f"WorldPack {label} must contain a JSON object")
-        return seed
-
-    @classmethod
-    def _validate_revision11_default_aliases(
-        cls,
-        pack: WorldPackSummary,
-        catalog: dict[str, Any],
-    ) -> None:
-        files = pack.manifest.get("files")
-        if not isinstance(files, dict):
-            raise ValueError("revision-11 WorldPack must declare root file aliases")
-        expected_root_paths = {
-            "gm_system": "prompts/gm-system.md",
-            "authors_note": "prompts/authors-note.md",
-            "opening_scene": "prompts/opening-scene.md",
-            "state_seed": "state-seed.json",
-        }
-        for key, expected_path in expected_root_paths.items():
-            if files.get(key) != expected_path:
-                raise ValueError(f"WorldPack files.{key} must equal {expected_path}")
-        preset = catalog["presets"][catalog["preset_default"]]
-        opening = catalog["openings"][catalog["opening_default"]]
-        text_aliases = (
-            ("gm_system", preset["world_system_prompt"]),
-            ("authors_note", preset["world_authors_note"]),
-            ("opening_scene", opening["prompt"]),
-        )
-        for root_key, selected_path in text_aliases:
-            root_path = cls._worldpack_file(pack, files[root_key], label=f"files.{root_key}")
-            default_path = cls._worldpack_file(pack, selected_path, label=f"default {root_key}")
-            try:
-                aliases_match = root_path.read_bytes() == default_path.read_bytes()
-            except OSError as exc:
-                raise ValueError(f"cannot compare WorldPack files.{root_key} alias") from exc
-            if not aliases_match:
-                raise ValueError(f"WorldPack files.{root_key} is not a content alias of its explicit default")
-        root_seed_path = cls._worldpack_file(pack, files["state_seed"], label="files.state_seed")
-        default_seed_path = cls._worldpack_file(
-            pack,
-            opening["state_seed"],
-            label="default opening state_seed",
-        )
-        try:
-            aliases_match = root_seed_path.read_bytes() == default_seed_path.read_bytes()
-        except OSError as exc:
-            raise ValueError("cannot compare WorldPack files.state_seed alias") from exc
-        if not aliases_match:
-            raise ValueError("WorldPack files.state_seed is not a content alias of its explicit default")
-
-    def materialize_worldpack_choices(
-        self,
-        pack: WorldPackSummary,
-        *,
-        preset_id: str | None,
-        opening_id: str | None,
-    ) -> dict[str, Any]:
-        self.require_revision11_enabled(pack)
-        catalog = self._revision11_catalog(pack.manifest)
-        selected_preset_id = preset_id or catalog["preset_default"]
-        selected_opening_id = opening_id or catalog["opening_default"]
-        self._validated_choice_id(selected_preset_id, label="preset id")
-        self._validated_choice_id(selected_opening_id, label="opening id")
-        preset = catalog["presets"].get(selected_preset_id)
-        if preset is None:
-            raise ValueError(f"unknown WorldPack preset_id: {selected_preset_id}")
-        opening = catalog["openings"].get(selected_opening_id)
-        if opening is None:
-            raise ValueError(f"unknown WorldPack opening_id: {selected_opening_id}")
-        self._validate_revision11_default_aliases(pack, catalog)
-        materialization = {
-            "schema_version": WORLDPACK_MATERIALIZATION_SCHEMA_VERSION,
-            "preset_id": selected_preset_id,
-            "opening_id": selected_opening_id,
-            "world_system_prompt": self._worldpack_text(
-                pack,
-                preset["world_system_prompt"],
-                label=f"preset {selected_preset_id} world_system_prompt",
-            ),
-            "world_authors_note": self._worldpack_text(
-                pack,
-                preset["world_authors_note"],
-                label=f"preset {selected_preset_id} world_authors_note",
-            ),
-            "opening_prompt": self._worldpack_text(
-                pack,
-                opening["prompt"],
-                label=f"opening {selected_opening_id} prompt",
-            ),
-            "player_role": self.normalize_worldpack_text(opening["player_role"]),
-            "state_seed": self._worldpack_seed(
-                pack,
-                opening["state_seed"],
-                label=f"opening {selected_opening_id} state_seed",
-            ),
-        }
-        if not materialization["world_system_prompt"]:
-            raise ValueError("selected WorldPack world_system_prompt is empty")
-        if not materialization["world_authors_note"]:
-            raise ValueError("selected WorldPack world_authors_note is empty")
-        if not materialization["opening_prompt"]:
-            raise ValueError("selected WorldPack opening prompt is empty")
-        if len("WORLD_SYSTEM_PROMPT\n" + materialization["world_system_prompt"]) > 5_000:
-            raise ValueError("WORLD_SYSTEM_PROMPT exceeds the revision-11 5000 character limit")
-        if len("WORLD_AUTHORS_NOTE\n" + materialization["world_authors_note"]) > 1_500:
-            raise ValueError("WORLD_AUTHORS_NOTE exceeds the revision-11 1500 character limit")
-        materialization["hashes"] = self.materialization_hashes(materialization)
-        return self.validate_worldpack_materialization(materialization)
 
     def scan_worldpacks(self) -> list[WorldPackSummary]:
         root = Path(self.settings.worldpacks_path)
@@ -836,7 +484,6 @@ class PartyStore:
                 state_seed_path=str(state_seed.resolve()),
                 lorebook_path=lorebook_path,
                 manifest=manifest,
-                **self.public_worldpack_choices(manifest),
             )
             packs.append(summary)
             self.upsert_worldpack(summary)
@@ -892,116 +539,7 @@ class PartyStore:
                 ),
             )
 
-    def create_prompt_worldpack(self, request: WorldPromptCreate, owner_user_id: str | None = None) -> WorldPackSummary:
-        title = " ".join(request.title.split())[:160] or "Свой мир"
-        is_markdown = request.source == "markdown_file"
-        if is_markdown:
-            prompt = request.prompt.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff").strip()
-            state_prompt = prompt[:WORLD_PROMPT_MAX_CHARS].rstrip()
-        else:
-            prompt = " ".join(request.prompt.split())
-            state_prompt = prompt
-        pack_id = f"prompt-{slug(title)[:42]}-{uuid.uuid4().hex[:8]}"
-        generated_root = Path(self.settings.party_state_root) / "_generated_worldpacks" / pack_id
-        generated_root.mkdir(parents=True, exist_ok=True)
-        files = {"state_seed": "state-seed.json"}
-        if is_markdown:
-            (generated_root / "world.md").write_text(prompt + "\n", encoding="utf-8")
-            files["gm_system"] = "world.md"
-        state = self.prompt_world_state(pack_id, title, state_prompt)
-        manifest = {
-            "id": pack_id,
-            "title": title,
-            "language": "ru",
-            "mode": "prompt world",
-            "status": "playable",
-            "premise": prompt[:600],
-            "player_role": "Персонаж, заданный игроком для этой партии.",
-            "generated_by": "rp-light-gui",
-            "rp_contract": {"schema_version": "rp-core.v2", "revision": 6},
-            "prompt": state_prompt,
-            "prompt_source": request.source,
-            "prompt_source_filename": request.source_filename if is_markdown else None,
-            "prompt_source_characters": len(prompt),
-            "prompt_truncated_in_state": is_markdown and len(prompt) > len(state_prompt),
-            "files": files,
-        }
-        manifest_path = generated_root / "manifest.json"
-        state_seed_path = generated_root / "state-seed.json"
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        state_seed_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        summary = WorldPackSummary(
-            id=pack_id,
-            owner_user_id=owner_user_id,
-            title=title,
-            slug=pack_id,
-            status="playable",
-            premise=prompt[:600],
-            manifest_path=str(manifest_path.resolve()),
-            state_seed_path=str(state_seed_path.resolve()),
-            lorebook_path=None,
-            manifest=manifest,
-        )
-        self.upsert_worldpack(summary, owner_user_id=owner_user_id)
-        return summary
 
-    def prompt_world_state(self, pack_id: str, title: str, prompt: str) -> dict[str, Any]:
-        return {
-            "meta": {
-                "campaign_id": pack_id,
-                "schema_version": "1.0.0",
-                "state_version": 1,
-                "turn": 0,
-                "last_updated": "1970-01-01T00:00:00Z",
-            },
-            "player": {
-                "location": "начальная сцена",
-                "status": "active",
-                "reputation": {},
-                "resources": {},
-                "known_abilities": [],
-                "constraints": [],
-                "known_world_facts": [{"id": "world_prompt", "text": prompt, "source": "world_prompt", "turn": 0}],
-            },
-            "characters": {},
-            "factions": {},
-            "locations": {
-                "initial_scene": {
-                    "name": "Начальная сцена",
-                    "description": prompt[:500],
-                    "status": "available",
-                    "hard_constraints": [],
-                }
-            },
-            "resources": {},
-            "relationships": {},
-            "active_threads": [
-                {
-                    "id": "main_prompt_thread",
-                    "description": f"{title}: развивать мир по prompt игрока, не переписывая подтвержденный state.",
-                    "status": "active",
-                    "turn": 0,
-                }
-            ],
-            "completed_threads": [],
-            "world_constraints": [
-                {
-                    "id": "attempts_not_facts",
-                    "text": "Player declarations of outcome are attempts until confirmed in state.",
-                    "scope": "global",
-                    "turn": 0,
-                },
-                {
-                    "id": "world_prompt",
-                    "text": prompt,
-                    "scope": "global",
-                    "turn": 0,
-                },
-            ],
-            "timeline": [{"turn": 0, "event": f"Мир создан из prompt: {title}", "confirmed": True, "participants": ["player"]}],
-            "last_turn": {"turn": 0, "player_message": "", "narrator_response": "", "state_patch_id": ""},
-            "uncertain_facts": [],
-        }
 
     def extract_premise(self, manifest: dict[str, Any]) -> str:
         for key in ("premise", "summary", "description", "player_role"):
@@ -1087,7 +625,6 @@ class PartyStore:
             state_seed_path=row["state_seed_path"],
             lorebook_path=row["lorebook_path"],
             manifest=manifest,
-            **self.public_worldpack_choices(manifest),
         )
 
     def player_templates(
@@ -1187,21 +724,6 @@ class PartyStore:
                 )
         return cards
 
-    def worldpack_world_clock(
-        self,
-        pack: WorldPackSummary,
-        authored_lore_cards: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any] | None:
-        lore_card_keys = {
-            str(card["authored_key"])
-            for card in (authored_lore_cards or self.worldpack_lore_cards(pack))
-            if card.get("authored_key")
-        }
-        return load_world_clock_contract(
-            pack.manifest_path,
-            pack.manifest,
-            lore_card_keys=lore_card_keys,
-        )
 
     def list_player_characters(
         self,
@@ -1226,16 +748,12 @@ class PartyStore:
         return [self.character_from_row(row) for row in rows]
 
     def create_player_character(self, request: PlayerCharacterCreate, owner_user_id: str | None = None) -> PlayerCharacterSummary:
-        pack = self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
-        opening_id, player_role = self.resolve_player_character_opening(pack, request.opening_id)
+        self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
         character_id = f"pc_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
         profile = dict(request.profile)
         profile.setdefault("name", request.name)
         profile.setdefault("worldpack_id", request.worldpack_id)
-        if opening_id is not None:
-            profile["opening_id"] = opening_id
-            profile["player_role"] = player_role
         with self.connect() as connection:
             connection.execute(
                 """
@@ -1254,7 +772,7 @@ class PartyStore:
                     "active",
                     request.starting_state_patch_json,
                     json.dumps(profile, ensure_ascii=False),
-                    opening_id,
+                    None,
                     timestamp,
                     timestamp,
                 ),
@@ -1336,7 +854,7 @@ class PartyStore:
             return False
         if provider == "openrouter" and profile.model.lower().endswith(":batch"):
             return False
-        if (model_context_limit_tokens(profile) or 0) < MIN_RP_CONTEXT_TOKENS:
+        if (model_context_limit_tokens(profile) or 0) < MIN_TRAINING_CONTEXT_TOKENS:
             return False
         configured = {
             self.settings.narrative_model,
@@ -1349,9 +867,9 @@ class PartyStore:
         if provider == "local":
             return bool(self.settings.local_llm_enabled) and profile.model == self.settings.local_llm_model_alias
         if provider == "gemini":
-            return profile.model.startswith("gemini-") and is_quality_rp_model(profile.model)
+            return profile.model.startswith("gemini-") and is_quality_training_model(profile.model)
         if provider == "openrouter":
-            return profile.rp_specialized or is_quality_rp_model(profile.model)
+            return is_quality_training_model(profile.model)
         return False
 
     def get_model_profile(self, model_profile_id: str) -> ModelProfileSummary:
@@ -1430,73 +948,16 @@ class PartyStore:
         pack = self.get_worldpack(request.worldpack_id, owner_user_id=owner_user_id)
         scenario_types = pack.manifest.get("scenario_types") if isinstance(pack.manifest, dict) else None
         supported = scenario_types.get("supported") if isinstance(scenario_types, dict) else None
-        if isinstance(supported, list) and supported and request.scenario_type not in supported:
-            raise ValueError(f"worldpack {pack.id} does not support scenario type {request.scenario_type}")
-        rp_contract = pack.manifest.get("rp_contract") if isinstance(pack.manifest, dict) else None
-        rp_contract_version = (
-            str(rp_contract.get("schema_version") or "rp-core.v1")
-            if request.scenario_type == "rp" and isinstance(rp_contract, dict)
-            else "rp-core.v1"
-        )
-        if rp_contract_version not in {"rp-core.v1", "rp-core.v2"}:
-            raise ValueError(f"worldpack {pack.id} declares unsupported RP contract {rp_contract_version}")
-        declared_revision = (
-            int(rp_contract.get("revision", 6 if rp_contract_version == "rp-core.v2" else 0))
-            if request.scenario_type == "rp" and isinstance(rp_contract, dict)
-            else 0
-        )
-        if not 0 <= declared_revision <= RP_CONTRACT_MAX_REVISION:
-            raise ValueError(f"worldpack {pack.id} declares unsupported RP contract revision {declared_revision}")
-        if declared_revision >= 11 and rp_contract_version != "rp-core.v2":
-            raise ValueError(f"worldpack {pack.id} revision 11 requires RP contract rp-core.v2")
-        worldpack_materialization: dict[str, Any] | None = None
-        if request.scenario_type == "rp" and declared_revision >= 11:
-            worldpack_materialization = self.materialize_worldpack_choices(
-                pack,
-                preset_id=request.preset_id,
-                opening_id=request.opening_id,
-            )
-        elif request.preset_id or request.opening_id:
-            raise ValueError("preset_id and opening_id are available only for revision-11 RP WorldPacks")
-        rp_contract_revision = min(
-            declared_revision,
-            max(0, min(int(self.settings.rp_contract_observed_revision), RP_CONTRACT_MAX_REVISION)),
-        )
-        authored_lore_cards = (
-            self.worldpack_lore_cards(pack)
-            if request.scenario_type == "rp" and rp_contract_revision >= 8
-            else []
-        )
-        world_clock_contract = (
-            self.worldpack_world_clock(pack, authored_lore_cards)
-            if request.scenario_type == "rp" and rp_contract_revision >= 10
-            else None
-        )
+        if isinstance(supported, list) and supported and supported != ["training"]:
+            raise ValueError(f"worldpack {pack.id} must support only scenario_type=training")
         character = self.get_player_character(request.player_character_id, owner_user_id=owner_user_id)
         if character.worldpack_id != pack.id:
             raise ValueError("player character belongs to a different worldpack")
-        if worldpack_materialization is not None:
-            if character.opening_id != worldpack_materialization["opening_id"]:
-                raise ValueError("player character belongs to a different WorldPack opening")
         self.require_active_model_profile(request.model_profile_id)
 
         party_id = f"party_{uuid.uuid4().hex[:12]}"
         timestamp = now_iso()
-        self.initialize_party_state(
-            party_id,
-            pack,
-            character,
-            world_clock_contract=world_clock_contract,
-            worldpack_materialization=worldpack_materialization,
-        )
-        if authored_lore_cards:
-            party_state_store = StateStore(
-                self.settings.sqlite_path,
-                party_id,
-                str(self.state_path_for(party_id)),
-            )
-            for card in authored_lore_cards:
-                party_state_store.create_lore_card(**card)
+        self.initialize_party_state(party_id, pack, character)
         with self.connect() as connection:
             connection.execute(
                 """
@@ -1506,27 +967,16 @@ class PartyStore:
                     state_campaign_id, status, preset_id, opening_id,
                     worldpack_materialization_json, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, 'training', 'rp-core.v1', 0, ?, ?, ?, ?, 'active', NULL, NULL, NULL, ?, ?)
                 """,
                 (
                     party_id,
                     owner_user_id,
                     request.title,
-                    request.scenario_type,
-                    rp_contract_version,
-                    rp_contract_revision,
                     request.worldpack_id,
                     request.player_character_id,
                     request.model_profile_id,
                     party_id,
-                    "active",
-                    worldpack_materialization["preset_id"] if worldpack_materialization else None,
-                    worldpack_materialization["opening_id"] if worldpack_materialization else None,
-                    (
-                        json.dumps(worldpack_materialization, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                        if worldpack_materialization
-                        else None
-                    ),
                     timestamp,
                     timestamp,
                 ),
@@ -1771,10 +1221,13 @@ class PartyStore:
         owner_user_id: str | None,
         scenario_type: str | None = None,
         include_branches: bool = True,
+        allowed_party_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         parties = self.list_parties(owner_user_id=owner_user_id)
         records: list[dict[str, Any]] = []
         for party in parties:
+            if allowed_party_ids is not None and party.id not in allowed_party_ids:
+                continue
             if party.dataset_review_status != "approved":
                 continue
             if scenario_type and party.scenario_type != scenario_type:
@@ -2050,26 +1503,10 @@ class PartyStore:
         label: str,
         branch_type: str = "manual",
         owner_user_id: str | None = None,
-        rp_contract_revision: int | None = None,
     ) -> dict[str, Any]:
         party = self.get_party(party_id, owner_user_id=owner_user_id)
         source_store = self.store_for_party(party.id, owner_user_id=owner_user_id)
         checkpoint = source_store.get_memory_checkpoint(checkpoint_id)
-        declared_revision = 0
-        rp_contract = party.worldpack.manifest.get("rp_contract") if party.worldpack else None
-        if party.scenario_type == "rp" and isinstance(rp_contract, dict):
-            declared_revision = int(
-                rp_contract.get("revision", 6 if party.rp_contract_version == "rp-core.v2" else 0)
-            )
-        target_revision = party.rp_contract_revision if rp_contract_revision is None else int(rp_contract_revision)
-        if party.scenario_type != "rp" and target_revision != 0:
-            raise ValueError("RP contract revision is available only for RP branches")
-        if not 0 <= target_revision <= min(declared_revision, RP_CONTRACT_MAX_REVISION):
-            raise ValueError(
-                f"RP contract revision must be between 0 and WorldPack candidate revision {declared_revision}"
-            )
-        if target_revision >= 11:
-            self.validate_worldpack_materialization(party.worldpack_materialization)
         branch_id = f"branch_{uuid.uuid4().hex[:12]}"
         state_campaign_id = f"{party.id}--{branch_id}"
         timestamp = now_iso()
@@ -2080,7 +1517,7 @@ class PartyStore:
                     id, party_id, owner_user_id, label, branch_type,
                     source_checkpoint_id, state_campaign_id, rp_contract_revision,
                     status, created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?)
                 """,
                 (
                     branch_id,
@@ -2090,7 +1527,6 @@ class PartyStore:
                     branch_type,
                     int(checkpoint["id"]),
                     state_campaign_id,
-                    target_revision,
                     timestamp,
                     timestamp,
                 ),
@@ -2101,24 +1537,6 @@ class PartyStore:
                 target_campaign_id=state_campaign_id,
                 target_state_path=str(self.state_path_for_branch(party.id, branch_id)),
             )
-            if party.scenario_type == "rp" and target_revision >= 10 and party.worldpack is not None:
-                authored_lore_cards = self.worldpack_lore_cards(party.worldpack)
-                contract = self.worldpack_world_clock(party.worldpack, authored_lore_cards)
-                if contract is not None:
-                    branch_store = self.store_for_branch(
-                        party.id,
-                        branch_id,
-                        owner_user_id=owner_user_id,
-                    )
-                    existing_authored_keys = {
-                        str(card["authored_key"])
-                        for card in branch_store.lore_cards(include_archived=True)
-                        if card.get("authored_key")
-                    }
-                    for card in authored_lore_cards:
-                        if str(card["authored_key"]) not in existing_authored_keys:
-                            branch_store.create_lore_card(**card)
-                    branch_store.initialize_world_clock(contract)
         except Exception:
             with self.connect() as connection:
                 connection.execute("DELETE FROM party_branches WHERE id = ?", (branch_id,))
@@ -2404,19 +1822,12 @@ class PartyStore:
         party_id: str,
         pack: WorldPackSummary,
         character: PlayerCharacterSummary,
-        *,
-        world_clock_contract: dict[str, Any] | None = None,
-        worldpack_materialization: dict[str, Any] | None = None,
     ) -> None:
         state_path = self.state_path_for(party_id)
         if state_path.exists():
             return
-        if worldpack_materialization is not None:
-            materialization = self.validate_worldpack_materialization(worldpack_materialization)
-            state = copy.deepcopy(materialization["state_seed"])
-        else:
-            seed_path = Path(pack.state_seed_path)
-            state = json.loads(seed_path.read_text(encoding="utf-8")) if seed_path.exists() else None
+        seed_path = Path(pack.state_seed_path)
+        state = json.loads(seed_path.read_text(encoding="utf-8")) if seed_path.exists() else None
         if state is None:
             state = {
                 "meta": {
@@ -2450,128 +1861,19 @@ class PartyStore:
         state.setdefault("meta", {})
         state["meta"]["campaign_id"] = party_id
         state["meta"]["state_version"] = 1
-        if world_clock_contract is not None:
-            state["world_clock"] = initial_world_clock_state(world_clock_contract)
         state.setdefault("player", {})
         state["player"]["character_id"] = character.id
         state["player"]["name"] = character.name
         state["player"]["description"] = character.description
-        if worldpack_materialization is not None:
-            state["player"]["role"] = worldpack_materialization["player_role"]
         state["player"].setdefault("known_world_facts", [])
         if character.description:
             state["player"]["known_world_facts"].append(
                 {"id": "player_character_prompt", "text": character.description, "source": "player_character", "turn": 0}
             )
         state = self.apply_starting_patch(state, character.starting_state_patch_json)
-        if worldpack_materialization is not None:
-            self.validate_initialized_revision11_state(state)
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    @staticmethod
-    def validate_initialized_revision11_state(state: Any) -> None:
-        errors: list[str] = []
-        if not isinstance(state, dict):
-            raise ValueError("revision-11 initialized state must be an object")
-
-        def require_fields(value: Any, fields: dict[str, type], prefix: str) -> None:
-            if not isinstance(value, dict):
-                errors.append(f"{prefix}: expected object")
-                return
-            for field, expected in fields.items():
-                if field not in value:
-                    errors.append(f"{prefix}.{field}: missing required field")
-                elif not isinstance(value[field], expected):
-                    errors.append(
-                        f"{prefix}.{field}: expected {expected.__name__}, got {type(value[field]).__name__}"
-                    )
-
-        require_fields(
-            state,
-            {
-                "meta": dict,
-                "player": dict,
-                "characters": dict,
-                "factions": dict,
-                "locations": dict,
-                "resources": dict,
-                "relationships": dict,
-                "active_threads": list,
-                "completed_threads": list,
-                "world_constraints": list,
-                "timeline": list,
-                "last_turn": dict,
-            },
-            "state",
-        )
-        require_fields(
-            state.get("meta"),
-            {
-                "campaign_id": str,
-                "schema_version": str,
-                "state_version": int,
-                "turn": int,
-                "last_updated": str,
-            },
-            "state.meta",
-        )
-        meta = state.get("meta")
-        if isinstance(meta, dict):
-            if isinstance(meta.get("state_version"), int) and meta["state_version"] < 1:
-                errors.append("state.meta.state_version: must be >= 1")
-            if isinstance(meta.get("turn"), int) and meta["turn"] < 0:
-                errors.append("state.meta.turn: must be >= 0")
-        require_fields(
-            state.get("player"),
-            {
-                "location": str,
-                "status": str,
-                "reputation": dict,
-                "resources": dict,
-                "known_abilities": list,
-                "constraints": list,
-                "known_world_facts": list,
-            },
-            "state.player",
-        )
-        characters = state.get("characters")
-        if isinstance(characters, dict):
-            required_character = {
-                "status": str,
-                "location": str,
-                "attitude_to_player": str,
-                "trust": int,
-                "fear": int,
-                "loyalty": str,
-                "current_goal": str,
-                "knowledge": list,
-                "secrets": list,
-                "obligations": list,
-                "hard_constraints": list,
-                "last_confirmed_update": int,
-            }
-            for character_id, character_state in characters.items():
-                require_fields(character_state, required_character, f"state.characters.{character_id}")
-                if isinstance(character_state, dict):
-                    trust = character_state.get("trust")
-                    fear = character_state.get("fear")
-                    if isinstance(trust, int) and not -10 <= trust <= 10:
-                        errors.append(f"state.characters.{character_id}.trust: must be between -10 and 10")
-                    if isinstance(fear, int) and not 0 <= fear <= 10:
-                        errors.append(f"state.characters.{character_id}.fear: must be between 0 and 10")
-        require_fields(
-            state.get("last_turn"),
-            {
-                "turn": int,
-                "player_message": str,
-                "narrator_response": str,
-                "state_patch_id": str,
-            },
-            "state.last_turn",
-        )
-        if errors:
-            raise ValueError("invalid revision-11 initialized state: " + "; ".join(errors))
 
     def store_for_party(self, party_id: str, owner_user_id: str | None = None) -> StateStore:
         party = self.get_party(party_id, owner_user_id=owner_user_id)

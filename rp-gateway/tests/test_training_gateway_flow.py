@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+import json
+import shutil
+import sqlite3
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import Settings
+from app.main import create_app
+from app.services.narrative import NarrativeClient
+from app.services.training_runtime import TrainingRuntimeService
+
+
+def training_client(tmp_path: Path) -> TestClient:
+    source = Path(__file__).resolve().parents[2] / "worldpacks" / "awareness"
+    pack = tmp_path / "worldpacks" / "awareness"
+    shutil.copytree(source, pack)
+    settings = Settings(
+        app_env="test",
+        campaign_id="awareness",
+        scenario_type="training",
+        database_url=f"sqlite:///{tmp_path / 'awareness_gateway.db'}",
+        world_state_path=str(pack / "state-seed.json"),
+        party_state_root=str(tmp_path / "state" / "parties"),
+        showroom_cover_dir=str(tmp_path / "showroom-covers"),
+        worldpacks_path=str(tmp_path / "worldpacks"),
+        showroom_catalog_path="",
+        llm_api_base="mock://training-provider",
+        llm_api_key="test-key",
+        openrouter_api_base="mock://training-provider",
+        openrouter_api_key="test-key",
+        service_openrouter_api_key="test-key",
+        openrouter_model_catalog_live=False,
+        local_llm_enabled=False,
+        post_turn_helpers_inline=True,
+        auth_enabled=True,
+        bootstrap_admin_username="admin",
+        bootstrap_admin_password="admin-secret",
+    )
+    return TestClient(create_app(settings))
+
+
+def latest_turn_metadata(client: TestClient, party_id: str) -> dict[str, object]:
+    store = client.app.state.party_store.store_for_party(party_id)
+    with sqlite3.connect(store.sqlite_path) as connection:
+        row = connection.execute(
+            "SELECT metadata_json FROM turns WHERE campaign_id = ? ORDER BY id DESC LIMIT 1",
+            (store.campaign_id,),
+        ).fetchone()
+    assert row is not None
+    return json.loads(row[0])
+
+
+def test_public_showroom_provider_turn_persists_training_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = training_client(tmp_path)
+    login = admin.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "admin-secret"},
+    )
+    assert login.status_code == 200, login.text
+    model_id = admin.get("/api/model-profiles").json()["model_profiles"][0]["id"]
+    created = admin.post(
+        "/api/admin/showroom/scenarios",
+        json={
+            "title": "Training provider flow",
+            "status": "published",
+            "scenario_type": "training",
+            "model_profile_id": model_id,
+            "world_source": "preset",
+            "worldpack_id": "awareness",
+            "interactive_links_enabled": True,
+            "interactive_workspace_enabled": False,
+        },
+    )
+    assert created.status_code == 200, created.text
+    scenario_id = created.json()["scenario"]["id"]
+
+    public = TestClient(admin.app)
+    run_response = public.post(
+        f"/api/showroom/scenarios/{scenario_id}/runs",
+        json={
+            "character_name": "Provider QA",
+            "character_prompt": "Инженер QA",
+            "employee_position": "Инженер QA",
+        },
+    )
+    assert run_response.status_code == 200, run_response.text
+    run_id = run_response.json()["run"]["id"]
+    with admin.app.state.showroom_store.connect() as connection:
+        party_id = connection.execute(
+            "SELECT party_id FROM showroom_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()["party_id"]
+    party = admin.app.state.party_store.get_party(party_id)
+    state_store = admin.app.state.party_store.store_for_party(party_id)
+    runtime = TrainingRuntimeService(party.worldpack, state_store)
+    provider_turns: list[int] = []
+
+    async def provider_complete(*args: object, **kwargs: object) -> dict[str, object]:
+        state = args[2]
+        assert isinstance(state, dict)
+        turn = int(state["meta"]["turn"])
+        provider_turns.append(turn)
+        interaction = kwargs.get("artifact_contract")
+        assert interaction is None or isinstance(interaction, dict)
+        visible = runtime.fallback_text(state, interaction)
+        site = interaction.get("site") if interaction else None
+        content = visible
+        if site:
+            content = json.dumps(
+                {
+                    "schema_version": "rp-gateway.narrative-bundle.v1",
+                    "narrative_text": visible,
+                    "artifacts": [
+                        {
+                            "artifact_key": site["artifact_key"],
+                            "blueprint_id": site["blueprint_id"],
+                            "slots": {slot_id: "Учебная проверка" for slot_id in site["slots"]},
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        return {
+            "id": f"training-provider-{turn}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "mock-training-model",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+            ],
+        }
+
+    monkeypatch.setattr(NarrativeClient, "complete", provider_complete)
+    started = public.post(
+        f"/api/showroom/runs/{run_id}/start",
+        json={"idempotency_key": "training-flow-start"},
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["choices"][0]["message"]["content"].startswith("Ход 1.")
+    assert started.json()["choices"][0]["message"]["artifacts"]
+
+    answered = public.post(
+        f"/api/showroom/runs/{run_id}/messages",
+        json={
+            "content": "Не открываю подозрительный файл, сообщаю в SOC и продолжаю штатную рабочую задачу.",
+            "idempotency_key": "training-flow-turn-1",
+        },
+    )
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["choices"][0]["message"]["content"].startswith("Ход 2.")
+    assert provider_turns == [1, 2]
+
+    resumed = public.get(f"/api/showroom/runs/{run_id}")
+    history = public.get(f"/api/showroom/runs/{run_id}/history")
+    assert resumed.status_code == 200, resumed.text
+    assert history.status_code == 200, history.text
+    assert resumed.json()["run"]["party_status"] == "active"
+    assert len(history.json()["turns"]) == 2
+    state = state_store.get_state()
+    assert state["meta"]["turn"] == 2
+    assert state["player"]["resources"]["safe-escalations"] >= 1
+    metadata = latest_turn_metadata(admin, party_id)
+    assert metadata["fallback"] is False
+    assert metadata["validator_valid"] is True
+
+    unauthorized_runs = public.get("/api/admin/showroom/runs")
+    assert unauthorized_runs.status_code == 401, unauthorized_runs.text
+    admin_runs = admin.get("/api/admin/showroom/runs")
+    assert admin_runs.status_code == 200, admin_runs.text
+    discovered = next(item for item in admin_runs.json()["runs"] if item["run_id"] == run_id)
+    assert discovered["party_id"] == party_id
+    assert discovered["dataset_review_status"] == "review"
+
+    approved_party = admin.patch(
+        f"/api/admin/datasets/parties/{party_id}",
+        json={"review_status": "approved", "tags": ["showroom-training"]},
+    )
+    assert approved_party.status_code == 200, approved_party.text
+    dataset_turns = admin.get(f"/api/admin/datasets/parties/{party_id}/turns")
+    assert dataset_turns.status_code == 200, dataset_turns.text
+    first_turn = dataset_turns.json()["turns"][0]
+    approved_turn = admin.put(
+        f"/api/admin/datasets/parties/{party_id}/turns/{first_turn['turn_id']}",
+        json={"review_status": "approved", "tags": ["provider-flow"], "notes": "reviewed"},
+    )
+    assert approved_turn.status_code == 200, approved_turn.text
+    exported = admin.get("/api/admin/datasets/export.jsonl?scenario_type=training&include_branches=false")
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["X-Dataset-Approved-Turns"] == "1"
+    exported_rows = [json.loads(line) for line in exported.text.splitlines() if line.strip()]
+    assert len(exported_rows) == 1
+    assert exported_rows[0]["metadata"]["party_id"] == party_id
+
+    autotest_models = admin.get("/api/admin/autotests/models")
+    assert autotest_models.status_code == 200, autotest_models.text
+    assert autotest_models.json()["model_profiles"]
+    autotest = admin.post(
+        "/api/admin/autotests",
+        json={
+            "source_party_id": party_id,
+            "player_prompt": "Проверяй каждое сообщение и эскалируй риск.",
+            "turn_count": 1,
+            "player_model_profile_id": autotest_models.json()["model_profiles"][0]["id"],
+        },
+    )
+    assert autotest.status_code == 200, autotest.text
+    assert autotest.json()["run"]["source_party_id"] == party_id
+    assert autotest.json()["run"]["owner_user_id"] == login.json()["user"]["id"]
+    assert autotest.json()["branch"]["owner_user_id"] == "__showroom__"
+    autotest_id = autotest.json()["run"]["id"]
+    autotest_run = autotest.json()["run"]
+    for _ in range(100):
+        listed = admin.get(f"/api/admin/autotests?source_party_id={party_id}")
+        assert listed.status_code == 200, listed.text
+        autotest_run = next(item for item in listed.json()["runs"] if item["id"] == autotest_id)
+        if autotest_run["status"] in {"completed", "failed", "stopped"}:
+            break
+        time.sleep(0.01)
+    assert autotest_run["status"] == "completed", autotest_run
+    assert autotest_run["completed_turns"] == 1
+
+    with admin.app.state.showroom_store.connect() as connection:
+        connection.execute("DELETE FROM showroom_runs WHERE id = ?", (run_id,))
+    orphan_export = admin.get("/api/admin/datasets/export.jsonl?scenario_type=training&include_branches=false")
+    assert orphan_export.status_code == 200, orphan_export.text
+    assert orphan_export.headers["X-Dataset-Approved-Turns"] == "0"
+    assert orphan_export.text == ""
+
+    paths = {route.path for route in admin.app.router.routes}
+    assert not any(path == "/api/parties" or path.startswith("/api/parties/") for path in paths)
+    assert "/api/showroom/runs/{run_id}/messages" in paths

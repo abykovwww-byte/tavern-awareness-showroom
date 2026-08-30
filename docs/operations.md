@@ -49,8 +49,10 @@ runner.
 
 Use empty, access-controlled Gateway, state and cover directories. Do not copy
 the mixed RP database, state tree, cookies, provider secrets or cover directory.
-Keep the legacy deployment available read-only for historical results during
-the acceptance and rollback window.
+The approved rollback window is zero. Complete shadow preflight plus an initial
+backup/restore rehearsal before cutover, because the original Showroom is not
+retained as a traffic rollback target. These checks do not replace the
+post-activation acceptance with real training data.
 
 On first start, confirm the administrator bootstrap succeeds, then rotate or
 remove bootstrap-only credentials according to the deployment secret workflow.
@@ -90,7 +92,8 @@ start empty.
 ## Live acceptance
 
 A source check, image build or healthy container is necessary but insufficient.
-Before C1, verify through the shadow origin:
+Before C1, verify the complete list through the shadow origin. After the IaC
+cutover, repeat it through production `8011` and use a real provider-backed run:
 
 1. `/health` succeeds; separately verify the deployed `APP_REVISION` through
    the IaC/container configuration against the intended source revision.
@@ -118,6 +121,10 @@ snapshot plus the standalone state and cover directories into
 containers. Validate archive contents and perform a restore rehearsal into
 separate temporary paths before relying on it.
 
+After production acceptance has created real runs, take a new backup and repeat
+the restore rehearsal into separate paths. Verify the restored run, score,
+debrief, session continuity, state and covers before declaring recovery proven.
+
 The repository scripts target only the standalone project:
 
 ```bash
@@ -135,14 +142,11 @@ Restore only a backup produced by this standalone service. Stop writers first,
 resolve and verify every absolute target path, restore database/state/covers as
 one versioned set, and then repeat the live-acceptance checks.
 
-## Cutover and rollback
+## Cutover and recovery
 
 At C1, IaC changes the standalone listener from shadow `18011` to production
-`8011` only after the original Showroom has released that port. Preserve the
-original RP deployment and its data during the rollback window.
-
-Rollback reverses routing/port ownership to the original Showroom and stops the
-standalone project without deleting its data. Because the recommended migration
-uses a fresh database, rollback does not require merging new training writes
-back into the RP database. Export of post-cutover training results, if required,
-is a separate reviewed operation.
+`8011` after the old Awareness/Showroom services have released that port. There
+is no rollback to the original Showroom (`rollback window = 0`). Operational
+recovery means redeploying the last known-good standalone revision and restoring
+its matching standalone backup, then repeating live acceptance. Never merge
+training writes into the RP database.

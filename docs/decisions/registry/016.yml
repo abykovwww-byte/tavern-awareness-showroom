@@ -1,8 +1,0 @@
-- requirement: "RP living story memory reaches the narrator prompt on a later RP turn"
-  level: подключено
-  store: "rp_story_memory_snapshots"
-  assertion: prompt_presence
-  expectation: rp_story_memory_reaches_next_turn_prompt
-  probe_command: null
-  expected: null
-  waiver: "The v2 active-only projection is connected and covered offline; a deployed later-turn causal probe is still pending."

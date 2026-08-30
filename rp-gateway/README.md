@@ -37,9 +37,12 @@ GET      /api/worldpacks
 GET      /api/model-profiles
 GET/POST /api/showroom/*
 GET/POST /api/admin/showroom/*
+GET/PUT  /api/admin/datasets/*
 GET/POST /api/admin/autotests/*
 GET      /health
 ```
 
 The public browser contract is `/api/showroom/*`; internal `party_id` values
-are not exposed to visitors.
+are not exposed to visitors. An administrator discovers the exact training run
+to `party_id` mapping through `GET /api/admin/showroom/runs` before dataset
+review or an isolated autotest branch.

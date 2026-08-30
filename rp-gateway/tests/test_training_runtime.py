@@ -673,10 +673,8 @@ def test_training_debrief_accepts_natural_score_wording_and_recommendations(tmp_
         scenario_type="training",
         training_runtime=runtime,
     )
-    rp_result = OutputValidator().validate("Рекомендации:\nСлужебный разбор.", outcome, {}, scenario_type="rp")
     expected_violation = "Narrative exposed analysis, recommendation, or diagnostic labels to the player."
     assert expected_violation in normal_result.violations
-    assert expected_violation in rp_result.violations
     for forbidden_label in ("Diagnostics:\ninternal", "Gateway:\ninternal"):
         debrief_with_service_label = OutputValidator().validate(
             f"{text}\n\n{forbidden_label}",
