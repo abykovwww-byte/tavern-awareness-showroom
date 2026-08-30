@@ -301,6 +301,12 @@ class TrainingRuntimeService:
         interaction_contract: dict[str, Any] | None = None,
     ) -> str:
         """Apply canonical boundaries that do not require narrator judgment."""
+        text = text.replace("\r\n", "\n").translate({
+            ord("\r"): "\n",
+            ord("\u0085"): "\n",
+            ord("\u2028"): "\n",
+            ord("\u2029"): "\n",
+        })
         contract = self.prompt_contract(state, interaction_contract)
         if not contract:
             return text
@@ -435,11 +441,20 @@ class TrainingRuntimeService:
             blocks = self.structured_surface_blocks(text, marker)
             expected = int(surface.get("count", 1))
             if len(blocks) != expected:
+                marker_counts: dict[str, int] = {}
+                for declared_surface in surfaces:
+                    declared_marker = self.surface_marker(declared_surface)
+                    marker_counts[declared_marker] = marker_counts.get(declared_marker, 0) + max(
+                        int(declared_surface.get("count", 1) or 1), 1
+                    )
                 return [(
                     "soft",
                     f"Training turn must contain exactly {expected} {marker} block(s).",
-                    f"Верни ровно {expected} полных блока «{marker}»; "
-                    "каждый маркер должен стоять на отдельной строке, а все поля и authored facts остаются обязательными.",
+                    "Перепиши весь visible response целиком, а не отдельный фрагмент. "
+                    "Полный состав блоков задан JSON-объектом (это инструкция, не текст ответа): "
+                    + json.dumps(marker_counts, ensure_ascii=False, separators=(",", ":"))
+                    + ". Выведи ровно это количество; каждый маркер должен стоять на отдельной строке без Markdown и нумерации; "
+                    "заполни все поля и must_include из ACTIVE_TRAINING_TURN_CONTRACT, сохрани fresh wording тела.",
                 )]
             surface_blocks.append((surface, "\n".join(blocks)))
 

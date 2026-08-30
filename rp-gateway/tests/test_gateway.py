@@ -143,6 +143,7 @@ def client(tmp_path: Path, mode: str = "success", api_key: str = "test-key", **s
         "party_state_root": str(tmp_path / "state" / "parties"),
         "showroom_cover_dir": str(tmp_path / "showroom-covers"),
         "worldpacks_path": str(tmp_path / "worldpacks"),
+        "showroom_catalog_path": "",
         "llm_api_base": f"mock://{mode}",
         "llm_api_key": api_key,
         "gemini_api_base": f"mock://{mode}",
@@ -818,9 +819,25 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
         assert interaction_contract is None or isinstance(interaction_contract, dict)
         visible = runtime.fallback_text(state, interaction_contract)
         if turn == 1 and not repairing:
-            visible = "Рабочий блок начался, но provider потерял обязательные структурные блоки."
+            visible = visible.replace("\n", "\u2028").replace("Подпись:", "Подпись отсутствует:")
+        if turn == 1 and repairing:
+            assert "Добавь видимое поле «Подпись:»" in str(repair_instruction)
+            assert "Полный состав блоков" not in str(repair_instruction)
+            visible = visible.replace(
+                "Утро в PT Security начинается с обычной рабочей загрузки:",
+                "Рабочее утро начинается с новой естественной формулировки:",
+                1,
+            )
         if turn == 2 and not repairing:
-            visible = visible.replace("От: Елена Шевелёва", "От: Посторонний", 1)
+            visible = visible.replace("ПИСЬМО", "ПИСЬМО-ПОВРЕЖДЕНО", 1)
+        if turn == 2 and repairing:
+            assert "весь visible response целиком" in str(repair_instruction)
+            assert '{"ПИСЬМО":1,"СООБЩЕНИЕ":1}' in str(repair_instruction)
+            visible = visible.replace(
+                "Рабочий блок продолжается по расписанию.",
+                "Новый рабочий блок продолжается по расписанию.",
+                1,
+            )
         if turn == 3:
             visible = visible.replace("Елена Шевелёва", "Посторонний")
         if turn == 4 and not repairing:
@@ -867,6 +884,7 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
     assert started.status_code == 200, started.text
     start_message = started.json()["choices"][0]["message"]
     assert start_message["content"].startswith("Ход 1.")
+    assert "новой естественной формулировки" in start_message["content"]
     assert not start_message["content"].lstrip().startswith("{")
     assert len(start_message["artifacts"]) == 1
     start_metadata = latest_turn_metadata(party_state_store)
@@ -889,6 +907,7 @@ def test_showroom_artifact_only_turn_keeps_materialized_provider_narrative(
             turn_two_content = response.json()["choices"][0]["message"]["content"]
             assert "От: Елена Шевелёва" in turn_two_content
             assert "От: Посторонний" not in turn_two_content
+            assert "Новый рабочий блок продолжается по расписанию." in turn_two_content
             assert turn_two_metadata["fallback"] is False
             assert turn_two_metadata["validator_valid"] is True
             assert turn_two_metadata["repaired"] is True

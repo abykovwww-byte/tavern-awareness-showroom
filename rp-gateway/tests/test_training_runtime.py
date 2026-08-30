@@ -64,6 +64,7 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     assert "must start with this exact authored header" not in prompt_block
     assert "VISIBLE_PLAIN_TEXT_FORMAT" in prompt_block
     assert "Emit exactly 1 ПИСЬМО block(s)." in prompt_block
+    assert 'surface marker counts (JSON instruction data, not visible output): {"ПИСЬМО":1}' in prompt_block
     assert "Канал: | От: | Кому:" in prompt_block
     assert "Every must_include item is mandatory" in prompt_block
     assert "never shorten, replace, or generalize" in prompt_block
@@ -493,6 +494,11 @@ def test_training_normalization_repairs_boundaries_and_no_link_marker_but_not_ur
     assert "Ссылки: нет" in normalized
     assert runtime.validate_narrative(normalized, state) == []
 
+    unicode_separated = runtime.fallback_text(state).replace("\n", "\u2028")
+    normalized_unicode = runtime.normalize_narrative(unicode_separated, state)
+    assert "\u2028" not in normalized_unicode
+    assert runtime.validate_narrative(normalized_unicode, state) == []
+
     with_url = runtime.fallback_text(state).replace("Ссылки: нет", "Ссылки: https://outside.example")
     normalized_url = runtime.normalize_narrative(with_url, state)
     assert "https://outside.example" in normalized_url
@@ -548,7 +554,9 @@ def test_training_block_shape_failure_returns_exactly_one_violation(tmp_path: Pa
     violations = runtime.validate_narrative(mutated, state)
     assert violations == ["Training turn must contain exactly 1 ПИСЬМО block(s)."]
     assert runtime.hard_violations(mutated, state) == []
-    assert "ровно 1 полных блока" in runtime.repair_instruction(mutated, state)
+    instruction = runtime.repair_instruction(mutated, state)
+    assert "весь visible response целиком" in instruction
+    assert '{"ПИСЬМО":1}' in instruction
 
 
 def test_training_attachment_and_debrief_score_invariants_remain_hard(tmp_path: Path):
@@ -847,6 +855,7 @@ def test_v3_multichannel_turn_accepts_two_emails_and_one_message(tmp_path: Path)
         ("email", 2),
         ("messenger", 1),
     ]
+    assert '{"ПИСЬМО":2,"СООБЩЕНИЕ":1}' in training_turn_prompt_block(contract)
     assert runtime.validate_narrative(narrative, state) == []
 
 
@@ -864,7 +873,9 @@ def test_v3_multichannel_turn_rejects_wrong_declared_count(tmp_path: Path):
         "Training turn must contain exactly 2 ПИСЬМО block(s)."
     ]
     assert runtime.hard_violations(narrative, state) == []
-    assert "ровно 2 полных блока" in runtime.repair_instruction(narrative, state)
+    instruction = runtime.repair_instruction(narrative, state)
+    assert "весь visible response целиком" in instruction
+    assert '{"ПИСЬМО":2,"СООБЩЕНИЕ":1}' in instruction
 
 
 def test_v3_turn_rejects_undeclared_surface_marker(tmp_path: Path):
