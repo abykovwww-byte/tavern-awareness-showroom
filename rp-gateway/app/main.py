@@ -2223,6 +2223,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     text = artifact_result.text
                 if workspace_contract and workspace_result.valid:
                     text = workspace_result.text
+                if runtime_service.enabled:
+                    text = runtime_service.normalize_narrative(text, narrative_state, interaction_contract)
                 if artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
             else:
@@ -2374,6 +2376,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     text = artifact_result.text
                 if workspace_contract and workspace_result.valid:
                     text = workspace_result.text
+                if runtime_service.enabled:
+                    text = runtime_service.normalize_narrative(text, narrative_state, interaction_contract)
                 if artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(response, text, artifact_result, workspace_result)
                 validation = validator.validate(

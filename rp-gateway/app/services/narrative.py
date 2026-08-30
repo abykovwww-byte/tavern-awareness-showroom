@@ -365,12 +365,23 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     format_rules: list[str] = []
     surfaces = contract.get("surfaces") if contract.get("kind") == "turn" else None
     if isinstance(surfaces, list) and surfaces:
+        marker_counts: dict[str, int] = {}
+        for surface in surfaces:
+            if not isinstance(surface, dict):
+                continue
+            marker = "ПИСЬМО" if surface.get("type") == "email" else "СООБЩЕНИЕ"
+            marker_counts[marker] = marker_counts.get(marker, 0) + max(
+                int(surface.get("count", 1) or 1), 1
+            )
         format_rules.extend(
             [
                 "VISIBLE_PLAIN_TEXT_FORMAT",
                 "Inside narrative_text use plain text with real line breaks. Do not use Markdown headings, emphasis, lists, blockquotes, code fences, HTML, or the characters < and >.",
                 "A surface marker is valid only when its whole line is exactly ПИСЬМО or СООБЩЕНИЕ, starting in the first column with no prefix, suffix, numbering, or decoration.",
                 "Start every declared field on its own new line. Write sender identities as 'От: Имя — login@domain' or 'От: Имя — handle', never inside angle brackets.",
+                "Required surface marker counts (JSON instruction data, not visible output): "
+                + json.dumps(marker_counts, ensure_ascii=False, separators=(",", ":"))
+                + ". Emit exactly these counts; every marker must be a separate whole line without Markdown or numbering.",
             ]
         )
         for surface in surfaces:
