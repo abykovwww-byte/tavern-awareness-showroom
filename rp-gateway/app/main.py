@@ -1059,6 +1059,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             response = adjudicator.normalize_response(raw, model_profile.model)
+            failed_provider_response_text = response_text(response)
             structured_valid = True
             structured_violations: list[str] = []
             if fallback_reason is None:
@@ -1189,7 +1190,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     start_outcome,
                     authorization,
                     repair_instruction,
-                    failed_response_text=text,
+                    failed_response_text=failed_provider_response_text,
                     memory_summary=memory_summary,
                     request_id=request_id,
                     artifact_contract=interaction_contract,

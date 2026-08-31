@@ -25,8 +25,8 @@ from app.services.training_workspace import TrainingWorkspaceService
 WORLD_PACKS_ROOT = Path(__file__).resolve().parents[2] / "worldpacks"
 
 
-def training_services(tmp_path: Path, turn: int = 1):
-    root = WORLD_PACKS_ROOT / "awareness"
+def training_services(tmp_path: Path, turn: int = 1, slug: str = "awareness"):
+    root = WORLD_PACKS_ROOT / slug
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pack = WorldPackSummary(
@@ -168,6 +168,64 @@ def test_weekly_turn_schema_owns_exact_surface_shape_and_links(tmp_path: Path):
     assert visible["properties"]["surface_1_1"]["properties"]["От:"]["type"] == "string"
     assert schema["properties"]["artifacts"]["minItems"] == 1
     assert schema["properties"]["workspace_files"]["minItems"] == 1
+
+
+def test_response_schema_guides_surface_semantics_in_body_value_without_defaults(tmp_path: Path):
+    state, runtime, artifact_service, _ = training_services(
+        tmp_path,
+        turn=1,
+        slug="awareness-one-day",
+    )
+    state["player"]["description"] = "Археолог по керамическим артефактам"
+    interaction = artifact_service.contract_for_state(state) or {}
+    turn_contract = runtime.prompt_contract(state, interaction)
+    assert turn_contract is not None
+
+    schema = training_interaction_response_format(interaction, turn_contract)["json_schema"]["schema"]
+    surface_contract = turn_contract["surfaces"][0]
+    surface_schema = schema["properties"]["visible_surfaces"]["properties"]["surface_1_1"]
+    required_fields = [str(field) for field in surface_contract["required_fields"]]
+    assert surface_schema["required"] == required_fields
+    assert list(surface_schema["properties"]) == required_fields
+    assert surface_schema["additionalProperties"] is False
+
+    body_schema = surface_schema["properties"]["Тело:"]
+    assert body_schema["type"] == "string"
+    assert body_schema["minLength"] == 1
+    assert body_schema["maxLength"] == 6000
+    for requirement in surface_contract["must_include"]:
+        assert requirement in body_schema["description"]
+    assert surface_contract["profile_adaptation_instruction"] in body_schema["description"]
+    assert "Value only for Тело:" in body_schema["description"]
+    assert "authored header" in body_schema["description"]
+
+    state["meta"]["turn"] = 3
+    messenger_contract = runtime.prompt_contract(state, {})
+    assert messenger_contract is not None
+    messenger_schema = training_interaction_response_format({}, messenger_contract)["json_schema"]["schema"]
+    messenger_surface_contract = messenger_contract["surfaces"][0]
+    messenger_surface_schema = messenger_schema["properties"]["visible_surfaces"]["properties"]["surface_1_1"]
+    messenger_fields = [str(field) for field in messenger_surface_contract["required_fields"]]
+    assert messenger_surface_schema["required"] == messenger_fields
+    assert list(messenger_surface_schema["properties"]) == messenger_fields
+    assert messenger_surface_schema["additionalProperties"] is False
+    text_schema = messenger_surface_schema["properties"]["Текст:"]
+    for requirement in messenger_surface_contract["must_include"]:
+        assert requirement in text_schema["description"]
+    assert messenger_surface_contract["profile_adaptation_instruction"] in text_schema["description"]
+    assert "Value only for Текст:" in text_schema["description"]
+
+    def assert_no_defaults(node: object) -> None:
+        if isinstance(node, dict):
+            assert "default" not in node
+            for value in node.values():
+                assert_no_defaults(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_no_defaults(value)
+
+    assert_no_defaults(schema)
+    assert_no_defaults(messenger_schema)
 
 
 def test_structured_bundle_renders_plain_public_text_and_legacy_interactions(tmp_path: Path):
@@ -329,6 +387,16 @@ def test_primary_and_repair_send_same_structured_schema_but_debrief_stays_plain(
     assert primary_payload["provider"]["require_parameters"] is True
     assert repair_payload["provider"]["require_parameters"] is True
     assert "visible_surfaces" in primary_payload["response_format"]["json_schema"]["schema"]["properties"]
+    repair_system_text = "\n".join(
+        str(message["content"])
+        for message in repair_payload["messages"]
+        if message.get("role") == "system"
+    )
+    assert "failed_response is the unrendered provider response" in repair_system_text
+    assert "Regardless of its current shape" in repair_system_text
+    assert "visible_surfaces field values" in repair_system_text
+    assert "never put the authored header" in repair_system_text
+    assert json.loads(repair_payload["messages"][-1]["content"])["failed_response"] == "bad"
     assert json.loads(response_text(primary_response))["schema_version"] == "rp-gateway.narrative-bundle.v3"
 
     debrief_state = dict(state)
