@@ -413,6 +413,29 @@ class TrainingRuntimeService:
                 " Перед ответом перепроверь каждый surface: число маркеров, required_fields, "
                 "must_include, profile_adaptation_instruction, effective_links и attachments."
             )
+            authored_requirements = [
+                {
+                    "surface_index": index,
+                    "must_include": [
+                        str(item).strip()
+                        for item in surface.get("must_include", [])
+                        if str(item).strip()
+                    ],
+                }
+                for index, surface in enumerate(contract.get("surfaces", []), start=1)
+                if isinstance(surface, dict) and surface.get("must_include")
+            ]
+            if authored_requirements:
+                instruction += (
+                    " Обязательные authored-требования для повторной проверки "
+                    "(JSON-инструкция, не текст ответа): "
+                    + json.dumps(
+                        authored_requirements,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "."
+                )
             profile_requirements = [
                 str(surface.get("profile_adaptation_instruction") or "").strip()
                 for surface in contract.get("surfaces", [])
@@ -536,13 +559,23 @@ class TrainingRuntimeService:
                         rf"(?mi)^Ссылки:[ \t]*{re.escape(display_url)}[ \t]*$",
                         surface_text,
                     )
+                    outside_urls = [
+                        url
+                        for url in urls
+                        if url.rstrip(".,;:!?)]}\"'»").casefold() != display_url.casefold()
+                    ]
                     if surface_text.count(display_url) != 1 or len(exact_link_lines) != 1:
                         issues.append((
                             "hard",
                             "Training turn must contain the active artifact URL exactly once on its standalone Ссылки line.",
-                            "",
+                            (
+                                "Оставь активный display_url ровно один раз и только значением поля «Ссылки:»; "
+                                "удали его из narrative_text и всех остальных полей."
+                                if not outside_urls
+                                else ""
+                            ),
                         ))
-                    if any(display_url.casefold() not in url.casefold() for url in urls):
+                    if outside_urls:
                         issues.append(("hard", "Training turn must not contain a URL outside the active artifact contract.", ""))
                 if not site and urls:
                     issues.append(("hard", "Training turn with disabled links must not contain a URL.", ""))
