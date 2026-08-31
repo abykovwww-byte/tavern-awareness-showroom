@@ -51,6 +51,7 @@ from app.services.context_budget import estimate_tokens, model_context_limit_tok
 from app.services.narrative import (
     ProviderRateLimitError,
     archived_memory_retrieval_block,
+    materialize_structured_training_response,
     response_text,
     uncompacted_archive_fallback_block,
 )
@@ -1058,8 +1059,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
 
             response = adjudicator.normalize_response(raw, model_profile.model)
-            text = response_text(response)
+            structured_valid = True
+            structured_violations: list[str] = []
             if fallback_reason is None:
+                structured_result = materialize_structured_training_response(
+                    response,
+                    training_turn_contract,
+                    interaction_contract,
+                )
+                response = structured_result.response
+                text = structured_result.text
+                structured_valid = structured_result.valid
+                structured_violations = structured_result.violations
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
                 workspace_result = workspace_service.materialize_response(response, workspace_contract)
                 if artifact_contract and artifact_result.valid:
@@ -1071,7 +1082,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     narrative_state,
                     interaction_contract,
                 )
-                if artifact_result.valid and workspace_result.valid:
+                if structured_valid and artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(
                         response,
                         text,
@@ -1079,6 +1090,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         workspace_result,
                     )
             else:
+                text = response_text(response)
                 artifact_result = artifact_service.fallback_materialization(
                     response,
                     text,
@@ -1102,6 +1114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             initial_violations = [
                 *validation.violations,
+                *structured_violations,
                 *artifact_result.violations,
                 *workspace_result.violations,
             ]
@@ -1125,15 +1138,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 interaction_contract,
             )
             runtime_violation_set = set(runtime_violations)
-            repair_allowed = not runtime_service.repair_blockers(
-                text,
-                narrative_state,
-                interaction_contract,
-            ) and not any(
-                violation not in runtime_violation_set for violation in validation.violations
+            repair_allowed = not structured_valid or (
+                not runtime_service.repair_blockers(
+                    text,
+                    narrative_state,
+                    interaction_contract,
+                )
+                and not any(
+                    violation not in runtime_violation_set for violation in validation.violations
+                )
             )
             invalid = (
-                not validation.valid
+                not structured_valid
+                or not validation.valid
                 or not artifact_result.valid
                 or not workspace_result.valid
             )
@@ -1149,6 +1166,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         [
                             repair_instruction,
                             "Return a valid narrative bundle: " + "; ".join(artifact_result.violations),
+                        ]
+                    ).strip()
+                if not structured_valid:
+                    repair_instruction = " ".join(
+                        [
+                            repair_instruction,
+                            "Верни полный JSON bundle v3 с точными visible_surfaces: "
+                            + "; ".join(structured_violations),
                         ]
                     ).strip()
                 if not workspace_result.valid:
@@ -1171,7 +1196,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     training_turn_contract=training_turn_contract,
                 )
                 response = adjudicator.normalize_response(raw, model_profile.model)
-                text = response_text(response)
+                structured_result = materialize_structured_training_response(
+                    response,
+                    training_turn_contract,
+                    interaction_contract,
+                )
+                response = structured_result.response
+                text = structured_result.text
+                structured_valid = structured_result.valid
+                structured_violations = structured_result.violations
                 artifact_result = artifact_service.materialize_response(response, artifact_contract)
                 workspace_result = workspace_service.materialize_response(response, workspace_contract)
                 if artifact_contract and artifact_result.valid:
@@ -1183,7 +1216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     narrative_state,
                     interaction_contract,
                 )
-                if artifact_result.valid and workspace_result.valid:
+                if structured_valid and artifact_result.valid and workspace_result.valid:
                     response = Adjudicator.merge_interaction_response(
                         response,
                         text,
@@ -1201,6 +1234,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 repair_violations = [
                     *validation.violations,
+                    *structured_violations,
                     *artifact_result.violations,
                     *workspace_result.violations,
                 ]
@@ -1219,7 +1253,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     party_turn=expected_party_turn,
                 )
 
-            if not validation.valid or not artifact_result.valid or not workspace_result.valid:
+            if (
+                not structured_valid
+                or not validation.valid
+                or not artifact_result.valid
+                or not workspace_result.valid
+            ):
                 fallback_reason = fallback_reason or "validation_failed"
                 transport_status = "invalid_response"
                 party_state_store.audit(
@@ -1229,6 +1268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "model": model_profile.model,
                         "violations": [
                             *validation.violations,
+                            *structured_violations,
                             *artifact_result.violations,
                             *workspace_result.violations,
                         ],

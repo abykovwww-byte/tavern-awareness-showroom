@@ -145,6 +145,7 @@ try {
     $trainingTests = @(
         "tests/test_awareness_one_day.py",
         "tests/test_training_runtime.py",
+        "tests/test_training_structured_narrative.py",
         "tests/test_training_artifacts.py",
         "tests/test_training_capabilities.py",
         "tests/test_showroom_portal.py",
