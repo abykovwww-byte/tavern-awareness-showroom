@@ -8,10 +8,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.models.schemas import InteractionEvidence, Intent, TrainingArtifactEventRequest, WorldPackSummary
+from app.models.schemas import (
+    InteractionEvidence,
+    Intent,
+    PatchOperation,
+    StatePatch,
+    TrainingArtifactEventRequest,
+    WorldPackSummary,
+)
 from app.services.narrative import training_artifact_prompt_block
 from app.services.rule_engine import RuleEngine
-from app.services.state_store import StateStore
+from app.services.state_store import StateStore, StateVersionConflict
 from app.services.training_artifacts import TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 
@@ -398,6 +405,168 @@ def test_event_is_idempotent_private_and_consumed_by_scoring(tmp_path: Path):
     assert service.pending_evidence() == []
     statuses = store.training_artifact_event_status_for_turn(turn_id)
     assert all(item["consumed"] for item in statuses)
+
+
+def test_turn_bundle_rolls_back_all_training_effects_and_retries_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store, service, state = artifact_service(tmp_path)
+    contract = service.contract_for_state(state)
+    materialized = service.materialize_response(response_with_bundle(contract), contract)
+    store.record_turn(
+        "atomic-artifact-turn-4",
+        "atomic-request-turn-4",
+        "Открываю письмо.",
+        materialized.text,
+        materialized.response,
+        int(store.current_version() or 1),
+        artifacts=materialized.persistence_records,
+    )
+    artifact = materialized.public_artifacts[0]
+    event = service.record_event(
+        TrainingArtifactEventRequest(
+            event_id="evt-atomic-link-0001",
+            artifact_id=artifact["artifact_id"],
+            artifact_revision=artifact["artifact_revision"],
+            event_type="link_opened",
+        )
+    )
+    evidence = service.pending_evidence()
+    _, score_patch = RuleEngine().resolve(
+        state,
+        Intent(desired_outcome="Продолжаю рабочий день."),
+        "score-atomic-ui-event",
+        campaign_id=AWARENESS_ONE_DAY_ID,
+        scenario_type="training",
+        interaction_evidence=evidence,
+        training_runtime=TrainingRuntimeService(service.worldpack, store),
+    )
+    response = {"choices": [{"message": {"role": "assistant", "content": "Следующий эпизод."}}]}
+
+    def database_snapshot() -> tuple[int, ...]:
+        with sqlite3.connect(store.sqlite_path) as connection:
+            return tuple(
+                int(value)
+                for value in connection.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM state_versions),
+                        (SELECT COUNT(*) FROM state_patches),
+                        (SELECT COUNT(*) FROM turns),
+                        (SELECT COUNT(*) FROM training_artifacts),
+                        (SELECT COUNT(*) FROM training_artifact_events WHERE consumed_turn_id IS NOT NULL)
+                    """
+                ).fetchone()
+            )
+
+    expected_version = int(store.current_version() or 0)
+    state_before = store.get_state()
+    database_before = database_snapshot()
+    state_file_before = store.state_path.read_bytes()
+    first_request = store.begin_turn_request("atomic-turn-5", "atomic-request-turn-5")
+    assert first_request["acquired"] is True
+    with pytest.raises(ValueError, match="invalid training artifact persistence record"):
+        store.commit_turn_bundle(
+            score_patch,
+            reason="turn:atomic-failure",
+            expected_state_version=expected_version,
+            idempotency_key="atomic-turn-5",
+            request_id="atomic-request-turn-5",
+            player_message="Продолжаю рабочий день.",
+            narrative_response="Следующий эпизод.",
+            response_json=response,
+            artifacts=[{}],
+            consumed_artifact_event_ids=[event.event_sequence],
+        )
+
+    assert store.get_state() == state_before
+    assert store.current_version() == expected_version
+    assert database_snapshot() == database_before
+    assert store.state_path.read_bytes() == state_file_before
+    assert [item.event_sequence for item in service.pending_evidence()] == [event.event_sequence]
+    store.fail_turn_request("atomic-turn-5", "simulated bundle failure")
+    retried_request = store.begin_turn_request("atomic-turn-5", "atomic-request-turn-5")
+    assert retried_request["acquired"] is True
+    assert retried_request["retried"] is True
+
+    original_write_state_file = store.write_state_file
+
+    def fail_state_mirror(_: dict) -> None:
+        raise OSError("simulated state mirror failure")
+
+    monkeypatch.setattr(store, "write_state_file", fail_state_mirror)
+    updated_state, turn_id = store.commit_turn_bundle(
+        score_patch,
+        reason="turn:atomic-retry",
+        expected_state_version=expected_version,
+        idempotency_key="atomic-turn-5",
+        request_id="atomic-request-turn-5",
+        player_message="Продолжаю рабочий день.",
+        narrative_response="Следующий эпизод.",
+        response_json=response,
+        consumed_artifact_event_ids=[event.event_sequence, event.event_sequence],
+    )
+    monkeypatch.setattr(store, "write_state_file", original_write_state_file)
+
+    assert int(updated_state["meta"]["state_version"]) == expected_version + 1
+    assert int(updated_state["player"]["resources"]["links-opened"]) == 1
+    assert service.pending_evidence() == []
+    assert store.state_path.read_bytes() == state_file_before
+    store.write_state_file(updated_state)
+    assert json.loads(store.state_path.read_text(encoding="utf-8")) == updated_state
+    with sqlite3.connect(store.sqlite_path) as connection:
+        assert connection.execute(
+            "SELECT consumed_turn_id FROM training_artifact_events WHERE id = ?",
+            (event.event_sequence,),
+        ).fetchone() == (turn_id,)
+    completed_replay = store.begin_turn_request("atomic-turn-5", "atomic-request-turn-5")
+    assert completed_replay == {
+        "acquired": False,
+        "status": "completed",
+        "response": response,
+    }
+
+    rejected_patch = StatePatch(
+        turn=int(updated_state["meta"]["turn"]) + 1,
+        check_id="score-atomic-consumed-event",
+        patch=[
+            PatchOperation(
+                op="replace",
+                path="/player/resources/links-opened",
+                value=int(updated_state["player"]["resources"]["links-opened"]),
+                reason="verify consumed event cannot be scored again",
+                turn=int(updated_state["meta"]["turn"]) + 1,
+            )
+        ],
+    )
+    committed_snapshot = database_snapshot()
+    with pytest.raises(StateVersionConflict, match="training artifact events changed before turn commit"):
+        store.commit_turn_bundle(
+            rejected_patch,
+            reason="turn:atomic-consumed-event",
+            expected_state_version=expected_version + 1,
+            idempotency_key="atomic-turn-6",
+            request_id="atomic-request-turn-6",
+            player_message="Повторяю действие.",
+            narrative_response="Повтор не засчитан.",
+            response_json=response,
+            consumed_artifact_event_ids=[event.event_sequence],
+        )
+    assert database_snapshot() == committed_snapshot
+
+    with pytest.raises(StateVersionConflict, match="expected"):
+        store.commit_turn_bundle(
+            rejected_patch,
+            reason="turn:atomic-stale-state",
+            expected_state_version=expected_version,
+            idempotency_key="atomic-turn-stale",
+            request_id="atomic-request-turn-stale",
+            player_message="Устаревший ход.",
+            narrative_response="Конфликт версии.",
+            response_json=response,
+        )
+    assert database_snapshot() == committed_snapshot
 
 
 def test_event_schema_forbids_transmitting_field_values():

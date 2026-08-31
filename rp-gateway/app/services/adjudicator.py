@@ -145,6 +145,9 @@ class Adjudicator:
         try:
             latest = self.latest_user_message(request)
             state = self.store.get_state()
+            expected_state_version = int(
+                state.get("meta", {}).get("state_version") or self.store.current_version() or 0
+            )
             expected_party_turn = int(state.get("meta", {}).get("turn", 0)) + 1
             self.record_trace_event(
                 request_id=request_id,
@@ -509,23 +512,23 @@ class Adjudicator:
                 llm_calls=llm_calls,
                 interaction_evidence=[item.model_dump(mode="json") for item in interaction_evidence],
             )
-            updated_state = self.store.apply_state_patch(patch, reason=f"turn:{request_id}")
-            version = int(updated_state.get("meta", {}).get("state_version", 0))
-            turn_id = self.store.record_turn(
-                idempotency_key,
-                request_id,
-                latest,
-                text,
-                response,
-                version,
-                prompt_messages,
-                turn_metadata,
+            updated_state, turn_id = self.store.commit_turn_bundle(
+                patch,
+                reason=f"turn:{request_id}",
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                request_id=request_id,
+                player_message=latest,
+                narrative_response=text,
+                response_json=response,
+                prompt_messages=prompt_messages,
+                metadata=turn_metadata,
                 artifacts=artifact_result.persistence_records if artifact_result else [],
                 consumed_artifact_event_ids=[item.event_sequence for item in artifact_evidence],
                 workspace_files=workspace_result.persistence_records if workspace_result else [],
                 consumed_workspace_event_ids=[item.event_sequence for item in workspace_evidence],
-                party_turn=int(updated_state["meta"]["turn"]),
             )
+            version = int(updated_state.get("meta", {}).get("state_version", 0))
             self.record_trace_event(
                 request_id=request_id,
                 phase_key="turn_commit",
