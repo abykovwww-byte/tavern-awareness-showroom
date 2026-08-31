@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import time
@@ -53,6 +54,68 @@ def latest_turn_metadata(client: TestClient, party_id: str) -> dict[str, object]
         ).fetchone()
     assert row is not None
     return json.loads(row[0])
+
+
+def structured_provider_content(
+    runtime: TrainingRuntimeService,
+    state: dict,
+    interaction: dict | None,
+) -> dict:
+    contract = runtime.prompt_contract(state, interaction)
+    assert contract is not None and contract["kind"] == "turn"
+    visible = runtime.fallback_text(state, interaction)
+    header = str(contract["header"]).strip()
+    question = str(contract.get("question") or "").strip()
+    visible = visible.removeprefix(header).lstrip()
+    if question and visible.endswith(question):
+        visible = visible[: -len(question)].rstrip()
+    marker_match = re.search(r"(?m)^(ПИСЬМО|СООБЩЕНИЕ)\s*$", visible)
+    assert marker_match is not None
+    blocks = {
+        "ПИСЬМО": iter(runtime.structured_surface_blocks(visible, "ПИСЬМО")),
+        "СООБЩЕНИЕ": iter(runtime.structured_surface_blocks(visible, "СООБЩЕНИЕ")),
+    }
+    structured: dict[str, dict[str, str]] = {}
+    for surface_index, surface in enumerate(contract["surfaces"], start=1):
+        marker = "ПИСЬМО" if surface["type"] == "email" else "СООБЩЕНИЕ"
+        fields = [str(field) for field in surface["required_fields"]]
+        for instance_index in range(1, int(surface.get("count", 1)) + 1):
+            lines = next(blocks[marker]).strip().splitlines()[1:]
+            positions: list[int] = []
+            search_from = 0
+            for field in fields:
+                position = next(
+                    index
+                    for index in range(search_from, len(lines))
+                    if lines[index].startswith(field)
+                )
+                positions.append(position)
+                search_from = position + 1
+            values: dict[str, str] = {}
+            for field_index, field in enumerate(fields):
+                start = positions[field_index]
+                end = positions[field_index + 1] if field_index + 1 < len(positions) else len(lines)
+                inline = lines[start][len(field) :].strip()
+                value_lines = ([inline] if inline else []) + lines[start + 1 : end]
+                values[field] = "\n".join(value_lines).strip()
+            structured[f"surface_{surface_index}_{instance_index}"] = values
+    site = interaction.get("site") if interaction else None
+    artifacts = []
+    if site:
+        artifacts.append(
+            {
+                "artifact_key": site["artifact_key"],
+                "blueprint_id": site["blueprint_id"],
+                "slots": {slot_id: "Учебная проверка" for slot_id in site["slots"]},
+            }
+        )
+    return {
+        "schema_version": "rp-gateway.narrative-bundle.v3",
+        "narrative_text": visible[: marker_match.start()].strip(),
+        "visible_surfaces": structured,
+        "artifacts": artifacts,
+        "workspace_files": [],
+    }
 
 
 def test_public_showroom_provider_turn_persists_training_progress(
@@ -111,37 +174,16 @@ def test_public_showroom_provider_turn_persists_training_progress(
         interaction = kwargs.get("artifact_contract")
         assert interaction is None or isinstance(interaction, dict)
         repair_instruction = args[5] if len(args) > 5 else kwargs.get("repair_instruction")
-        visible = runtime.fallback_text(state, interaction)
+        bundle = structured_provider_content(runtime, state, interaction)
         site = interaction.get("site") if interaction else None
-        content = visible
-        if site:
-            if turn == 3 and not repair_instruction:
-                visible = "Ссылки: нет"
-            elif turn == 3:
-                contract = runtime.prompt_contract(state, interaction)
-                assert contract is not None
-                header = str(contract["header"]).strip()
-                question = str(contract.get("question") or "").strip()
-                visible = visible.removeprefix(header).lstrip()
-                if question and visible.endswith(question):
-                    visible = visible[: -len(question)].rstrip()
-                assert not visible.startswith(header)
-                assert not visible.endswith(question)
-                visible = visible.replace("\n", "\u2028")
-            content = json.dumps(
-                {
-                    "schema_version": "rp-gateway.narrative-bundle.v1",
-                    "narrative_text": visible,
-                    "artifacts": [
-                        {
-                            "artifact_key": site["artifact_key"],
-                            "blueprint_id": site["blueprint_id"],
-                            "slots": {slot_id: "Учебная проверка" for slot_id in site["slots"]},
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-            )
+        if turn == 3 and not repair_instruction:
+            assert site is not None
+            bundle["visible_surfaces"]["surface_2_1"]["Ссылки:"] = "нет"
+        elif turn == 3:
+            for fields in bundle["visible_surfaces"].values():
+                for field, value in fields.items():
+                    fields[field] = value.replace("\n", "\u2028")
+        content = json.dumps(bundle, ensure_ascii=False)
         return {
             "id": f"training-provider-{turn}",
             "object": "chat.completion",

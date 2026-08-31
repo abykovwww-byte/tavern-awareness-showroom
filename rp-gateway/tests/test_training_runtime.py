@@ -60,10 +60,10 @@ def test_one_day_runtime_owns_turns_fallbacks_and_scoring(tmp_path: Path):
     assert prompt_contract["header"] == runtime.program["turns"][0]["header"]
     assert prompt_contract["question"] == runtime.program["turns"][0]["question"]
     prompt_block = training_turn_prompt_block(prompt_contract)
-    assert "Gateway applies the exact authored header and final question" in prompt_block
+    assert "Gateway renders markers, labels, the authored header, and the final question" in prompt_block
     assert "must start with this exact authored header" not in prompt_block
-    assert "VISIBLE_PLAIN_TEXT_FORMAT" in prompt_block
-    assert "Emit exactly 1 ПИСЬМО block(s)." in prompt_block
+    assert "STRUCTURED_VISIBLE_SURFACES_FORMAT" in prompt_block
+    assert "Fill exactly 1 ПИСЬМО surface value object(s)" in prompt_block
     assert 'surface marker counts (JSON instruction data, not visible output): {"ПИСЬМО":1}' in prompt_block
     assert "Канал: | От: | Кому:" in prompt_block
     assert "Every must_include item is mandatory" in prompt_block

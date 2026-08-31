@@ -18,6 +18,7 @@ from app.services.narrative import (
     NarrativeClient,
     PromptBudgetExceeded,
     ProviderRateLimitError,
+    materialize_structured_training_response,
     response_text,
     with_text,
 )
@@ -236,7 +237,13 @@ class Adjudicator:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                 )
-                text = response_text(raw)
+                structured_result = materialize_structured_training_response(
+                    raw,
+                    training_turn_contract,
+                    interaction_contract,
+                )
+                raw = structured_result.response
+                text = structured_result.text
                 if self.training_artifacts:
                     artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                     if artifact_contract and artifact_result.valid:
@@ -247,7 +254,11 @@ class Adjudicator:
                         text = workspace_result.text
                 if self.training_runtime and self.training_runtime.enabled:
                     text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
-                if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
+                if (
+                    structured_result.valid
+                    and (artifact_result is None or artifact_result.valid)
+                    and (workspace_result is None or workspace_result.valid)
+                ):
                     raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
 
                 validation = self.validator.validate(
@@ -260,8 +271,10 @@ class Adjudicator:
                     training_runtime=self.training_runtime,
                     interaction_contract=interaction_contract,
                 )
-                interaction_valid = (artifact_result.valid if artifact_result else True) and (
-                    workspace_result.valid if workspace_result else True
+                interaction_valid = (
+                    structured_result.valid
+                    and (artifact_result.valid if artifact_result else True)
+                    and (workspace_result.valid if workspace_result else True)
                 )
                 self.record_trace_event(
                     request_id=request_id,
@@ -276,6 +289,7 @@ class Adjudicator:
                             "valid": validation.valid and interaction_valid,
                             "violations": [
                                 *validation.violations,
+                                *structured_result.violations,
                                 *(artifact_result.violations if artifact_result else []),
                                 *(workspace_result.violations if workspace_result else []),
                             ],
@@ -286,7 +300,7 @@ class Adjudicator:
                 )
 
                 repair_allowed = True
-                if self.training_runtime and self.training_runtime.enabled:
+                if structured_result.valid and self.training_runtime and self.training_runtime.enabled:
                     runtime_violations = set(
                         self.training_runtime.validate_narrative(text, narrative_state, interaction_contract)
                     )
@@ -310,7 +324,15 @@ class Adjudicator:
                         repair_instruction = " ".join(
                             [
                                 repair_instruction,
-                                "Верни корректный JSON bundle: объект artifact должен содержать только разрешённые ключи и slots; fixed display_url оставь только в строке «Ссылки:» видимого narrative_text.",
+                                "Верни корректный JSON bundle: объект artifact должен содержать только разрешённые ключи и slots; fixed display_url оставь только в разрешённом поле «Ссылки:» visible_surfaces.",
+                            ]
+                        ).strip()
+                    if not structured_result.valid:
+                        repair_instruction = " ".join(
+                            [
+                                repair_instruction,
+                                "Верни полный JSON bundle v3 с точными visible_surfaces: "
+                                + "; ".join(structured_result.violations),
                             ]
                         ).strip()
                     if workspace_result and not workspace_result.valid:
@@ -333,7 +355,13 @@ class Adjudicator:
                         artifact_contract=interaction_contract,
                         training_turn_contract=training_turn_contract,
                     )
-                    text = response_text(raw)
+                    structured_result = materialize_structured_training_response(
+                        raw,
+                        training_turn_contract,
+                        interaction_contract,
+                    )
+                    raw = structured_result.response
+                    text = structured_result.text
                     if self.training_artifacts:
                         artifact_result = self.training_artifacts.materialize_response(raw, artifact_contract)
                         if artifact_contract and artifact_result.valid:
@@ -344,7 +372,11 @@ class Adjudicator:
                             text = workspace_result.text
                     if self.training_runtime and self.training_runtime.enabled:
                         text = self.training_runtime.normalize_narrative(text, narrative_state, interaction_contract)
-                    if (artifact_result is None or artifact_result.valid) and (workspace_result is None or workspace_result.valid):
+                    if (
+                        structured_result.valid
+                        and (artifact_result is None or artifact_result.valid)
+                        and (workspace_result is None or workspace_result.valid)
+                    ):
                         raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
                     validation = self.validator.validate(
                         text,
@@ -356,8 +388,10 @@ class Adjudicator:
                         training_runtime=self.training_runtime,
                         interaction_contract=interaction_contract,
                     )
-                    interaction_valid = (artifact_result.valid if artifact_result else True) and (
-                        workspace_result.valid if workspace_result else True
+                    interaction_valid = (
+                        structured_result.valid
+                        and (artifact_result.valid if artifact_result else True)
+                        and (workspace_result.valid if workspace_result else True)
                     )
                     self.record_trace_event(
                         request_id=request_id,
@@ -372,6 +406,7 @@ class Adjudicator:
                                 "valid": validation.valid and interaction_valid,
                                 "violations": [
                                     *validation.violations,
+                                    *structured_result.violations,
                                     *(artifact_result.violations if artifact_result else []),
                                     *(workspace_result.violations if workspace_result else []),
                                 ],
@@ -391,6 +426,7 @@ class Adjudicator:
                             "model": self.settings.narrative_model,
                             "violations": [
                                 *validation.violations,
+                                *structured_result.violations,
                                 *(artifact_result.violations if artifact_result else []),
                                 *(workspace_result.violations if workspace_result else []),
                             ],

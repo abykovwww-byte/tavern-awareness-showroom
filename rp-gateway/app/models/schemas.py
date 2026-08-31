@@ -392,6 +392,18 @@ class NarrativeBundle(BaseModel):
     workspace_files: list[NarrativeWorkspaceFileContent] = Field(default_factory=list, max_length=8)
 
 
+class StructuredNarrativeBundle(BaseModel):
+    """Provider-only bundle; Gateway renders its visible surface fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["rp-gateway.narrative-bundle.v3"]
+    narrative_text: str = Field(max_length=30000)
+    visible_surfaces: dict[str, dict[str, str]] = Field(min_length=1, max_length=20)
+    artifacts: list[NarrativeArtifactContent] = Field(max_length=4)
+    workspace_files: list[NarrativeWorkspaceFileContent] = Field(max_length=8)
+
+
 class TrainingArtifactSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

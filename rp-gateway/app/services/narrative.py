@@ -8,12 +8,14 @@ import logging
 import json
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import httpx
+from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.models.schemas import ChatCompletionRequest, Outcome
+from app.models.schemas import ChatCompletionRequest, Outcome, StructuredNarrativeBundle
 from app.services.context_budget import estimate_tokens
 from app.services.provider_catalog import normalize_provider
 from app.services.provider_auth import outbound_headers
@@ -21,6 +23,23 @@ from app.services.trace_redaction import redact_trace_value
 
 
 logger = logging.getLogger(__name__)
+
+FORBIDDEN_STRUCTURED_MARKUP_RE = re.compile(
+    r"[<>]|(?:javascript|data|vbscript):|`|\*\*|__|(?m:^\s*(?:#{1,6}\s|[-*+]\s|>\s))",
+    re.IGNORECASE,
+)
+VISIBLE_URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
+
+
+def _canonical_provider_line_breaks(value: str) -> str:
+    return value.replace("\r\n", "\n").translate(
+        {
+            ord("\r"): "\n",
+            ord("\u0085"): "\n",
+            ord("\u2028"): "\n",
+            ord("\u2029"): "\n",
+        }
+    )
 
 
 class PromptBudgetExceeded(RuntimeError):
@@ -58,8 +77,8 @@ class PromptBudgetExceeded(RuntimeError):
 
 def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     output_rules = [
-        "Return only the final visible narration: no analysis, preamble, commentary, or Markdown fences. If a TRAINING_INTERACTION_CONTRACT is also supplied, put that narration only in its narrative_text JSON field.",
-        "Write fresh natural wording for the visible surface body. Gateway applies the exact authored header and final question.",
+        "Return only the requested provider response: no analysis, preamble, commentary, or Markdown fences.",
+        "For an active turn, follow the supplied JSON schema: put only optional scene-setting prose in narrative_text and put each visible field value in the exact visible_surfaces object. Gateway renders markers, labels, the authored header, and the final question.",
         "The current ACTIVE_TRAINING_TURN_CONTRACT has priority over every earlier turn and message.",
         "Every must_include item is mandatory. Preserve complete authored sender names; never shorten, replace, or generalize them.",
     ]
@@ -76,13 +95,13 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
             )
         format_rules.extend(
             [
-                "VISIBLE_PLAIN_TEXT_FORMAT",
-                "Inside narrative_text use plain text with real line breaks. Do not use Markdown headings, emphasis, lists, blockquotes, code fences, HTML, or the characters < and >.",
-                "A surface marker is valid only when its whole line is exactly ПИСЬМО or СООБЩЕНИЕ, starting in the first column with no prefix, suffix, numbering, or decoration.",
-                "Start every declared field on its own new line. Write sender identities as 'От: Имя — login@domain' or 'От: Имя — handle', never inside angle brackets.",
+                "STRUCTURED_VISIBLE_SURFACES_FORMAT",
+                "Do not put ПИСЬМО/СООБЩЕНИЕ marker lines, field labels, the authored header, or the final question in narrative_text; Gateway adds them after decoding.",
+                "Fill every required field value in visible_surfaces. Do not repeat the field label inside its value. Write sender identities as 'Имя — login@domain' or 'Имя — handle', never inside angle brackets.",
+                "Do not use Markdown, HTML, angle brackets, or Markdown-formatted links in narrative_text or any field value.",
                 "Required surface marker counts (JSON instruction data, not visible output): "
                 + json.dumps(marker_counts, ensure_ascii=False, separators=(",", ":"))
-                + ". Emit exactly these counts; every marker must be a separate whole line without Markdown or numbering.",
+                + ". The response schema provides one exact visible_surfaces key for every required block.",
             ]
         )
         for surface in surfaces:
@@ -91,10 +110,12 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
             marker = "ПИСЬМО" if surface.get("type") == "email" else "СООБЩЕНИЕ"
             count = max(int(surface.get("count", 1) or 1), 1)
             fields = [str(field) for field in surface.get("required_fields", [])]
-            format_rules.append(f"Emit exactly {count} {marker} block(s).")
+            format_rules.append(
+                f"Fill exactly {count} {marker} surface value object(s) using the exact visible_surfaces keys assigned by the response schema."
+            )
             if fields:
                 format_rules.append(
-                    f"Every {marker} block must contain these labels at the start of separate lines: {' | '.join(fields)}"
+                    f"Every {marker} value object must contain exactly these JSON keys; put only field values inside them: {' | '.join(fields)}"
                 )
             links_policy = str(surface.get("links", "none"))
             effective_links = surface.get("effective_links")
@@ -103,12 +124,14 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
                 and isinstance(effective_links, dict)
                 and not effective_links.get("enabled")
             ):
-                format_rules.append(f"Every {marker} block must contain the exact standalone line 'Ссылки: нет' and no URL.")
+                format_rules.append(
+                    f"Set the 'Ссылки:' JSON value to exact 'нет' in every {marker} object and put no URL in other values."
+                )
             elif links_policy == "artifact" and isinstance(effective_links, dict):
                 display_url = str(effective_links.get("display_url") or "").strip()
                 if display_url:
                     format_rules.append(
-                        f"Across the {marker} block(s), put the exact URL {display_url} once and only as the value of a 'Ссылки:' line; use 'Ссылки: нет' in every other {marker} block and never repeat the URL in body text."
+                        f"Set the first {marker} object's 'Ссылки:' JSON value to exact {display_url}; set it to 'нет' in every other {marker} object and never repeat the URL in other values."
                     )
     return "\n".join(
         [
@@ -123,11 +146,23 @@ def training_turn_prompt_block(contract: dict[str, Any]) -> str:
     )
 
 
-def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
+def training_artifact_prompt_block(
+    contract: dict[str, Any],
+    training_turn_contract: dict[str, Any] | None = None,
+) -> str:
     site = contract.get("site") if "site" in contract or "workspace" in contract else contract
     workspace = contract.get("workspace") if "site" in contract or "workspace" in contract else None
     lines = ["TRAINING_INTERACTION_CONTRACT"]
-    if workspace:
+    structured_turn = bool(training_turn_contract and training_turn_contract.get("kind") == "turn")
+    if structured_turn:
+        lines.extend(
+            [
+                "Return exactly one JSON object with schema_version rp-gateway.narrative-bundle.v3, narrative_text, visible_surfaces, artifacts, and workspace_files.",
+                "Use narrative_text only for optional scene-setting prose. Fill the exact visible_surfaces keys and fields required by the response schema; Gateway renders the visible blocks.",
+                "For workspace_files emit exactly supplied file_key and blueprint_id values and fill only declared string slots.",
+            ]
+        )
+    elif workspace:
         lines.extend(
             [
                 "Return exactly one JSON object with schema_version rp-gateway.narrative-bundle.v2, narrative_text, artifacts, and workspace_files.",
@@ -137,17 +172,23 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
     else:
         lines.append("Return exactly one JSON object with schema_version rp-gateway.narrative-bundle.v1, narrative_text, and artifacts.")
     if site:
+        lines.append("Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.")
+        if structured_turn:
+            lines.append(
+                "The fixed display_url is Gateway-owned. Use only the exact value allowed by the response schema and never copy it into narrative_text, body text, or artifact slots."
+            )
+        else:
+            lines.append("Put the exact fixed display_url only in the visible narrative_text field line 'Ссылки:'.")
+        lines.append("Do not emit display_url or any other fixed URL field inside an artifact object.")
+    if not structured_turn:
         lines.extend(
             [
-                "Emit exactly the supplied artifact_key and blueprint_id and fill only the declared string slots.",
-                "Put the exact fixed display_url only in the visible narrative_text field line 'Ссылки:'.",
-                "Do not emit display_url or any other fixed URL field inside an artifact object.",
+                "Put the complete visible surface body inside narrative_text; Gateway applies the exact authored header and final question.",
+                "After JSON decoding, narrative_text must obey VISIBLE_PLAIN_TEXT_FORMAT: preserve the required line breaks and literal undecorated ПИСЬМО/СООБЩЕНИЕ marker lines.",
             ]
         )
     lines.extend(
         [
-            "Put the complete visible surface body inside narrative_text; Gateway applies the exact authored header and final question.",
-            "After JSON decoding, narrative_text must obey VISIBLE_PLAIN_TEXT_FORMAT: preserve the required line breaks and literal undecorated ПИСЬМО/СООБЩЕНИЕ marker lines.",
             "Inside narrative_text and generated slots do not use Markdown, HTML, angle brackets, or Markdown-formatted links. Write sender identities after an em dash.",
             "Do not put any text before or after the JSON object. Do not wrap it in a Markdown code fence.",
             "Never emit HTML, CSS, JavaScript, remote assets, credentials, paths, MIME types, file classification, answer keys, scoring, correctness, or remediation.",
@@ -157,10 +198,41 @@ def training_artifact_prompt_block(contract: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, Any]:
+def _expanded_training_surfaces(
+    contract: dict[str, Any] | None,
+) -> list[tuple[str, dict[str, Any], int]]:
+    if not contract or contract.get("kind") != "turn":
+        return []
+    expanded: list[tuple[str, dict[str, Any], int]] = []
+    for surface_index, surface in enumerate(contract.get("surfaces") or [], start=1):
+        if not isinstance(surface, dict):
+            continue
+        count = max(int(surface.get("count", 1) or 1), 1)
+        for instance_index in range(1, count + 1):
+            expanded.append((f"surface_{surface_index}_{instance_index}", surface, instance_index))
+    return expanded
+
+
+def _surface_link_value(surface: dict[str, Any], instance_index: int) -> str:
+    effective = surface.get("effective_links")
+    if (
+        surface.get("links") == "artifact"
+        and isinstance(effective, dict)
+        and effective.get("enabled")
+        and instance_index == 1
+    ):
+        return str(effective.get("display_url") or "").strip()
+    return "нет"
+
+
+def training_interaction_response_format(
+    contract: dict[str, Any],
+    training_turn_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     combined = "site" in contract or "workspace" in contract
     site = contract.get("site") if combined else contract
     workspace = contract.get("workspace") if combined else None
+    structured_surfaces = _expanded_training_surfaces(training_turn_contract)
 
     def slots_schema(slots: dict[str, Any]) -> dict[str, Any]:
         properties = {
@@ -205,18 +277,22 @@ def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, 
         "schema_version": {
             "type": "string",
             "enum": [
-                "rp-gateway.narrative-bundle.v2"
-                if workspace
-                else "rp-gateway.narrative-bundle.v1"
+                "rp-gateway.narrative-bundle.v3"
+                if structured_surfaces
+                else (
+                    "rp-gateway.narrative-bundle.v2"
+                    if workspace
+                    else "rp-gateway.narrative-bundle.v1"
+                )
             ],
         },
         "narrative_text": {
             "type": "string",
             "description": (
-                "Visible plain text with real line breaks. Surface markers are literal undecorated standalone "
-                "ПИСЬМО or СООБЩЕНИЕ lines; every field starts on a new line; no Markdown, HTML, or angle brackets."
+                "Optional scene-setting prose only when visible_surfaces is present; no URLs, markup, "
+                "surface markers, field labels, authored header, or final question. Otherwise the complete visible text."
             ),
-            "minLength": 1,
+            "minLength": 0 if structured_surfaces else 1,
             "maxLength": 30000,
         },
         "artifacts": {
@@ -227,14 +303,55 @@ def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, 
         },
     }
     required = ["schema_version", "narrative_text", "artifacts"]
-    if workspace:
-        files = list(workspace.get("files") or [])
+    if structured_surfaces:
+        visible_properties: dict[str, Any] = {}
+        for surface_key, surface, instance_index in structured_surfaces:
+            field_properties: dict[str, Any] = {}
+            field_names = [str(field).strip() for field in surface.get("required_fields") or []]
+            for field_name in field_names:
+                value_schema: dict[str, Any] = {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 6000,
+                }
+                if field_name == "Ссылки:":
+                    value_schema["enum"] = [_surface_link_value(surface, instance_index)]
+                field_properties[field_name] = value_schema
+            visible_properties[surface_key] = {
+                "type": "object",
+                "additionalProperties": False,
+                "required": field_names,
+                "properties": field_properties,
+            }
+        properties["visible_surfaces"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": list(visible_properties),
+            "properties": visible_properties,
+        }
+        required.append("visible_surfaces")
+
+    if workspace or structured_surfaces:
+        files = list((workspace or {}).get("files") or [])
         file_schemas = [content_schema(item, "file_key") for item in files]
         properties["workspace_files"] = {
             "type": "array",
             "minItems": len(files),
             "maxItems": len(files),
-            "items": file_schemas[0] if len(file_schemas) == 1 else {"anyOf": file_schemas},
+            "items": (
+                file_schemas[0]
+                if len(file_schemas) == 1
+                else (
+                    {"anyOf": file_schemas}
+                    if file_schemas
+                    else {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [],
+                        "properties": {},
+                    }
+                )
+            ),
         }
         required.append("workspace_files")
     return {
@@ -250,6 +367,141 @@ def training_interaction_response_format(contract: dict[str, Any]) -> dict[str, 
             },
         },
     }
+
+
+@dataclass(frozen=True)
+class StructuredNarrativeMaterialization:
+    response: dict[str, Any]
+    text: str
+    valid: bool
+    violations: list[str]
+
+
+def materialize_structured_training_response(
+    response: dict[str, Any],
+    training_turn_contract: dict[str, Any] | None,
+    interaction_contract: dict[str, Any] | None,
+) -> StructuredNarrativeMaterialization:
+    """Render a provider-only v3 bundle while preserving the legacy public response."""
+
+    raw_text = response_text(response)
+    expected = _expanded_training_surfaces(training_turn_contract)
+    if not expected:
+        return StructuredNarrativeMaterialization(response, raw_text, True, [])
+    try:
+        decoded = json.loads(json_object_content(raw_text))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return StructuredNarrativeMaterialization(
+            response,
+            raw_text,
+            False,
+            ["active training turn requires a structured narrative bundle v3"],
+        )
+    if not isinstance(decoded, dict) or decoded.get("schema_version") != "rp-gateway.narrative-bundle.v3":
+        return StructuredNarrativeMaterialization(
+            response,
+            raw_text,
+            False,
+            ["active training turn requires schema_version rp-gateway.narrative-bundle.v3"],
+        )
+    try:
+        bundle = StructuredNarrativeBundle.model_validate(decoded)
+    except ValidationError as exc:
+        return StructuredNarrativeMaterialization(
+            response,
+            raw_text,
+            False,
+            [f"invalid structured narrative bundle: {str(exc)[:500]}"],
+        )
+
+    violations: list[str] = []
+    expected_keys = [item[0] for item in expected]
+    if set(bundle.visible_surfaces) != set(expected_keys):
+        violations.append("visible_surfaces do not exactly match the active training turn")
+    rendered_blocks: list[str] = []
+    multiline_fields = {"Тело:", "Текст:", "Подпись:"}
+    marker_pattern = re.compile(r"(?m)^(ПИСЬМО|СООБЩЕНИЕ)\s*$")
+    lead = _canonical_provider_line_breaks(bundle.narrative_text).strip()
+    known_fields = {
+        str(field).strip()
+        for _, surface, _ in expected
+        for field in surface.get("required_fields") or []
+    }
+    field_line_pattern = re.compile(
+        r"(?m)^\s*(?:" + "|".join(re.escape(field) for field in sorted(known_fields)) + r")",
+        re.IGNORECASE,
+    )
+    if marker_pattern.search(lead):
+        violations.append("narrative_text must not contain visible surface markers")
+    if VISIBLE_URL_RE.search(lead):
+        violations.append("narrative_text must not contain a URL")
+    if FORBIDDEN_STRUCTURED_MARKUP_RE.search(lead):
+        violations.append("narrative_text must not contain markup")
+    if field_line_pattern.search(lead):
+        violations.append("narrative_text must not contain visible field labels")
+    for boundary_key in ("header", "question"):
+        boundary = str((training_turn_contract or {}).get(boundary_key) or "").strip()
+        if boundary and boundary in lead:
+            violations.append(f"narrative_text must not contain the authored {boundary_key}")
+    for surface_key, surface, instance_index in expected:
+        supplied_fields = bundle.visible_surfaces.get(surface_key)
+        if supplied_fields is None:
+            continue
+        expected_fields = [str(field).strip() for field in surface.get("required_fields") or []]
+        if set(supplied_fields) != set(expected_fields):
+            violations.append(f"{surface_key} fields do not exactly match the active training turn")
+            continue
+        lines = ["ПИСЬМО" if surface.get("type") == "email" else "СООБЩЕНИЕ"]
+        for field_name in expected_fields:
+            value = _canonical_provider_line_breaks(supplied_fields[field_name]).strip()
+            if not value:
+                violations.append(f"{surface_key} has an empty field: {field_name}")
+                continue
+            if field_name not in multiline_fields and ("\n" in value or "\r" in value):
+                violations.append(f"{surface_key} has a multiline single-line field: {field_name}")
+            if marker_pattern.search(value):
+                violations.append(f"{surface_key} contains an injected visible surface marker")
+            if FORBIDDEN_STRUCTURED_MARKUP_RE.search(value):
+                violations.append(f"{surface_key} contains forbidden markup")
+            if field_line_pattern.search(value):
+                violations.append(f"{surface_key} contains an injected visible field label")
+            if field_name == "Ссылки:" and value != _surface_link_value(surface, instance_index):
+                violations.append(f"{surface_key} has a non-authoritative link value")
+            lines.append(field_name if field_name in multiline_fields else f"{field_name} {value}")
+            if field_name in multiline_fields:
+                lines.append(value)
+        rendered_blocks.append("\n".join(lines))
+
+    combined = "site" in (interaction_contract or {}) or "workspace" in (interaction_contract or {})
+    site = (interaction_contract or {}).get("site") if combined else interaction_contract
+    workspace = (interaction_contract or {}).get("workspace") if combined else None
+    if not site and bundle.artifacts:
+        violations.append("structured narrative bundle contains undeclared artifacts")
+    if not workspace and bundle.workspace_files:
+        violations.append("structured narrative bundle contains undeclared workspace_files")
+    if violations:
+        return StructuredNarrativeMaterialization(response, raw_text, False, violations)
+
+    parts = [lead, *rendered_blocks]
+    rendered_text = "\n\n".join(part for part in parts if part)
+    if interaction_contract:
+        legacy_bundle: dict[str, Any] = {
+            "schema_version": (
+                "rp-gateway.narrative-bundle.v2"
+                if workspace
+                else "rp-gateway.narrative-bundle.v1"
+            ),
+            "narrative_text": rendered_text,
+            "artifacts": [item.model_dump(mode="json") for item in bundle.artifacts],
+        }
+        if workspace:
+            legacy_bundle["workspace_files"] = [
+                item.model_dump(mode="json") for item in bundle.workspace_files
+            ]
+        bridged = with_text(response, json.dumps(legacy_bundle, ensure_ascii=False))
+        return StructuredNarrativeMaterialization(bridged, rendered_text, True, [])
+    rendered = with_text(response, rendered_text)
+    return StructuredNarrativeMaterialization(rendered, rendered_text, True, [])
 
 
 class ProviderRateLimitError(RuntimeError):
@@ -334,8 +586,14 @@ class NarrativeClient:
                 artifact_contract=artifact_contract,
                 training_turn_contract=training_turn_contract,
             )
-        if artifact_contract:
+        if training_turn_contract and training_turn_contract.get("kind") == "turn":
+            payload["response_format"] = training_interaction_response_format(
+                artifact_contract or {},
+                training_turn_contract,
+            )
+        elif artifact_contract:
             payload["response_format"] = training_interaction_response_format(artifact_contract)
+        response_format_enabled = "response_format" in payload
         self.apply_prompt_cache_policy(payload)
         payload["stream"] = False
         narrator_settings_model = (request._narrator_settings_model or "").strip().lower()
@@ -350,11 +608,17 @@ class NarrativeClient:
             self.apply_model_policy(
                 attempt_payload,
                 self.settings.narrative_model,
-                require_parameters=uses_narrator_settings or bool(artifact_contract),
+                require_parameters=uses_narrator_settings or response_format_enabled,
             )
             started = time.perf_counter()
             try:
-                data = self.mock_completion(outcome, repair_instruction, artifact_contract, state=state)
+                data = self.mock_completion(
+                    outcome,
+                    repair_instruction,
+                    artifact_contract,
+                    state=state,
+                    training_turn_contract=training_turn_contract,
+                )
             except Exception as exc:
                 self.record_trace_attempt(
                     request_id=request_id,
@@ -399,7 +663,7 @@ class NarrativeClient:
                 self.apply_model_policy(
                     attempt_payload,
                     model,
-                    require_parameters=uses_narrator_settings or bool(artifact_contract),
+                    require_parameters=uses_narrator_settings or response_format_enabled,
                 )
                 empty_response_retry_used = False
                 while True:
@@ -769,7 +1033,15 @@ class NarrativeClient:
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
-            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+            messages.append(
+                {
+                    "role": "system",
+                    "content": training_artifact_prompt_block(
+                        artifact_contract,
+                        training_turn_contract,
+                    ),
+                }
+            )
         if request_messages:
             current_action = request_messages[-1]
             messages.append({"role": current_action.role, "content": current_action.content})
@@ -836,7 +1108,15 @@ class NarrativeClient:
         if training_turn_contract:
             messages.append({"role": "system", "content": training_turn_prompt_block(training_turn_contract)})
         if artifact_contract:
-            messages.append({"role": "system", "content": training_artifact_prompt_block(artifact_contract)})
+            messages.append(
+                {
+                    "role": "system",
+                    "content": training_artifact_prompt_block(
+                        artifact_contract,
+                        training_turn_contract,
+                    ),
+                }
+            )
         messages.append(
             {
                 "role": "user",
@@ -865,8 +1145,9 @@ class NarrativeClient:
             "conditions exactly. Resolve only actions explicitly stated by the player and advance exactly one "
             "scenario turn. Do not coach, hint, assess, explain best practice, reveal hidden scoring, or announce "
             "whether an item is safe or suspicious unless the authored scenario explicitly schedules a final debrief. "
-            "If player.resources.current-turn-window is present, begin with that exact scheduled turn as a Russian "
-            "player-facing header and never remain in the previous time window."
+            "If player.resources.current-turn-window is present, preserve that exact scheduled turn and never remain "
+            "in the previous time window. When a structured response schema is supplied, Gateway adds the authored "
+            "player-facing header; otherwise begin with that exact header."
         )
 
     def mock_completion(
@@ -875,6 +1156,7 @@ class NarrativeClient:
         repair_instruction: str | None,
         artifact_contract: dict[str, Any] | None = None,
         state: dict[str, Any] | None = None,
+        training_turn_contract: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         mode = self.settings.llm_api_base.removeprefix("mock://")
         if mode == "timeout":
@@ -902,9 +1184,17 @@ class NarrativeClient:
             content = "Despite the failure, the king still transfers command authority."
         else:
             content = "The scene shifts around the attempt, leaving the next opening clear without taking control from the player."
-        if artifact_contract:
-            site_contract = artifact_contract.get("site") if "site" in artifact_contract or "workspace" in artifact_contract else artifact_contract
-            workspace_contract = artifact_contract.get("workspace") if "site" in artifact_contract or "workspace" in artifact_contract else None
+        site_contract = (
+            artifact_contract.get("site")
+            if artifact_contract and ("site" in artifact_contract or "workspace" in artifact_contract)
+            else artifact_contract
+        )
+        workspace_contract = (
+            artifact_contract.get("workspace")
+            if artifact_contract and ("site" in artifact_contract or "workspace" in artifact_contract)
+            else None
+        )
+        if artifact_contract or (training_turn_contract and training_turn_contract.get("kind") == "turn"):
             slot_values = {
                 slot_id: ("Продолжить" if slot_id.endswith("label") else "Учебная страница")
                 for slot_id in (site_contract or {}).get("slots", {})
@@ -921,7 +1211,6 @@ class NarrativeClient:
             narrative_text = content
             artifacts = []
             if site_contract:
-                narrative_text = f"{content}\n\nСсылка: {site_contract['display_url']}"
                 artifacts = [
                     {
                         "artifact_key": site_contract["artifact_key"],
@@ -929,15 +1218,60 @@ class NarrativeClient:
                         "slots": slot_values,
                     }
                 ]
-            content = json.dumps(
-                {
-                    "schema_version": "rp-gateway.narrative-bundle.v2" if workspace_contract else "rp-gateway.narrative-bundle.v1",
-                    "narrative_text": narrative_text,
-                    "artifacts": artifacts,
-                    **({"workspace_files": workspace_files} if workspace_contract else {}),
-                },
-                ensure_ascii=False,
-            )
+            if training_turn_contract and training_turn_contract.get("kind") == "turn":
+                visible_surfaces: dict[str, dict[str, str]] = {}
+                player = (state or {}).get("player") if isinstance((state or {}).get("player"), dict) else {}
+                recipient = str((player or {}).get("name") or "Коллега")
+                for surface_key, surface, instance_index in _expanded_training_surfaces(
+                    training_turn_contract
+                ):
+                    values = {
+                        "Канал:": (
+                            "корпоративная почта"
+                            if surface.get("type") == "email"
+                            else "рабочий мессенджер"
+                        ),
+                        "Чат:": "рабочий чат",
+                        "От:": "Учебный отправитель — sender@example.test",
+                        "Кому:": recipient,
+                        "Дата/время:": "текущий рабочий блок",
+                        "Тема:": "Учебный рабочий запрос",
+                        "Вложения:": "нет",
+                        "Ссылки:": _surface_link_value(surface, instance_index),
+                        "Тело:": content,
+                        "Текст:": content,
+                        "Подпись:": "Учебный отправитель",
+                    }
+                    visible_surfaces[surface_key] = {
+                        str(field).strip(): values.get(str(field).strip(), "Учебное значение")
+                        for field in surface.get("required_fields") or []
+                    }
+                content = json.dumps(
+                    {
+                        "schema_version": "rp-gateway.narrative-bundle.v3",
+                        "narrative_text": "",
+                        "visible_surfaces": visible_surfaces,
+                        "artifacts": artifacts,
+                        "workspace_files": workspace_files,
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                if site_contract:
+                    narrative_text = f"{content}\n\nСсылка: {site_contract['display_url']}"
+                content = json.dumps(
+                    {
+                        "schema_version": (
+                            "rp-gateway.narrative-bundle.v2"
+                            if workspace_contract
+                            else "rp-gateway.narrative-bundle.v1"
+                        ),
+                        "narrative_text": narrative_text,
+                        "artifacts": artifacts,
+                        **({"workspace_files": workspace_files} if workspace_contract else {}),
+                    },
+                    ensure_ascii=False,
+                )
         return {
             "id": f"mock-{outcome.check_id}",
             "object": "chat.completion",
