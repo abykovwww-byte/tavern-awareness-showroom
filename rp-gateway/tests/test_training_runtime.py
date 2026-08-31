@@ -333,7 +333,32 @@ def test_awareness_v3_requires_one_active_url_on_the_links_line(tmp_path: Path, 
         "Training turn must contain the active artifact URL exactly once on its standalone Ссылки line."
         in runtime.hard_violations(narrative, state, interaction_contract)
     )
-    assert runtime.repair_blockers(narrative, state, interaction_contract)
+    assert runtime.repair_blockers(narrative, state, interaction_contract) == []
+    instruction = runtime.repair_instruction(narrative, state, interaction_contract)
+    assert "активный display_url ровно один раз" in instruction
+    assert "только значением поля «Ссылки:»" in instruction
+
+
+def test_awareness_v3_keeps_an_outside_url_blocking(tmp_path: Path):
+    root = WORLD_PACKS_ROOT / "awareness"
+    runtime = TrainingRuntimeService(
+        worldpack(root),
+        StateStore(str(tmp_path / "state.db"), "party-url-outside", root / "state-seed.json"),
+    )
+    state = runtime.store.get_state()
+    state["meta"]["turn"] = 1
+    url = "https://training.example.test/turn-1"
+    interaction_contract = {"site": {"display_url": url}}
+    narrative = runtime.fallback_text(state, interaction_contract).replace(
+        url,
+        "https://outside.example/turn-1",
+        1,
+    )
+
+    violation = "Training turn must not contain a URL outside the active artifact contract."
+    assert violation in runtime.hard_violations(narrative, state, interaction_contract)
+    assert violation in runtime.repair_blockers(narrative, state, interaction_contract)
+    assert runtime.repair_instruction(narrative, state, interaction_contract) == ""
 
 
 def test_one_day_negated_dangerous_actions_do_not_create_unsafe_evidence(tmp_path: Path):
@@ -525,6 +550,17 @@ def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp
     assert runtime.repair_blockers(wrong_sender, state) == []
     assert "Анна Петрова" in runtime.repair_instruction(wrong_sender, state)
 
+    state["meta"]["turn"] = 3
+    wrong_director = runtime.fallback_text(state).replace(
+        "От: Генеральный директор",
+        "От: Руководитель",
+        1,
+    )
+    director_instruction = runtime.repair_instruction(wrong_director, state)
+    assert "поле «От» представляет аккаунт генерального директора" in director_instruction
+    assert "есть просьба подтвердить оплату" in director_instruction
+    assert "JSON-инструкция, не текст ответа" in director_instruction
+
     state["meta"]["turn"] = 5
     wrong_channel = runtime.fallback_text(state).replace("Канал: рабочий мессенджер", "Канал: личная почта", 1)
     assert any("authored fact" in item for item in runtime.hard_violations(wrong_channel, state))
@@ -546,7 +582,7 @@ def test_training_hard_identity_gets_one_repair_but_channel_remains_blocking(tmp
     assert "указан срок 09:35" in deadline_instruction
     assert "profile_adaptation_instruction" in deadline_instruction
     assert "Археолог по керамическим артефактам" in deadline_instruction
-    assert "первый результат" not in deadline_instruction
+    assert "запрошен первый результат" in deadline_instruction
     assert "(?m)" not in deadline_instruction
 
     missing_result = re.sub(r"результ\w*", "материал", runtime.fallback_text(state), flags=re.IGNORECASE)
