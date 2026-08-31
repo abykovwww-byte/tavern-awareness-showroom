@@ -2287,56 +2287,70 @@ class StateStore:
         reason: str,
     ) -> dict[str, Any]:
         with self.connect() as connection:
-            row = connection.execute(
-                """
-                SELECT state_json, version FROM state_versions
-                WHERE campaign_id = ?
-                ORDER BY version DESC
-                LIMIT 1
-                """,
-                (self.campaign_id,),
-            ).fetchone()
-            if row is None:
-                state = self.empty_state()
-                version = 0
-            else:
-                state = json.loads(row["state_json"])
-                version = int(row["version"])
-            if patch.check_id:
-                existing = connection.execute(
-                    "SELECT id FROM state_patches WHERE campaign_id = ? AND check_id = ? AND applied = 1",
-                    (self.campaign_id, patch.check_id),
-                ).fetchone()
-                if existing:
-                    raise ValueError(f"patch for check_id {patch.check_id} is already applied")
-
-            operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
-            candidate = apply_patch(state, operations)
-            candidate.setdefault("meta", {})
-            candidate["meta"]["state_version"] = version + 1
-            candidate["meta"]["turn"] = max(int(candidate["meta"].get("turn", 0)) + 1, patch.turn)
-            candidate["meta"]["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            candidate.setdefault("last_turn", {})
-            candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
-            candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
-
-            patch_json = patch.model_dump_json()
-            patch_row = connection.execute(
-                """
-                INSERT INTO state_patches(campaign_id, check_id, patch_json, applied, created_at, applied_at)
-                VALUES(?, ?, ?, 1, ?, ?)
-                """,
-                (self.campaign_id, patch.check_id, patch_json, now_ts(), now_ts()),
-            )
-            connection.execute(
-                """
-                INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
-                VALUES(?, ?, ?, ?, ?)
-                """,
-                (self.campaign_id, version + 1, json.dumps(candidate, ensure_ascii=False), now_ts(), reason),
-            )
-            _ = patch_row
+            candidate = self._apply_state_patch(connection, patch, reason)
         self.write_state_file(candidate)
+        return candidate
+
+    def _apply_state_patch(
+        self,
+        connection: sqlite3.Connection,
+        patch: StatePatch,
+        reason: str,
+        *,
+        expected_state_version: int | None = None,
+    ) -> dict[str, Any]:
+        row = connection.execute(
+            """
+            SELECT state_json, version FROM state_versions
+            WHERE campaign_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (self.campaign_id,),
+        ).fetchone()
+        if row is None:
+            state = self.empty_state()
+            version = 0
+        else:
+            state = json.loads(row["state_json"])
+            version = int(row["version"])
+        if expected_state_version is not None and version != expected_state_version:
+            raise StateVersionConflict(
+                f"state version changed: expected {expected_state_version}, current {version}"
+            )
+        if patch.check_id:
+            existing = connection.execute(
+                "SELECT id FROM state_patches WHERE campaign_id = ? AND check_id = ? AND applied = 1",
+                (self.campaign_id, patch.check_id),
+            ).fetchone()
+            if existing:
+                raise ValueError(f"patch for check_id {patch.check_id} is already applied")
+
+        operations = [operation.model_dump(exclude_none=True) for operation in patch.patch]
+        candidate = apply_patch(state, operations)
+        candidate.setdefault("meta", {})
+        candidate["meta"]["state_version"] = version + 1
+        candidate["meta"]["turn"] = max(int(candidate["meta"].get("turn", 0)) + 1, patch.turn)
+        candidate["meta"]["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        candidate.setdefault("last_turn", {})
+        candidate["last_turn"]["turn"] = candidate["meta"]["turn"]
+        candidate["last_turn"]["state_patch_id"] = patch.check_id or f"gateway-v{version + 1}"
+
+        patch_json = patch.model_dump_json()
+        connection.execute(
+            """
+            INSERT INTO state_patches(campaign_id, check_id, patch_json, applied, created_at, applied_at)
+            VALUES(?, ?, ?, 1, ?, ?)
+            """,
+            (self.campaign_id, patch.check_id, patch_json, now_ts(), now_ts()),
+        )
+        connection.execute(
+            """
+            INSERT INTO state_versions(campaign_id, version, state_json, created_at, reason)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (self.campaign_id, version + 1, json.dumps(candidate, ensure_ascii=False), now_ts(), reason),
+        )
         return candidate
 
 
@@ -2894,107 +2908,204 @@ class StateStore:
         if party_turn is None:
             party_turn = int(self.get_state().get("meta", {}).get("turn", 0))
         with self.connect() as connection:
-            cursor = connection.execute(
+            turn_id = self._record_turn(
+                connection,
+                idempotency_key,
+                request_id,
+                player_message,
+                narrative_response,
+                response_json,
+                state_version,
+                prompt_messages,
+                metadata,
+                artifacts,
+                consumed_artifact_event_ids,
+                workspace_files,
+                consumed_workspace_event_ids,
+                party_turn,
+            )
+        self.link_turn_diagnostics(turn_id, request_id, party_turn)
+        return turn_id
+
+    def commit_turn_bundle(
+        self,
+        patch: StatePatch,
+        *,
+        reason: str,
+        expected_state_version: int,
+        idempotency_key: str,
+        request_id: str,
+        player_message: str,
+        narrative_response: str,
+        response_json: dict[str, Any],
+        prompt_messages: list[dict[str, str]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
+        consumed_artifact_event_ids: list[int] | None = None,
+        workspace_files: list[dict[str, Any]] | None = None,
+        consumed_workspace_event_ids: list[int] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            candidate = self._apply_state_patch(
+                connection,
+                patch,
+                reason,
+                expected_state_version=expected_state_version,
+            )
+            state_version = int(candidate["meta"]["state_version"])
+            party_turn = int(candidate["meta"]["turn"])
+            turn_id = self._record_turn(
+                connection,
+                idempotency_key,
+                request_id,
+                player_message,
+                narrative_response,
+                response_json,
+                state_version,
+                prompt_messages,
+                metadata,
+                artifacts,
+                consumed_artifact_event_ids,
+                workspace_files,
+                consumed_workspace_event_ids,
+                party_turn,
+            )
+        try:
+            self.write_state_file(candidate)
+        except OSError:
+            logger.warning(
+                "state_mirror_write_failed campaign_id=%s state_version=%s",
+                self.campaign_id,
+                candidate["meta"]["state_version"],
+                exc_info=True,
+            )
+        self.link_turn_diagnostics(turn_id, request_id, party_turn)
+        return candidate, turn_id
+
+    def _record_turn(
+        self,
+        connection: sqlite3.Connection,
+        idempotency_key: str,
+        request_id: str,
+        player_message: str,
+        narrative_response: str,
+        response_json: dict[str, Any],
+        state_version: int,
+        prompt_messages: list[dict[str, str]] | None,
+        metadata: dict[str, Any] | None,
+        artifacts: list[dict[str, Any]] | None,
+        consumed_artifact_event_ids: list[int] | None,
+        workspace_files: list[dict[str, Any]] | None,
+        consumed_workspace_event_ids: list[int] | None,
+        party_turn: int,
+    ) -> int:
+        cursor = connection.execute(
+            """
+            INSERT INTO turns(
+                campaign_id, idempotency_key, request_id, player_message,
+                narrative_response, response_json, prompt_json, metadata_json,
+                state_version, party_turn, created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                self.campaign_id,
+                idempotency_key,
+                request_id,
+                player_message,
+                narrative_response,
+                json.dumps(response_json, ensure_ascii=False),
+                json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
+                json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+                state_version,
+                party_turn,
+                now_ts(),
+            ),
+        )
+        turn_id = int(cursor.lastrowid)
+        for artifact in artifacts or []:
+            public = artifact.get("public") if isinstance(artifact, dict) else None
+            policy = artifact.get("policy") if isinstance(artifact, dict) else None
+            if not isinstance(public, dict) or not isinstance(policy, dict):
+                raise ValueError("invalid training artifact persistence record")
+            connection.execute(
                 """
-                INSERT INTO turns(
-                    campaign_id, idempotency_key, request_id, player_message,
-                    narrative_response, response_json, prompt_json, metadata_json,
-                    state_version, party_turn, created_at
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO training_artifacts(
+                    id, campaign_id, turn_id, artifact_key, artifact_revision,
+                    blueprint_id, public_json, policy_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    public["artifact_id"],
                     self.campaign_id,
-                    idempotency_key,
-                    request_id,
-                    player_message,
-                    narrative_response,
-                    json.dumps(response_json, ensure_ascii=False),
-                    json.dumps(prompt_messages, ensure_ascii=False) if prompt_messages is not None else None,
-                    json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
-                    state_version,
-                    party_turn,
+                    turn_id,
+                    public["artifact_key"],
+                    int(public["artifact_revision"]),
+                    public["blueprint_id"],
+                    json.dumps(public, ensure_ascii=False),
+                    json.dumps(policy, ensure_ascii=False),
                     now_ts(),
                 ),
             )
-            turn_id = int(cursor.lastrowid)
-            for artifact in artifacts or []:
-                public = artifact.get("public") if isinstance(artifact, dict) else None
-                policy = artifact.get("policy") if isinstance(artifact, dict) else None
-                if not isinstance(public, dict) or not isinstance(policy, dict):
-                    raise ValueError("invalid training artifact persistence record")
-                connection.execute(
-                    """
-                    INSERT INTO training_artifacts(
-                        id, campaign_id, turn_id, artifact_key, artifact_revision,
-                        blueprint_id, public_json, policy_json, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        public["artifact_id"],
-                        self.campaign_id,
-                        turn_id,
-                        public["artifact_key"],
-                        int(public["artifact_revision"]),
-                        public["blueprint_id"],
-                        json.dumps(public, ensure_ascii=False),
-                        json.dumps(policy, ensure_ascii=False),
-                        now_ts(),
-                    ),
-                )
-            for workspace_file in workspace_files or []:
-                public = workspace_file.get("public") if isinstance(workspace_file, dict) else None
-                policy = workspace_file.get("policy") if isinstance(workspace_file, dict) else None
-                if not isinstance(public, dict) or not isinstance(policy, dict):
-                    raise ValueError("invalid training workspace persistence record")
-                connection.execute(
-                    """
-                    INSERT INTO training_workspace_files(
-                        id, campaign_id, file_key, file_revision, blueprint_id, folder_id,
-                        turn_id, available_from_turn, available_until_turn, public_json,
-                        policy_json, materialized_turn, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(campaign_id, file_key, file_revision) DO NOTHING
-                    """,
-                    (
-                        public["file_id"],
-                        self.campaign_id,
-                        public["file_key"],
-                        int(public["file_revision"]),
-                        public["blueprint_id"],
-                        public["folder_id"],
-                        turn_id,
-                        int(public["available_from_turn"]),
-                        public.get("available_until_turn"),
-                        json.dumps(public, ensure_ascii=False),
-                        json.dumps(policy, ensure_ascii=False),
-                        int(public["materialized_turn"]),
-                        now_ts(),
-                    ),
-                )
-            event_ids = [int(value) for value in consumed_artifact_event_ids or []]
-            if event_ids:
-                placeholders = ",".join("?" for _ in event_ids)
-                connection.execute(
-                    f"""
-                    UPDATE training_artifact_events
-                    SET consumed_turn_id = ?
-                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
-                    """,
-                    (turn_id, self.campaign_id, *event_ids),
-                )
-            workspace_event_ids = [int(value) for value in consumed_workspace_event_ids or []]
-            if workspace_event_ids:
-                placeholders = ",".join("?" for _ in workspace_event_ids)
-                connection.execute(
-                    f"""
-                    UPDATE training_workspace_events
-                    SET consumed_turn_id = ?
-                    WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
-                    """,
-                    (turn_id, self.campaign_id, *workspace_event_ids),
-                )
-        self.link_turn_diagnostics(turn_id, request_id, party_turn)
+        for workspace_file in workspace_files or []:
+            public = workspace_file.get("public") if isinstance(workspace_file, dict) else None
+            policy = workspace_file.get("policy") if isinstance(workspace_file, dict) else None
+            if not isinstance(public, dict) or not isinstance(policy, dict):
+                raise ValueError("invalid training workspace persistence record")
+            connection.execute(
+                """
+                INSERT INTO training_workspace_files(
+                    id, campaign_id, file_key, file_revision, blueprint_id, folder_id,
+                    turn_id, available_from_turn, available_until_turn, public_json,
+                    policy_json, materialized_turn, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(campaign_id, file_key, file_revision) DO NOTHING
+                """,
+                (
+                    public["file_id"],
+                    self.campaign_id,
+                    public["file_key"],
+                    int(public["file_revision"]),
+                    public["blueprint_id"],
+                    public["folder_id"],
+                    turn_id,
+                    int(public["available_from_turn"]),
+                    public.get("available_until_turn"),
+                    json.dumps(public, ensure_ascii=False),
+                    json.dumps(policy, ensure_ascii=False),
+                    int(public["materialized_turn"]),
+                    now_ts(),
+                ),
+            )
+        event_ids = list(dict.fromkeys(int(value) for value in consumed_artifact_event_ids or []))
+        if event_ids:
+            placeholders = ",".join("?" for _ in event_ids)
+            event_cursor = connection.execute(
+                f"""
+                UPDATE training_artifact_events
+                SET consumed_turn_id = ?
+                WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                """,
+                (turn_id, self.campaign_id, *event_ids),
+            )
+            if event_cursor.rowcount != len(event_ids):
+                raise StateVersionConflict("training artifact events changed before turn commit")
+        workspace_event_ids = list(
+            dict.fromkeys(int(value) for value in consumed_workspace_event_ids or [])
+        )
+        if workspace_event_ids:
+            placeholders = ",".join("?" for _ in workspace_event_ids)
+            workspace_event_cursor = connection.execute(
+                f"""
+                UPDATE training_workspace_events
+                SET consumed_turn_id = ?
+                WHERE campaign_id = ? AND consumed_turn_id IS NULL AND id IN ({placeholders})
+                """,
+                (turn_id, self.campaign_id, *workspace_event_ids),
+            )
+            if workspace_event_cursor.rowcount != len(workspace_event_ids):
+                raise StateVersionConflict("training workspace events changed before turn commit")
         return turn_id
 
     def link_turn_diagnostics(self, turn_id: int, request_id: str, party_turn: int) -> None:

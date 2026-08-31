@@ -67,7 +67,7 @@ from app.services.service_models import (
 )
 from app.services.party_store import PartyStore
 from app.services.showroom import SHOWROOM_WORLD_OWNER, ShowroomStore
-from app.services.state_store import StateStore
+from app.services.state_store import StateStore, StateVersionConflict
 from app.services.training_artifacts import TrainingArtifactService
 from app.services.training_runtime import TrainingRuntimeService
 from app.services.training_workspace import TrainingWorkspaceService
@@ -940,6 +940,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         try:
             state = party_state_store.get_state()
+            expected_state_version = int(
+                state.get("meta", {}).get("state_version") or party_state_store.current_version() or 0
+            )
             runtime_service, artifact_service, workspace_service = training_services_for_party(
                 party,
                 party_state_store,
@@ -1306,26 +1309,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "interactive_workspace_enabled": workspace_service.enabled,
                 },
             }
-            state = party_state_store.apply_state_patch(
+            state, turn_id = party_state_store.commit_turn_bundle(
                 start_patch,
                 reason=f"party_start:{request_id}",
-            )
-            state_version = party_state_store.current_version() or int(
-                state.get("meta", {}).get("state_version") or 1
-            )
-            turn_id = party_state_store.record_turn(
-                idempotency_key,
-                request_id,
-                TRAINING_START_HISTORY_MESSAGE,
-                text,
-                response,
-                state_version,
-                prompt_messages,
-                turn_metadata,
+                expected_state_version=expected_state_version,
+                idempotency_key=idempotency_key,
+                request_id=request_id,
+                player_message=TRAINING_START_HISTORY_MESSAGE,
+                narrative_response=text,
+                response_json=response,
+                prompt_messages=prompt_messages,
+                metadata=turn_metadata,
                 artifacts=artifact_result.persistence_records,
                 workspace_files=workspace_result.persistence_records,
-                party_turn=int(state["meta"]["turn"]),
             )
+            state_version = int(state["meta"]["state_version"])
             adjudicator.record_trace_event(
                 request_id=request_id,
                 phase_key="turn_commit",
@@ -1380,6 +1378,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request_id,
             )
             raise HTTPException(status_code=429, detail=exc.public_detail()) from exc
+        except StateVersionConflict as exc:
+            party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
+            trace_start_failure(exc)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeError as exc:
             party_state_store.fail_turn_request(idempotency_key, f"{type(exc).__name__}: {exc}")
             trace_start_failure(exc)
@@ -1456,6 +1458,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except ProviderRateLimitError as exc:
             raise HTTPException(status_code=429, detail=exc.public_detail()) from exc
+        except StateVersionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except ValueError as exc:

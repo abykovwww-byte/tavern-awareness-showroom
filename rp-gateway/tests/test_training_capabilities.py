@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 import shutil
 from pathlib import Path
 
 import pytest
 
-from app.models.schemas import TrainingWorkspaceEventRequest, WorldPackSummary
-from app.services.state_store import StateStore
+from app.models.schemas import (
+    PatchOperation,
+    StatePatch,
+    TrainingWorkspaceEventRequest,
+    WorldPackSummary,
+)
+from app.services.state_store import StateStore, StateVersionConflict
 from app.services.training_artifacts import TrainingArtifactService
 from app.services.training_capabilities import TrainingCapabilityPolicy
 from app.services.training_workspace import TrainingWorkspaceService
@@ -96,7 +102,9 @@ def test_anonymous_showroom_rejects_restricted_workspace_resources(tmp_path: Pat
 
 def test_workspace_materializes_files_and_records_scored_evidence(tmp_path: Path):
     pack = awareness_pack()
-    store = StateStore(str(tmp_path / "state.db"), "party-workspace", pack.state_seed_path)
+    state_path = tmp_path / "state.json"
+    shutil.copy2(pack.state_seed_path, state_path)
+    store = StateStore(str(tmp_path / "state.db"), "party-workspace", str(state_path))
     service = TrainingWorkspaceService(pack, store)
     state = store.get_state()
     state.setdefault("meta", {})["turn"] = 1
@@ -174,3 +182,66 @@ def test_workspace_materializes_files_and_records_scored_evidence(tmp_path: Path
     evidence = service.pending_evidence()
     assert evidence[0].decision_result == "fail"
     assert evidence[0].score_rule_id == "workspace-access-update-open"
+
+    new_file = copy.deepcopy(dynamic.persistence_records[0])
+    new_file["public"]["file_id"] = "workspace_atomic_new"
+    new_file["public"]["file_key"] = "atomic-workspace-copy"
+    expected_version = int(store.current_version() or 0)
+    with sqlite3.connect(store.sqlite_path) as connection:
+        turn_before = int(connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0])
+    patch = StatePatch(
+        turn=int(store.get_state().get("meta", {}).get("turn", 0)) + 1,
+        check_id="workspace-atomic-turn",
+        patch=[
+            PatchOperation(
+                op="add",
+                path="/meta/atomic-workspace-proof",
+                value=True,
+                reason="verify workspace effects share the turn transaction",
+                turn=int(store.get_state().get("meta", {}).get("turn", 0)) + 1,
+            )
+        ],
+    )
+    with pytest.raises(StateVersionConflict, match="workspace events changed before turn commit"):
+        store.commit_turn_bundle(
+            patch,
+            reason="turn:workspace-atomic-failure",
+            expected_state_version=expected_version,
+            idempotency_key="workspace-atomic-turn",
+            request_id="workspace-atomic-request",
+            player_message="Открываю рабочий файл.",
+            narrative_response="Файл открыт.",
+            response_json=response,
+            workspace_files=[new_file],
+            consumed_workspace_event_ids=[event.event_sequence, 999_999_999],
+        )
+
+    assert store.current_version() == expected_version
+    assert [item.event_sequence for item in service.pending_evidence()] == [event.event_sequence]
+    with sqlite3.connect(store.sqlite_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == turn_before
+        assert connection.execute(
+            "SELECT COUNT(*) FROM training_workspace_files WHERE id = 'workspace_atomic_new'"
+        ).fetchone() == (0,)
+
+    _, committed_turn_id = store.commit_turn_bundle(
+        patch,
+        reason="turn:workspace-atomic-retry",
+        expected_state_version=expected_version,
+        idempotency_key="workspace-atomic-turn",
+        request_id="workspace-atomic-request",
+        player_message="Открываю рабочий файл.",
+        narrative_response="Файл открыт.",
+        response_json=response,
+        workspace_files=[new_file],
+        consumed_workspace_event_ids=[event.event_sequence],
+    )
+    assert service.pending_evidence() == []
+    with sqlite3.connect(store.sqlite_path) as connection:
+        assert connection.execute(
+            "SELECT turn_id FROM training_workspace_files WHERE id = 'workspace_atomic_new'"
+        ).fetchone() == (committed_turn_id,)
+        assert connection.execute(
+            "SELECT consumed_turn_id FROM training_workspace_events WHERE id = ?",
+            (event.event_sequence,),
+        ).fetchone() == (committed_turn_id,)
