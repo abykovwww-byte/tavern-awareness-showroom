@@ -237,6 +237,7 @@ class Adjudicator:
                     artifact_contract=interaction_contract,
                     training_turn_contract=training_turn_contract,
                 )
+                failed_provider_response_text = response_text(raw)
                 structured_result = materialize_structured_training_response(
                     raw,
                     training_turn_contract,
@@ -349,7 +350,7 @@ class Adjudicator:
                         outcome,
                         authorization,
                         repair_instruction,
-                        failed_response_text=text,
+                        failed_response_text=failed_provider_response_text,
                         memory_summary=memory_summary,
                         request_id=request_id,
                         artifact_contract=interaction_contract,

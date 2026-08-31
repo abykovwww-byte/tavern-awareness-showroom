@@ -308,17 +308,48 @@ def training_interaction_response_format(
         for surface_key, surface, instance_index in structured_surfaces:
             field_properties: dict[str, Any] = {}
             field_names = [str(field).strip() for field in surface.get("required_fields") or []]
+            surface_count = max(int(surface.get("count", 1) or 1), 1)
+            authored_requirements = [
+                str(item).strip()
+                for item in surface.get("must_include") or []
+                if str(item).strip()
+            ]
+            profile_instruction = str(surface.get("profile_adaptation_instruction") or "").strip()
+            semantic_guidance: list[str] = []
+            if authored_requirements:
+                semantic_guidance.append(
+                    "Across this authored surface group, satisfy every requirement explicitly: "
+                    + "; ".join(authored_requirements)
+                    + "."
+                )
+            if profile_instruction:
+                semantic_guidance.append(
+                    "Across this authored surface group, preserve the player-profile adaptation: "
+                    + profile_instruction
+                )
+            group_description = (
+                f"Visible surface instance {instance_index} of {surface_count}. "
+                "Return field values only; Gateway renders the marker, labels, authored header, and final question. "
+                + " ".join(semantic_guidance)
+            ).strip()
             for field_name in field_names:
                 value_schema: dict[str, Any] = {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 6000,
+                    "description": (
+                        f"Value only for {field_name}; do not repeat the field label, surface marker, "
+                        "authored header, or final question."
+                    ),
                 }
+                if field_name in {"Тело:", "Текст:"} and semantic_guidance:
+                    value_schema["description"] += " " + " ".join(semantic_guidance)
                 if field_name == "Ссылки:":
                     value_schema["enum"] = [_surface_link_value(surface, instance_index)]
                 field_properties[field_name] = value_schema
             visible_properties[surface_key] = {
                 "type": "object",
+                "description": group_description,
                 "additionalProperties": False,
                 "required": field_names,
                 "properties": field_properties,
@@ -1103,6 +1134,15 @@ class NarrativeClient:
                 "visible fact and requirement the failed response already satisfied. Before returning it, recheck "
                 "every surface in ACTIVE_TRAINING_TURN_CONTRACT, including marker counts, required_fields, "
                 "must_include, profile_adaptation_instruction, effective_links, and attachments."
+            )
+        if training_turn_contract and training_turn_contract.get("kind") == "turn":
+            repair_rules += (
+                " The supplied failed_response is the unrendered provider response, not rendered player-facing text. "
+                "Regardless of its current shape, return exactly one complete rp-gateway.narrative-bundle.v3 object. "
+                "Apply semantic corrections "
+                "inside the corresponding visible_surfaces field values and preserve every exact surface and field key. "
+                "Keep narrative_text empty or limited to optional scene-setting prose; never put the authored header, "
+                "final question, ПИСЬМО/СООБЩЕНИЕ markers, or visible field labels in narrative_text. Gateway renders them."
             )
         messages = [{"role": "system", "content": self.scenario_rules() + repair_rules}]
         if training_turn_contract:
