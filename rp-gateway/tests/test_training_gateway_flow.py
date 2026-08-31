@@ -110,10 +110,24 @@ def test_public_showroom_provider_turn_persists_training_progress(
         provider_turns.append(turn)
         interaction = kwargs.get("artifact_contract")
         assert interaction is None or isinstance(interaction, dict)
+        repair_instruction = args[5] if len(args) > 5 else kwargs.get("repair_instruction")
         visible = runtime.fallback_text(state, interaction)
         site = interaction.get("site") if interaction else None
         content = visible
         if site:
+            if turn == 3 and not repair_instruction:
+                visible = "Ссылки: нет"
+            elif turn == 3:
+                contract = runtime.prompt_contract(state, interaction)
+                assert contract is not None
+                header = str(contract["header"]).strip()
+                question = str(contract.get("question") or "").strip()
+                visible = visible.removeprefix(header).lstrip()
+                if question and visible.endswith(question):
+                    visible = visible[: -len(question)].rstrip()
+                assert not visible.startswith(header)
+                assert not visible.endswith(question)
+                visible = visible.replace("\n", "\u2028")
             content = json.dumps(
                 {
                     "schema_version": "rp-gateway.narrative-bundle.v1",
@@ -156,20 +170,32 @@ def test_public_showroom_provider_turn_persists_training_progress(
     )
     assert answered.status_code == 200, answered.text
     assert answered.json()["choices"][0]["message"]["content"].startswith("Ход 2.")
-    assert provider_turns == [1, 2]
+    repaired_answer = public.post(
+        f"/api/showroom/runs/{run_id}/messages",
+        json={
+            "content": "Проверяю источник обращения и не передаю внутренние материалы внешнему адресату.",
+            "idempotency_key": "training-flow-turn-2",
+        },
+    )
+    assert repaired_answer.status_code == 200, repaired_answer.text
+    assert repaired_answer.json()["choices"][0]["message"]["content"].startswith("Ход 3.")
+    assert "\u2028" not in repaired_answer.json()["choices"][0]["message"]["content"]
+    assert repaired_answer.json()["choices"][0]["message"]["artifacts"]
+    assert provider_turns == [1, 2, 3, 3]
 
     resumed = public.get(f"/api/showroom/runs/{run_id}")
     history = public.get(f"/api/showroom/runs/{run_id}/history")
     assert resumed.status_code == 200, resumed.text
     assert history.status_code == 200, history.text
     assert resumed.json()["run"]["party_status"] == "active"
-    assert len(history.json()["turns"]) == 2
+    assert len(history.json()["turns"]) == 3
     state = state_store.get_state()
-    assert state["meta"]["turn"] == 2
+    assert state["meta"]["turn"] == 3
     assert state["player"]["resources"]["safe-escalations"] >= 1
     metadata = latest_turn_metadata(admin, party_id)
     assert metadata["fallback"] is False
     assert metadata["validator_valid"] is True
+    assert metadata["repaired"] is True
 
     unauthorized_runs = public.get("/api/admin/showroom/runs")
     assert unauthorized_runs.status_code == 401, unauthorized_runs.text

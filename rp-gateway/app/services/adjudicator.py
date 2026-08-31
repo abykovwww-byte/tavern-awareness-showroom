@@ -470,7 +470,7 @@ class Adjudicator:
                     or gateway_fallback_reason is not None
                 ):
                     artifact_result = self.training_artifacts.fallback_materialization(raw, text, artifact_contract)
-                text = artifact_result.text
+                    text = artifact_result.text
             if self.training_workspace and workspace_contract:
                 if (
                     workspace_result is None
@@ -479,7 +479,7 @@ class Adjudicator:
                     or gateway_fallback_reason is not None
                 ):
                     workspace_result = self.training_workspace.fallback_materialization(workspace_contract, text)
-                text = workspace_result.text
+                    text = workspace_result.text
             raw = self.merge_interaction_response(raw, text, artifact_result, workspace_result)
 
             response = self.normalize_response(raw, request.model or self.settings.narrative_model)
