@@ -381,29 +381,48 @@ def test_checked_in_catalog_publishes_both_training_courses(tmp_path: Path) -> N
 
     app = create_app(settings)
     scenarios = app.state.showroom_store.list_scenarios(public_only=False)
-    by_title = {scenario["title"]: scenario for scenario in scenarios}
+    by_id = {scenario["id"]: scenario for scenario in scenarios}
 
-    assert set(by_title) == {
-        "Awareness. Неделя",
-        "Тест",
-        "One Day. Эллина",
-        "Один день. V5",
-        "Один день. V3",
+    assert set(by_id) == {
+        "scenario_catalog_awareness-week",
+        "scenario_catalog_test",
+        "scenario_catalog_one-day-ellina",
+        "scenario_catalog_one-day-v5",
+        "scenario_catalog_one-day-v3",
     }
-    assert all(scenario["status"] == "published" for scenario in scenarios)
-    weekly = by_title["Awareness. Неделя"]
+    assert {scenario_id: scenario["status"] for scenario_id, scenario in by_id.items()} == {
+        "scenario_catalog_awareness-week": "published",
+        "scenario_catalog_test": "draft",
+        "scenario_catalog_one-day-ellina": "published",
+        "scenario_catalog_one-day-v5": "draft",
+        "scenario_catalog_one-day-v3": "draft",
+    }
+    public_scenarios = app.state.showroom_store.list_scenarios(public_only=True)
+    assert {scenario["title"] for scenario in public_scenarios} == {
+        "Awareness. Неделя",
+        "Awareness. Один день",
+    }
+    assert {scenario["id"] for scenario in public_scenarios} == {
+        "scenario_catalog_awareness-week",
+        "scenario_catalog_one-day-ellina",
+    }
+    assert all(scenario["status"] == "published" for scenario in public_scenarios)
+
+    weekly = by_id["scenario_catalog_awareness-week"]
     assert weekly["worldpack_id"] == "awareness"
     assert weekly["leaderboard_state_path"] == "player.resources.awareness-score"
     assert weekly["interactive_links_enabled"] is True
     assert weekly["interactive_workspace_enabled"] is True
-    one_day_scenarios = [scenario for scenario in scenarios if scenario is not weekly]
+    one_day_scenarios = [
+        scenario for scenario in scenarios if scenario["worldpack_id"] == "awareness-one-day"
+    ]
     assert all(scenario["worldpack_id"] == "awareness-one-day" for scenario in one_day_scenarios)
     assert all(
         scenario["leaderboard_state_path"] == "player.resources.total-score"
         for scenario in one_day_scenarios
     )
-    assert by_title["Тест"]["interactive_workspace_enabled"] is True
-    assert by_title["One Day. Эллина"]["interactive_workspace_enabled"] is False
+    assert by_id["scenario_catalog_test"]["interactive_workspace_enabled"] is True
+    assert by_id["scenario_catalog_one-day-ellina"]["interactive_workspace_enabled"] is False
 
     with sqlite3.connect(settings.sqlite_path) as connection:
         model_rows = connection.execute(

@@ -23,7 +23,7 @@
       "key": "test",
       "title": "Тест",
       "description": "Тест 3.08",
-      "status": "published",
+      "status": "draft",
       "worldpack_id": "awareness-one-day",
       "model": {
         "provider": "openrouter",
@@ -39,8 +39,8 @@
     },
     {
       "key": "one-day-ellina",
-      "title": "One Day. Эллина",
-      "description": "Один день, тестирование на реальном человеке",
+      "title": "Awareness. Один день",
+      "description": "Однодневный курс по распознаванию подозрительных писем, ссылок и запросов в рабочем дне",
       "status": "published",
       "worldpack_id": "awareness-one-day",
       "model": {
@@ -59,7 +59,7 @@
       "key": "one-day-v5",
       "title": "Один день. V5",
       "description": "Один день, тестирование на реальном человеке",
-      "status": "published",
+      "status": "draft",
       "worldpack_id": "awareness-one-day",
       "model": {
         "provider": "openrouter",
@@ -77,7 +77,7 @@
       "key": "one-day-v3",
       "title": "Один день. V3",
       "description": "Один день, тестирование на реальном человеке",
-      "status": "published",
+      "status": "draft",
       "worldpack_id": "awareness-one-day",
       "model": {
         "provider": "openrouter",
