@@ -562,6 +562,7 @@ async function copyPortalValue(value) {
 
 function renderHistory(turns, fallbackOpening = "") {
   els.chatThread.replaceChildren();
+  const activeArtifactTurnId = [...turns].reverse().find((turn) => turn.narrative_response)?.id;
   for (const turn of turns) {
     const autoStart = String(turn.player_message || "").startsWith("[AUTO_START]");
     if (turn.player_message && !autoStart) {
@@ -578,7 +579,7 @@ function renderHistory(turns, fallbackOpening = "") {
           turnId: turn.id,
           rating: turn.player_rating || (turn.player_liked ? "positive" : "none"),
         },
-        turn.artifacts || [],
+        turn.id === activeArtifactTurnId ? (turn.artifacts || []) : [],
         turn.id,
       );
     }
